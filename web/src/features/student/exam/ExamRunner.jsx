@@ -904,6 +904,8 @@ export default function ExamRunner() {
           gradePublished: false,
           finalizedByServer: outcome.finalizedByServer === true,
           submittedByInstructor: outcome.source === 'instructor_finish',
+          // Recolhida pelo professor no Monitor (P3-S8): entregue com o que o servidor salvou.
+          collectedByInstructor: outcome.source === 'instructor_collect',
           answeredCount: outcome.answeredCount,
           lateBySeconds: outcome.lateBySeconds,
         })
@@ -925,7 +927,9 @@ export default function ExamRunner() {
       const reopenedForClosedScreen = !submittedRef.current && openStartedAttempt
         && (phaseRef.current === 'exhausted' || (phaseRef.current === 'error' && timeOverScreenRef.current))
       if (reopenedHere || reopenedForClosedScreen) {
-        resumeExtendedAttempt(st.reopenedAt ? 'O professor deu mais tempo à turma: sua prova foi reaberta.' : 'Sua prova continua.')
+        resumeExtendedAttempt(st.reopenedByInstructor
+          ? 'O professor reabriu a sua prova. Ela continua de onde parou, com as suas respostas.'
+          : st.reopenedAt ? 'O professor deu mais tempo à turma: sua prova foi reaberta.' : 'Sua prova continua.')
         setAttemptId(stateAttemptId)
       }
       if (st.startedAt && stateAttemptId && !timeupRef.current) {
@@ -970,6 +974,7 @@ export default function ExamRunner() {
           finishDelivered({
             gradePublished: false,
             submittedByInstructor: delivered ? delivered.source === 'instructor_finish' : r.finishOutcome === 'submitted',
+            collectedByInstructor: delivered?.source === 'instructor_collect',
             finalizedByServer: delivered?.finalizedByServer === true,
             answeredCount: delivered?.answeredCount ?? null,
             lateBySeconds: delivered?.lateBySeconds || 0,
@@ -1401,10 +1406,12 @@ export default function ExamRunner() {
   if (phase === 'done') return withInstructorMessage(
     <Center>
       <div className="w-16 h-16 grid place-items-center rounded-full bg-success-soft text-success mb-3"><CheckCircle2 size={32} /></div>
-      <h2 className="text-xl font-bold text-text">{result?.submittedByInstructor ? 'Respostas salvas e entregues' : result?.finalizedByServer ? 'Tempo esgotado: prova entregue' : 'Prova enviada!'}</h2>
+      <h2 className="text-xl font-bold text-text">{result?.collectedByInstructor ? 'Prova recolhida pelo professor' : result?.submittedByInstructor ? 'Respostas salvas e entregues' : result?.finalizedByServer ? 'Tempo esgotado: prova entregue' : 'Prova enviada!'}</h2>
       {result?.gradePublished === true
         ? <p className="text-4xl font-bold text-text tabular-nums mt-3">{fmtGrade(result.score)}</p>
-        : <p className="text-sm text-muted mt-3 max-w-sm text-center">{result?.submittedByInstructor
+        : <p className="text-sm text-muted mt-3 max-w-sm text-center">{result?.collectedByInstructor
+          ? 'O professor recolheu a sua prova e entregou as respostas que já estavam salvas. Sua nota será exibida depois da publicação pelo professor.'
+          : result?.submittedByInstructor
           ? 'O professor encerrou a aplicação e salvou o que você havia respondido.'
           : result?.finalizedByServer
             ? 'O tempo acabou e as respostas salvas no servidor foram entregues automaticamente. Sua nota será exibida depois da publicação pelo professor.'

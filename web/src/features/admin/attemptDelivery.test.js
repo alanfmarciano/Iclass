@@ -41,3 +41,18 @@ describe('[UC-APLICACAO-001] tentativa mostrada no Monitor', () => {
     expect(attemptCountLabel({ attemptNumber: null, maxAttempts: 2 })).toBe('')
   })
 })
+
+describe('[UC-TENTATIVA-004] entrega recolhida e reaberta pelo professor no Monitor (AVA-14)', () => {
+  it('diz que a prova foi recolhida pelo professor', () => {
+    expect(deliveryLabel({ submissionSource: 'instructor_collect' })).toBe('Recolhida pelo professor com as respostas salvas')
+    expect(deliveryTone({ submissionSource: 'instructor_collect' })).toBe('muted')
+  })
+
+  it('diz quem reabriu: o professor (linha do Monitor ou última reabertura da entrega) ou o tempo extra da turma', () => {
+    expect(deliveryLabel({ submissionSource: 'student', reopenedAt: '2026-11-20T10:00:00Z', reopenedFrom: [{ byInstructor: true }] })).toBe('Reaberta pelo professor')
+    expect(deliveryLabel({ submissionSource: 'student', reopenedAt: '2026-11-20T10:00:00Z', reopenedByInstructor: true })).toBe('Reaberta pelo professor')
+    expect(deliveryLabel({ submissionSource: 'student', reopenedAt: '2026-11-20T10:00:00Z', reopenedFrom: [{}, { byInstructor: true }] })).toBe('Reaberta 2 vezes (a última pelo professor)')
+    expect(deliveryLabel({ submissionSource: 'timer_auto_submit', reopenedAt: '2026-11-20T10:00:00Z', reopenedFrom: [{ byInstructor: true }, {}] })).toBe('Enviada automaticamente no fim do tempo · Reaberta 2 vezes com o tempo extra da turma')
+    expect(deliveryLabel({ submissionSource: 'student', restoredAfterDiscard: { byInstructor: true } })).toBe('Reaberta pelo professor e desconsiderada no encerramento: vale a entrega anterior')
+  })
+})

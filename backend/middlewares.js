@@ -1056,6 +1056,8 @@ function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
     delete safeGrade.reopenableState;
     delete safeGrade.reopenedFrom;
     delete safeGrade.restoredAfterDiscard;
+    // Quem recolheu a prova no Monitor (P3-S8): registro do professor.
+    delete safeGrade.collectedBy;
     if (!gradePublished) {
         delete safeGrade.score;
         delete safeGrade.correctCount;

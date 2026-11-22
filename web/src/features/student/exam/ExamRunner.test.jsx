@@ -334,6 +334,44 @@ describe('[UC-TENTATIVA-001] ExamRunner: fim do tempo, salvamento e recarga', ()
     expect(postsTo('/api/student/submit')).toHaveLength(1)
   }, 15000)
 
+  it('[UC-TENTATIVA-004] o professor recolhe a prova no Monitor: a tela mostra a entrega com as respostas salvas, sem enviar de novo', async () => {
+    let collected = false
+    apiMock.get.mockImplementation(async () => (collected
+      ? syncResponse({ startedAt: null, attemptOutcome: { attemptId: 'att-1', finalizedByServer: false, source: 'instructor_collect', answeredCount: 2 } })
+      : syncResponse({ timerRemaining: 600 })))
+    renderRunner()
+    enterFullscreen()
+    expect(await screen.findByRole('button', { name: /Dois/ })).toBeVisible()
+    collected = true
+    expect(await screen.findByText('Prova recolhida pelo professor', {}, { timeout: 6000 })).toBeVisible()
+    expect(screen.getByText(/O professor recolheu a sua prova e entregou as respostas que já estavam salvas/)).toBeVisible()
+    expect(screen.getByText('2 respostas registradas.')).toBeVisible()
+    expect(postsTo('/api/student/submit')).toHaveLength(0)
+  }, 15000)
+
+  it('[UC-TENTATIVA-004] o professor reabre a prova entregue: a tela volta às questões com "O professor reabriu a sua prova"', async () => {
+    const user = userEvent.setup()
+    let delivered = false
+    apiMock.get.mockImplementation(async () => {
+      if (!delivered) return syncResponse({ timerRemaining: 2 })
+      const response = syncResponse({ timerRemaining: 900, answers: { 1: 'A' }, reopenedAt: Date.now() })
+      response.state.reopenedByInstructor = true
+      return response
+    })
+    apiMock.post.mockImplementation(async (url) => {
+      if (url !== '/api/student/submit') return { success: true }
+      delivered = true
+      return { success: true, gradePublished: false, answeredCount: 1 }
+    })
+    renderRunner()
+    enterFullscreen()
+    await user.click(await screen.findByRole('button', { name: /Dois/ }))
+    expect(await screen.findByText('Prova enviada!', {}, { timeout: 5000 })).toBeVisible()
+    expect(await screen.findByRole('button', { name: /Três/ }, { timeout: 6000 })).toBeVisible()
+    expect(toast.info).toHaveBeenCalledWith('O professor reabriu a sua prova. Ela continua de onde parou, com as suas respostas.')
+    expect(screen.queryByText('Prova enviada!')).not.toBeInTheDocument()
+  }, 15000)
+
   it('reaberta pelo "+N min" depois do salvamento que falhou no fim do tempo: sem "Falha no último salvamento" quando o servidor tem tudo', async () => {
     const user = userEvent.setup()
     let delivered = false

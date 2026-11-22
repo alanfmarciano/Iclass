@@ -8,6 +8,7 @@ import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
 import { Select } from '../../components/ui/Select'
 import { Modal } from '../../components/ui/Modal'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { PageState } from '../../components/ui/PageState'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { useApi } from '../../hooks/useApi'
@@ -229,6 +230,8 @@ export default function ResultadosPage() {
   const [openExams, setOpenExams] = useState(() => new Set())
   const [manualErrors, setManualErrors] = useState({})
   const [savingManual, setSavingManual] = useState(false)
+  // Questões em branco no lançamento pelo cartão: quantas, enquanto o diálogo pergunta.
+  const [blankConfirm, setBlankConfirm] = useState(null)
   const [view, setView] = useState('alunos')
   const [deletedOpen, setDeletedOpen] = useState(false)
   const [auditApplicationId, setAuditApplicationId] = useState(null)
@@ -546,7 +549,9 @@ export default function ResultadosPage() {
     }
   }
 
-  async function createManual() {
+  // blanksConfirmed: o professor já confirmou, no diálogo, que as questões em branco
+  // contam como erradas (P3-S8: antes era o confirm do navegador).
+  async function createManual(blanksConfirmed = false) {
     const errors = {}
     if (!manual.studentEmail) errors.studentEmail = 'Selecione o aluno.'
     if (!manual.examKey) errors.examKey = 'Selecione a prova.'
@@ -576,7 +581,7 @@ export default function ResultadosPage() {
         })
       }
       if (Object.keys(answers).length === 0) return toast.error('Marque ao menos uma resposta')
-      if (blanks > 0 && !window.confirm(`${blanks} questão(ões) em branco serão contadas como erradas. Continuar?`)) return
+      if (blanks > 0 && !blanksConfirmed) { setBlankConfirm(blanks); return }
       body = { ...context, type: 'impressa', mode: 'card', answers, questionNumbers }
     } else {
       const quick = validateQuickGrade(manual, manualLimits)
@@ -1171,7 +1176,7 @@ export default function ResultadosPage() {
 
       {/* Lançamento manual de notas */}
       <Modal open={manualOpen} onClose={() => setManualOpen(false)} title="Lançamento manual" description="Use a nota rápida ou corrija uma prova impressa pelo cartão-resposta."
-        footer={<><Button variant="ghost" onClick={() => setManualOpen(false)}>Cancelar</Button><Button loading={loadingManual || savingManual} onClick={createManual}>Salvar nota</Button></>}>
+        footer={<><Button variant="ghost" onClick={() => setManualOpen(false)}>Cancelar</Button><Button loading={loadingManual || savingManual} onClick={() => createManual()}>Salvar nota</Button></>}>
         <div className="space-y-4">
           <div className="grid grid-cols-2 gap-2">
             <Button variant={manual.mode === 'quick' ? 'primary' : 'secondary'} onClick={() => setManual({ ...manual, mode: 'quick' })}>Rápido</Button>
@@ -1244,6 +1249,11 @@ export default function ResultadosPage() {
         title="Excluir esta entrega?" description={`${del?.studentName || del?.studentEmail || del?.student?.email} - ${del?.examKey} · nota ${fmtGrade(del?.score)}.`}
         note={'A entrega sai de Resultados e vai para "Notas excluídas", de onde pode ser restaurada.'}
         reason={del?.gradePublished === true ? 'required' : 'optional'} />
+      <ConfirmDialog open={blankConfirm !== null} onClose={() => setBlankConfirm(null)}
+        onConfirm={async () => { setBlankConfirm(null); await createManual(true) }}
+        title={`Lançar com ${blankConfirm} ${blankConfirm === 1 ? 'questão em branco' : 'questões em branco'}?`}
+        message={blankConfirm === 1 ? 'A questão sem resposta marcada conta como errada.' : 'As questões sem resposta marcada contam como erradas.'}
+        confirmLabel="Lançar assim" cancelLabel="Voltar ao cartão" />
       <GradeReasonDialog open={!!reasonAsk} onClose={() => setReasonAsk(null)} onConfirm={(reason) => reasonAsk.onConfirm(reason)}
         title={reasonAsk?.title} description={reasonAsk?.description} note={reasonAsk?.note} confirmLabel={reasonAsk?.confirmLabel}
         danger={!!reasonAsk?.danger} reason={reasonAsk?.reason || 'optional'} />

@@ -244,6 +244,8 @@ const evaluationFields = () => ({
 const ADMIN_SCHEMAS = {
     evaluation: body(evaluationFields()),
     resetPassword: body({ email: adminEmailField(), newPassword: str({ max: 200, trim: false, nullable: true, label: 'nova senha' }) }),
+    // Ajuste de tempo do Monitor: o motivo é opcional (diálogo do tempo, D20 do P3).
+    adjustStudentTime: body({ reason: str({ max: 300, nullable: true, label: 'motivo' }) }),
     examStudent: body({
         studentEmail: adminEmailField('e-mail do aluno'),
         studentClass: adminTextField(200, 'turma'),
@@ -4193,9 +4195,10 @@ function classExtraTimeResult(reopened, deliveredAtDeadline = 0) {
 }
 
 // 2. Adiciona ou subtrai minutos de um aluno específico ou de toda a turma
-router.post('/api/admin/adjust-student-time', (req, res) => {
-    validateAdmin(req, res, () => {
+router.post('/api/admin/adjust-student-time', ADMIN_SCHEMAS.adjustStudentTime, (req, res) => {
+    validateAdmin(req, res, (config, currentAdmin) => {
         const { studentClass, courseId, examKey, applicationId, targetEmail, adjustmentMinutes } = req.body;
+        const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
         if (!studentClass || !examKey || typeof adjustmentMinutes !== 'number') {
             return res.status(400).json({ error: 'Campos obrigatórios ausentes ou inválidos.' });
         }
@@ -4261,6 +4264,23 @@ router.post('/api/admin/adjust-student-time', (req, res) => {
             db.memory.studentExamState[key].individualTimeAdjustment += adjustmentMinutes;
             if (db.memory.studentExamState[key].timerRemaining !== null) {
                 db.memory.studentExamState[key].timerRemaining += (adjustmentMinutes * 60);
+            }
+            // O ajuste de um aluno com a prova aberta fica no registro do monitoramento
+            // (P3-S8, D20: o diálogo do tempo tem motivo opcional).
+            if (application && openAttempt) {
+                if (!Array.isArray(db.memory.proctoringLogs)) db.memory.proctoringLogs = [];
+                db.memory.proctoringLogs.push({
+                    id: Date.now().toString() + '_' + Math.random().toString(36).substr(2, 9),
+                    studentEmail: email,
+                    studentClass: application.studentClass,
+                    courseId: application.courseId || null,
+                    examKey: application.examKey,
+                    applicationId: application.id,
+                    attemptId: openAttempt.state.attemptId || null,
+                    timestamp: Date.now(),
+                    eventType: 'time_adjusted',
+                    details: `${adjustmentMinutes > 0 ? '+' : ''}${adjustmentMinutes} min pelo professor${reason ? `: ${reason}` : ''}`,
+                });
             }
         } else {
             const classes = db.memory.classes;
@@ -4726,6 +4746,16 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                     ? (submission.reopenedAt || null)
                     : (Number(state.reopenedAt) > 0 ? new Date(Number(state.reopenedAt)).toISOString() : null),
                 restoredAfterDiscard: !!submission?.restoredAfterDiscard,
+                // Ações por aluno do Monitor (P3-S8): a reabertura foi do professor (e não do
+                // "+N min" da turma), e a entrega mostrada pode voltar para a prova (a rota
+                // attempt-action confere de novo, inclusive o tempo que faltava).
+                reopenedByInstructor: submission
+                    ? (Array.isArray(submission.reopenedFrom) && submission.reopenedFrom.length > 0 && submission.reopenedFrom[submission.reopenedFrom.length - 1]?.byInstructor === true)
+                    : state.reopenedByInstructor === true,
+                canReopen: !!(application && applicationActive && submission
+                    && submission.gradePublished !== true
+                    && !['archived', 'invalidated'].includes(submission.resultStatus)
+                    && submission.reopenableState && submission.reopenableState.startedAt),
                 // Aparelho sem tela cheia (iPhone): a prova abriu sem exigi-la (UXA-02).
                 fullscreenUnsupported: currentAttemptLogs.some(log => log.eventType === 'fullscreen_unsupported'),
                 // Só os últimos eventos de foco (a linha mostra os 2 últimos); o histórico

@@ -79,6 +79,36 @@ const MIGRATIONS = Object.freeze([
             return changed;
         },
     }),
+    // Token da prova fora do histórico (P3-S8: AVA-14; D19 do desenho do P3): a tela
+    // Provas gravava o token em texto puro em cada configuração salva
+    // (classes[].examHistory[prova][].accessToken), e GET /api/admin/exam-history o
+    // devolvia. Agora a configuração guarda só se pede token (tokenEnabled: true quando
+    // havia um token válido) e o token da aplicação fica selado nela. Idempotente: sem o
+    // campo, nada a fazer.
+    Object.freeze({
+        id: '2026-11-p3-token-historico',
+        nome: 'Tira o token da prova em texto puro do histórico das configurações salvas',
+        tipo: 'memoria',
+        run(memory) {
+            let changed = false;
+            (Array.isArray(memory.classes) ? memory.classes : []).forEach(cls => {
+                const history = cls && typeof cls === 'object' && cls.examHistory && typeof cls.examHistory === 'object' && !Array.isArray(cls.examHistory)
+                    ? cls.examHistory
+                    : null;
+                if (!history) return;
+                Object.keys(history).forEach(examKey => {
+                    (Array.isArray(history[examKey]) ? history[examKey] : []).forEach(entry => {
+                        if (!entry || typeof entry !== 'object' || !Object.prototype.hasOwnProperty.call(entry, 'accessToken')) return;
+                        const hadToken = /^[A-Z]{5}$/.test(String(entry.accessToken || '').trim().toUpperCase());
+                        entry.tokenEnabled = hadToken || entry.tokenEnabled === true;
+                        delete entry.accessToken;
+                        changed = true;
+                    });
+                });
+            });
+            return changed;
+        },
+    }),
 ]);
 
 // Identidade da instalação em todo boot (A1 / P6-S2, rodada de ajuste): a versão 281029f

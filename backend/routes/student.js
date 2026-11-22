@@ -2002,9 +2002,10 @@ router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submi
     });
     submissionObj.answeredCount = countAnswers(answers);
     markLateSubmission(submissionObj, { deadlineAt: timing.deadlineAt, lateMs: lateDecision.lateMs });
-    // Entrega automática do fim do tempo: guarda a tentativa para o "+N min" da turma
-    // poder reabri-la logo depois do fim do tempo.
-    if (auto === true && application) {
+    // Guarda a tentativa na entrega para ela poder voltar à prova: a do fim do tempo pelo
+    // "+N min" da turma, e qualquer uma pelo "Reabrir" do professor no Monitor (P3-S8,
+    // AVA-14: enviada por engano). Nunca vai para o aluno.
+    if (application && ACTIVE_APPLICATION_STATUSES.has(application.status)) {
         const reopenable = attemptStateForReopen(lockedState);
         if (reopenable) submissionObj.reopenableState = reopenable;
     }

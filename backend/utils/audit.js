@@ -412,9 +412,11 @@ const REASON_MAX_LENGTH = 500;
 // O hash também sai: o token da prova tem 5 letras e o accessTokenHash é sha256 sem
 // sal, que volta ao token por tentativa em segundos. Valor booleano fica
 // (mustChangePassword: true não é segredo; só diz que a senha precisa ser trocada).
-// O vazio (null) também sai: a trilha nem mostra que o campo existe.
+// O vazio (null) também sai: a trilha nem mostra que o campo existe. O token selado da
+// prova (accessTokenSealed, fase 3, P3-S8) também: é o token, cifrado com o segredo deste
+// computador.
 const SECRET_KEYS = new Set(['password', 'passwordhash', 'hash', 'salt', 'token', 'sessiontoken', 'accesstoken', 'adminsessiontoken', 'secret', 'senha']);
-const SECRET_SUFFIXES = /(password|senha|token|secret|hash|salt)$/;
+const SECRET_SUFFIXES = /(password|senha|token|secret|hash|salt|sealed)$/;
 
 function isSecretKey(key, value) {
     if (typeof value === 'boolean') return false;

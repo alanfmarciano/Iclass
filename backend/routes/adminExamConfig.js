@@ -1,7 +1,7 @@
 const express = require('express');
 const crypto = require('crypto');
 const db = require('../database.js');
-const { ensureExamToken, hashExamToken, normalizeExamToken } = require('../utils/examToken.js');
+const { ensureExamToken, hashExamToken, normalizeExamToken, sealExamToken, unsealExamToken } = require('../utils/examToken.js');
 const { normalizeMaxAttempts, parseMaxAttempts } = require('../utils/examAttempts.js');
 const { keystrokeModeOf, normalizeKeystrokeMode, parseKeystrokeModeOption, withKeystrokeMode } = require('../utils/keystrokePolicy.js');
 const {
@@ -15,18 +15,30 @@ const {
     ACTIVE_APPLICATION_STATUSES,
     CLOSED_ATTEMPT_STATUSES,
     applicationToOnlineConfig,
+    applicationParticipant,
     createExamApplication,
+    effectiveMaxAttempts,
     findExamApplication,
+    findOpenAttemptState,
     listExamApplications,
     transitionExamApplication,
 } = require('../utils/examApplications.js');
-const { deliveredWithoutAttemptsLeft, reopenDeadlineDeliveries, settleExpiredAttempts } = require('../utils/examDeadline.js');
+const {
+    INSTRUCTOR_COLLECT_SOURCE,
+    attemptOverdueMs,
+    deliveredWithoutAttemptsLeft,
+    finalizeAttemptState,
+    reopenDeadlineDeliveries,
+    reopenDeliveryByInstructor,
+    settleExpiredAttempts,
+} = require('../utils/examDeadline.js');
 const { examFamilyKeys } = require('../utils/examFamily.js');
 const { assertClassOpen } = require('../utils/academicCalendar.js');
 const { normalizeQuestion, questionInputSchema } = require('../utils/questionModel.js');
 const { body, either, int, shape, str } = require('../utils/inputSchema.js');
 const {
     AUDIENCE_INPUT_FIELDS,
+    MAX_EXTRA_ATTEMPTS,
     applicationFinalidade,
     applicationParticipantList,
     changedOverrides,
@@ -36,6 +48,8 @@ const {
     participantCandidates,
 } = require('../utils/examParticipants.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
+const { normalizeEmail, studentInClass } = require('../utils/students.js');
+const { answerIdSecret } = require('../utils/examAnswerIds.js');
 const {
     OPEN_APPLICATION_STATUSES,
     activeApplicationConflict,
@@ -97,7 +111,12 @@ function buildPreparedOnlineExamConfig(historyEntry, previousConfig = {}, applic
     const waitingRoomDuration = waitingRoomMinutes * 60;
     const hasWaitingRoom = waitingRoomDuration > 0;
     const hasTokenChoice = Object.prototype.hasOwnProperty.call(applicationOptions, 'tokenEnabled');
-    const tokenEnabled = hasTokenChoice ? applicationOptions.tokenEnabled === true : !!normalizeExamToken(historyEntry.accessToken);
+    // A configuração salva guarda só se pede token (tokenEnabled, P3-S8); a antiga, que
+    // ainda tenha o token em texto puro (antes da migração '2026-11-p3-token-historico'),
+    // vale como "pede token".
+    const tokenEnabled = hasTokenChoice
+        ? applicationOptions.tokenEnabled === true
+        : (historyEntry.tokenEnabled === true || !!normalizeExamToken(historyEntry.accessToken));
     const hasMaxAttemptsChoice = Object.prototype.hasOwnProperty.call(applicationOptions, 'maxAttempts');
     const historyHasMaxAttempts = Object.prototype.hasOwnProperty.call(historyEntry, 'maxAttempts');
     const maxAttempts = normalizeMaxAttempts(hasMaxAttemptsChoice
@@ -241,6 +260,8 @@ function prepareApplicationFromHistory(cls, examKey, historyEntry, applicationOp
         actor,
         status: 'prepared',
     });
+    // Token reexibível (P3-S8, D19): o selo fica só na aplicação (nunca na turma).
+    sealApplicationToken(application, rawToken);
     db.memory.examApplications.push(application);
     recordAudienceAudit(application, actor, { participantsChanged: true, before: { finalidade: 'regular', participants: null, studentOverrides: {} }, onlyWhenRestricted: true });
     cls.onlineExamConfigs[examKey] = applicationToOnlineConfig(application, cls.onlineExamConfigs?.[examKey] || {});
@@ -297,6 +318,43 @@ const PREPARE_AUDIENCE_SCHEMA = body({
     applicationOptions: shape(AUDIENCE_INPUT_FIELDS, { nullable: true, label: 'opções da aplicação' }),
 });
 const PARTICIPANTS_SCHEMA = body(AUDIENCE_INPUT_FIELDS);
+
+// Ações por aluno no Monitor (fase 3, P3-S8: AVA-14; D18 do desenho do P3), numa rota só:
+// recolher a prova em andamento, reabrir a entrega e dar uma tentativa extra. Anular por
+// cola e desfazer a anulação chegam no P3-S4a (A9), junto com a regra do calculador da
+// nota (X10 do plano): até lá a rota recusa as duas com 400. O guarda do painel já pede
+// page.monitor (e page.results para qualquer outra ação, adminPermissions.js).
+const ATTEMPT_ACTIONS = Object.freeze(['recolher', 'reabrir', 'tentativa_extra']);
+const ATTEMPT_ACTION_REASON_MAX = 500;
+const ATTEMPT_ACTION_SCHEMA = body({
+    action: str({ max: 40, required: true, label: 'ação' }),
+    studentEmail: str({ max: 254, required: true, label: 'aluno' }),
+    motivo: str({ max: ATTEMPT_ACTION_REASON_MAX, nullable: true, label: 'motivo' }),
+    extraAttempts: int({ min: 1, max: MAX_EXTRA_ATTEMPTS, coerce: true, nullable: true, label: 'tentativas extras' }),
+});
+
+// Registro do monitoramento da prova (evidência, com a retenção dela; aparece no Monitor
+// e na digitação ao vivo): attempt_collected e attempt_reopened. O texto não leva o motivo
+// (o motivo fica na auditoria, que só o professor lê).
+function pushAttemptLog(application, email, attemptId, eventType, details) {
+    if (!Array.isArray(db.memory.proctoringLogs)) db.memory.proctoringLogs = [];
+    db.memory.proctoringLogs.push({
+        id: `${Date.now()}_${crypto.randomBytes(4).toString('hex')}`,
+        studentEmail: email,
+        studentClass: application.studentClass,
+        courseId: application.courseId || null,
+        examKey: application.examKey,
+        applicationId: application.id,
+        attemptId: attemptId || null,
+        timestamp: Date.now(),
+        eventType,
+        details,
+    });
+}
+
+function attemptActionRefusal(res, status, code, error, extra = {}) {
+    return res.status(status).json({ success: false, error, code, ...extra });
+}
 
 function pushExamMessage(application, actor, messageText) {
     if (!Array.isArray(db.memory.broadcastMessages)) db.memory.broadcastMessages = [];
@@ -439,25 +497,97 @@ function applicationForAdminRequest(applicationId) {
     return { application, cls };
 }
 
-// Aplicação sem versionSnapshots e questionReports, com openReportCount (view=summary).
+// Token selado da aplicação (P3-S8, D19 do P3; utils/examToken.js). Sem token (prova sem
+// token, ou token desligado) não há selo. O segredo é o dos identificadores das
+// alternativas (config.examAnswerSecret, que fica o deste computador ao restaurar).
+function sealApplicationToken(application, token) {
+    const sealed = token ? sealExamToken(token, { applicationId: application.id, secret: answerIdSecret() }) : null;
+    if (sealed) application.accessTokenSealed = sealed;
+    else delete application.accessTokenSealed;
+}
+
+function revealApplicationToken(application) {
+    const secret = db.memory.config && typeof db.memory.config.examAnswerSecret === 'string' ? db.memory.config.examAnswerSecret : null;
+    const token = unsealExamToken(application && application.accessTokenSealed, { applicationId: application && application.id, secret });
+    // O selo só vale se for o token que o servidor confere agora (o hash da aplicação).
+    return token && hashExamToken(token) === application.accessTokenHash ? token : null;
+}
+
+// A aplicação como vai para a tela: sem o token selado (só GET .../access-token o abre).
+function withoutSealedToken(application) {
+    if (!application || typeof application !== 'object' || !Object.prototype.hasOwnProperty.call(application, 'accessTokenSealed')) return application;
+    const { accessTokenSealed, ...rest } = application;
+    return rest;
+}
+
+function adminApplicationView(application) {
+    return withoutSealedToken(withKeystrokeMode(application));
+}
+
+// Letras das versões da aplicação (A, B...), para o Monitor oferecer só as que existem.
+function applicationVersionLabels(application) {
+    const snapshots = Array.isArray(application && application.versionSnapshots) ? application.versionSnapshots : [];
+    const labels = snapshots
+        .map((snapshot, index) => String((snapshot && snapshot.version) || VERSION_LABELS[index] || '').trim().toUpperCase())
+        .filter(Boolean);
+    return [...new Set(labels)];
+}
+
+// Aplicação sem versionSnapshots e questionReports, com openReportCount (view=summary) e
+// versionLabels (as versões que existem, para o Monitor).
 function applicationSummary(application) {
-    const { versionSnapshots, questionReports, ...summary } = application || {};
+    const { versionSnapshots, questionReports, accessTokenSealed, ...summary } = application || {};
     summary.openReportCount = (Array.isArray(questionReports) ? questionReports : [])
         .filter(report => report && report.status === 'open').length;
+    summary.versionLabels = applicationVersionLabels(application);
     return summary;
 }
 
-// Linhas do "Para quem" no registro da aplicação (o texto vem de examParticipants.js;
-// gradebook.js é da trilha B até a J2 e devolveria só 'Evento da prova').
+// Linhas do "Para quem" e das ações por aluno do Monitor no registro da aplicação (o texto
+// do "Para quem" vem de examParticipants.js; gradebook.js é da trilha B até a J2 e
+// devolveria só 'Evento da prova').
+const DESCRIBED_HERE = new Set([
+    'exam_application_participants_set',
+    'exam_attempt_extra_granted',
+    'exam_attempt_collected',
+    'exam_attempt_reopened_by_instructor',
+    'exam_access_token_revealed',
+    'exam_application_token_regenerated',
+]);
+
+function describeMonitorActionAudit(entry, nameByEmail) {
+    const details = (entry && entry.details) || {};
+    const email = normalizeEmail(entry.studentEmail || details.studentEmail);
+    const name = nameByEmail.get(email) || (entry.studentAnonymized ? 'Aluno anonimizado' : email || 'aluno');
+    const join = (...parts) => parts.filter(Boolean).join(' · ');
+    if (entry.type === 'exam_attempt_collected') {
+        const answered = Number(details.answeredCount) || 0;
+        return {
+            title: `Prova de ${name} recolhida pelo professor`,
+            detail: join(`${answered} ${answered === 1 ? 'resposta salva' : 'respostas salvas'}`, details.motivo ? `motivo: ${details.motivo}` : ''),
+        };
+    }
+    if (entry.type === 'exam_attempt_reopened_by_instructor') {
+        const minutes = details.minutosRestantes;
+        return {
+            title: `Prova de ${name} reaberta pelo professor`,
+            detail: join(minutes === null || minutes === undefined ? '' : `${minutes} min para terminar`, details.motivo ? `motivo: ${details.motivo}` : ''),
+        };
+    }
+    if (entry.type === 'exam_access_token_revealed') return { title: 'Token da prova mostrado de novo', detail: '' };
+    if (entry.type === 'exam_application_token_regenerated') return { title: 'Token da prova trocado', detail: '' };
+    return null;
+}
+
 function describeAudienceEntries(rows) {
     const byId = new Map((db.memory.auditLogs || [])
-        .filter(entry => entry && (entry.type === 'exam_application_participants_set' || entry.type === 'exam_attempt_extra_granted'))
+        .filter(entry => entry && DESCRIBED_HERE.has(entry.type))
         .map(entry => [entry.id, entry]));
     if (!byId.size) return rows;
     const nameByEmail = new Map((db.memory.students || []).map(student => [String(student.email || '').trim().toLowerCase(), (student.nomeSocial && student.nomeSocial.trim()) || student.name || student.email]));
     return rows.map(row => {
         const entry = byId.get(row.id);
-        const described = entry ? describeAudienceAudit(entry, nameByEmail) : null;
+        const described = entry ? (describeAudienceAudit(entry, nameByEmail) || describeMonitorActionAudit(entry, nameByEmail)) : null;
         return described ? { ...row, ...described } : row;
     });
 }
@@ -537,7 +667,7 @@ function createAdminExamConfigRouter() {
                     : adminCanAccessClass(matchedAdmin, application.studentClass, application.courseId)))
                 // Aplicação de antes do H8b, sem o campo, aparece como 'eventos' (cópia; o banco não
                 // muda), com keystrokeModeLegacy: o que ela já guardou é a digitação completa.
-                .map(withKeystrokeMode);
+                .map(adminApplicationView);
             // view=summary (Monitor, consultado a cada 5 s): sem as versões da prova
             // (versionSnapshots, com o gabarito) e sem as contestações (questionReports),
             // que nenhuma tela de polling lê e eram o grosso da resposta (DES-04, DES-13);
@@ -554,7 +684,7 @@ function createAdminExamConfigRouter() {
         validateAdmin(req, res, () => {
             const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
             if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
-            res.json({ success: true, application: withKeystrokeMode(application) });
+            res.json({ success: true, application: adminApplicationView(application) });
         });
     });
 
@@ -591,10 +721,43 @@ function createAdminExamConfigRouter() {
         });
     });
 
-    // Novo token para uma aplicação preparada ou em andamento. O token só existe em
-    // texto puro na aba que preparou a prova; quem perdeu (outra máquina, aba fechada)
-    // gera outro aqui, sem preparar de novo nem encerrar a prova. Quem já validou o
-    // token continua na prova; o anterior deixa de valer para quem ainda vai entrar.
+    // Token da aplicação de novo na tela (P3-S8: AVA-14; D19 do P3): o Monitor de outro
+    // computador, o projetor ou a aba fechada mostram o token sem trocá-lo. Só com
+    // page.monitor (o guarda) e a turma da conta; cada leitura fica na auditoria
+    // (exam_access_token_revealed, nunca o token). Aplicação de antes desta versão (sem
+    // selo) ou restaurada de outro computador (o segredo de lá é outro): 404
+    // token_unavailable, e a tela oferece "Gerar outro".
+    router.get('/api/admin/exam-applications/:applicationId/access-token', (req, res) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
+            if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
+            if (!canManageApplication(matchedAdmin, application)) {
+                return res.status(403).json({ error: 'A turma desta aplicação não está atribuída a esta conta.' });
+            }
+            res.set('Cache-Control', 'no-store');
+            if (application.tokenEnabled !== true) {
+                return res.status(400).json({ error: 'Esta aplicação não exige token de acesso.', code: 'token_disabled' });
+            }
+            if (!OPEN_APPLICATION_STATUSES.has(application.status)) {
+                return res.status(409).json({ error: 'Esta aplicação já foi encerrada; nenhum aluno entra mais com o token.', code: 'application_closed', applicationClosed: true });
+            }
+            const accessToken = revealApplicationToken(application);
+            if (!accessToken) {
+                return res.status(404).json({
+                    error: 'Não dá para mostrar o token desta aplicação de novo (ela é de antes desta versão ou veio de um backup de outro computador). Gere outro token: quem já entrou continua na prova.',
+                    code: 'token_unavailable',
+                });
+            }
+            recordExamAudit('exam_access_token_revealed', application, adminActor(req), { status: application.status });
+            await db.save({ only: ['auditLogs'] });
+            res.json({ success: true, accessToken, accessTokenIssuedAt: application.accessTokenIssuedAt || null, applicationId: application.id });
+        });
+    });
+
+    // Novo token para uma aplicação preparada ou em andamento, sem preparar de novo nem
+    // encerrar a prova (o token perdido, ou trocar o que vazou). Quem já validou o token
+    // continua na prova; o anterior deixa de valer para quem ainda vai entrar. O novo
+    // também fica selado (o Monitor de outro computador o mostra).
     router.post('/api/admin/exam-applications/:applicationId/access-token', (req, res) => {
         validateAdmin(req, res, async (config, matchedAdmin) => {
             const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
@@ -615,6 +778,7 @@ function createAdminExamConfigRouter() {
             const accessToken = ensureExamToken(requested);
             const actor = adminActor(req);
             application.accessTokenHash = hashExamToken(accessToken);
+            sealApplicationToken(application, accessToken);
             application.updatedAt = new Date().toISOString();
             application.accessTokenIssuedAt = application.updatedAt;
             application.updatedBy = actor;
@@ -674,7 +838,7 @@ function createAdminExamConfigRouter() {
             if (!cls.releasedItems) cls.releasedItems = {};
             const prepared = prepareApplicationFromHistory(cls, examKey, historyEntry, options, req, audience.value);
             await persistClasses(db.memory.classes || []);
-            res.status(201).json({ success: true, ...prepared, onlineExamConfig: cls.onlineExamConfigs[examKey] });
+            res.status(201).json({ success: true, ...prepared, application: withoutSealedToken(prepared.application), onlineExamConfig: cls.onlineExamConfigs[examKey] });
         });
     });
 
@@ -713,7 +877,7 @@ function createAdminExamConfigRouter() {
                 || JSON.stringify(before.participants) !== JSON.stringify(next.participants);
             const overridesChanged = changedOverrides(before.studentOverrides, next.studentOverrides).length > 0;
             if (!participantsChanged && !overridesChanged) {
-                return res.json({ success: true, unchanged: true, application: withKeystrokeMode(application) });
+                return res.json({ success: true, unchanged: true, application: adminApplicationView(application) });
             }
             application.finalidade = next.finalidade;
             application.participants = next.participants;
@@ -722,7 +886,7 @@ function createAdminExamConfigRouter() {
             application.updatedBy = actor;
             recordAudienceAudit(application, actor, { participantsChanged, before });
             await db.save({ only: ['examApplications', 'auditLogs'] });
-            res.json({ success: true, application: withKeystrokeMode(application) });
+            res.json({ success: true, application: adminApplicationView(application) });
         });
     });
 
@@ -745,7 +909,7 @@ function createAdminExamConfigRouter() {
             }
             if (plan.unchanged) {
                 if (plan.droppedLeftovers) await db.save();
-                return res.json({ success: true, unchanged: true, application, config: cls.onlineExamConfigs?.[application.examKey] || null, finish: null });
+                return res.json({ success: true, unchanged: true, application: withoutSealedToken(application), config: cls.onlineExamConfigs?.[application.examKey] || null, finish: null });
             }
             if (plan.resolve) {
                 try {
@@ -779,7 +943,7 @@ function createAdminExamConfigRouter() {
             // Encerrar com tentativas em andamento resolve entregas (algumas já existiam):
             // gravação completa. As outras transições, parcial.
             await saveApplicationAction({ full: !!plan.resolve });
-            res.json({ success: true, application, config: cls.onlineExamConfigs[application.examKey], finish: processedFinish });
+            res.json({ success: true, application: withoutSealedToken(application), config: cls.onlineExamConfigs[application.examKey], finish: processedFinish });
         });
     });
 
@@ -831,16 +995,196 @@ function createAdminExamConfigRouter() {
             await saveApplicationAction({ full: !!settled.changed || !!(reopened && reopened.reopened.length) });
             // Ajuste da turma: quem voltou para a prova com o tempo extra e quem já tinha
             // entregue e ficou sem ele.
-            if (targetEmail) return res.json({ success: true, application, deliveredAtDeadline: 0 });
+            if (targetEmail) return res.json({ success: true, application: withoutSealedToken(application), deliveredAtDeadline: 0 });
             res.json({
                 success: true,
-                application,
+                application: withoutSealedToken(application),
                 reopenedAtDeadline: reopened ? reopened.reopened.length : 0,
                 reopenedLocked: reopened ? reopened.reopenedLocked : 0,
                 deliveredAtDeadline: reopened ? reopened.deadlineKept : settled.finalized.length,
                 deliveredAtDeadlineTooShort: reopened ? reopened.extraTooShort : 0,
                 deliveredByStudent: reopened ? reopened.manualKept : 0,
                 nextAttemptStarted: reopened ? reopened.nextAttemptStarted : 0,
+            });
+        });
+    });
+
+    // Ações por aluno no Monitor (P3-S8: AVA-14; D18 do P3). { action, studentEmail, motivo,
+    // extraAttempts }:
+    // - recolher: entrega a tentativa em andamento com as respostas salvas no servidor
+    //   (source 'instructor_collect'); a tentativa vencida é entregue pelo fim do tempo (409
+    //   attemptFinalized, como no ajuste de tempo);
+    // - reabrir (motivo obrigatório): a entrega mais recente volta para a mesma tentativa,
+    //   com as respostas e o tempo que faltava (reopenDeliveryByInstructor, examDeadline.js);
+    //   não conta de novo no limite; só com a aplicação em andamento;
+    // - tentativa_extra: soma extraAttempts (1 por padrão) às tentativas extras do aluno
+    //   (studentOverrides, D16; até 5 no total), com o mesmo registro do "Para quem".
+    // Todas: aplicação da turma da conta (403), aluno da turma (404), turma aberta
+    // (assertClassOpen: recolher e reabrir mexem em nota) e auditoria na mesma gravação;
+    // recolher e reabrir vão também para o registro do monitoramento (proctoringLogs).
+    router.post('/api/admin/exam-applications/:applicationId/attempt-action', (req, res) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            if (!ATTEMPT_ACTION_SCHEMA.check(req, res)) return;
+            const action = String(req.body.action || '').trim().toLowerCase();
+            if (!ATTEMPT_ACTIONS.includes(action)) {
+                return res.status(400).json({ success: false, error: 'Ação inválida. Use recolher, reabrir ou tentativa_extra.', field: 'action' });
+            }
+            const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
+            if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
+            if (!canManageApplication(matchedAdmin, application)) {
+                return res.status(403).json({ error: 'A turma desta aplicação não está atribuída a esta conta.' });
+            }
+            const cls = findClassByNameAndCourse(db.memory.classes || [], application.studentClass, application.courseId);
+            if (!cls) return res.status(404).json({ error: 'Turma da aplicação não encontrada.' });
+            const email = normalizeEmail(req.body.studentEmail);
+            const student = (db.memory.students || []).find(item => item && normalizeEmail(item.email) === email) || null;
+            if (!student || !studentInClass(student, cls.name, cls.courseId)) {
+                return res.status(404).json({ error: 'Aluno não encontrado nesta turma.', field: 'studentEmail' });
+            }
+            const motivo = String(req.body.motivo || '').trim();
+            if (action === 'reabrir' && !motivo) {
+                return res.status(400).json({ success: false, error: 'Informe o motivo para reabrir a prova do aluno.', field: 'motivo' });
+            }
+            if (!assertClassOpen(cls, { res })) return;
+            const actor = adminActor(req);
+            const now = Date.now();
+
+            if (action === 'recolher') {
+                if (!ACTIVE_APPLICATION_STATUSES.has(application.status)) {
+                    return attemptActionRefusal(res, 409, 'application_not_running', 'A prova não está em andamento: não há tentativa para recolher.');
+                }
+                // A tentativa vencida é entregue pelo fim do tempo, como sempre.
+                const settled = settleExpiredAttempts(db.memory, { applicationId: application.id, studentEmail: email, graceMs: 0 });
+                if (settled.finalized.length) {
+                    await db.save();
+                    return attemptActionRefusal(res, 409, 'attempt_finalized', 'O tempo deste aluno já tinha terminado. A tentativa foi entregue automaticamente com as respostas salvas.', { attemptFinalized: true });
+                }
+                const open = findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail: email });
+                if (!open || !(Number(open.state.startedAt) > 0)) {
+                    return attemptActionRefusal(res, 409, 'no_open_attempt', 'Este aluno não está fazendo a prova agora: não há tentativa para recolher.');
+                }
+                const { deadlineAt } = attemptOverdueMs(open.state, application, now);
+                const submission = finalizeAttemptState(db.memory, {
+                    key: open.key,
+                    state: open.state,
+                    application,
+                    now,
+                    deadlineAt,
+                    source: INSTRUCTOR_COLLECT_SOURCE,
+                });
+                if (!submission) {
+                    await saveApplicationAction();
+                    return attemptActionRefusal(res, 409, 'already_delivered', 'Esta tentativa já tinha sido entregue.');
+                }
+                submission.collectedBy = actor;
+                submission.collectedAt = new Date(now).toISOString();
+                recordExamAudit('exam_attempt_collected', application, actor, {
+                    attemptId: submission.attemptId || null,
+                    attemptNumber: submission.attemptNumber || null,
+                    submissionId: submission.id,
+                    answeredCount: submission.answeredCount,
+                    ...(motivo ? { motivo } : {}),
+                }, { studentEmail: email });
+                pushAttemptLog(application, email, submission.attemptId, 'attempt_collected', 'Prova recolhida pelo professor com as respostas salvas');
+                application.updatedAt = new Date(now).toISOString();
+                application.updatedBy = actor;
+                await saveApplicationAction();
+                return res.json({
+                    success: true,
+                    action,
+                    application: withoutSealedToken(application),
+                    submission: { id: submission.id, attemptId: submission.attemptId, attemptNumber: submission.attemptNumber, answeredCount: submission.answeredCount },
+                });
+            }
+
+            if (action === 'reabrir') {
+                // Tentativa vencida que ainda não virou entrega vira entrega antes (é ela que
+                // reabre, se o tempo que faltava permitir).
+                const settled = settleExpiredAttempts(db.memory, { applicationId: application.id, studentEmail: email, graceMs: 0 });
+                const reopened = reopenDeliveryByInstructor(db.memory, application, email, { now, actor });
+                if (!reopened.ok) {
+                    if (settled.changed) await db.save();
+                    return attemptActionRefusal(res, 409, reopened.code, reopened.error);
+                }
+                const minutes = reopened.remainingMs === null ? null : Math.round(reopened.remainingMs / 60000);
+                recordExamAudit('exam_attempt_reopened_by_instructor', application, actor, {
+                    attemptId: reopened.state.attemptId || null,
+                    attemptNumber: reopened.state.attemptNumber || null,
+                    submissionId: reopened.submission.id,
+                    submissionSource: reopened.submission.submissionSource || null,
+                    motivo,
+                    minutosRestantes: minutes,
+                    minutosAcrescentados: reopened.addedMinutes,
+                    newDeadlineAt: reopened.state.deadlineAt || null,
+                    answeredCount: Number(reopened.submission.answeredCount || 0),
+                    score: reopened.submission.score ?? null,
+                    ...(reopened.discardedNext.length ? { discardedNextAttempts: reopened.discardedNext } : {}),
+                }, { studentEmail: email });
+                pushAttemptLog(application, email, reopened.state.attemptId, 'attempt_reopened',
+                    minutes === null ? 'Tentativa reaberta pelo professor' : `Tentativa reaberta pelo professor com ${minutes} min`);
+                application.updatedAt = new Date(now).toISOString();
+                application.updatedBy = actor;
+                // A entrega saiu da lista (linha que já existia): gravação completa.
+                await saveApplicationAction({ full: true });
+                return res.json({
+                    success: true,
+                    action,
+                    application: withoutSealedToken(application),
+                    state: {
+                        attemptId: reopened.state.attemptId,
+                        attemptNumber: reopened.state.attemptNumber,
+                        deadlineAt: reopened.state.deadlineAt || null,
+                        focusLocked: reopened.state.focusLocked === true,
+                        remainingMinutes: minutes,
+                        addedMinutes: reopened.addedMinutes,
+                    },
+                });
+            }
+
+            // tentativa_extra
+            if (['finished', 'cancelled'].includes(application.status)) {
+                return attemptActionRefusal(res, 409, 'application_closed', 'Esta aplicação já foi encerrada: a tentativa extra não teria efeito. Prepare uma nova aplicação (por exemplo, a segunda chamada).', { applicationClosed: true });
+            }
+            const configMaxAttempts = cls.onlineExamConfigs?.[application.examKey]?.maxAttempts;
+            if (effectiveMaxAttempts(application, email, configMaxAttempts) === null) {
+                return attemptActionRefusal(res, 409, 'unlimited_attempts', 'Esta aplicação não tem limite de tentativas: não é preciso dar tentativa extra.');
+            }
+            if (!applicationParticipant(application, email)) {
+                return attemptActionRefusal(res, 409, 'not_participant', 'Este aluno não está na lista desta aplicação. Inclua-o em "Alunos desta aplicação" antes.');
+            }
+            const add = req.body.extraAttempts === undefined || req.body.extraAttempts === null ? 1 : Number(req.body.extraAttempts);
+            const overrides = application.studentOverrides && typeof application.studentOverrides === 'object' && !Array.isArray(application.studentOverrides)
+                ? application.studentOverrides
+                : {};
+            const before = JSON.parse(JSON.stringify(overrides));
+            const ownKey = Object.keys(overrides).find(key => normalizeEmail(key) === email);
+            const previous = ownKey !== undefined && overrides[ownKey] && typeof overrides[ownKey] === 'object' ? overrides[ownKey] : null;
+            const currentExtra = previous && Number.isInteger(Number(previous.extraAttempts)) ? Math.max(0, Number(previous.extraAttempts)) : 0;
+            if (currentExtra + add > MAX_EXTRA_ATTEMPTS) {
+                return attemptActionRefusal(res, 409, 'extra_limit', `Este aluno já tem ${currentExtra} ${currentExtra === 1 ? 'tentativa extra' : 'tentativas extras'}; o máximo é ${MAX_EXTRA_ATTEMPTS}.`);
+            }
+            const next = {
+                ...(previous || {}),
+                extraAttempts: currentExtra + add,
+                prazoAte: previous && Number(previous.prazoAte) > 0 ? Number(previous.prazoAte) : null,
+                motivo: (motivo || (previous && previous.motivo) || '').slice(0, 300),
+                por: actor,
+                em: now,
+            };
+            const nextOverrides = { ...overrides };
+            if (ownKey !== undefined && ownKey !== email) delete nextOverrides[ownKey];
+            nextOverrides[email] = next;
+            application.studentOverrides = nextOverrides;
+            application.updatedAt = new Date(now).toISOString();
+            application.updatedBy = actor;
+            recordAudienceAudit(application, actor, { before: { studentOverrides: before } });
+            await db.save({ only: ['examApplications', 'auditLogs'] });
+            return res.json({
+                success: true,
+                action,
+                application: withoutSealedToken(application),
+                extraAttempts: next.extraAttempts,
+                maxAttempts: effectiveMaxAttempts(application, email, configMaxAttempts),
             });
         });
     });
@@ -1310,14 +1654,14 @@ function createAdminExamConfigRouter() {
                 success: true,
                 scope: normalizedStudentEmail ? 'student' : 'class',
                 releasedItems: getReleasedItemsForClass(cls, normalizedStudentEmail),
-                application: affectedApplication,
+                application: withoutSealedToken(affectedApplication),
             });
         });
     });
 
     router.post('/api/admin/exam-history/add', (req, res) => {
         validateAdmin(req, res, async () => {
-            const { studentClass, courseId, examKey, type, label, questionNumbers, examCode, printSnapshot, questionCount, excludedQuestions, shuffleQuestions, shuffleAnswers, durationMinutes, timerEnabled, waitingRoomMinutes, maxAttempts } = req.body;
+            const { studentClass, courseId, examKey, type, label, questionNumbers, examCode, printSnapshot, questionCount, excludedQuestions, shuffleQuestions, shuffleAnswers, durationMinutes, timerEnabled, waitingRoomMinutes, maxAttempts, tokenEnabled } = req.body;
             if (!studentClass || !examKey || !Array.isArray(questionNumbers) || questionNumbers.length === 0) {
                 return res.status(400).json({ error: 'Dados incompletos para registrar histórico.' });
             }
@@ -1354,7 +1698,9 @@ function createAdminExamConfigRouter() {
                 durationMinutes: parseInt(durationMinutes, 10) || DEFAULT_ONLINE_DURATION_MINUTES,
                 timerEnabled: timerEnabled !== false,
                 waitingRoomMinutes: Number.isFinite(parsedWaitingRoom) ? Math.max(0, parsedWaitingRoom) : DEFAULT_WAITING_ROOM_MINUTES,
-                accessToken: normalizeExamToken(req.body.accessToken),
+                // Só se a configuração pede token (P3-S8, D19): o token em texto puro não fica
+                // mais no histórico (a tela de antes mandava accessToken; vale como "pede").
+                tokenEnabled: tokenEnabled === true || !!normalizeExamToken(req.body.accessToken),
                 maxAttempts: parsedMaxAttempts.value,
                 createdAt: new Date().toISOString(),
             };
@@ -1371,7 +1717,14 @@ function createAdminExamConfigRouter() {
             const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId);
             if (!cls) return res.status(404).json({ error: 'Turma não encontrada.' });
             if (!isCourseExamKey(cls, examKey)) return res.status(400).json({ error: 'Avaliação não pertence ao curso da turma.' });
-            res.json({ success: true, history: (cls.examHistory && cls.examHistory[examKey]) || [] });
+            // O token em texto puro não sai mais (P3-S8, D19): a migração do boot tira o de
+            // antes, e o que a versão anterior gravar depois dela também não vai para a tela.
+            const history = ((cls.examHistory && cls.examHistory[examKey]) || []).map(entry => {
+                if (!entry || typeof entry !== 'object' || !Object.prototype.hasOwnProperty.call(entry, 'accessToken')) return entry;
+                const { accessToken, ...rest } = entry;
+                return { ...rest, tokenEnabled: rest.tokenEnabled === true || !!normalizeExamToken(accessToken) };
+            });
+            res.json({ success: true, history });
         });
     });
 

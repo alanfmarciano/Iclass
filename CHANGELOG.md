@@ -11,6 +11,14 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 - Exceção por aluno: até 5 tentativas extras e, com o cronômetro "Quando cada aluno iniciar", um prazo "Pode começar até" só para aquele aluno, com motivo. Cada mudança fica na Auditoria.
 - O aluno com exceção vê o próprio limite ("Tentativa 1 de 2") no cartão da prova e, nas instruções, o limite e o prazo "Pode começar até". Quem começou antes do prazo continua a prova depois dele, sem aviso de prazo terminado. Na segunda chamada, quem já fez a prova do curso conta como feito também na versão "só desta turma".
 
+### Ações por aluno no Monitor
+- Na linha de cada aluno, o botão "⋯" (Mais ações) traz "Recolher prova" (entrega na hora, com as respostas já salvas), "Reabrir prova" (a entrega volta para a mesma tentativa, com as respostas e o tempo que faltava, sem contar como tentativa nova; pede o motivo) e "Dar tentativa extra" (até 5). Tudo fica na Auditoria e no registro da aplicação.
+- O aluno vê "Prova recolhida pelo professor" quando a prova é recolhida e "O professor reabriu a sua prova" quando ela volta. No Monitor e em Resultados, a entrega aparece como "Recolhida pelo professor" ou "Reaberta pelo professor".
+- A mensagem tem avisos prontos ("Faltam 10 minutos", "Confira se respondeu todas" e "Levante a mão se precisar de ajuda"), aceita várias linhas e mostra para quem vai. O ajuste de tempo tem os botões −5, +5 e +10 e um motivo opcional. A versão da prova só oferece as versões que a aplicação tem. Liberar notas diz quantas notas vão para os alunos e quantas, aguardando correção, ficam de fora.
+- O token da prova aparece de novo no Monitor de outro computador, no projetor ou depois de fechar a aba: "Mostrar token" traz o mesmo token, sem trocar. Em aplicação preparada antes desta versão (ou vinda de um backup de outro computador), o Monitor explica e oferece "Gerar outro".
+- As configurações salvas da prova não guardam mais o token em texto: ao atualizar, o IClass tira os tokens que estavam lá.
+- Em Resultados, lançar o cartão-resposta com questões em branco pergunta numa janela do IClass, em vez da caixa do navegador.
+
 ### Versão, Novidades e Ajuda
 - O rodapé do menu mostra a versão de verdade do IClass (por exemplo, "v3.0.0") e se a tela está falando com o servidor: "Conectado", "Sem conexão" ou "Servidor reiniciando". Antes ficava "Sistema ativo" e "v3", mesmo com o servidor fora do ar.
 - Na tela Sistema, o cartão novo "Sobre o IClass" mostra a versão instalada, a última atualização (com o nome do backup feito antes dela), a versão dos dados, o código desta instalação e o botão "Novidades", que abre esta lista.

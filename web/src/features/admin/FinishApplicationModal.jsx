@@ -53,8 +53,8 @@ export function FinishApplicationModal({ open, onClose, summary, onSubmit, onDis
             {reopened > 0 && (
               <p role="note">
                 {reopened === 1
-                  ? '1 dessas tentativas foi reaberta com o tempo extra da turma depois da entrega do fim do tempo: ao desconsiderar, vale a entrega que o aluno já tinha.'
-                  : `${reopened} dessas tentativas foram reabertas com o tempo extra da turma depois da entrega do fim do tempo: ao desconsiderar, vale a entrega que cada aluno já tinha.`}
+                  ? '1 dessas tentativas foi reaberta depois da entrega (pelo tempo extra da turma ou pelo professor): ao desconsiderar, vale a entrega que o aluno já tinha.'
+                  : `${reopened} dessas tentativas foram reabertas depois da entrega (pelo tempo extra da turma ou pelo professor): ao desconsiderar, vale a entrega que cada aluno já tinha.`}
               </p>
             )}
           </div>

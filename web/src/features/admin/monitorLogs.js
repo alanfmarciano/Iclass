@@ -38,6 +38,13 @@ export function focusLogLabel(log) {
   if (type === 'exam_error_reload') return 'Recarregou depois do erro de tela'
   if (type === 'exam_update_reload') return 'Recarregou com a atualização do IClass'
   if (type === 'focus_unlocked') return 'Liberado pelo professor'
+  // Ações por aluno do Monitor (P3-S8): ficam no registro, sem contar como saída de foco.
+  if (type === 'attempt_collected') return 'Recolhida pelo professor'
+  if (type === 'attempt_reopened') return 'Reaberta pelo professor'
+  if (type === 'time_adjusted') {
+    const amount = String(log?.details || '').match(/^[+-]?\d+ min/)
+    return amount ? `Tempo ajustado (${amount[0]})` : 'Tempo ajustado pelo professor'
+  }
   return type || 'Evento'
 }
 

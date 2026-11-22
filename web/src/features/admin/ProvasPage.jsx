@@ -418,7 +418,9 @@ export default function ProvasPage() {
       durationMinutes: Number(form.durationMinutes) || 60,
       timerEnabled: form.timerEnabled !== false,
       waitingRoomMinutes: parseWaitingRoomInput(form.waitingRoomMinutes),
-      accessToken: type === 'online' && form.tokenEnabled ? form.accessToken : null,
+      // A configuração salva guarda só se pede token (P3-S8, D19): o token em texto puro
+      // não vai mais para o histórico; ele é escolhido na preparação.
+      tokenEnabled: type === 'online' && form.tokenEnabled === true,
       ...extra,
     })
   }

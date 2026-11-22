@@ -483,21 +483,19 @@ test('[UC-BUSCA-002] guarda: nenhuma busca com toLowerCase().includes nem locale
 // e não dizem o que vai acontecer: tela tocada na fase 3 usa o ConfirmDialog
 // (web/src/components/ui/ConfirmDialog.jsx, contrato C12 do P3). As que ainda existem
 // estão na lista abaixo, com quantas há em cada arquivo; a lista só diminui (a Biblioteca,
-// o Fórum, o Monitor e Provas do professor saíram no C0a). Arquivo novo ou chamada nova
+// o Fórum, o Monitor e Provas do professor saíram no C0a; Resultados, no P3-S8). Arquivo novo ou chamada nova
 // reprova. E, onde há o histórico do git, arquivo da lista que mudou desde o começo da
 // fase 3 (PHASE3_BASE) também reprova: quem toca a tela troca as caixas dela.
 const NATIVE_DIALOGS_LEFT = {
     'features/admin/CalendarioPage.jsx': 1,
     'features/admin/EditorPage.jsx': 2,
     'features/admin/IdentidadePage.jsx': 1,
-    'features/admin/ResultadosPage.jsx': 1,
     'features/admin/TurmaPresencaConfig.jsx': 1,
 };
 // Exceções combinadas no plano (a tela muda antes de quem troca a caixa dela).
-const NATIVE_DIALOGS_TOUCH_EXCEPTIONS = {
-    // K15: até a J2 a ResultadosPage é da trilha B; o confirm dela sai no P3-S8 (trilha A).
-    'features/admin/ResultadosPage.jsx': 'K15 do plano: o confirm sai no P3-S8',
-};
+// A K15 (ResultadosPage até o P3-S8) acabou: o confirm das questões em branco virou o
+// ConfirmDialog no P3-S8.
+const NATIVE_DIALOGS_TOUCH_EXCEPTIONS = {};
 // Main de onde a fase 3 partiu (281029f, 18/11/2026).
 const PHASE3_BASE = '281029f1846543c2b33b181f6d9a9bb304aa6f0a';
 
@@ -547,7 +545,7 @@ test('[UC-CONFIRMACAO-001] guarda: nenhuma caixa nova do navegador (confirm, pro
     }
     assert.deepEqual(problems, [], `use o ConfirmDialog (web/src/components/ui/ConfirmDialog.jsx):\n${problems.join('\n')}`);
     // As telas tocadas no C0a não usam mais as caixas do navegador.
-    for (const file of ['features/admin/BibliotecaPage.jsx', 'features/admin/ForumPage.jsx', 'features/admin/MonitorPage.jsx', 'features/admin/ProvasPage.jsx']) {
+    for (const file of ['features/admin/BibliotecaPage.jsx', 'features/admin/ForumPage.jsx', 'features/admin/MonitorPage.jsx', 'features/admin/ProvasPage.jsx', 'features/admin/ResultadosPage.jsx']) {
         assert.equal(nativeDialogCalls({ text: fs.readFileSync(path.join(WEB_SRC, file), 'utf8') }).length, 0, file);
         assert.equal(NATIVE_DIALOGS_LEFT[file], undefined, file);
     }
