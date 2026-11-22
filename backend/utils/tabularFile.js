@@ -232,47 +232,166 @@ function decodeXmlText(text) {
         .replace(/_x([0-9a-fA-F]{4})_/g, (match, hex) => String.fromCharCode(parseInt(hex, 16)));
 }
 
+// O XML de cada parte é lido por um laço só, da esquerda para a direita, sem expressão
+// regular que volte atrás: o tempo cresce em linha reta com o tamanho da parte, mesmo
+// com XML malformado (uma abertura sem fechamento, aspas sem fechar). Uma busca por
+// expressão regular a cada elemento ficava quadrática: um .xlsx de 1 KB com "<c>" sem
+// "</c>" repetido prendia o servidor por 20 s. XML malformado é recusado (o Excel, o
+// LibreOffice e o openpyxl gravam XML bem formado).
+const XML_MAX_DEPTH = 64;
+
+function xmlError() {
+    return new TabularFileError(`Não foi possível abrir a planilha do Excel: o arquivo parece danificado. ${SALVE_COMO}`, 'invalid_xlsx');
+}
+
+function isXmlSpace(code) {
+    return code === 0x20 || code === 0x09 || code === 0x0A || code === 0x0D;
+}
+
+// Letras, dígitos, "_", ":", ".", "-" e qualquer caractere fora do ASCII.
+function isXmlNameChar(code) {
+    return (code >= 0x61 && code <= 0x7A) || (code >= 0x41 && code <= 0x5A) || (code >= 0x30 && code <= 0x39)
+        || code === 0x5F || code === 0x3A || code === 0x2E || code === 0x2D || code >= 0x80;
+}
+
+function localName(qualified) {
+    const colon = qualified.indexOf(':');
+    return colon >= 0 ? qualified.slice(colon + 1) : qualified;
+}
+
+// Texto de CDATA volta escapado, para que todo texto chegue do mesmo jeito (com
+// entidades) a decodeXmlText.
+function escapeXmlTextForDecode(text) {
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+}
+
+// walkXml(xml, { open(nome, atributos, fechado, caminho), close(nome, caminho),
+// text(texto, caminho) }): `nome` sem o prefixo de namespace; `atributos` é o trecho cru
+// (para parseAttributes); `caminho` são os nomes dos elementos acima (no text, o último
+// é o elemento que contém o texto). Comentários e instruções são pulados; CDATA vira
+// texto. DOCTYPE é recusado (o Excel não grava, e assim não há entidade declarada).
+function walkXml(xml, { open, close, text } = {}) {
+    const source = xml || '';
+    const length = source.length;
+    const qualifiedStack = [];
+    const path = [];
+    let pos = 0;
+    while (pos < length) {
+        const lt = source.indexOf('<', pos);
+        const textEnd = lt < 0 ? length : lt;
+        if (textEnd > pos && text && path.length) text(source.slice(pos, textEnd), path);
+        if (lt < 0) break;
+        const next = source.charCodeAt(lt + 1);
+        if (next === 0x21 /* ! */) {
+            if (source.startsWith('<!--', lt)) {
+                const end = source.indexOf('-->', lt + 4);
+                if (end < 0) throw xmlError();
+                pos = end + 3;
+                continue;
+            }
+            if (source.startsWith('<![CDATA[', lt)) {
+                const end = source.indexOf(']]>', lt + 9);
+                if (end < 0) throw xmlError();
+                if (text && path.length && end > lt + 9) text(escapeXmlTextForDecode(source.slice(lt + 9, end)), path);
+                pos = end + 3;
+                continue;
+            }
+            throw xmlError();
+        }
+        if (next === 0x3F /* ? */) {
+            const end = source.indexOf('?>', lt + 2);
+            if (end < 0) throw xmlError();
+            pos = end + 2;
+            continue;
+        }
+        if (next === 0x2F /* / */) {
+            const end = source.indexOf('>', lt + 2);
+            if (end < 0) throw xmlError();
+            const qualified = source.slice(lt + 2, end).trim();
+            if (!qualifiedStack.length || qualifiedStack[qualifiedStack.length - 1] !== qualified) throw xmlError();
+            qualifiedStack.pop();
+            const name = path.pop();
+            if (close) close(name, path);
+            pos = end + 1;
+            continue;
+        }
+        let index = lt + 1;
+        while (index < length && isXmlNameChar(source.charCodeAt(index))) index += 1;
+        if (index === lt + 1) throw xmlError();
+        const qualified = source.slice(lt + 1, index);
+        const attrStart = index;
+        let quote = 0;
+        while (index < length) {
+            const code = source.charCodeAt(index);
+            if (quote) {
+                if (code === quote) quote = 0;
+            } else if (code === 0x22 || code === 0x27) {
+                quote = code;
+            } else if (code === 0x3E /* > */) {
+                break;
+            } else if (code === 0x3C /* < */) {
+                throw xmlError();
+            }
+            index += 1;
+        }
+        if (index >= length) throw xmlError();
+        const selfClosing = source.charCodeAt(index - 1) === 0x2F && index - 1 >= attrStart;
+        const attrs = source.slice(attrStart, selfClosing ? index - 1 : index);
+        const name = localName(qualified);
+        if (open) open(name, attrs, selfClosing, path);
+        if (selfClosing) {
+            if (close) close(name, path);
+        } else {
+            if (path.length >= XML_MAX_DEPTH) throw xmlError();
+            qualifiedStack.push(qualified);
+            path.push(name);
+        }
+        pos = index + 1;
+    }
+    if (path.length) throw xmlError();
+}
+
+// Atributos de uma abertura de elemento, também num laço só. Cada atributo fica pelo
+// nome completo (r:id) e, se ainda não houver, pelo nome sem prefixo (id).
 function parseAttributes(source) {
     const attrs = {};
-    const re = /([\w:.-]+)\s*=\s*(?:"([^"]*)"|'([^']*)')/g;
-    let match;
-    while ((match = re.exec(source || ''))) {
-        const name = match[1];
-        const value = decodeXmlText(match[2] !== undefined ? match[2] : match[3]);
+    const text = source || '';
+    const length = text.length;
+    let index = 0;
+    while (index < length) {
+        while (index < length && isXmlSpace(text.charCodeAt(index))) index += 1;
+        if (index >= length) break;
+        const start = index;
+        while (index < length && isXmlNameChar(text.charCodeAt(index))) index += 1;
+        if (index === start) throw xmlError();
+        const name = text.slice(start, index);
+        while (index < length && isXmlSpace(text.charCodeAt(index))) index += 1;
+        if (text[index] !== '=') throw xmlError();
+        index += 1;
+        while (index < length && isXmlSpace(text.charCodeAt(index))) index += 1;
+        const quote = text[index];
+        if (quote !== '"' && quote !== "'") throw xmlError();
+        const end = text.indexOf(quote, index + 1);
+        if (end < 0) throw xmlError();
+        const value = decodeXmlText(text.slice(index + 1, end));
         attrs[name] = value;
-        const local = name.includes(':') ? name.slice(name.indexOf(':') + 1) : name;
+        const local = localName(name);
         if (!(local in attrs)) attrs[local] = value;
+        index = end + 1;
     }
     return attrs;
 }
 
 // Atributo com prefixo de namespace (r:id), qualquer que seja o prefixo.
-function prefixedAttribute(source, localName) {
-    const re = new RegExp(`\\s[\\w.-]+:${localName}\\s*=\\s*(?:"([^"]*)"|'([^']*)')`);
-    const match = re.exec(source || '');
-    return match ? decodeXmlText(match[1] !== undefined ? match[1] : match[2]) : '';
+function prefixedAttribute(attrs, localNameWanted) {
+    const key = Object.keys(attrs).find(name => name.includes(':') && localName(name) === localNameWanted);
+    return key ? attrs[key] : '';
 }
 
-// Elementos <nome ...>...</nome> ou <nome .../>, com ou sem prefixo de namespace.
-function elements(xml, name) {
-    const re = new RegExp(`<(?:[\\w.-]+:)?${name}(?=[\\s/>])([^>]*?)(?:/>|>([\\s\\S]*?)</(?:[\\w.-]+:)?${name}\\s*>)`, 'g');
-    const out = [];
-    let match;
-    while ((match = re.exec(xml || ''))) out.push({ attrs: match[1] || '', body: match[2] === undefined ? null : match[2] });
-    return out;
-}
-
-function firstElement(xml, name) {
-    const re = new RegExp(`<(?:[\\w.-]+:)?${name}(?=[\\s/>])([^>]*?)(?:/>|>([\\s\\S]*?)</(?:[\\w.-]+:)?${name}\\s*>)`);
-    const match = re.exec(xml || '');
-    return match ? { attrs: match[1] || '', body: match[2] === undefined ? null : match[2] } : null;
-}
-
-// Texto de um <si> ou <is>: os <t> em ordem, sem a leitura fonética (<rPh>).
-function richText(body) {
-    if (!body) return '';
-    const withoutPhonetic = body.replace(/<(?:[\w.-]+:)?rPh\b[\s\S]*?<\/(?:[\w.-]+:)?rPh\s*>/g, '');
-    return elements(withoutPhonetic, 't').map(item => decodeXmlText(item.body || '')).join('');
+// Junta os trechos de texto de um elemento (o texto pode vir partido por comentário
+// ou CDATA) e decodifica uma vez.
+function joinXmlText(parts) {
+    return parts.length === 1 ? decodeXmlText(parts[0]) : decodeXmlText(parts.join(''));
 }
 
 function columnIndex(letters) {
@@ -318,6 +437,9 @@ function bareFormat(code) {
 function classifyFormat(numFmtId, code) {
     if (BUILTIN_DATE_IDS.has(numFmtId)) return { kind: 'date', time: numFmtId === 22, seconds: false, dateParts: true };
     if (BUILTIN_TIME_IDS.has(numFmtId)) return { kind: 'date', time: true, seconds: [19, 21, 46].includes(numFmtId), dateParts: false, elapsed: numFmtId === 46 };
+    // O Excel não aceita formato com mais de 255 caracteres; um maior só viria de arquivo
+    // feito para travar a leitura (as expressões abaixo não são lineares).
+    if (String(code || '').length > 255) return { kind: 'general' };
     const bare = bareFormat(code);
     if (!bare || /^general$/i.test(bare.trim()) || bare.trim() === '@') return { kind: 'general' };
     if (/[dy]/i.test(bare) || /[hs]/i.test(bare) || /\[[hms]+\]/i.test(bare) || (/m/i.test(bare) && !/[0#?]/.test(bare))) {
@@ -494,10 +616,13 @@ function readRelationships(reader, path) {
     const xml = reader.read(path);
     const rels = new Map();
     if (!xml) return rels;
-    for (const item of elements(xml, 'Relationship')) {
-        const attrs = parseAttributes(item.attrs);
-        if (attrs.Id) rels.set(attrs.Id, { type: String(attrs.Type || ''), target: attrs.Target || '' });
-    }
+    walkXml(xml, {
+        open(name, rawAttrs) {
+            if (name !== 'Relationship') return;
+            const attrs = parseAttributes(rawAttrs);
+            if (attrs.Id) rels.set(attrs.Id, { type: String(attrs.Type || ''), target: attrs.Target || '' });
+        },
+    });
     return rels;
 }
 
@@ -505,52 +630,90 @@ function readStyles(reader, path) {
     const xml = path ? reader.read(path) : null;
     if (!xml) return [];
     const custom = new Map();
-    const numFmts = firstElement(xml, 'numFmts');
-    for (const item of elements(numFmts ? numFmts.body : '', 'numFmt')) {
-        const attrs = parseAttributes(item.attrs);
-        custom.set(Number(attrs.numFmtId), attrs.formatCode || '');
-    }
-    const cellXfs = firstElement(xml, 'cellXfs');
-    const formats = [];
-    // <xf .../> ou <xf ...>...</xf>: só a abertura importa (numFmtId).
-    const re = /<(?:[\w.-]+:)?xf(?=[\s/>])([^>]*?)\/?>/g;
-    let match;
-    const body = cellXfs ? (cellXfs.body || '') : '';
-    while ((match = re.exec(body))) {
-        const attrs = parseAttributes(match[1]);
-        const id = Number(attrs.numFmtId) || 0;
+    const xfFormatIds = [];
+    walkXml(xml, {
+        open(name, rawAttrs, selfClosing, parents) {
+            const parent = parents[parents.length - 1];
+            if (name === 'numFmt' && parent === 'numFmts') {
+                const attrs = parseAttributes(rawAttrs);
+                custom.set(Number(attrs.numFmtId), attrs.formatCode || '');
+            } else if (name === 'xf' && parent === 'cellXfs') {
+                // Só a abertura importa (numFmtId); o <xf> de cellStyleXfs não conta.
+                xfFormatIds.push(Number(parseAttributes(rawAttrs).numFmtId) || 0);
+            }
+        },
+    });
+    return xfFormatIds.map(id => {
         const code = custom.has(id) ? custom.get(id) : (BUILTIN_FORMATS[id] || 'General');
-        formats.push(classifyFormat(custom.has(id) ? -1 : id, code));
-    }
-    return formats;
+        return classifyFormat(custom.has(id) ? -1 : id, code);
+    });
+}
+
+// Texto de um <si> ou <is>: os <t> em ordem (também os de dentro de <r>, o rich text),
+// sem a leitura fonética (<rPh>). `collector` é usado dentro do walkXml.
+function createRichTextCollector() {
+    let parts = null;
+    let phonetic = 0;
+    let textParts = null;
+    return {
+        start() { parts = []; phonetic = 0; textParts = null; },
+        get active() { return parts !== null; },
+        open(name, selfClosing) {
+            if (parts === null) return;
+            if (name === 'rPh' && !selfClosing) phonetic += 1;
+            else if (name === 't' && !phonetic && !selfClosing) textParts = [];
+        },
+        text(raw, parents) {
+            if (textParts && parents[parents.length - 1] === 't') textParts.push(raw);
+        },
+        close(name) {
+            if (parts === null) return;
+            if (name === 'rPh' && phonetic) phonetic -= 1;
+            else if (name === 't' && textParts) { parts.push(joinXmlText(textParts)); textParts = null; }
+        },
+        finish() { const value = (parts || []).join(''); parts = null; return value; },
+    };
 }
 
 function readSharedStrings(reader, path) {
     const xml = path ? reader.read(path) : null;
     if (!xml) return [];
-    return elements(xml, 'si').map(item => richText(item.body));
+    const strings = [];
+    const rich = createRichTextCollector();
+    walkXml(xml, {
+        open(name, rawAttrs, selfClosing) {
+            if (name === 'si' && !rich.active) {
+                rich.start();
+                if (selfClosing) strings.push(rich.finish());
+                return;
+            }
+            rich.open(name, selfClosing);
+        },
+        text(raw, parents) { rich.text(raw, parents); },
+        close(name) {
+            if (name === 'si' && rich.active) { strings.push(rich.finish()); return; }
+            rich.close(name);
+        },
+    });
+    return strings;
 }
 
+// cell: { attrs (já lidos), raw (texto cru do <v>), hasFormula, inline (texto do <is> ou null) }
 function cellValue(cell, context) {
-    const attrs = parseAttributes(cell.attrs);
+    const attrs = cell.attrs;
     const type = attrs.t || 'n';
-    const body = cell.body || '';
-    const v = firstElement(body, 'v');
-    const raw = v && v.body !== null ? v.body : '';
-    const hasFormula = !!firstElement(body, 'f');
-    if (type === 'inlineStr') {
-        const inline = firstElement(body, 'is');
-        return inline ? richText(inline.body) : decodeXmlText(raw);
-    }
+    const raw = cell.raw;
+    if (type === 'inlineStr') return cell.inline !== null ? cell.inline : decodeXmlText(raw);
     // Fórmula sem o resultado guardado (o openpyxl grava <v></v>): fica vazia, com aviso.
     // Fórmula de texto (t="str") que dá "" é resultado de verdade.
-    if (hasFormula && String(raw).trim() === '' && type !== 'str') {
+    if (cell.hasFormula && String(raw).trim() === '' && type !== 'str') {
         context.formulasSemValor += 1;
         return '';
     }
     if (type === 's') {
-        const index = Number(String(raw).trim());
-        return Number.isInteger(index) && index >= 0 && index < context.sharedStrings.length ? context.sharedStrings[index] : '';
+        const text = String(raw).trim();
+        const index = Number(text);
+        return text !== '' && Number.isInteger(index) && index >= 0 && index < context.sharedStrings.length ? context.sharedStrings[index] : '';
     }
     if (type === 'str' || type === 'e') return decodeXmlText(raw);
     if (type === 'b') {
@@ -587,13 +750,19 @@ function parseWorkbook(reader, workbookPath, limits) {
     const baseDir = workbookPath.includes('/') ? workbookPath.slice(0, workbookPath.lastIndexOf('/')) : '';
     const relsPath = `${baseDir ? baseDir + '/' : ''}_rels/${workbookPath.slice(workbookPath.lastIndexOf('/') + 1)}.rels`;
     const rels = readRelationships(reader, relsPath);
-    const workbookPr = firstElement(workbookXml, 'workbookPr');
-    const prAttrs = workbookPr ? parseAttributes(workbookPr.attrs) : {};
+    let prAttrs = null;
+    const sheetAttrs = [];
+    walkXml(workbookXml, {
+        open(name, rawAttrs, selfClosing, parents) {
+            if (name === 'workbookPr' && !prAttrs) prAttrs = parseAttributes(rawAttrs);
+            else if (name === 'sheet' && parents[parents.length - 1] === 'sheets') sheetAttrs.push(parseAttributes(rawAttrs));
+        },
+    });
+    prAttrs = prAttrs || {};
     const date1904 = prAttrs.date1904 === '1' || String(prAttrs.date1904).toLowerCase() === 'true';
 
-    const sheets = elements(workbookXml, 'sheet').map(item => {
-        const attrs = parseAttributes(item.attrs);
-        const relId = prefixedAttribute(item.attrs, 'id');
+    const sheets = sheetAttrs.map(attrs => {
+        const relId = prefixedAttribute(attrs, 'id');
         const rel = rels.get(relId);
         return {
             name: attrs.name || '',
@@ -624,36 +793,95 @@ function parseWorkbook(reader, workbookPath, limits) {
     };
 
     const sheetXml = reader.read(chosen.path) || '';
-    const sheetData = firstElement(sheetXml, 'sheetData');
     const rows = [];
     let dataRows = 0;
     let previousRow = 0;
-    for (const row of elements(sheetData ? sheetData.body : '', 'row')) {
-        const rowAttrs = parseAttributes(row.attrs);
-        const rowNumber = Number(rowAttrs.r) > 0 ? Number(rowAttrs.r) : previousRow + 1;
-        previousRow = rowNumber;
-        if (!row.body) continue;
-        const values = [];
-        let previousColumn = 0;
-        let hasContent = false;
-        for (const cell of elements(row.body, 'c')) {
-            const cellAttrs = parseAttributes(cell.attrs);
-            const ref = /^([A-Za-z]{1,3})\d*$/.exec(String(cellAttrs.r || ''));
-            const column = ref ? columnIndex(ref[1]) : previousColumn + 1;
-            previousColumn = column;
-            const value = cellValue(cell, context);
-            if (value === '') continue;
-            if (column > limits.maxColunas) throw tooManyColumns(limits.maxColunas, rowNumber);
-            while (values.length < column - 1) values.push('');
-            values[column - 1] = value;
-            if (value.trim() !== '') hasContent = true;
-        }
-        if (!hasContent) continue;
-        rows.push({ numero: rowNumber, valores: values });
+    let sheetDataDone = false;
+    let inSheetData = false;
+    // Linha e célula em leitura (a aba é lida aos poucos, sem montar a árvore do XML).
+    let row = null;
+    let cell = null;
+    let valueParts = null;
+    const rich = createRichTextCollector();
+
+    const finishCell = () => {
+        const current = cell;
+        cell = null;
+        const cellAttrs = current.attrs;
+        const ref = /^([A-Za-z]{1,3})\d*$/.exec(String(cellAttrs.r || ''));
+        const column = ref ? columnIndex(ref[1]) : row.previousColumn + 1;
+        row.previousColumn = column;
+        const value = cellValue(current, context);
+        if (value === '') return;
+        if (column > limits.maxColunas) throw tooManyColumns(limits.maxColunas, row.number);
+        while (row.values.length < column - 1) row.values.push('');
+        row.values[column - 1] = value;
+        if (value.trim() !== '') row.hasContent = true;
+    };
+    const finishRow = () => {
+        const current = row;
+        row = null;
+        if (!current.hasContent) return;
+        rows.push({ numero: current.number, valores: current.values });
         dataRows += 1;
         // Cabeçalho + maxLinhas: não precisa ler o resto para recusar.
         if (dataRows > limits.maxLinhas + 1) throw tooManyRows(limits.maxLinhas);
-    }
+    };
+
+    walkXml(sheetXml, {
+        open(name, rawAttrs, selfClosing, parents) {
+            if (sheetDataDone) return;
+            const parent = parents[parents.length - 1];
+            if (name === 'sheetData') {
+                if (selfClosing) sheetDataDone = true; else inSheetData = true;
+                return;
+            }
+            if (!inSheetData) return;
+            if (name === 'row' && parent === 'sheetData') {
+                const rowAttrs = parseAttributes(rawAttrs);
+                const number = Number(rowAttrs.r) > 0 ? Number(rowAttrs.r) : previousRow + 1;
+                previousRow = number;
+                row = { number, values: [], previousColumn: 0, hasContent: false };
+                if (selfClosing) finishRow();
+                return;
+            }
+            if (!row) return;
+            if (name === 'c' && parent === 'row') {
+                cell = { attrs: parseAttributes(rawAttrs), raw: '', hasFormula: false, inline: null, hasValue: false };
+                if (selfClosing) finishCell();
+                return;
+            }
+            if (!cell) return;
+            if (name === 'v' && parent === 'c') {
+                if (!cell.hasValue && !selfClosing) valueParts = [];
+                cell.hasValue = true;
+            } else if (name === 'f' && parent === 'c') {
+                cell.hasFormula = true;
+            } else if (name === 'is' && parent === 'c' && !rich.active) {
+                rich.start();
+                if (selfClosing) cell.inline = rich.finish();
+            } else {
+                rich.open(name, selfClosing);
+            }
+        },
+        text(raw, parents) {
+            if (!cell) return;
+            if (valueParts && parents[parents.length - 1] === 'v') valueParts.push(raw);
+            else rich.text(raw, parents);
+        },
+        close(name, parents) {
+            if (sheetDataDone) return;
+            const parent = parents[parents.length - 1];
+            if (name === 'sheetData' && inSheetData) { inSheetData = false; sheetDataDone = true; return; }
+            if (!row) return;
+            if (name === 'row' && parent === 'sheetData') { finishRow(); return; }
+            if (!cell) return;
+            if (name === 'c' && parent === 'row') { finishCell(); return; }
+            if (name === 'v' && parent === 'c' && valueParts) { cell.raw = valueParts.join(''); valueParts = null; return; }
+            if (name === 'is' && parent === 'c' && rich.active) { cell.inline = rich.finish(); return; }
+            rich.close(name);
+        },
+    });
 
     const avisos = [];
     const visibleSheets = sheets.filter(sheet => !sheet.hidden);
@@ -783,11 +1011,15 @@ function xmlCellText(value) {
 
 function safeSheetName(name) {
     const clean = String(name || '')
+        // eslint-disable-next-line no-control-regex
+        .replace(/[\u0000-\u001F\u007F\uFFFE\uFFFF]/g, ' ')
         .replace(/[[\]:*?/\\]/g, ' ')
         .replace(/\s+/g, ' ')
         .trim()
         .replace(/^'+|'+$/g, '')
         .slice(0, 31)
+        // Metade de um par (emoji cortado no limite de 31) não vale no XML.
+        .replace(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(^|[^\uD800-\uDBFF])[\uDC00-\uDFFF]/g, '$1')
         .trim();
     return clean || 'Planilha';
 }

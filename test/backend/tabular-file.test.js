@@ -312,6 +312,80 @@ test('XLSX: ZIP bomb (tamanho declarado e tamanho de verdade) e planilha com sen
     assert.throws(() => zlib.inflateRawSync(zlib.deflateRawSync(Buffer.alloc(1000)), { maxOutputLength: 10 }), RangeError);
 });
 
+test('XLSX com XML malformado é recusado em tempo linear (um .xlsx de 1 KB não prende o servidor)', () => {
+    // Com a leitura por expressão regular, cada "<c>" sem "</c>" fazia uma busca até o
+    // fim da parte: 160 mil (1 KB compactado) levavam 20 s, e 8 milhões levariam horas,
+    // com o servidor parado (provas, autosave e monitor juntos).
+    const linha = inner => sheetXml(`<row r="1">${inner}</row>`);
+    const casos = {
+        'célula aberta sem fechar': sheetXml('<row r="1">' + '<c>'.repeat(160000) + '</row>'),
+        'linha aberta sem fechar': sheetXml('<row>'.repeat(80000)),
+        'valor aberto sem fechar': linha('<c><v>'.repeat(100000) + '</c>'),
+        'abertura sem ">"': '<worksheet><sheetData><row r="1">' + '<c '.repeat(400000),
+        'aspas sem fechar': '<worksheet><sheetData><row r="1"><c r="' + 'a'.repeat(2000000),
+        'nome de atributo sem "="': linha('<c ' + 'a'.repeat(2000000) + '/>'),
+        'comentário sem fechar': '<worksheet>' + '<!--'.repeat(300000),
+        'CDATA sem fechar': '<worksheet>' + '<![CDATA['.repeat(200000),
+        'instrução sem fechar': '<worksheet>' + '<?'.repeat(500000),
+        'elementos sem fim (profundidade)': '<worksheet>' + '<a>'.repeat(400000),
+        'fechamento trocado': sheetXml('<row r="1"><c><v>1</c></v></row>'),
+        DOCTYPE: '<!DOCTYPE worksheet [<!ENTITY a "aaaa">]>' + sheetXml(''),
+        'atributo sem aspas': linha('<c r=A1><v>1</v></c>'),
+    };
+    for (const [nome, xml] of Object.entries(casos)) {
+        const buffer = handmadeXlsx({ 'xl/worksheets/sheet1.xml': xml });
+        assert.ok(buffer.length < LIMITES.maxBytes, nome);
+        const inicio = Date.now();
+        expectError(() => parseTabularFile(buffer, { nomeArquivo: 'malformada.xlsx' }), 'invalid_xlsx');
+        const ms = Date.now() - inicio;
+        assert.ok(ms < 2000, `${nome}: ${ms} ms`);
+    }
+    // Shared strings malformadas também.
+    const sst = handmadeXlsx({
+        'xl/_rels/workbook.xml.rels': '<Relationships><Relationship Id="rId1" Type="x/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="x/sharedStrings" Target="sharedStrings.xml"/></Relationships>',
+        'xl/worksheets/sheet1.xml': sheetXml('<row r="1"><c t="s"><v>0</v></c></row>'),
+        'xl/sharedStrings.xml': '<sst>' + '<si><rPh>'.repeat(200000) + '</sst>',
+    });
+    const inicio = Date.now();
+    expectError(() => parseTabularFile(sst, { nomeArquivo: 'malformada.xlsx' }), 'invalid_xlsx');
+    assert.ok(Date.now() - inicio < 2000);
+
+    // Bem formado e grande (perto do limite da parte): termina rápido. 6 milhões de
+    // células vazias e um formato de número de 1 milhão de caracteres (o Excel aceita
+    // até 255; acima disso o formato é ignorado).
+    const vazias = handmadeXlsx({
+        'xl/_rels/workbook.xml.rels': '<Relationships><Relationship Id="rId1" Type="x/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId3" Type="x/styles" Target="styles.xml"/></Relationships>',
+        'xl/styles.xml': '<styleSheet><numFmts><numFmt numFmtId="200" formatCode="' + '['.repeat(1000000) + '"/><numFmt numFmtId="201" formatCode="' + ','.repeat(1000000) + '"/></numFmts>'
+            + '<cellXfs><xf numFmtId="200"/><xf numFmtId="201"/></cellXfs></styleSheet>',
+        'xl/worksheets/sheet1.xml': sheetXml('<row r="1"><c t="inlineStr"><is><t>Nota</t></is></c></row><row r="2"><c s="0"><v>7.5</v></c><c s="1"><v>8</v></c>' + '<c/>'.repeat(6000000) + '</row>'),
+    });
+    const comeco = Date.now();
+    const lida = parseTabularFile(vazias, { nomeArquivo: 'vazias.xlsx' });
+    assert.deepEqual(lida.linhas, [{ numero: 2, valores: ['7,5', '8'] }]);
+    assert.ok(Date.now() - comeco < 5000, `${Date.now() - comeco} ms`);
+});
+
+test('XLSX: CDATA vira texto, comentário XML não é lido e índice de texto vazio não pega o primeiro texto', () => {
+    const buffer = handmadeXlsx({
+        'xl/_rels/workbook.xml.rels': '<Relationships><Relationship Id="rId1" Type="x/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="x/sharedStrings" Target="sharedStrings.xml"/></Relationships>',
+        'xl/sharedStrings.xml': '<?xml version="1.0"?><!-- gerado por outro programa --><sst><si><t>Primeiro</t></si><si><t><![CDATA[a<b & c]]></t></si><si><r><t>par</t></r><!-- <t>não</t> --><r><t><![CDATA[te]]>s</t></r></si></sst>',
+        'xl/worksheets/sheet1.xml': sheetXml(
+            '<row r="1"><c t="inlineStr"><is><t>A</t></is></c><c t="inlineStr"><is><t>B</t></is></c><c t="inlineStr"><is><t>C</t></is></c></row>'
+            + '<row r="2"><c r="A2" t="s"><v>1</v></c><!-- <c r="B2"><v>9</v></c> --><c r="C2" t="inlineStr"><is><t><![CDATA[<x> &amp;]]></t></is></c></row>'
+            + '<row r="3"><c r="A3" t="s"><v>2</v></c><c r="B3" t="s"><v></v></c><c r="C3" t="s"/></row>'
+            + '<!-- <row r="4"><c r="A4"><v>1</v></c></row> -->'
+            + '<row r="5"><c r="A5"><v><![CDATA[3.5]]></v></c></row>',
+        ),
+    });
+    const resultado = parseTabularFile(buffer, { nomeArquivo: 'cdata.xlsx' });
+    assert.deepEqual(resultado.cabecalho, ['A', 'B', 'C']);
+    assert.deepEqual(resultado.linhas, [
+        { numero: 2, valores: ['a<b & c', '', '<x> &amp;'] },
+        { numero: 3, valores: ['partes', '', ''] },
+        { numero: 5, valores: ['3,5', '', ''] },
+    ]);
+});
+
 test('buildXlsx: cabeçalho em negrito, número de verdade com formato, texto que fica texto, datas e nomes de aba', () => {
     const linhas = [
         ['Ana', '00123', 7, 7.25, 3, '2008-03-15', '2026-03-01 08:05', '=HYPERLINK("http://x")', true, null],
@@ -352,6 +426,15 @@ test('buildXlsx: cabeçalho em negrito, número de verdade com formato, texto qu
     assert.ok(buildXlsx([]).length > 0);
     assert.equal(/<sheet name="([^"]*)"/.exec(new AdmZip(buildXlsx([], { nomePlanilha: '[]' })).readAsText('xl/workbook.xml'))[1], 'Planilha');
     assert.equal(XLSX_CONTENT_TYPE, 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+});
+
+test('buildXlsx: nome de aba com caractere de controle ou emoji cortado no limite continua XML válido', () => {
+    const nome = (texto) => /<sheet name="([^"]*)"/.exec(new AdmZip(buildXlsx([['x']], { nomePlanilha: texto })).readAsText('xl/workbook.xml'))[1];
+    assert.equal(nome('Turma\u0001A\u0007\u001F B\uFFFE'), 'Turma A B');
+    // 30 letras + emoji: o corte em 31 deixaria meio par de surrogates.
+    assert.equal(nome('a'.repeat(30) + '\u{1F600}fim'), 'a'.repeat(30));
+    const buffer = buildXlsx([['x']], { nomePlanilha: 'Turma\u0001A', cabecalho: ['Nome'] });
+    assert.equal(parseTabularFile(buffer, { nomeArquivo: 'turma.xlsx' }).planilha, 'Turma A');
 });
 
 test('buildXlsx abre no LibreOffice e no openpyxl com as mesmas células (pulado se não estiverem instalados)', { skip: !sofficeAvailable() && 'LibreOffice (soffice) não instalado' }, () => {
