@@ -125,7 +125,7 @@ const MESSAGES = Object.freeze({
     archived: 'Esta tarefa está arquivada. Reative a tarefa para alterar.',
     archivedPublish: 'Esta tarefa está arquivada. Reative a tarefa antes de publicar.',
     otherClass: 'A turma de uma tarefa não muda. Para usar a tarefa em outra turma, use "Copiar para outra turma".',
-    reason: `Esta tarefa já tem entregas. Para mudar a abertura, o prazo ou o encerramento, informe o motivo (de ${LIMITS.reasonMin} a ${LIMITS.reasonMax} caracteres).`,
+    reason: `Esta tarefa já tem entrega ou nota de aluno. Para mudar a abertura, o prazo ou o encerramento, informe o motivo (de ${LIMITS.reasonMin} a ${LIMITS.reasonMax} caracteres).`,
     confirm: 'Digite EXCLUIR para confirmar.',
     hasSubmissions: 'Esta tarefa já tem entregas ou registros de alunos e não pode ser excluída. Arquive a tarefa para ela sumir para os alunos.',
     penaltyPerDay: 'Com desconto por atraso, informe o desconto por dia (de 1% a 100%).',
@@ -518,6 +518,10 @@ function presentAssignment(memory, raw, { tz, full = true } = {}) {
         // A mesma regra do POST /:id/delete: qualquer linha de aluno (nota sem envio,
         // prorrogação, entrega em mãos) segura a tarefa. A lista só mostra "Excluir" com true.
         deletable: assignments.submissionsForAssignment(memory, task.id).length === 0,
+        // A mesma regra do POST /:id/update: com versão, entrega em mãos ou nota de algum
+        // aluno, mudar prazo, abertura ou encerramento pede o motivo. O formulário mostra o
+        // campo do motivo já com true (nota sem envio também conta, sem contar em enviadas).
+        deadlineReasonRequired: deliveredSubmissions(memory, task.id).length > 0,
     };
     if (full) {
         out.instructions = task.instructions;

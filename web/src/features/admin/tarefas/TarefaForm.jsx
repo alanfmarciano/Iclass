@@ -17,6 +17,7 @@ import { api } from '../../../lib/api'
 import { markdownToHtml } from '../../../lib/contentMarkdown'
 import { createBody, deadlineChanged, emptyForm, formFieldOf, formFromAssignment, limitsOf, updateBody, validateForm } from './assignmentForm'
 import { hidePlaceholderEmails, latePolicyText } from './assignmentText'
+import { TOUCH, TOUCH_SQUARE } from './touch'
 
 // Formulário "Nova tarefa" e "Editar tarefa" (fase 3, C7 / P1-e; FUN-01, D6, D8 e D17 do
 // P1). Rotas /tarefas/nova e /tarefas/:id/editar.
@@ -107,7 +108,10 @@ export default function TarefaForm() {
   const readOnly = auth?.readOnly === true
   const locked = readOnly || archived || busy
   const published = assignment?.status === 'publicada'
-  const hasDeliveries = (assignment?.counts?.enviadas || 0) > 0 || serverAskedReason
+  // O servidor diz se mudar o prazo pede motivo (deadlineReasonRequired: versão, entrega em
+  // mãos ou nota, a mesma regra do /update); resposta sem o campo cai nas contagens.
+  const serverRule = typeof assignment?.deadlineReasonRequired === 'boolean' ? assignment.deadlineReasonRequired : (assignment?.counts?.enviadas || 0) > 0
+  const hasDeliveries = serverRule || serverAskedReason
   const needsReason = editing && !!form && !!initial && hasDeliveries && deadlineChanged(initial, form)
   const modules = useMemo(() => (Array.isArray(options?.modules) ? options.modules : []), [options])
   const units = useMemo(() => modules.find((module) => module.id === form?.moduleId)?.units || [], [modules, form?.moduleId])
@@ -183,7 +187,7 @@ export default function TarefaForm() {
 
   return (
     <div className="max-w-3xl mx-auto space-y-5">
-      <PageHeader title={title} subtitle={studentClass ? `Turma ${studentClass}${options?.timezone ? ` · horários no relógio da escola (${options.timezone})` : ''}` : ''} helpTopic="tarefas">
+      <PageHeader title={title} subtitle={studentClass ? `Turma ${studentClass}${options?.timezone ? ` · horários no relógio da escola (${options.timezone})` : ''}` : ''} helpTopic="tarefas" helpClassName={TOUCH_SQUARE}>
         <Button variant="ghost" icon={ArrowLeft} className="min-h-[44px] sm:min-h-0" onClick={() => navigate('/tarefas')}>Voltar para Tarefas</Button>
       </PageHeader>
 
@@ -206,7 +210,7 @@ export default function TarefaForm() {
                   onChange={(event) => change({ title: event.target.value })} error={errors.title} placeholder="Ex.: Relatório da prática de redes" />
                 <div className="space-y-2">
                   <p className="text-sm font-medium text-text">Instruções</p>
-                  <Tabs tabs={[{ id: 'escrever', label: 'Escrever' }, { id: 'previa', label: 'Prévia' }]} active={instructionsTab} onChange={setInstructionsTab} />
+                  <Tabs tabs={[{ id: 'escrever', label: 'Escrever' }, { id: 'previa', label: 'Prévia' }]} active={instructionsTab} onChange={setInstructionsTab} tabClassName={TOUCH} />
                   {instructionsTab === 'escrever' ? (
                     <Textarea id={FIELD_IDS.instructions} aria-label="Instruções" value={form.instructions} maxLength={limits.instructionsMax} counterFrom={limits.instructionsMax - 1000}
                       onChange={(event) => change({ instructions: event.target.value })} error={errors.instructions} className="min-h-[160px]"
@@ -220,12 +224,12 @@ export default function TarefaForm() {
                   )}
                 </div>
                 <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-                  <Select id={FIELD_IDS.moduleId} label="Módulo (opcional)" value={form.moduleId} error={errors.moduleId}
+                  <Select id={FIELD_IDS.moduleId} label="Módulo (opcional)" value={form.moduleId} error={errors.moduleId} className={TOUCH}
                     onChange={(event) => change({ moduleId: event.target.value, unitKey: '' })}>
                     <option value="">Nenhum</option>
                     {modules.map((module) => <option key={module.id} value={module.id}>{module.name}</option>)}
                   </Select>
-                  <Select id={FIELD_IDS.unitKey} label="Unidade (opcional)" value={form.unitKey} error={errors.unitKey} disabled={!form.moduleId || !units.length}
+                  <Select id={FIELD_IDS.unitKey} label="Unidade (opcional)" value={form.unitKey} error={errors.unitKey} className={TOUCH} disabled={!form.moduleId || !units.length}
                     onChange={(event) => change({ unitKey: event.target.value })}>
                     <option value="">{form.moduleId ? 'Nenhuma' : 'Escolha o módulo antes'}</option>
                     {units.map((unit) => <option key={unit.key} value={unit.key}>{unit.name}</option>)}
@@ -332,7 +336,7 @@ export default function TarefaForm() {
                 {needsReason && (
                   <Textarea id={FIELD_IDS.reason} label="Motivo da mudança de prazo" value={form.reason} maxLength={limits.reasonMax}
                     onChange={(event) => change({ reason: event.target.value })} error={errors.reason}
-                    placeholder="Esta tarefa já tem entregas. O motivo fica na Auditoria." className="min-h-[70px]" />
+                    placeholder="Esta tarefa já tem entrega ou nota de aluno. O motivo fica na Auditoria." className="min-h-[70px]" />
                 )}
               </Card>
 

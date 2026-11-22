@@ -131,6 +131,17 @@ describe('Tarefas', () => {
     expect(link.className).toMatch(/(^|\s)inline-flex(\s|$)/)
   })
 
+  it('no celular o filtro Mostrar, as abas Ativas/Arquivadas e a ajuda também são alvos de toque de 44 px', () => {
+    renderAt()
+    const touch = /(^|\s)min-h-\[44px\](\s|$)/
+    expect(screen.getByLabelText('Mostrar').className).toMatch(touch)
+    expect(screen.getByRole('button', { name: 'Ativas' }).className).toMatch(touch)
+    expect(screen.getByRole('button', { name: 'Arquivadas' }).className).toMatch(touch)
+    const help = screen.getByRole('link', { name: 'Ajuda sobre esta tela' })
+    expect(help.className).toMatch(touch)
+    expect(help.className).toMatch(/(^|\s)min-w-\[44px\](\s|$)/)
+  })
+
   it('o link da fila "Precisa de você" (?filtro=para-corrigir) abre só as tarefas com entrega para corrigir', () => {
     renderAt('/tarefas?filtro=para-corrigir')
     expect(screen.getByRole('link', { name: 'Relatório de redes' })).toBeInTheDocument()

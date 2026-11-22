@@ -29,7 +29,7 @@ export const MESSAGES = Object.freeze({
   dueRequired: 'Informe o prazo da tarefa (data e hora) antes de publicar.',
   penaltyPerDay: 'Com desconto por atraso, informe o desconto por dia (de 1% a 100%).',
   penaltyMax: 'Com desconto por atraso, o desconto máximo precisa ser de 1% a 100%.',
-  reason: (min, max) => `Esta tarefa já tem entregas. Para mudar a abertura, o prazo ou o encerramento, informe o motivo (de ${min} a ${max} caracteres).`,
+  reason: (min, max) => `Esta tarefa já tem entrega ou nota de aluno. Para mudar a abertura, o prazo ou o encerramento, informe o motivo (de ${min} a ${max} caracteres).`,
   maxSize: (ceiling) => `O tamanho máximo por arquivo vai até ${ceiling} MB (o limite das entregas em Sistema).`,
   range: (label, min, max) => `O campo "${label}" deve estar entre ${min} e ${max}.`,
   dateMissing: (label) => `Informe a data ${label}.`,

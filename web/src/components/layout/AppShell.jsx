@@ -11,7 +11,7 @@ import { ADMIN_ERROR_DESCRIPTION, AppErrorBoundary } from '../ui/ErrorScreen'
 const CRUMBS = {
   '/calendario': ['Gestão', 'Calendário'], '/avisos': ['Gestão', 'Avisos'],
   '/': ['Visão geral', 'Dashboard'], '/provas': ['Avaliações', 'Provas'],
-  '/monitor': ['Avaliações', 'Monitor Online'], '/resultados': ['Avaliações', 'Resultados'],
+  '/monitor': ['Avaliações', 'Monitor Online'], '/tarefas': ['Avaliações', 'Tarefas'], '/resultados': ['Avaliações', 'Resultados'],
   '/materiais': ['Conteúdo', 'Materiais & Liberação'], '/editor': ['Conteúdo', 'Editor'],
   '/turmas': ['Gestão acadêmica', 'Cursos e turmas'], '/alunos': ['Gestão', 'Alunos'], '/matriculas': ['Visão geral', 'Matrículas'], '/admins': ['Instituição', 'Administradores'],
   '/forum': ['Gestão', 'Fórum & Dúvidas'], '/escolas': ['Instituição', 'Escolas'],
@@ -21,11 +21,19 @@ const CRUMBS = {
   '/ajuda': ['Ajuda', 'Manual do IClass'],
   '/minha-conta': ['Conta', 'Minha conta'],
 }
+// Telas com caminho filho (/resultados/:id, /tarefas/nova, /tarefas/:id/editar) herdam a
+// trilha da tela-mãe.
+const CRUMB_PREFIXES = ['/resultados', '/tarefas']
+export function breadcrumbFor(pathname) {
+  if (CRUMBS[pathname]) return CRUMBS[pathname]
+  const parent = CRUMB_PREFIXES.find((prefix) => pathname.startsWith(`${prefix}/`))
+  return parent ? CRUMBS[parent] : ['IClass']
+}
 export function AppShell() {
   const [open, setOpen] = useState(() => typeof window !== 'undefined' && window.matchMedia('(min-width: 768px)').matches)
   const { pathname } = useLocation()
   const { interfacePreset } = useBranding()
-  const breadcrumb = CRUMBS[pathname] || (pathname.startsWith('/resultados/') ? CRUMBS['/resultados'] : ['IClass'])
+  const breadcrumb = breadcrumbFor(pathname)
   // No celular o menu cobre a página: fecha ao escolher um destino (senão os botões da
   // página escolhida ficavam atrás dele até tocar no fundo escurecido).
   const closeOnMobile = () => {

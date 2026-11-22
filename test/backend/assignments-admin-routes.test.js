@@ -451,6 +451,33 @@ test('publicar, arquivar e reativar: idempotentes, com a auditoria e a situaçã
     assert.equal(backDraft.body.assignment.status, 'rascunho');
 });
 
+test('deadlineReasonRequired segue a regra do /update: nota sem envio pede motivo, prorrogação sozinha não', async () => {
+    const task = await create();
+    const fetched = async () => (await get('professor', `/api/admin/assignments/${task.id}`)).body.assignment;
+    assert.equal(task.deadlineReasonRequired, false);
+    // Só prorrogação: o servidor muda o prazo sem motivo, e a tela sabe disso.
+    const extension = addSubmission(task.id, 'bruno@tarefas.local', { versions: [], status: 'pendente', extension: { dueAt: Date.now(), by: 'prof@tarefas.local', at: Date.now(), reason: 'Atestado' } });
+    assert.equal((await fetched()).deadlineReasonRequired, false);
+    const free = await post('professor', `/api/admin/assignments/${task.id}/update`, { dueDate: '2026-12-05', dueTime: '23:00' });
+    assert.equal(free.status, 200, JSON.stringify(free.body));
+    assert.equal(free.body.assignment.deadlineReasonRequired, false);
+    // Nota zero lançada sem envio: enviadas continua 0, mas o motivo é pedido, e a lista e o
+    // detalhe já avisam (o formulário mostra o campo antes de mandar).
+    db.memory.assignmentSubmissions.splice(db.memory.assignmentSubmissions.indexOf(extension), 1);
+    addSubmission(task.id, 'ana@tarefas.local', { versions: [], status: 'corrigida', grade: { score: 0, penaltyPct: 0, finalScore: 0, comment: '', versionGraded: 0, gradedBy: 'prof@tarefas.local', gradedAt: Date.now() } });
+    const graded = await fetched();
+    assert.equal(graded.counts.enviadas, 0, 'sem envio');
+    assert.equal(graded.deadlineReasonRequired, true);
+    const listed = (await get('professor', `/api/admin/assignments?courseId=${task.courseId}&studentClass=${encodeURIComponent(task.studentClass)}`)).body.assignments.find(item => item.id === task.id);
+    assert.equal(listed.deadlineReasonRequired, true);
+    const noReason = await post('professor', `/api/admin/assignments/${task.id}/update`, { dueDate: '2026-12-03', dueTime: '23:00' });
+    assert.equal(noReason.status, 400, JSON.stringify(noReason.body));
+    assert.equal(noReason.body.code, 'reason_required', JSON.stringify(noReason.body));
+    const withReason = await post('professor', `/api/admin/assignments/${task.id}/update`, { dueDate: '2026-12-03', dueTime: '23:00', reason: 'Feriado na sexta' });
+    assert.equal(withReason.status, 200, JSON.stringify(withReason.body));
+    assert.equal(withReason.body.assignment.deadlineReasonRequired, true);
+});
+
 test('excluir: pede EXCLUIR, recusa com qualquer registro de aluno e guarda a cópia na auditoria', async () => {
     const task = await create();
     const noConfirm = await post('professor', `/api/admin/assignments/${task.id}/delete`, {});

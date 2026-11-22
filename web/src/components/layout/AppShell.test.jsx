@@ -3,7 +3,7 @@ import { act, cleanup, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, NavLink, Route, Routes } from 'react-router-dom'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AppShell } from './AppShell'
+import { AppShell, breadcrumbFor } from './AppShell'
 
 vi.mock('../../context/BrandingProvider', () => ({ useBranding: () => ({ interfacePreset: 'classic' }) }))
 const reported = vi.hoisted(() => ({ calls: [] }))
@@ -126,5 +126,22 @@ describe('[UC-ERRO-002] AppShell · erro de tela dentro do layout', () => {
     } finally {
       consoleError.mockRestore()
     }
+  })
+})
+
+// Fase 3, C7 (P1-e): a trilha do topo das telas de Tarefas é "Avaliações > Tarefas", como
+// Provas, Monitor e Resultados; o formulário (nova e editar) herda a da lista.
+describe('AppShell · trilha do topo', () => {
+  it('Tarefas, Nova tarefa e Editar tarefa mostram Avaliações > Tarefas', () => {
+    expect(breadcrumbFor('/tarefas')).toEqual(['Avaliações', 'Tarefas'])
+    expect(breadcrumbFor('/tarefas/nova')).toEqual(['Avaliações', 'Tarefas'])
+    expect(breadcrumbFor('/tarefas/asg_1_aaaaaa/editar')).toEqual(['Avaliações', 'Tarefas'])
+  })
+
+  it('o resto continua como antes', () => {
+    expect(breadcrumbFor('/provas')).toEqual(['Avaliações', 'Provas'])
+    expect(breadcrumbFor('/resultados/abc')).toEqual(['Avaliações', 'Resultados'])
+    expect(breadcrumbFor('/tarefasx')).toEqual(['IClass'])
+    expect(breadcrumbFor('/qualquer')).toEqual(['IClass'])
   })
 })

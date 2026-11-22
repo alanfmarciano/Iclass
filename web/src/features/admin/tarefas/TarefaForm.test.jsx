@@ -226,6 +226,48 @@ describe('Editar tarefa', () => {
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/assignments/asg_1_aaaaaa/update', { dueDate: '2026-12-08', dueTime: '23:00', reason: 'Laboratório fechado' }))
   })
 
+  it('tarefa só com nota lançada (enviadas 0): o motivo aparece já na tela, pela regra do servidor, sem um 400 antes', async () => {
+    const user = userEvent.setup()
+    mocks.assignment = { ...SAVED, deadlineReasonRequired: true, counts: { ...SAVED.counts, enviadas: 0, paraCorrigir: 0 } }
+    renderAt('/tarefas/asg_1_aaaaaa/editar')
+    expect(screen.queryByLabelText('Motivo da mudança de prazo')).not.toBeInTheDocument()
+    await user.clear(screen.getByLabelText('Prazo: data'))
+    await user.type(screen.getByLabelText('Prazo: data'), '2026-12-08')
+    expect(screen.getByLabelText('Motivo da mudança de prazo')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Salvar alterações' }))
+    expect(mocks.post).not.toHaveBeenCalled()
+    await waitFor(() => expect(screen.getByLabelText('Motivo da mudança de prazo')).toHaveFocus())
+    await user.type(screen.getByLabelText('Motivo da mudança de prazo'), 'Laboratório fechado')
+    await user.click(screen.getByRole('button', { name: 'Salvar alterações' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledTimes(1))
+    expect(mocks.post).toHaveBeenCalledWith('/api/admin/assignments/asg_1_aaaaaa/update', { dueDate: '2026-12-08', dueTime: '23:00', reason: 'Laboratório fechado' })
+  })
+
+  it('o servidor diz que o prazo muda sem motivo (deadlineReasonRequired false): o campo não aparece', async () => {
+    const user = userEvent.setup()
+    mocks.assignment = { ...SAVED, deadlineReasonRequired: false }
+    renderAt('/tarefas/asg_1_aaaaaa/editar')
+    await user.clear(screen.getByLabelText('Prazo: data'))
+    await user.type(screen.getByLabelText('Prazo: data'), '2026-12-08')
+    expect(screen.queryByLabelText('Motivo da mudança de prazo')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Salvar alterações' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/assignments/asg_1_aaaaaa/update', { dueDate: '2026-12-08', dueTime: '23:00' }))
+  })
+
+  it('no celular as listas de módulo e unidade, as abas Escrever/Prévia e a ajuda são alvos de toque de 44 px', () => {
+    renderAt('/tarefas/asg_1_aaaaaa/editar')
+    const touch = /(^|\s)min-h-\[44px\](\s|$)/
+    expect(screen.getByLabelText('Módulo (opcional)').className).toMatch(touch)
+    expect(screen.getByLabelText('Unidade (opcional)').className).toMatch(touch)
+    expect(screen.getByRole('button', { name: 'Escrever' }).className).toMatch(touch)
+    expect(screen.getByRole('button', { name: 'Prévia' }).className).toMatch(touch)
+    const help = screen.getByRole('link', { name: 'Ajuda sobre esta tela' })
+    expect(help.className).toMatch(touch)
+    expect(help.className).toMatch(/(^|\s)min-w-\[44px\](\s|$)/)
+    // No computador, o tamanho de sempre.
+    expect(screen.getByLabelText('Módulo (opcional)').className).toMatch(/(^|\s)sm:min-h-0(\s|$)/)
+  })
+
   it('rascunho: "Salvar e publicar" grava e publica', async () => {
     const user = userEvent.setup()
     mocks.assignment = { ...SAVED, status: 'rascunho', publishedAt: null, counts: { ...SAVED.counts, enviadas: 0 } }

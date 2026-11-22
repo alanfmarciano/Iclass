@@ -16,6 +16,7 @@ import { useAuth } from '../../context/AuthProvider'
 import { useToast } from '../../context/ToastProvider'
 import { api } from '../../lib/api'
 import { assignmentStatusInfo, closeLine, countsLine, deadlineLine, hidePlaceholderEmails, opensLine } from './tarefas/assignmentText'
+import { TOUCH, TOUCH_SQUARE } from './tarefas/touch'
 
 // Tarefas do painel (fase 3, C7 / P1-e; FUN-01): a lista da turma em cartões, com o prazo
 // no relógio da escola (relativo e absoluto), a situação (Rascunho, Publicada, Arquivada)
@@ -108,7 +109,7 @@ export default function TarefasPage() {
 
   return (
     <div className="max-w-5xl mx-auto space-y-5">
-      <PageHeader title="Tarefas" subtitle={`Trabalhos com prazo e envio pelos alunos · ${courseName || courseId} · ${className}`} helpTopic="tarefas">
+      <PageHeader title="Tarefas" subtitle={`Trabalhos com prazo e envio pelos alunos · ${courseName || courseId} · ${className}`} helpTopic="tarefas" helpClassName={TOUCH_SQUARE}>
         {!readOnly && <Button icon={FilePlus} className="min-h-[44px] sm:min-h-0" onClick={() => navigate('/tarefas/nova')}>Nova tarefa</Button>}
       </PageHeader>
 
@@ -116,11 +117,12 @@ export default function TarefasPage() {
         tabs={[{ id: 'ativas', label: 'Ativas' }, { id: 'arquivadas', label: 'Arquivadas' }]}
         active={tab}
         onChange={(id) => setParams({ aba: id === 'arquivadas' ? 'arquivadas' : '', filtro: '' })}
+        tabClassName={TOUCH}
       />
 
       {tab === 'ativas' && (
         <div className="w-full sm:max-w-xs">
-          <Select label="Mostrar" value={filter} onChange={(event) => setParams({ filtro: event.target.value === 'todas' ? '' : event.target.value })}>
+          <Select label="Mostrar" className={TOUCH} value={filter} onChange={(event) => setParams({ filtro: event.target.value === 'todas' ? '' : event.target.value })}>
             {FILTERS.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}
           </Select>
         </div>
