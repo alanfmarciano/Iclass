@@ -15,6 +15,8 @@ describe('[UC-TENTATIVA-001] envio automático do fim do tempo (CONF-01, UXA-01)
     expect(classifyAutoSubmitError({ status: 403, data: { applicationPaused: true } })).toBe('paused')
     expect(classifyAutoSubmitError({ status: 409 })).toBe('fatal')
     expect(countAnswered({ 1: 'A', 2: '', 3: null, 4: 'C' })).toBe(2)
+    // [UC-PROVA-004] tipos novos (P3-S2): lista, número e texto contam; em branco não.
+    expect(countAnswered({ 1: ['A', 'C'], 2: [], 3: { numero: '3,5' }, 4: { texto: '  ' }, 5: { texto: 'SYN' } })).toBe(3)
   })
 
   it('tempo devolvido pela queda do servidor: o aviso diz que foi o servidor, não o professor (CONF-03)', () => {

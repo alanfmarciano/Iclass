@@ -9,10 +9,11 @@ const { parseEvaluationMarkdown } = require('./utils/parser.js');
 const runtimePaths = require('./runtimePaths.js');
 const { resolveInside } = require('./utils/safePath.js');
 const { BUILD_ID_HEADER, currentBuildId, verifyBuild } = require('./utils/buildIntegrity.js');
-const { studentBelongsToClass, getReleasedItemsForClass, resolveAdminSession, assignRequestId } = require('./middlewares.js');
+const { studentBelongsToClass, getReleasedItemsForClass, resolveAdminSession, assignRequestId, canStudentViewAnswerKey } = require('./middlewares.js');
 const { isFullAdmin } = require('./utils/adminRoles.js');
 const { crashLogPath, logError } = require('./utils/errorLog.js');
 const { safeImageSegments, studentHasApprovedClass, uploadReferencedInReleasedContent, uploadAttachedToContent } = require('./utils/contentMedia.js');
+const { studentCanSeeExamUpload } = require('./utils/examMedia.js');
 const { fileLooksLikeBackup } = require('./utils/backup.js');
 const { studentCanDownloadLibraryFile } = require('./utils/studentLibrary.js');
 const { createPersistenceContext } = require('./utils/persistenceContext.js');
@@ -222,10 +223,16 @@ async function sendControlledFile(baseDir, relativePath, req, res) {
             } else {
                 // Upload sem item de biblioteca só sai para o aluno quando é imagem citada
                 // numa apostila liberada para a turma dele (imagem inserida pelo editor,
-                // UXA-X2). Sem esse guard, qualquer upload era servido a qualquer aluno.
-                const allowed = INLINE_IMAGE_EXTENSIONS.includes(ext) && await uploadReferencedInReleasedContent({
+                // UXA-X2) ou numa questão de prova que ele pode ver agora: a da tentativa
+                // aberta dele, ou a de uma entrega dele com o gabarito liberado (D11 do P3,
+                // utils/examMedia.js). Sem esse guard, qualquer upload era servido a
+                // qualquer aluno; sem a regra da prova, a imagem da questão não aparecia.
+                const image = INLINE_IMAGE_EXTENSIONS.includes(ext);
+                const allowed = image && (await uploadReferencedInReleasedContent({
                     student, studentEmail, filename, studentBelongsToClass, getReleasedItemsForClass,
-                });
+                }) || studentCanSeeExamUpload({
+                    student, studentEmail, filename, studentBelongsToClass, canViewAnswerKey: canStudentViewAnswerKey,
+                }));
                 if (!allowed) return res.status(403).json({ error: 'Arquivo não disponível para alunos.' });
             }
         }

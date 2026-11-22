@@ -82,8 +82,11 @@ function cleanGeneratedHtml(html) {
   })
 }
 
-export function markdownToHtml(markdownText) {
-  const html = marked.parse(markdownText || '', { gfm: true, breaks: false })
+// breaks: true faz cada quebra de linha do texto virar quebra na tela (questão de prova,
+// P3-S2: o enunciado digitado em várias linhas não se junta numa só). As apostilas
+// seguem o Markdown padrão (linha em branco separa parágrafos).
+export function markdownToHtml(markdownText, { breaks = false } = {}) {
+  const html = marked.parse(markdownText || '', { gfm: true, breaks: breaks === true })
   return cleanGeneratedHtml(html)
 }
 

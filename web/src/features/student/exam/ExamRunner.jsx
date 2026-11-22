@@ -14,13 +14,16 @@ import { onBeforeUpdateReload, updateReloadPending, UPDATE_RELOAD_EVENT } from '
 import { clearInterruptedExam, markInterruptedExam, recentRenderError } from '../../../lib/renderErrors'
 import { useStudent } from '../useStudent'
 import { useToast } from '../../../context/ToastProvider'
-import { normQuestion, fmtTime, fullscreenElement, fullscreenSupported } from './examUtils'
+import { normQuestion, fmtTime, fullscreenElement, fullscreenSupported, blankQuestionPositions, formatQuestionPoints, joinPositions } from './examUtils'
+import QuestionMarkdown from '../../exam/QuestionMarkdown'
+import QuestionAnswer from './QuestionAnswer'
 import { autoSubmitExtendedMessage, autoSubmitRetryDelay, classifyAutoSubmitError, countAnswered, optionalNumber, remainingSeconds, wait } from './examAutoSubmit'
 import {
   clearExamDraft,
   clearExamDraftsForApplication,
   clearOtherExamDrafts,
   findExamDraftAttempt,
+  hasExamAnswer,
   importExamDraftKey,
   readExamDraft,
   sameExamAnswers,
@@ -28,7 +31,7 @@ import {
 } from '../../../lib/examDrafts'
 import { fmtGrade } from '../../../lib/grades'
 import { useOnReconnect } from '../../../hooks/useServerConnection'
-import { isAltGrTyping, keystrokeNotice, normalizeKeystrokeMode, shouldRecordKeystroke } from './keystrokePolicy'
+import { isAltGrTyping, isAnswerEditingShortcut, keystrokeNotice, normalizeKeystrokeMode, shouldRecordKeystroke } from './keystrokePolicy'
 
 // A cada sincronização (4 s) as respostas que mudaram desde o último salvamento vão
 // junto para o servidor: encerrar a aplicação ou perder a rede custa poucos segundos.
@@ -152,12 +155,20 @@ export function keepaliveKeystrokeBatch(base, events, maxBytes = KEYSTROKE_KEEPA
 }
 // Identificador opaco da alternativa (AVA-05); uma letra avulsa vem de páginas antigas.
 const ANSWER_ID_PATTERN = /^[0-9A-Z]{13}$/
+// Salvamento das respostas na saída da página (keepalive): o navegador recusa na hora o
+// pedido keepalive que passa de 64 KB somando os pendentes, e a digitação leva até 48 KB.
+// Com respostas escritas maiores que isto (dissertativas longas, P3-S2), o salvamento da
+// saída vai como pedido comum (a aba oculta continua aberta e ele chega; ao fechar a
+// página, vale a cópia local cifrada) em vez de não sair.
+export const ANSWER_KEEPALIVE_MAX_BYTES = 12 * 1024
 
 // Combinações bloqueadas dentro da prova (fluxos de cópia/busca/impressão/devtools/Lens).
 // Retorna a razão se a combinação for suspeita/bloqueável, senão null.
 function classifyCombo(e) {
   // Caractere digitado com AltGr (chega com Ctrl e Alt juntos): digitação, não atalho (H8b).
   if (isAltGrTyping(e)) return null
+  // Desfazer, selecionar tudo, apagar palavra... no campo da resposta escrita: é escrita.
+  if (isAnswerEditingShortcut(e)) return null
   const k = (e.key || '').toLowerCase()
   const ctrl = e.ctrlKey, alt = e.altKey, meta = e.metaKey, shift = e.shiftKey
   if ((ctrl || meta) && ['c', 'x'].includes(k)) return { block: true, reason: 'copiar_recortar' }
@@ -407,7 +418,7 @@ export default function ExamRunner() {
         setAttemptLimit(Number(e.data.maxAttempts) || null)
         setPhase('exhausted')
       } else if (e.status === 408 && e.data?.finalizedByServer) {
-        finishDelivered({ finalizedByServer: true, answeredCount: e.data.answeredCount, gradePublished: false })
+        finishDelivered({ finalizedByServer: true, answeredCount: e.data.answeredCount, gradePublished: false, awaitingCorrection: e.data.awaitingCorrection === true })
       } else if (saveFailureStatus(e) !== 'error') {
         // Sem conexão, servidor iniciando ou gravação que falhou: a prova continua aberta,
         // com as respostas na tela (o salvamento automático segue tentando).
@@ -436,7 +447,9 @@ export default function ExamRunner() {
     let saved = false
     if (!keepalive) setSaveState((current) => ({ ...current, status: 'saving' }))
     try {
-      await api.post('/api/student/autosave-progress', { email, studentClass, courseId, examKey, applicationId, attemptId: currentAttemptId, answers: snapshot }, keepalive ? { keepalive: true } : { timeoutMs: AUTOSAVE_TIMEOUT_MS })
+      const payload = { email, studentClass, courseId, examKey, applicationId, attemptId: currentAttemptId, answers: snapshot }
+      const useKeepalive = keepalive && jsonBytes(payload) <= ANSWER_KEEPALIVE_MAX_BYTES
+      await api.post('/api/student/autosave-progress', payload, useKeepalive ? { keepalive: true } : { timeoutMs: AUTOSAVE_TIMEOUT_MS })
       lastSavedRef.current = snapshot
       saved = true
       saveLocalCopy(currentAttemptId, answersRef.current, sameExamAnswers(snapshot, answersRef.current))
@@ -489,7 +502,7 @@ export default function ExamRunner() {
           continue
         }
         if (kind === 'finalized') {
-          finishDelivered({ finalizedByServer: true, answeredCount: e.data?.answeredCount, gradePublished: false })
+          finishDelivered({ finalizedByServer: true, answeredCount: e.data?.answeredCount, gradePublished: false, awaitingCorrection: e.data?.awaitingCorrection === true })
           return
         }
         if (kind === 'extended') {
@@ -908,6 +921,7 @@ export default function ExamRunner() {
           collectedByInstructor: outcome.source === 'instructor_collect',
           answeredCount: outcome.answeredCount,
           lateBySeconds: outcome.lateBySeconds,
+          awaitingCorrection: outcome.awaitingCorrection === true,
         })
         return
       }
@@ -940,8 +954,11 @@ export default function ExamRunner() {
           // Letra avulsa de uma cópia ou página antiga já confirmada pelo servidor: troca
           // pelo identificador que o servidor devolveu, para a alternativa ficar marcada.
           const confirmed = lastSavedRef.current || {}
+          // Só a letra avulsa (texto): a resposta digitada e a lista ficam como o aluno
+          // deixou (trocar pelo que o servidor guardou, já aparado, comia o espaço que o
+          // aluno tinha acabado de digitar no fim da dissertativa).
           const legacy = Object.entries(answersRef.current)
-            .filter(([number, value]) => !ANSWER_ID_PATTERN.test(String(value)) && confirmed[number] === value && serverAnswers[number])
+            .filter(([number, value]) => typeof value === 'string' && !ANSWER_ID_PATTERN.test(value) && confirmed[number] === value && typeof serverAnswers[number] === 'string')
           if (legacy.length) {
             setAnswers((current) => {
               const next = { ...current }
@@ -978,6 +995,7 @@ export default function ExamRunner() {
             finalizedByServer: delivered?.finalizedByServer === true,
             answeredCount: delivered?.answeredCount ?? null,
             lateBySeconds: delivered?.lateBySeconds || 0,
+            awaitingCorrection: delivered?.awaitingCorrection === true,
           })
         } else {
           clearExamDraftsForApplication(applicationId)
@@ -1181,7 +1199,7 @@ export default function ExamRunner() {
       }
       if (error.data?.attemptFinalized) {
         const delivered = error.data.attemptOutcome || {}
-        finishDelivered({ gradePublished: false, finalizedByServer: true, answeredCount: delivered.answeredCount ?? null, lateBySeconds: delivered.lateBySeconds || 0 })
+        finishDelivered({ gradePublished: false, finalizedByServer: true, answeredCount: delivered.answeredCount ?? null, lateBySeconds: delivered.lateBySeconds || 0, awaitingCorrection: delivered.awaitingCorrection === true })
         return
       }
       if (error.data?.paused) {
@@ -1321,7 +1339,18 @@ export default function ExamRunner() {
     }
   }
 
-  const answeredCount = Object.keys(answers).length
+  // Respondidas: resposta não vazia de qualquer tipo (letra, lista, número ou texto). Com
+  // as questões na tela, conta só as delas.
+  const answeredCount = questions.length
+    ? questions.filter((q) => hasExamAnswer(answers[q.number])).length
+    : countAnswered(answers)
+  const blankPositions = blankQuestionPositions(questions, answers, hasExamAnswer)
+  const setAnswer = (number, value) => setAnswers((current) => {
+    const next = { ...current }
+    if (value === undefined || value === null) delete next[number]
+    else next[number] = value
+    return next
+  })
   // "Cronômetro ativo" desligado na aplicação: a prova não tem tempo limite.
   const untimed = cfg?.timerEnabled === false
   const instructorMessageOverlay = instructorMessage && (
@@ -1407,7 +1436,7 @@ export default function ExamRunner() {
     <Center>
       <div className="w-16 h-16 grid place-items-center rounded-full bg-success-soft text-success mb-3"><CheckCircle2 size={32} /></div>
       <h2 className="text-xl font-bold text-text">{result?.collectedByInstructor ? 'Prova recolhida pelo professor' : result?.submittedByInstructor ? 'Respostas salvas e entregues' : result?.finalizedByServer ? 'Tempo esgotado: prova entregue' : 'Prova enviada!'}</h2>
-      {result?.gradePublished === true
+      {result?.gradePublished === true && result?.awaitingCorrection !== true
         ? <p className="text-4xl font-bold text-text tabular-nums mt-3">{fmtGrade(result.score)}</p>
         : <p className="text-sm text-muted mt-3 max-w-sm text-center">{result?.collectedByInstructor
           ? 'O professor recolheu a sua prova e entregou as respostas que já estavam salvas. Sua nota será exibida depois da publicação pelo professor.'
@@ -1416,6 +1445,9 @@ export default function ExamRunner() {
           : result?.finalizedByServer
             ? 'O tempo acabou e as respostas salvas no servidor foram entregues automaticamente. Sua nota será exibida depois da publicação pelo professor.'
             : `${result?.auto ? 'O tempo acabou e suas respostas foram enviadas automaticamente. ' : ''}Sua nota será exibida depois da publicação pelo professor.`}</p>}
+      {result?.awaitingCorrection === true && result?.gradePublished !== true && (
+        <p className="text-sm font-medium text-text mt-2 max-w-sm text-center" data-testid="awaiting-correction">Sua prova foi entregue. As dissertativas serão corrigidas.</p>
+      )}
       {optionalNumber(result?.answeredCount) !== null && (
         <p className="text-sm text-text mt-2">{Number(result.answeredCount) === 1 ? '1 resposta registrada.' : `${Number(result.answeredCount)} respostas registradas.`}</p>
       )}
@@ -1579,7 +1611,9 @@ export default function ExamRunner() {
         onClose={() => setSubmitConfirm(false)}
         onConfirm={() => submit(false)}
         title="Enviar a prova?"
-        description={`Você respondeu ${answeredCount} de ${questions.length} questões. Depois do envio esta tentativa será encerrada.`}
+        description={`Você respondeu ${answeredCount} de ${questions.length} questões.${blankPositions.length && questions.length
+          ? (blankPositions.length === 1 ? ` A questão ${blankPositions[0]} está em branco.` : ` As questões ${joinPositions(blankPositions)} estão em branco.`)
+          : ''} Depois do envio esta tentativa será encerrada.`}
         confirmLabel="Enviar prova"
       />
       {exitDialog}
@@ -1651,8 +1685,12 @@ export default function ExamRunner() {
       </div>
 
       <div className="py-5 space-y-4">
-        {questions.map((q, i) => (
-          <Card key={q.number} className={`p-5 max-[359px]:p-3 ${(cfg?.annulledQuestions || []).some((item) => Number(item.questionNumber) === Number(q.number)) ? 'border-warning/60 bg-warning-soft/10' : ''}`}>
+        {questions.map((q, i) => {
+          const annulled = (cfg?.annulledQuestions || []).some((item) => Number(item.questionNumber) === Number(q.number))
+          const pointsId = `questao-${q.number}-pontos`
+          const textId = `questao-${q.number}-enunciado`
+          return (
+          <Card key={q.number} className={`p-5 max-[359px]:p-3 ${annulled ? 'border-warning/60 bg-warning-soft/10' : ''}`}>
             {/* Tela muito estreita (abaixo de 360 px, como o celular com zoom de 200%): o número
                 e "Reportar" ficam na 1ª linha e o enunciado ganha a largura toda do cartão
                 embaixo (ao lado do número sobravam ~60 px para o texto). */}
@@ -1660,10 +1698,14 @@ export default function ExamRunner() {
               <span className="w-7 h-7 shrink-0 grid place-items-center rounded-md bg-primary-soft text-primary text-sm font-bold">{i + 1}</span>
               <div className="min-w-0 flex-1 max-[359px]:order-3 max-[359px]:basis-full">
                 <div className="mb-1 flex flex-wrap items-center gap-2">
+                  {/* Pontos da questão (P3-S2): o campo da resposta aponta para cá (aria-describedby). */}
+                  <span id={pointsId} className="text-xs font-medium text-subtle">{formatQuestionPoints(q.points)}</span>
                   {q.isAdditional && <Badge tone="info">Questão adicional</Badge>}
-                  {(cfg?.annulledQuestions || []).some((item) => Number(item.questionNumber) === Number(q.number)) && <Badge tone="warning">Questão anulada</Badge>}
+                  {annulled && <Badge tone="warning">Questão anulada</Badge>}
                 </div>
-                <p className="text-text font-medium break-words">{q.text}</p>
+                {/* Enunciado em Markdown (imagem, tabela, código e quebra de linha, UXA-12); o
+                    link vira texto para o toque não levar o aluno para fora da prova. */}
+                <QuestionMarkdown id={textId} text={q.text} links={false} className="text-text font-medium" />
               </div>
               <Button
                 size="sm"
@@ -1677,29 +1719,22 @@ export default function ExamRunner() {
                 <span className="hidden sm:inline">{reportedQuestions.has(Number(q.number)) ? 'Reportada' : 'Reportar'}</span>
               </Button>
             </div>
-            {/* Abaixo de 360 px as alternativas usam a largura toda do cartão. */}
+            {/* Abaixo de 360 px as respostas usam a largura toda do cartão. */}
             <div className="space-y-2 pl-9 max-[359px]:pl-0" data-exam-answer="">
               {/* O aluno vê a letra da posição (A, B, C... nesta versão) e a resposta guarda o
-                  identificador da alternativa; a letra original nunca chega aqui (AVA-05). */}
-              {q.alternatives.map((alt) => {
-                const sel = answers[q.number] === alt.id
-                return (
-                  <button
-                    key={alt.id}
-                    type="button"
-                    aria-pressed={sel}
-                    disabled={(remaining != null && remaining <= 0) || (cfg?.annulledQuestions || []).some((item) => Number(item.questionNumber) === Number(q.number))}
-                    onClick={() => setAnswers((a) => ({ ...a, [q.number]: alt.id }))}
-                    className={`w-full min-w-0 text-left flex items-center gap-3 p-3 max-[359px]:gap-2 max-[359px]:p-2 rounded-lg border transition disabled:cursor-not-allowed disabled:opacity-60 ${sel ? 'border-primary bg-primary-soft' : 'border-border hover:bg-surface-2'}`}
-                  >
-                    <span className={`w-6 h-6 shrink-0 grid place-items-center rounded-full text-xs font-bold ${sel ? 'bg-primary text-primary-fg' : 'bg-surface-2 text-muted'}`}>{alt.label}</span>
-                    <span className="min-w-0 text-sm text-text break-words">{alt.text}</span>
-                  </button>
-                )
-              })}
+                  identificador da alternativa; a letra original nunca chega aqui (AVA-05).
+                  Cada tipo tem o seu campo (QuestionAnswer.jsx). */}
+              <QuestionAnswer
+                question={q}
+                value={answers[q.number]}
+                onChange={(value) => setAnswer(q.number, value)}
+                disabled={(remaining != null && remaining <= 0) || annulled}
+                describedBy={`${textId} ${pointsId}`}
+              />
             </div>
           </Card>
-        ))}
+          )
+        })}
         {questions.length === 0 && <Card className="p-8 text-center text-muted">As questões aparecerão quando a prova iniciar.</Card>}
       </div>
 

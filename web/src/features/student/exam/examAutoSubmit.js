@@ -1,3 +1,5 @@
+import { hasExamAnswer } from '../../../lib/examDrafts'
+
 // Envio automático do fim do tempo: o navegador insiste até o servidor dar uma
 // resposta definitiva, em vez de mostrar só um aviso de erro.
 export const AUTO_SUBMIT_RETRY_DELAYS_MS = [1000, 2000, 4000, 8000, 15000]
@@ -56,8 +58,9 @@ export function autoSubmitExtendedMessage(error) {
   return error?.data?.reason === 'server_outage' ? AUTO_SUBMIT_SERVER_OUTAGE_MESSAGE : AUTO_SUBMIT_EXTENDED_MESSAGE
 }
 
+// Respostas não vazias de qualquer tipo (letra, lista, número ou texto; lib/examDrafts.js).
 export function countAnswered(answers) {
-  return Object.values(answers || {}).filter((value) => value !== null && value !== undefined && value !== '').length
+  return Object.values(answers || {}).filter(hasExamAnswer).length
 }
 
 export function wait(ms) {

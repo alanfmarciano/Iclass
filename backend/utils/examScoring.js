@@ -382,6 +382,16 @@ function describeAnswer(question, gradedAnswer, { blank = '' } = {}) {
     return String(answer);
 }
 
+// A entrega tem dissertativa escrita esperando o professor? (P3-S2, P-B6: o aluno vê "Sua
+// prova foi entregue. As dissertativas serão corrigidas." no fim da prova.) Só conta a
+// dissertativa, que fica pendente sempre que está respondida: a resposta curta ou
+// numérica que foi para o professor porque não bateu com o gabarito não entra, porque
+// avisar o aluno disso revelaria que a resposta dele não está entre as aceitas.
+function hasEssayAwaitingTeacher(gradedAnswers) {
+    return (Array.isArray(gradedAnswers) ? gradedAnswers : [])
+        .some(item => item && item.type === 'essay' && item.pending === true && item.annulled !== true);
+}
+
 module.exports = {
     ANSWER_LIMITS,
     DEFAULT_POINTS,
@@ -396,6 +406,7 @@ module.exports = {
     describeAnswer,
     gradedAnswerFor,
     hasAnswer,
+    hasEssayAwaitingTeacher,
     isAnswered,
     isChoiceType,
     isSingleChoiceType,

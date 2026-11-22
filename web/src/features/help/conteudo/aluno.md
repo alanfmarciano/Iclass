@@ -50,6 +50,28 @@ Quando a escola usa a conexão segura (o endereço começa com `https`), o naveg
 
 <!-- P3 (A5, A19) e P2 (B9) escrevem aqui: prova com os tipos novos, Minhas notas e pedido de revisão. -->
 
+### Como responder cada tipo de questão
+
+- **Uma correta**: toque na alternativa. Para trocar, toque em outra.
+- **Verdadeiro ou falso**: toque em "Verdadeiro" ou em "Falso".
+- **Várias corretas** ("Marque todas as corretas."): marque todas as alternativas certas. Toque de novo para desmarcar.
+- **Numérica**: digite só o número, com vírgula ou ponto para as casas decimais (por exemplo, 3,5). A unidade já aparece ao lado do campo.
+- **Resposta curta**: escreva a resposta numa linha.
+- **Dissertativa**: escreva o seu texto. O contador embaixo mostra quantos caracteres você usou do limite ("1.230 de 10.000").
+
+Cada questão mostra quanto vale. Se você apagar uma resposta, a questão volta a contar como em branco. Ao enviar, o IClass avisa quais questões ficaram em branco.
+
+### Imagens, tabelas e código na questão
+
+- Toque na imagem para ver maior. Toque em **Fechar** para voltar à prova.
+- Tabela larga e código comprido rolam para o lado dentro do próprio quadro: arraste o quadro, e não a página.
+- Na prova, os links aparecem como texto e não abrem: sair da tela trava a prova.
+- A imagem só abre enquanto a sua prova está aberta. Depois de entregar, ela volta a aparecer na revisão, quando o professor liberar o gabarito.
+
+### Prova com dissertativa
+
+Quando a prova tem questão dissertativa, a tela final diz "Sua prova foi entregue. As dissertativas serão corrigidas." A nota aparece em Provas depois que o professor corrigir e liberar.
+
 ## Atividades {#atividades}
 
 <!-- P1 (C9) escreve aqui: enviar trabalho pelo celular, prazos, comprovante e devolução. -->

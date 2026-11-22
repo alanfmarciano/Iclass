@@ -20,6 +20,7 @@ const {
     questionPoints,
     questionType,
     scoreQuestion,
+    hasEssayAwaitingTeacher,
 } = require('../../backend/utils/examScoring.js');
 const { gradeAttempt, regradeSubmission, createSubmissionFromAttempt, freezeSnapshotGrading } = require('../../backend/utils/examGrading.js');
 const { normalizeQuestion } = require('../../backend/utils/questionModel.js');
@@ -572,4 +573,19 @@ const { createApp } = require(${JSON.stringify(path.join(__dirname, '..', '..', 
     } finally {
         fs.rmSync(tempRoot, { recursive: true, force: true });
     }
+});
+
+test('[UC-PROVA-004] aviso "as dissertativas serão corrigidas" só pela dissertativa escrita, nunca pela resposta curta que foi para o professor (P3-S2, P-B6)', () => {
+    const essay = { type: 'essay', points: 2, text: 'Explique.' };
+    const short = { type: 'short_answer', points: 1, text: 'Nome?', acceptedAnswers: ['máscara'], review: 'professor' };
+    const written = gradedAnswerFor(essay, 1, { texto: 'Explico.' });
+    const blank = gradedAnswerFor(essay, 1, null);
+    const shortMiss = gradedAnswerFor(short, 2, { texto: 'outra coisa' });
+    assert.equal(shortMiss.pending, true, 'a resposta curta que não bateu aguarda o professor');
+    assert.equal(hasEssayAwaitingTeacher([written]), true);
+    assert.equal(hasEssayAwaitingTeacher([blank]), false, 'dissertativa em branco vale zero, sem esperar');
+    // Avisar pela resposta curta revelaria ao aluno que ela não está entre as aceitas.
+    assert.equal(hasEssayAwaitingTeacher([shortMiss]), false);
+    assert.equal(hasEssayAwaitingTeacher([{ ...written, annulled: true }]), false);
+    assert.equal(hasEssayAwaitingTeacher(null), false);
 });

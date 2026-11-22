@@ -284,6 +284,22 @@ test('[UC-PROVA-004] entrega corrigida por pontos; dissertativa aguarda; Monitor
         .send({ studentClass, courseId, examKey, applicationId: app1.id, attemptId, answers, examConfigVersion: synced.body.examConfigVersion })
         .expect(200);
     assert.equal(submitted.body.answeredCount, 6);
+    // Dissertativa escrita (P3-S2, P-B6): a resposta do envio diz que ela será corrigida,
+    // sem nota; o reenvio da mesma tentativa e o sync dizem o mesmo.
+    assert.equal(submitted.body.awaitingCorrection, true);
+    assert.equal(submitted.body.message, 'Sua prova foi entregue. As dissertativas serão corrigidas.');
+    assert.equal(submitted.body.gradePublished, false);
+    assert.equal('score' in submitted.body, false);
+    const duplicate = await request(app)
+        .post('/api/student/submit')
+        .set('x-session-token', students.ana.token)
+        .send({ studentClass, courseId, examKey, applicationId: app1.id, attemptId, answers, examConfigVersion: synced.body.examConfigVersion })
+        .expect(200);
+    assert.equal(duplicate.body.duplicate, true);
+    assert.equal(duplicate.body.awaitingCorrection, true);
+    const afterSync = await sync(students.ana, app1.id, attemptId);
+    assert.equal(afterSync.body.attemptOutcome?.attemptId, attemptId);
+    assert.equal(afterSync.body.attemptOutcome?.awaitingCorrection, true);
     const submission = db.memory.submissions.find(item => item.attemptId === attemptId);
     // 2 + 1,5 (metade das certas) + 1 + 2 (3,6 dentro de 0,25) + 1 + 0 (aguardando) de 12.
     assert.equal(submission.pointsEarned, 7.5);

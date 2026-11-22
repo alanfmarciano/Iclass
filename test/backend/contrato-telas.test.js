@@ -211,7 +211,11 @@ test('[UC-ERRO-003] contrato da tela da prova: start-attempt, autosave, teclas (
     assert.ok(attemptId, JSON.stringify(started.body));
     // A tela numera as questões como examUtils.normQuestion e marca { número: id }.
     screen('features/student/exam/examUtils.js', 'const number = Number(q.originalNumber ?? q.number ?? i + 1)')
-    screen('features/student/exam/ExamRunner.jsx', 'onClick={() => setAnswers((a) => ({ ...a, [q.number]: alt.id }))}')
+    // Fase 3 (P3-S2): o campo de cada tipo fica em QuestionAnswer.jsx; a uma correta manda
+    // o identificador da alternativa e o ExamRunner guarda { número: resposta }.
+    screen('features/student/exam/QuestionAnswer.jsx', 'onClick={() => onChange(alt.id)}')
+    screen('features/student/exam/ExamRunner.jsx', 'onChange={(value) => setAnswer(q.number, value)}')
+    screen('features/student/exam/ExamRunner.jsx', 'else next[number] = value')
     const questions = (started.body.questions || []).map((question, index) => ({
         number: Number(question.originalNumber ?? question.number ?? index + 1),
         alternativeId: String(question.alternatives?.[0]?.id || '').toUpperCase(),
@@ -220,7 +224,8 @@ test('[UC-ERRO-003] contrato da tela da prova: start-attempt, autosave, teclas (
     for (const question of questions.slice(0, 2)) answers[question.number] = question.alternativeId;
     assert.equal(Object.keys(answers).length, 2, JSON.stringify(answers));
 
-    screen('features/student/exam/ExamRunner.jsx', "api.post('/api/student/autosave-progress', { email, studentClass, courseId, examKey, applicationId, attemptId: currentAttemptId, answers: snapshot }");
+    screen('features/student/exam/ExamRunner.jsx', 'const payload = { email, studentClass, courseId, examKey, applicationId, attemptId: currentAttemptId, answers: snapshot }');
+    screen('features/student/exam/ExamRunner.jsx', "await api.post('/api/student/autosave-progress', payload,");
     ok(await asStudent('/api/student/autosave-progress').send({ email, studentClass, courseId, examKey, applicationId, attemptId, answers }), 'autosave');
 
     // Teclas: o lote cheio de 500 com os eventos que o handler de keydown, copiar e o menu

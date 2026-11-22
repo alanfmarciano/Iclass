@@ -103,7 +103,7 @@ const {
 } = require('../utils/examDeadline.js');
 const { ensureLocalCopyKey, localCopyKeyFor, stateWithoutSecrets } = require('../utils/examLocalCopy.js');
 const { POSITION_LABELS, answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../utils/examAnswerIds.js');
-const { isAnswered } = require('../utils/examScoring.js');
+const { hasEssayAwaitingTeacher, isAnswered } = require('../utils/examScoring.js');
 const { PAGE_RETURN_EVENT, pageExitReturnDecision, pageReturnDetails } = require('../utils/examFocusRules.js');
 const { attemptQuestionsAvailable, questionsForStudentAttempt } = require('../utils/attemptQuestions.js');
 const { visibleLibraryEntries } = require('../utils/studentLibrary.js');
@@ -375,6 +375,8 @@ function attemptOutcomeFor(application, studentEmail, attemptId) {
             ? Number(submission.answeredCount)
             : (submission.gradedAnswers || []).filter(isAnswered).length,
         lateBySeconds: Number(submission.lateBySeconds || 0),
+        // Dissertativa escrita esperando o professor (P-B6): a tela diz que ela será corrigida.
+        awaitingCorrection: hasEssayAwaitingTeacher(submission.gradedAnswers),
     };
 }
 
@@ -1774,6 +1776,7 @@ router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submi
                 gradePublished: false,
                 answeredCount: previousSameAttempt.answeredCount,
                 lateBySeconds: Number(previousSameAttempt.lateBySeconds || 0),
+                awaitingCorrection: hasEssayAwaitingTeacher(previousSameAttempt.gradedAnswers),
                 message: 'Prova enviada após o fim do tempo. O atraso fica registrado para o professor.',
                 examConfigVersion: previousSameAttempt.examConfigVersion || null,
             });
@@ -1787,6 +1790,7 @@ router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submi
             answeredCount: Number.isFinite(Number(previousSameAttempt.answeredCount))
                 ? Number(previousSameAttempt.answeredCount)
                 : (previousSameAttempt.gradedAnswers || []).filter(isAnswered).length,
+            awaitingCorrection: hasEssayAwaitingTeacher(previousSameAttempt.gradedAnswers),
             message: 'Esta tentativa já havia sido enviada.',
             examConfigVersion: previousSameAttempt.examConfigVersion || null,
         });
@@ -1871,6 +1875,7 @@ router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submi
             finalizedByServer: !!finalized,
             submissionId: finalized?.id || null,
             answeredCount: finalized ? finalized.answeredCount : null,
+            awaitingCorrection: finalized ? hasEssayAwaitingTeacher(finalized.gradedAnswers) : false,
         });
     }
     const lateDecision = lateSubmitDecision({ overdueMs: timing.overdueMs, auto: auto === true });
@@ -1889,6 +1894,7 @@ router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submi
             finalizedByServer: !!finalized,
             submissionId: finalized?.id || null,
             answeredCount: finalized ? finalized.answeredCount : null,
+            awaitingCorrection: finalized ? hasEssayAwaitingTeacher(finalized.gradedAnswers) : false,
         });
     }
 
@@ -2031,7 +2037,12 @@ router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submi
         attemptId: submissionObj.attemptId,
         answeredCount: submissionObj.answeredCount,
         lateBySeconds: Number(submissionObj.lateBySeconds || 0),
-        message: 'Prova enviada. A nota será exibida após a publicação do professor.',
+        // Prova com dissertativa escrita (P3-S2, P-B6): "Sua prova foi entregue. As
+        // dissertativas serão corrigidas." A nota só sai depois da correção e da publicação.
+        awaitingCorrection: hasEssayAwaitingTeacher(submissionObj.gradedAnswers),
+        message: hasEssayAwaitingTeacher(submissionObj.gradedAnswers)
+            ? 'Sua prova foi entregue. As dissertativas serão corrigidas.'
+            : 'Prova enviada. A nota será exibida após a publicação do professor.',
         examConfigVersion: currentExamConfigVersion
     });
 });
