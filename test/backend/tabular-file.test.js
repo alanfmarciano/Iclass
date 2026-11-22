@@ -365,6 +365,109 @@ test('XLSX com XML malformado é recusado em tempo linear (um .xlsx de 1 KB não
     assert.ok(Date.now() - comeco < 5000, `${Date.now() - comeco} ms`);
 });
 
+test('XLSX: formato de número repetido em muitos estilos não prende a leitura (styles.xml)', () => {
+    // Um formato de 255 vírgulas (ou "[") referenciado por 1,1 milhão de <xf> (54 KB de
+    // arquivo): a classificação rodava uma vez por <xf>, com expressões quadráticas, e
+    // levava 54 s com o servidor parado.
+    const rels = '<Relationships><Relationship Id="rId1" Type="x/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId3" Type="x/styles" Target="styles.xml"/></Relationships>';
+    const estilos = (codigo, quantos) => '<styleSheet><numFmts><numFmt numFmtId="164" formatCode="' + codigo + '"/></numFmts><cellXfs>'
+        + '<xf numFmtId="164"/>'.repeat(quantos) + '</cellXfs></styleSheet>';
+    const celulas = sheetXml('<row r="1"><c t="inlineStr"><is><t>Nota</t></is></c></row><row r="2"><c s="59999"><v>7.5</v></c></row>');
+    for (const codigo of [','.repeat(255), '['.repeat(255)]) {
+        // Mais formatos de célula que o Excel aceita (64.000): arquivo danificado.
+        const bomba = handmadeXlsx({ 'xl/_rels/workbook.xml.rels': rels, 'xl/styles.xml': estilos(codigo, 1100000), 'xl/worksheets/sheet1.xml': celulas });
+        assert.ok(bomba.length < 100 * 1024, `${bomba.length} bytes`);
+        let inicio = Date.now();
+        expectError(() => parseTabularFile(bomba, { nomeArquivo: 'estilos.xlsx' }), 'invalid_xlsx');
+        assert.ok(Date.now() - inicio < 2000, `${Date.now() - inicio} ms`);
+        // No limite: lê, e o formato é classificado uma vez só.
+        const noLimite = handmadeXlsx({ 'xl/_rels/workbook.xml.rels': rels, 'xl/styles.xml': estilos(codigo, 60000), 'xl/worksheets/sheet1.xml': celulas });
+        inicio = Date.now();
+        assert.equal(parseTabularFile(noLimite, { nomeArquivo: 'estilos.xlsx' }).linhas.length, 1);
+        assert.ok(Date.now() - inicio < 2000, `${Date.now() - inicio} ms`);
+    }
+    // Formatos de número demais também.
+    const muitosFormatos = '<styleSheet><numFmts>' + Array.from({ length: 64001 }, (_, index) => `<numFmt numFmtId="${164 + index}" formatCode="0"/>`).join('') + '</numFmts></styleSheet>';
+    expectError(() => parseTabularFile(handmadeXlsx({ 'xl/_rels/workbook.xml.rels': rels, 'xl/styles.xml': muitosFormatos, 'xl/worksheets/sheet1.xml': celulas })), 'invalid_xlsx');
+    // A classificação de um formato hostil de 255 caracteres é linear (era quadrática).
+    const comeco = Date.now();
+    for (let vez = 0; vez < 20000; vez += 1) {
+        _internals.classifyFormat(-1, ','.repeat(255));
+        _internals.classifyFormat(-1, '['.repeat(255));
+    }
+    assert.ok(Date.now() - comeco < 3000, `${Date.now() - comeco} ms`);
+    // E continua dando o mesmo resultado nos formatos de verdade.
+    assert.deepEqual(_internals.classifyFormat(-1, '[$R$-416] #,##0.00'), { kind: 'fixed', decimals: 2, minDecimals: 2, grouping: true });
+    assert.deepEqual(_internals.classifyFormat(-1, '[Red]0.0#;[Blue]-0.0'), { kind: 'fixed', decimals: 2, minDecimals: 1, grouping: false });
+    assert.equal(_internals.classifyFormat(-1, '[h]:mm:ss').elapsed, true);
+    assert.equal(_internals.classifyFormat(-1, '0,').decimals, 0);
+    assert.equal(_internals.classifyFormat(-1, '[' + '0.00').decimals, 2);
+});
+
+test('limite do texto devolvido: um .xlsx de 4 KB não vira 800 milhões de caracteres', () => {
+    // Um texto compartilhado de 32.767 caracteres em 501 x 50 células (dentro dos
+    // limites de linhas e colunas).
+    const rels = '<Relationships><Relationship Id="rId1" Type="x/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="x/sharedStrings" Target="sharedStrings.xml"/></Relationships>';
+    const linha = '<c t="s"><v>0</v></c>'.repeat(50);
+    const linhas = Array.from({ length: 501 }, (_, index) => `<row r="${index + 1}">${linha}</row>`).join('');
+    const bomba = handmadeXlsx({
+        'xl/_rels/workbook.xml.rels': rels,
+        'xl/sharedStrings.xml': `<sst><si><t>${'A'.repeat(32767)}</t></si></sst>`,
+        'xl/worksheets/sheet1.xml': sheetXml(linhas),
+    });
+    assert.ok(bomba.length < 10 * 1024, `${bomba.length} bytes`);
+    const erro = expectError(() => parseTabularFile(bomba, { nomeArquivo: 'textos.xlsx' }), 'spreadsheet_too_large', { status: 413 });
+    assert.match(erro.message, /texto demais/);
+    // Texto longo de verdade, mas pouco: passa (8 milhões de caracteres com os 2 MB).
+    assert.equal(LIMITES.caracteresPorByte * LIMITES.maxBytes, 8 * 1024 * 1024);
+    const poucas = handmadeXlsx({
+        'xl/_rels/workbook.xml.rels': rels,
+        'xl/sharedStrings.xml': `<sst><si><t>${'A'.repeat(32767)}</t></si></sst>`,
+        'xl/worksheets/sheet1.xml': sheetXml(Array.from({ length: 200 }, (_, index) => `<row r="${index + 1}"><c t="s"><v>0</v></c></row>`).join('')),
+    });
+    const lida = parseTabularFile(poucas, { nomeArquivo: 'textos.xlsx' });
+    assert.equal(lida.linhas.length, 199);
+    assert.equal(lida.linhas[0].valores[0].length, 32767);
+    // O limite segue o do arquivo (e a rota pode dar o seu), no CSV também.
+    expectError(() => parseTabularFile(poucas, { nomeArquivo: 'textos.xlsx', maxCaracteres: 100000 }), 'spreadsheet_too_large');
+    expectError(() => parseTabularFile(Buffer.from('Nome\n' + 'x'.repeat(5000)), { maxCaracteres: 1000 }), 'spreadsheet_too_large');
+});
+
+test('CSV: linhas e separadores vazios não ficam na memória; espaços depois da última coluna valem igual no CSV e no XLSX', () => {
+    // 2 MB de quebras de linha eram 2 milhões de registros guardados (500 MB) antes do
+    // limite de linhas.
+    const { records } = _internals.splitCsvRecords('a;b\n' + '\n'.repeat(1000000) + ';\n'.repeat(500000) + 'c;d\n', ';');
+    assert.deepEqual(records.map(record => [record.numero, record.valores]), [[1, ['a', 'b']], [1500002, ['c', 'd']]]);
+    let inicio = Date.now();
+    const vazias = parseTabularFile(Buffer.from('a;b\n' + '\n'.repeat(2000000)), { nomeArquivo: 'vazias.csv' });
+    assert.deepEqual([vazias.cabecalho, vazias.linhas], [['a', 'b'], []]);
+    assert.ok(Date.now() - inicio < 3000, `${Date.now() - inicio} ms`);
+    // Uma linha com 1 milhão de separadores: só as colunas aceitas são guardadas.
+    inicio = Date.now();
+    const larga = parseTabularFile(Buffer.from('Nome;Nota' + ';'.repeat(1000000) + '\nAna;7\n'), { nomeArquivo: 'larga.csv' });
+    assert.deepEqual([larga.cabecalho, larga.linhas[0].valores, larga.totalColunas], [['Nome', 'Nota'], ['Ana', '7'], 2]);
+    assert.ok(Date.now() - inicio < 3000, `${Date.now() - inicio} ms`);
+    const amostra = _internals.splitCsvRecords('a' + ';'.repeat(5000) + 'b\n', ';', { limit: 30, maxCampos: 10 }).records[0];
+    assert.deepEqual([amostra.campos, amostra.valores.length, amostra.excesso], [5001, 10, true]);
+    // Texto depois da última coluna recusa já na leitura, com a linha certa.
+    const fora = expectError(() => parseTabularFile(Buffer.from('A;B\n\n\nx;y;z\n'), { maxColunas: 2 }), 'too_many_columns');
+    assert.equal(fora.linha, 4);
+    // Linhas demais param a leitura (o resto, com aspas sem fechar, nem é lido).
+    const muitas = 'Nome\n' + 'x\n'.repeat(11) + '"sem fim\n';
+    expectError(() => parseTabularFile(Buffer.from(muitas), { maxLinhas: 10 }), 'too_many_rows');
+    expectError(() => parseTabularFile(Buffer.from('x\n'.repeat(11)), { maxLinhas: 10, cabecalho: false }), 'too_many_rows');
+    assert.equal(parseTabularFile(Buffer.from('x\n'.repeat(10)), { maxLinhas: 10, cabecalho: false }).linhas.length, 10);
+    // Célula só com espaços depois da coluna 50: descartada nos dois formatos.
+    const espacos = ['Nome', ...Array.from({ length: 49 }, (_, index) => `c${index}`), '   '];
+    assert.equal(parseTabularFile(Buffer.from(espacos.join(';') + '\nAna;1\n')).totalColunas, 50);
+    const xlsxEspacos = sheetXml('<row r="1"><c r="A1" t="inlineStr"><is><t>Nome</t></is></c><c r="AX1" t="inlineStr"><is><t>fim</t></is></c><c r="AY1" t="inlineStr"><is><t>   </t></is></c></row>');
+    assert.equal(parseTabularFile(handmadeXlsx({ 'xl/worksheets/sheet1.xml': xlsxEspacos })).totalColunas, 50);
+    // Com texto, os dois recusam.
+    expectError(() => parseTabularFile(Buffer.from([...espacos.slice(0, 50), 'x'].join(';') + '\n')), 'too_many_columns');
+    const xlsxTexto = sheetXml('<row r="1"><c r="A1" t="inlineStr"><is><t>Nome</t></is></c><c r="AY1" t="inlineStr"><is><t>x</t></is></c></row>');
+    expectError(() => parseTabularFile(handmadeXlsx({ 'xl/worksheets/sheet1.xml': xlsxTexto })), 'too_many_columns');
+});
+
 test('XLSX: CDATA vira texto, comentário XML não é lido e índice de texto vazio não pega o primeiro texto', () => {
     const buffer = handmadeXlsx({
         'xl/_rels/workbook.xml.rels': '<Relationships><Relationship Id="rId1" Type="x/worksheet" Target="worksheets/sheet1.xml"/><Relationship Id="rId2" Type="x/sharedStrings" Target="sharedStrings.xml"/></Relationships>',

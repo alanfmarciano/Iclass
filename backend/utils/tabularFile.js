@@ -37,6 +37,9 @@ const LIMITES = Object.freeze({
     maxParteXml: 24 * 1024 * 1024,
     maxTotalXml: 48 * 1024 * 1024,
     maxTextoCelula: 32767, // limite do Excel por célula
+    // Total de caracteres das células devolvidas, por byte do limite do arquivo (8 milhões
+    // com os 2 MB de sempre): um CSV nunca chega lá; um XLSX só com textos repetidos sim.
+    caracteresPorByte: 4,
 });
 
 const XLSX_CONTENT_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet';
@@ -132,20 +135,51 @@ function decodeText(buffer) {
 }
 
 // ------------------------------------------------------------ leitura do CSV
-// Registros do CSV com o separador dado. `limit` para a amostra da detecção. Aspas como
-// no Excel: campo entre aspas aceita separador e quebra de linha, "" é uma aspa; aspa no
-// meio de um campo sem aspas fica como está.
-function splitCsvRecords(text, separator, limit = Infinity) {
+// Registros do CSV com o separador dado. Aspas como no Excel: campo entre aspas aceita
+// separador e quebra de linha, "" é uma aspa; aspa no meio de um campo sem aspas fica
+// como está.
+// Só os registros com algum texto são guardados ({ numero, valores, campos, excesso }):
+// 2 MB de quebras de linha eram 2 milhões de registros vazios na memória (500 MB) antes
+// de qualquer limite. `numero` conta também os vazios (é a linha que o Excel mostra).
+// Opções: `limit` para a amostra da detecção (conta todos os registros); `maxCampos`
+// guarda só os primeiros campos de cada registro (`campos` diz quantos havia, e
+// `excesso` diz se algum dos que ficaram de fora tinha texto); `onRecord(registro)` é
+// chamado a cada registro guardado (para recusar o arquivo assim que passar do limite).
+function splitCsvRecords(text, separator, { limit = Infinity, maxCampos = Infinity, onRecord } = {}) {
     const records = [];
-    let record = [];
+    let values = [];
+    let fieldCount = 0;
+    let excess = false;
+    let hasContent = false;
+    let recordCount = 0;
     let field = '';
     let quoted = false;
     let fieldStarted = false;
     let quoteStartRecord = 0;
     let index = 0;
     const length = text.length;
-    const pushField = () => { record.push(field); field = ''; fieldStarted = false; };
-    const pushRecord = () => { pushField(); records.push(record); record = []; };
+    const pushField = () => {
+        const blank = field.trim() === '';
+        if (!blank) hasContent = true;
+        if (fieldCount < maxCampos) values.push(field);
+        else if (!blank) excess = true;
+        fieldCount += 1;
+        field = '';
+        fieldStarted = false;
+    };
+    const pushRecord = () => {
+        pushField();
+        recordCount += 1;
+        if (hasContent) {
+            const record = { numero: recordCount, valores: values, campos: fieldCount, excesso: excess };
+            records.push(record);
+            if (onRecord) onRecord(record, records.length);
+        }
+        values = [];
+        fieldCount = 0;
+        excess = false;
+        hasContent = false;
+    };
     while (index < length) {
         const char = text[index];
         if (quoted) {
@@ -162,7 +196,7 @@ function splitCsvRecords(text, separator, limit = Infinity) {
         if (char === '"' && !fieldStarted) {
             quoted = true;
             fieldStarted = true;
-            quoteStartRecord = records.length + 1;
+            quoteStartRecord = recordCount + 1;
             index += 1;
             continue;
         }
@@ -170,7 +204,7 @@ function splitCsvRecords(text, separator, limit = Infinity) {
         if (char === '\r' || char === '\n') {
             pushRecord();
             index += (char === '\r' && text[index + 1] === '\n') ? 2 : 1;
-            if (records.length >= limit) return { records, complete: false };
+            if (recordCount >= limit) return { records, complete: false };
             continue;
         }
         field += char;
@@ -181,11 +215,13 @@ function splitCsvRecords(text, separator, limit = Infinity) {
         if (limit !== Infinity) { pushRecord(); return { records, complete: false }; }
         throw new TabularFileError(`O arquivo tem aspas (") sem fechar a partir da linha ${quoteStartRecord}. Confira essa linha ou salve de novo pelo Excel.`, 'unclosed_quote', { linha: quoteStartRecord });
     }
-    if (fieldStarted || field || record.length) pushRecord();
+    if (fieldStarted || field || fieldCount) pushRecord();
     return { records, complete: true };
 }
 
 const SEPARATORS = [';', '\t', ','];
+// Na amostra da detecção, só a contagem de campos importa.
+const SAMPLE_MAX_FIELDS = 1000;
 
 // Separador: "sep=X" na primeira linha (o Excel entende), senão o que divide a amostra
 // em colunas de forma mais constante (empate: ';', tab, ',').
@@ -194,26 +230,33 @@ function detectSeparator(text) {
     if (hint) return { separador: hint[1], inicio: hint[0].length };
     let best = null;
     for (const separator of SEPARATORS) {
-        const sample = splitCsvRecords(text, separator, 30).records
-            .filter(record => record.some(value => String(value).trim() !== ''));
+        // Os registros vazios já ficam de fora.
+        const sample = splitCsvRecords(text, separator, { limit: 30, maxCampos: SAMPLE_MAX_FIELDS }).records;
         if (!sample.length) continue;
-        const first = sample[0].length;
+        const first = sample[0].campos;
         if (first < 2) continue;
-        const consistent = sample.filter(record => record.length === first).length;
+        const consistent = sample.filter(record => record.campos === first).length;
         const score = consistent * 1000 + first;
         if (!best || score > best.score) best = { separator, score };
     }
     return { separador: best ? best.separator : ';', inicio: 0 };
 }
 
-function parseCsvText(buffer) {
+function parseCsvText(buffer, limits) {
     const { texto, codificacao } = decodeText(buffer);
     if (texto.includes('\u0000')) {
         throw new TabularFileError(`O arquivo não parece uma planilha (CSV ou XLSX). ${SALVE_COMO}`, 'unsupported_format');
     }
     const { separador, inicio } = detectSeparator(texto);
-    const { records } = splitCsvRecords(texto.slice(inicio), separador);
-    const rows = records.map((values, index) => ({ numero: index + 1, valores: values }));
+    // Os limites valem durante a leitura, como no XLSX: o resto do arquivo não é guardado.
+    const { records } = splitCsvRecords(texto.slice(inicio), separador, {
+        maxCampos: limits.maxColunas,
+        onRecord(record, stored) {
+            if (record.excesso) throw tooManyColumns(limits.maxColunas, record.numero);
+            if (stored > limits.maxLinhas + limits.linhasCabecalho) throw tooManyRows(limits.maxLinhas);
+        },
+    });
+    const rows = records.map(record => ({ numero: record.numero, valores: record.valores }));
     return { formato: 'csv', separador, codificacao, planilha: null, rows, avisos: [] };
 }
 
@@ -423,22 +466,64 @@ const BUILTIN_DATE_IDS = new Set([14, 15, 16, 17, 22, 27, 28, 29, 30, 31, 32, 33
 const BUILTIN_TIME_IDS = new Set([18, 19, 20, 21, 45, 46, 47]);
 
 // Formato sem os textos entre aspas, os caracteres escapados e os colchetes de cor e
-// idioma (o [h] de hora corrida fica).
+// idioma (o [h] de hora corrida fica). Os colchetes são tirados por um laço só: a
+// expressão /\[(?![hms]+\])[^\]]*\]/ voltava atrás a cada "[" sem "]" (quadrática).
+function stripFormatBrackets(text) {
+    let out = '';
+    let pos = 0;
+    while (pos < text.length) {
+        const open = text.indexOf('[', pos);
+        if (open < 0) break;
+        const close = text.indexOf(']', open + 1);
+        // Nenhum "]" depois: os "[" que sobram ficam como estão.
+        if (close < 0) break;
+        const inner = text.slice(open + 1, close);
+        out += /^[hms]+$/i.test(inner) ? text.slice(pos, close + 1) : text.slice(pos, open);
+        pos = close + 1;
+    }
+    return out + text.slice(pos);
+}
+
 function bareFormat(code) {
-    return String(code || '')
+    return stripFormatBrackets(String(code || '')
         .split(';')[0]
         .replace(/"[^"]*"/g, '')
         .replace(/\\./g, '')
         .replace(/_./g, '')
-        .replace(/\*./g, '')
-        .replace(/\[(?![hms]+\])[^\]]*\]/gi, '');
+        .replace(/\*./g, ''));
+}
+
+// A parte numérica do formato, como /[#0,]*[0#](?:\.([0#]*))?/.exec(bare) achava, num
+// laço só (a expressão voltava atrás em cada sequência de vírgulas: quadrática). Devolve
+// { fraction } (as casas depois do ponto, ou undefined) ou null.
+function findNumberPart(bare) {
+    const isRunChar = char => char === '#' || char === '0' || char === ',';
+    let index = 0;
+    const length = bare.length;
+    while (index < length) {
+        if (!isRunChar(bare[index])) { index += 1; continue; }
+        let end = index;
+        let lastDigit = -1;
+        while (end < length && isRunChar(bare[end])) {
+            if (bare[end] !== ',') lastDigit = end;
+            end += 1;
+        }
+        if (lastDigit >= 0) {
+            if (bare[lastDigit + 1] !== '.') return { fraction: undefined };
+            let stop = lastDigit + 2;
+            while (stop < length && (bare[stop] === '0' || bare[stop] === '#')) stop += 1;
+            return { fraction: bare.slice(lastDigit + 2, stop) };
+        }
+        index = end;
+    }
+    return null;
 }
 
 function classifyFormat(numFmtId, code) {
     if (BUILTIN_DATE_IDS.has(numFmtId)) return { kind: 'date', time: numFmtId === 22, seconds: false, dateParts: true };
     if (BUILTIN_TIME_IDS.has(numFmtId)) return { kind: 'date', time: true, seconds: [19, 21, 46].includes(numFmtId), dateParts: false, elapsed: numFmtId === 46 };
     // O Excel não aceita formato com mais de 255 caracteres; um maior só viria de arquivo
-    // feito para travar a leitura (as expressões abaixo não são lineares).
+    // feito para travar a leitura.
     if (String(code || '').length > 255) return { kind: 'general' };
     const bare = bareFormat(code);
     if (!bare || /^general$/i.test(bare.trim()) || bare.trim() === '@') return { kind: 'general' };
@@ -448,10 +533,10 @@ function classifyFormat(numFmtId, code) {
         return { kind: 'date', time, seconds: /s/i.test(bare), dateParts, elapsed: /\[h+\]/i.test(bare) };
     }
     if (/E[+-]/i.test(bare) || /\?/.test(bare)) return { kind: 'general' };
-    const numberPart = /[#0,]*[0#](?:\.([0#]*))?/.exec(bare);
+    const numberPart = findNumberPart(bare);
     if (!numberPart) return { kind: 'general' };
     // "0,0#": uma casa sempre, a segunda só quando há.
-    const fraction = numberPart[1] || '';
+    const fraction = numberPart.fraction || '';
     const decimals = fraction.length;
     const minDecimals = (/^0*/.exec(fraction) || [''])[0].length;
     const grouping = /[#0],[#0]/.test(bare);
@@ -626,27 +711,45 @@ function readRelationships(reader, path) {
     return rels;
 }
 
+// O Excel aceita até 64.000 formatos de célula (e bem menos formatos de número) num
+// arquivo. Mais que isso só viria de arquivo feito para travar a leitura: um formato
+// de número repetido em um milhão de <xf> fazia a classificação rodar um milhão de vezes.
+const MAX_CELL_FORMATS = 64000;
+
+// Devolve formatOf(índice do estilo da célula): o formato é classificado só quando uma
+// célula o usa, e uma vez por formato (cache pelo código do formato).
 function readStyles(reader, path) {
     const xml = path ? reader.read(path) : null;
-    if (!xml) return [];
+    if (!xml) return () => undefined;
     const custom = new Map();
     const xfFormatIds = [];
     walkXml(xml, {
         open(name, rawAttrs, selfClosing, parents) {
             const parent = parents[parents.length - 1];
             if (name === 'numFmt' && parent === 'numFmts') {
+                if (custom.size >= MAX_CELL_FORMATS) throw xmlError();
                 const attrs = parseAttributes(rawAttrs);
                 custom.set(Number(attrs.numFmtId), attrs.formatCode || '');
             } else if (name === 'xf' && parent === 'cellXfs') {
+                if (xfFormatIds.length >= MAX_CELL_FORMATS) throw xmlError();
                 // Só a abertura importa (numFmtId); o <xf> de cellStyleXfs não conta.
                 xfFormatIds.push(Number(parseAttributes(rawAttrs).numFmtId) || 0);
             }
         },
     });
-    return xfFormatIds.map(id => {
-        const code = custom.has(id) ? custom.get(id) : (BUILTIN_FORMATS[id] || 'General');
-        return classifyFormat(custom.has(id) ? -1 : id, code);
-    });
+    const byStyle = new Map();
+    const byCode = new Map();
+    return styleIndex => {
+        if (!Number.isInteger(styleIndex) || styleIndex < 0 || styleIndex >= xfFormatIds.length) return undefined;
+        if (byStyle.has(styleIndex)) return byStyle.get(styleIndex);
+        const id = xfFormatIds[styleIndex];
+        const isCustom = custom.has(id);
+        const key = isCustom ? `c:${custom.get(id)}` : `b:${id}`;
+        if (!byCode.has(key)) byCode.set(key, isCustom ? classifyFormat(-1, custom.get(id)) : classifyFormat(id, BUILTIN_FORMATS[id] || 'General'));
+        const format = byCode.get(key);
+        byStyle.set(styleIndex, format);
+        return format;
+    };
 }
 
 // Texto de um <si> ou <is>: os <t> em ordem (também os de dentro de <r>, o rich text),
@@ -723,7 +826,7 @@ function cellValue(cell, context) {
     }
     if (type === 'd') return formatIsoDateCell(decodeXmlText(raw));
     const styleIndex = Number(attrs.s) || 0;
-    return formatNumberCell(raw, context.styles[styleIndex], context.date1904);
+    return formatNumberCell(raw, context.formatOf(styleIndex), context.date1904);
 }
 
 function parseXlsx(buffer, limits) {
@@ -787,7 +890,7 @@ function parseWorkbook(reader, workbookPath, limits) {
     const stylesPath = stylesRel ? resolvePartPath(baseDir, stylesRel.target) : `${baseDir ? baseDir + '/' : ''}styles.xml`;
     const context = {
         sharedStrings: readSharedStrings(reader, sharedPath),
-        styles: readStyles(reader, stylesPath),
+        formatOf: readStyles(reader, stylesPath),
         date1904,
         formulasSemValor: 0,
     };
@@ -795,6 +898,7 @@ function parseWorkbook(reader, workbookPath, limits) {
     const sheetXml = reader.read(chosen.path) || '';
     const rows = [];
     let dataRows = 0;
+    let totalChars = 0;
     let previousRow = 0;
     let sheetDataDone = false;
     let inSheetData = false;
@@ -813,7 +917,15 @@ function parseWorkbook(reader, workbookPath, limits) {
         row.previousColumn = column;
         const value = cellValue(current, context);
         if (value === '') return;
-        if (column > limits.maxColunas) throw tooManyColumns(limits.maxColunas, row.number);
+        // Como no CSV: célula só com espaços depois da última coluna aceita é descartada.
+        if (column > limits.maxColunas) {
+            if (value.trim() === '') return;
+            throw tooManyColumns(limits.maxColunas, row.number);
+        }
+        // Um texto compartilhado de 32 mil caracteres em todas as células faria um .xlsx
+        // de 4 KB devolver 800 milhões de caracteres: o total também tem limite.
+        totalChars += Math.min(value.length, LIMITES.maxTextoCelula);
+        if (totalChars > limits.maxCaracteres) throw tooMuchText();
         while (row.values.length < column - 1) row.values.push('');
         row.values[column - 1] = value;
         if (value.trim() !== '') row.hasContent = true;
@@ -825,7 +937,7 @@ function parseWorkbook(reader, workbookPath, limits) {
         rows.push({ numero: current.number, valores: current.values });
         dataRows += 1;
         // Cabeçalho + maxLinhas: não precisa ler o resto para recusar.
-        if (dataRows > limits.maxLinhas + 1) throw tooManyRows(limits.maxLinhas);
+        if (dataRows > limits.maxLinhas + limits.linhasCabecalho) throw tooManyRows(limits.maxLinhas);
     };
 
     walkXml(sheetXml, {
@@ -898,12 +1010,16 @@ function tooManyRows(maxLinhas) {
     return new TabularFileError(`A planilha tem mais de ${formatCount(maxLinhas)} linhas com dados. Divida em arquivos menores.`, 'too_many_rows');
 }
 
+function tooMuchText() {
+    return new TabularFileError('A planilha tem texto demais para importar. Divida em arquivos menores ou envie em CSV.', 'spreadsheet_too_large', { status: 413 });
+}
+
 function tooManyColumns(maxColunas, linha) {
     return new TabularFileError(`A planilha tem mais de ${formatCount(maxColunas)} colunas (linha ${linha}). Apague as colunas que não fazem parte da importação.`, 'too_many_columns', { linha });
 }
 
 // ------------------------------------------------------------ entrada única
-// parseTabularFile(buffer, { nomeArquivo, maxLinhas, maxColunas, maxBytes, cabecalho })
+// parseTabularFile(buffer, { nomeArquivo, maxLinhas, maxColunas, maxBytes, maxCaracteres, cabecalho })
 // => { formato: 'csv'|'xlsx', separador, codificacao, planilha, cabecalho: string[],
 //      linhas: [{ numero, valores: string[] }], totalColunas, sha256, avisos }
 // `cabecalho: false` devolve todas as linhas em `linhas` (cabecalho fica []). As linhas
@@ -915,6 +1031,9 @@ function parseTabularFile(buffer, options = {}) {
         maxColunas: positiveLimit(options.maxColunas, LIMITES.maxColunas),
     };
     const withHeader = options.cabecalho !== false;
+    limits.linhasCabecalho = withHeader ? 1 : 0;
+    // Total de caracteres das células devolvidas: proporcional ao arquivo aceito.
+    limits.maxCaracteres = positiveLimit(options.maxCaracteres, LIMITES.caracteresPorByte * limits.maxBytes);
     if (!Buffer.isBuffer(buffer)) {
         if (buffer instanceof Uint8Array) buffer = Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength);
         else throw new TabularFileError('Nenhum arquivo foi enviado.', 'file_missing');
@@ -942,11 +1061,12 @@ function parseTabularFile(buffer, options = {}) {
     } else if (extension && !TEXT_EXTENSIONS.has(extension)) {
         throw new TabularFileError(`Envie a planilha em CSV ou XLSX (o arquivo é .${extension}). ${SALVE_COMO}`, 'unsupported_format');
     } else {
-        parsed = parseCsvText(buffer);
+        parsed = parseCsvText(buffer, limits);
     }
 
     const rows = [];
     let totalColunas = 0;
+    let totalChars = 0;
     for (const row of parsed.rows) {
         const values = row.valores.map(value => {
             const text = String(value == null ? '' : value);
@@ -957,9 +1077,11 @@ function parseTabularFile(buffer, options = {}) {
         if (!last) continue;
         if (last > limits.maxColunas) throw tooManyColumns(limits.maxColunas, row.numero);
         const trimmed = values.slice(0, last);
+        for (const value of trimmed) totalChars += value.length;
+        if (totalChars > limits.maxCaracteres) throw tooMuchText();
         totalColunas = Math.max(totalColunas, trimmed.length);
         rows.push({ numero: row.numero, valores: trimmed });
-        if (rows.length > limits.maxLinhas + (withHeader ? 1 : 0)) throw tooManyRows(limits.maxLinhas);
+        if (rows.length > limits.maxLinhas + limits.linhasCabecalho) throw tooManyRows(limits.maxLinhas);
     }
     for (const row of rows) while (row.valores.length < totalColunas) row.valores.push('');
     const cabecalho = withHeader && rows.length ? rows.shift().valores : [];
