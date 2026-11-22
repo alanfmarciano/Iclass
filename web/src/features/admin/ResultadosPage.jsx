@@ -23,7 +23,9 @@ import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { deliveryLabel } from './attemptDelivery'
 import { OriginalLetter, reviewLettersNote } from './reviewLetters'
 import { GradeReasonDialog, isReasonRequiredError } from './GradeReasonDialog'
-import { displayEmail } from '../../lib/studentProfile'
+import { displayEmail, isStudentIdParam, studentRouteKey } from '../../lib/studentProfile'
+import { useAuth } from '../../context/AuthProvider'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission, canWriteAdminPermission } from '../../lib/adminPermissions'
 
 function useCountUp(value, durationMs = 900) {
   const [display, setDisplay] = useState(0)
@@ -188,10 +190,58 @@ function snapshotOptions(history) {
   return items
 }
 
+// Estrutura mínima (módulo e nome de cada prova) a partir do quadro de notas, para quem
+// abre Resultados sem o editor de cursos (Coordenação, Secretaria com Resultados): a rota
+// da estrutura pede page.editor e daria 403. O quadro vem na ordem da estrutura do curso;
+// prova aplicada mais de uma vez tem uma coluna por aplicação, "Título (2ª aplicação)", e
+// o nome da prova é o título sem o sufixo. Prova fora da estrutura ("Outras avaliações")
+// fica fora, como na estrutura de verdade.
+export const OTHER_EXAMS_MODULE = 'Outras avaliações'
+export function structureFromGradebook(gradebook) {
+  const columns = Array.isArray(gradebook?.columns) ? gradebook.columns : []
+  const byExam = new Map()
+  columns.forEach((column) => {
+    if (!column?.examKey || !column.moduleName || column.moduleName === OTHER_EXAMS_MODULE) return
+    if (!byExam.has(column.examKey)) byExam.set(column.examKey, [])
+    byExam.get(column.examKey).push(column)
+  })
+  const modules = []
+  const moduleByName = new Map()
+  byExam.forEach((list, examKey) => {
+    const first = list[0]
+    let module = moduleByName.get(first.moduleName)
+    if (!module) {
+      module = { id: first.moduleName, name: first.moduleName, units: [] }
+      moduleByName.set(first.moduleName, module)
+      modules.push(module)
+    }
+    const label = String(first.label || examKey)
+    const name = list.length > 1 ? label.replace(/\s*\([^()]*\)\s*$/, '') || examKey : label
+    module.units.push({ avaliacaoKey: examKey, name })
+  })
+  return modules
+}
+
+// Endereço dos resultados do aluno: pelo id estável (/resultados/aluno/alu_...), como a
+// ficha. Sem id (cadastro de antes da atualização), o e-mail; o endereço interno do aluno
+// sem e-mail nunca vai para a barra do navegador (ele sempre tem id).
+export function studentResultsPath(student) {
+  const key = studentRouteKey(student)
+  return key ? `/resultados/aluno/${key}` : '/resultados'
+}
+
 export default function ResultadosPage() {
   const navigate = useNavigate()
   const { studentId = '', submissionId = '' } = useParams()
   const { courseId: activeCourseId, courseName, className: activeClassName } = useAdminWorkspace()
+  const auth = useAuth()?.auth
+  // A Coordenação (só consulta) abre Resultados para ver: sem lançar, publicar, ocultar,
+  // excluir nem mudar a regra das tentativas (o servidor recusaria com 403). A lista de
+  // aplicações (Provas ou Monitor) e a estrutura do curso (editor) só para quem abre essas
+  // telas: sem elas, os pedidos dariam 403 ao abrir (B4).
+  const canWrite = canWriteAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_RESULTS)
+  const canReadApplications = canAccessAdminPermission(auth, [ADMIN_PERMISSIONS.PAGE_EXAMS, ADMIN_PERMISSIONS.PAGE_MONITOR])
+  const canReadStructure = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_EDITOR)
   // Boletim consolidado (provas + frequência) do aluno, pela caixa de impressão.
   async function openBoletim(email) {
     try {
@@ -201,9 +251,9 @@ export default function ResultadosPage() {
   }
   const contextQuery = new URLSearchParams({ courseId: activeCourseId, studentClass: activeClassName }).toString()
   const { data, loading, error, refetch } = useApi(`/api/admin/submissions?${contextQuery}`)
-  const { data: students } = useApi(`/api/admin/students?${contextQuery}`)
+  const { data: students, loading: studentsLoading } = useApi(`/api/admin/students?${contextQuery}`)
   const { data: classes } = useApi(`/api/admin/classes?${contextQuery}`)
-  const { data: applicationsData } = useApi(`/api/admin/exam-applications?${contextQuery}`)
+  const { data: applicationsData } = useApi(canReadApplications ? `/api/admin/exam-applications?${contextQuery}` : null)
   const [del, setDel] = useState(null)
   const [detail, setDetail] = useState(null)
   const [review, setReview] = useState(null)
@@ -300,17 +350,39 @@ export default function ResultadosPage() {
       }
     }).sort((a, b) => a.studentName.localeCompare(b.studentName, 'pt-BR'))
   }, [filteredRows, examMeta])
+  // Cadastro de cada e-mail (o id estável vem da lista de alunos da turma).
+  const studentByEmail = useMemo(() => {
+    const map = new Map()
+    ;(students || []).forEach((student) => {
+      const email = String(student?.email || '').trim().toLowerCase()
+      if (email) map.set(email, student)
+    })
+    return map
+  }, [students])
+  const resultsPathFor = (row) => {
+    const email = String(row?.studentEmail || '').trim().toLowerCase()
+    const student = email ? studentByEmail.get(email) : null
+    if (student?.id) return studentResultsPath(student)
+    if (email) return studentResultsPath({ email })
+    return row?.id ? `/resultados/aluno/${encodeURIComponent(row.id)}` : '/resultados'
+  }
+  // O parâmetro da rota: id do aluno (alu_...) ou, em endereço antigo, o e-mail.
   const routeStudentId = useMemo(() => {
     try { return decodeURIComponent(studentId).trim().toLowerCase() } catch { return String(studentId).trim().toLowerCase() }
   }, [studentId])
+  const routeIsStudentId = isStudentIdParam(studentId)
+  const routeEmail = useMemo(() => {
+    if (!routeStudentId) return ''
+    if (!routeIsStudentId) return routeStudentId
+    const student = (students || []).find((item) => String(item?.id || '').toLowerCase() === routeStudentId)
+    return String(student?.email || '').trim().toLowerCase()
+  }, [routeStudentId, routeIsStudentId, students])
   const selectedStudent = useMemo(() => {
     if (!routeStudentId) return null
-    return studentRows.find((student) => String(student.id || '').toLowerCase() === routeStudentId
-      || String(student.studentEmail || '').toLowerCase() === routeStudentId) || null
-  }, [studentRows, routeStudentId])
-  const selectedStudentPath = selectedStudent
-    ? `/resultados/aluno/${encodeURIComponent(selectedStudent.studentEmail || selectedStudent.id)}`
-    : '/resultados'
+    return studentRows.find((student) => (routeEmail && String(student.studentEmail || '').toLowerCase() === routeEmail)
+      || (!routeIsStudentId && String(student.id || '').toLowerCase() === routeStudentId)) || null
+  }, [studentRows, routeStudentId, routeEmail, routeIsStudentId])
+  const selectedStudentPath = selectedStudent ? resultsPathFor(selectedStudent) : '/resultados'
   const routeSubmission = useMemo(() => {
     if (!submissionId || !selectedStudent) return null
     return selectedStudent.submissions.find((submission) => String(submission.id) === String(submissionId)) || null
@@ -410,11 +482,25 @@ export default function ResultadosPage() {
       return
     }
     let active = true
-    api.get(`/api/admin/courses/${encodeURIComponent(activeCourseId)}/structure?studentClass=${encodeURIComponent(activeClassName)}`)
-      .then((response) => active && setCourseStructure(response.structure || []))
+    // Sem o editor de cursos, o módulo e o nome das provas vêm do quadro de notas (a rota
+    // da estrutura daria 403).
+    const request = canReadStructure
+      ? api.get(`/api/admin/courses/${encodeURIComponent(activeCourseId)}/structure?studentClass=${encodeURIComponent(activeClassName)}`).then((response) => response.structure || [])
+      : (activeClassName ? api.get(`/api/admin/gradebook?${contextQuery}`).then(structureFromGradebook) : Promise.resolve([]))
+    request
+      .then((structureList) => active && setCourseStructure(structureList))
       .catch(() => active && setCourseStructure([]))
     return () => { active = false }
-  }, [activeCourseId, activeClassName])
+  }, [activeCourseId, activeClassName, canReadStructure]) // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Endereço antigo, com o e-mail do aluno: troca pelo id (o e-mail sai da barra e do
+  // histórico do navegador), mantendo a prova aberta.
+  useEffect(() => {
+    if (!studentId || routeIsStudentId || !selectedStudent) return
+    const path = resultsPathFor(selectedStudent)
+    if (!/^\/resultados\/aluno\/alu_/i.test(path)) return
+    navigate(submissionId ? `${path}/prova/${encodeURIComponent(submissionId)}` : path, { replace: true })
+  }, [studentId, routeIsStudentId, selectedStudent, submissionId, studentByEmail]) // eslint-disable-line react-hooks/exhaustive-deps
 
   useEffect(() => {
     const main = document.querySelector('main')
@@ -662,9 +748,8 @@ export default function ResultadosPage() {
   }
 
   function openStudentResults(student) {
-    const identifier = student?.studentEmail || student?.id
-    if (!identifier) return
-    navigate(`/resultados/aluno/${encodeURIComponent(identifier)}`)
+    if (!student?.studentEmail && !student?.id) return
+    navigate(resultsPathFor(student))
   }
 
   function toggleModule(id) {
@@ -726,12 +811,14 @@ export default function ResultadosPage() {
             {exam.applicationId && (
               <button type="button" className="rb-btn" title="O que aconteceu nesta aplicação" onClick={() => setAuditApplicationId(exam.applicationId)}><History size={13} /><span>Registro da aplicação</span></button>
             )}
+            {canWrite && (
             <span className="rb-polsel">
               <span className="rb-pollab">Regra</span>
               <select className="rb-sel" value={policy} disabled={busy} onClick={(e) => e.stopPropagation()} onChange={(event) => controlAttempt(attempts[0], 'policy', event.target.value, attempts)} aria-label={`Regra de cálculo de ${exam.examName || exam.examKey}`}>
                 {RESULT_POLICIES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
               </select>
             </span>
+            )}
           </div>
           <div className="rb-pbody">
             <div className="rb-atts">
@@ -751,13 +838,13 @@ export default function ResultadosPage() {
                     </div>
                     <span className={`rb-as ${gradeBandClass(submission.score)}`}>{fmtNota(submission.score)}</span>
                     <div className="rb-acts">
-                      {!archived && (
+                      {canWrite && !archived && (
                         <button type="button" className="rb-btn pri" disabled={busy} title="Fixar esta tentativa como a nota" onClick={() => controlAttempt(submission, 'select', undefined, attempts)}><Target size={13} /><span>Usar esta nota</span></button>
                       )}
                       <button type="button" className="rb-btn" title="Ver a prova corrigida" onClick={() => openSubmissionReview(submission)}><Eye size={13} /><span>Ver prova</span></button>
-                      {archived
+                      {canWrite && (archived
                         ? <button type="button" className="rb-btn ok" disabled={busy} title="Voltar a tentativa ao cálculo" onClick={() => controlAttempt(submission, 'restore', undefined, attempts)}><RotateCcw size={13} /><span>Reconsiderar</span></button>
-                        : <button type="button" className="rb-btn warn" disabled={busy} title="Tirar a tentativa do cálculo (não apaga)" onClick={() => controlAttempt(submission, 'archive', undefined, attempts)}><EyeOff size={13} /><span>Desconsiderar</span></button>}
+                        : <button type="button" className="rb-btn warn" disabled={busy} title="Tirar a tentativa do cálculo (não apaga)" onClick={() => controlAttempt(submission, 'archive', undefined, attempts)}><EyeOff size={13} /><span>Desconsiderar</span></button>)}
                     </div>
                   </div>
                 )
@@ -818,11 +905,11 @@ export default function ResultadosPage() {
     <div className="max-w-7xl mx-auto space-y-6">
       {!studentId && !submissionId && <>
       <PageHeader title="Resultados" subtitle={`${courseName || activeCourseId} · ${activeClassName} · ${studentRows.length} alunos · ${filteredRows.length} entregas`}>
-        <Button variant="secondary" icon={Eye} onClick={() => publishGrades(filteredRows.filter((row) => row.gradePublished !== true), true)}>Publicar notas</Button>
-        <Button variant="secondary" icon={EyeOff} onClick={() => publishGrades(filteredRows.filter((row) => row.gradePublished === true), false)}>Ocultar notas</Button>
+        {canWrite && <Button variant="secondary" icon={Eye} onClick={() => publishGrades(filteredRows.filter((row) => row.gradePublished !== true), true)}>Publicar notas</Button>}
+        {canWrite && <Button variant="secondary" icon={EyeOff} onClick={() => publishGrades(filteredRows.filter((row) => row.gradePublished === true), false)}>Ocultar notas</Button>}
         <Button variant="secondary" icon={Download} onClick={exportGradebook}>Exportar planilha (CSV)</Button>
-        <Button variant="secondary" icon={Trash2} onClick={() => setDeletedOpen(true)}>Notas excluídas</Button>
-        <Button icon={FilePlus2} onClick={openManual}>Lançar nota</Button>
+        {canWrite && <Button variant="secondary" icon={Trash2} onClick={() => setDeletedOpen(true)}>Notas excluídas</Button>}
+        {canWrite && <Button icon={FilePlus2} onClick={openManual}>Lançar nota</Button>}
       </PageHeader>
 
       <div className="flex gap-2 flex-wrap">
@@ -1048,9 +1135,9 @@ export default function ResultadosPage() {
             </p>
           )}
           <div className="flex flex-wrap gap-2">
-            <Button variant="secondary" icon={detail.gradePublished === true ? EyeOff : Eye} onClick={() => publishGrades([detail], detail.gradePublished !== true)}>{detail.gradePublished === true ? 'Ocultar do aluno' : 'Publicar para o aluno'}</Button>
+            {canWrite && <Button variant="secondary" icon={detail.gradePublished === true ? EyeOff : Eye} onClick={() => publishGrades([detail], detail.gradePublished !== true)}>{detail.gradePublished === true ? 'Ocultar do aluno' : 'Publicar para o aluno'}</Button>}
             <Button variant="secondary" icon={Download} onClick={() => exportCsv(detail)}>Exportar CSV da turma</Button>
-            <Button variant="destructive" icon={Trash2} onClick={() => setDel(detail)}>Excluir registro</Button>
+            {canWrite && <Button variant="destructive" icon={Trash2} onClick={() => setDel(detail)}>Excluir registro</Button>}
           </div>
           {reviewLoading && (
             <div className="flex min-h-48 flex-col items-center justify-center gap-3 border-y border-border text-muted">
@@ -1159,8 +1246,8 @@ export default function ResultadosPage() {
 
       {studentId && !selectedStudent && (
         <PageState
-          loading={loading}
-          error={loading ? null : new Error('O aluno informado não possui resultados neste curso.')}
+          loading={loading || (routeIsStudentId && studentsLoading)}
+          error={loading || (routeIsStudentId && studentsLoading) ? null : new Error('O aluno informado não possui resultados neste curso.')}
           onRetry={refetch}
         />
       )}

@@ -21,7 +21,7 @@ import { displayEmail, studentRouteKey } from '../../lib/studentProfile'
 import { snoozedWith } from './dashboard/snooze'
 import { compareOrdinal } from '../../lib/textSearch'
 import { useAuth } from '../../context/AuthProvider'
-import { ADMIN_PERMISSIONS, canAccessAdminPermission, canReadStudentGrades } from '../../lib/adminPermissions'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission, canReadStudentGrades, isReadOnlyAccount } from '../../lib/adminPermissions'
 
 // Dashboard v3 — "fila de trabalho do dia", não relatório em miniatura.
 // São 4 endpoints com volatilidades diferentes; cada seção carrega, falha e
@@ -70,6 +70,8 @@ export default function DashboardPage() {
   const canResults = can(ADMIN_PERMISSIONS.PAGE_RESULTS)
   const canMonitor = can(ADMIN_PERMISSIONS.PAGE_MONITOR)
   const canChamada = can(ADMIN_PERMISSIONS.PAGE_STUDENTS)
+  // A Coordenação (só consulta) abre a Chamada para ver, sem lançar (B4).
+  const chamadaLabel = isReadOnlyAccount(auth) ? 'Ver chamada' : 'Lançar chamada'
   const gradesHidden = !canReadStudentGrades(auth)
 
   const ctx = new URLSearchParams({ courseId, studentClass: className }).toString()
@@ -127,14 +129,14 @@ export default function DashboardPage() {
     const notes = []
     if (semDado > 0) notes.push({
       text: `${semDado} ${semDado === 1 ? 'aluno sem nenhuma chamada registrada — fica' : 'alunos sem nenhuma chamada registrada — ficam'} fora de todos os números acima`,
-      ...(canChamada ? { action: { label: 'Lançar chamada', onClick: () => nav('/chamada') } } : {}),
+      ...(canChamada ? { action: { label: chamadaLabel, onClick: () => nav('/chamada') } } : {}),
     })
     const cob = trends.data?.disciplinas?.cobertura
     if (cob && cob.total > 0 && cob.comDisciplina < cob.total) {
       notes.push({ text: `${cob.total - cob.comDisciplina} de ${cob.total} registros de presença sem disciplina — a frequência por matéria cobre só ${cob.comDisciplina}` })
     }
     return notes
-  }, [semDado, trends.data, nav, canChamada])
+  }, [semDado, trends.data, nav, canChamada, chamadaLabel])
 
   // Exportar ≠ imprimir: gera CSV do overview (imprimir continua no navegador).
   const exportCsv = () => {
@@ -167,7 +169,7 @@ export default function DashboardPage() {
       <PageHeader title="Dashboard" subtitle={contexto}>
         <RoomAddressButton />
         <Button variant="secondary" icon={Download} onClick={exportCsv}>Exportar</Button>
-        {canChamada && <Button icon={ClipboardCheck} onClick={() => nav('/chamada')}>Lançar chamada</Button>}
+        {canChamada && <Button icon={ClipboardCheck} onClick={() => nav('/chamada')}>{chamadaLabel}</Button>}
       </PageHeader>
 
       {/* AGORA — some numa linha fora de horário, devolvendo o espaço à fila. */}

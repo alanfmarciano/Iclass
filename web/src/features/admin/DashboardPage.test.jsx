@@ -88,6 +88,13 @@ describe('[UC-PAPEIS-001] Dashboard por papel', () => {
     expect(pulse().getByText('7,5')).toBeInTheDocument()
   })
 
+  it('[UC-PAPEIS-004] a Coordenação (só consulta) vê "Ver chamada", não "Lançar chamada"', () => {
+    mocks.auth = { role: 'admin', accountRole: 'coordenacao', readOnly: true, roleLabel: 'Coordenação', effectivePermissions: ['page.dashboard', 'page.results', 'page.classes', 'page.students', 'page.forum', 'page.assignments', 'reports.view'] }
+    renderDashboard()
+    expect(screen.getByRole('button', { name: 'Ver chamada' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Lançar chamada' })).toBeNull()
+  })
+
   it('riskReasons: com a nota oculta, a média vazia não é motivo', () => {
     const row = { frequencia: 90, faltas: 0, media: null }
     expect(riskReasons(row, 75).map((item) => item.text)).toEqual(['nenhuma prova entregue'])

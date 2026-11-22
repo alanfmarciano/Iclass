@@ -15,6 +15,8 @@ import { useApi } from '../../hooks/useApi'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { useToast } from '../../context/ToastProvider'
 import { api } from '../../lib/api'
+import { useAuth } from '../../context/AuthProvider'
+import { ADMIN_PERMISSIONS, canWriteAdminPermission } from '../../lib/adminPermissions'
 
 const TYPE_LABELS = { aula: 'Aula', prova: 'Prova', entrega: 'Entrega', aviso: 'Aviso', reuniao: 'Reunião', outro: 'Outro' }
 const blank = (date = '', courseId = '', className = '') => ({ title: '', description: '', eventDate: date, startTime: '', endTime: '', eventType: 'aula', target: 'turma', targetValue: className, courseId })
@@ -22,6 +24,10 @@ const blank = (date = '', courseId = '', className = '') => ({ title: '', descri
 export default function CalendarioPage() {
   const toast = useToast()
   const { courseId, courseName, className } = useAdminWorkspace()
+  const auth = useAuth()?.auth
+  // A Coordenação (só consulta) vê o calendário e abre cada evento para ler, sem criar,
+  // alterar nem excluir (o servidor recusaria com 403; B4).
+  const canEdit = canWriteAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_FORUM)
   const eventsApi = useApi(courseId ? `/api/admin/announcements/calendar?courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(className)}` : null)
   const [month, setMonth] = useState(firstOfMonth())
   const [form, setForm] = useState(null)
@@ -32,7 +38,7 @@ export default function CalendarioPage() {
 
   const openNew = (date = '') => setForm(blank(date || `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, '0')}-01`, courseId, className))
   const openEdit = (event) => {
-    if (event.readOnly) return setReadOnlyDetail(event)
+    if (event.readOnly || !canEdit) return setReadOnlyDetail(event)
     setForm({ ...event, description: event.message || event.description || '' })
   }
   const set = (patch) => setForm((current) => ({ ...current, ...patch }))
@@ -69,10 +75,10 @@ export default function CalendarioPage() {
   return (
     <div className="mx-auto max-w-7xl space-y-5">
       <PageHeader title="Calendário" subtitle={`Aulas, provas, entregas e avisos · ${courseName || courseId} · ${className}`}>
-        <Button icon={Plus} onClick={() => openNew()}>Novo evento</Button>
+        {canEdit && <Button icon={Plus} onClick={() => openNew()}>Novo evento</Button>}
       </PageHeader>
       <PageState loading={eventsApi.loading} error={eventsApi.error} onRetry={eventsApi.refetch}>
-        <MonthCalendar month={month} onMonthChange={setMonth} events={eventsApi.data || []} onDayClick={openNew} onEventClick={openEdit} />
+        <MonthCalendar month={month} onMonthChange={setMonth} events={eventsApi.data || []} onDayClick={canEdit ? openNew : undefined} onEventClick={openEdit} />
       </PageState>
 
       <Modal
@@ -120,14 +126,26 @@ export default function CalendarioPage() {
       <Modal
         open={!!readOnlyDetail}
         onClose={() => setReadOnlyDetail(null)}
-        title={readOnlyDetail?.title || 'Dia não letivo'}
-        description={readOnlyDetail ? formatRange(readOnlyDetail.eventDate, readOnlyDetail.endDate) : ''}
+        title={readOnlyDetail?.title || (readOnlyDetail?.kind === 'nonSchoolDay' ? 'Dia não letivo' : 'Evento')}
+        description={readOnlyDetail ? eventWhen(readOnlyDetail) : ''}
         footer={<Button variant="ghost" onClick={() => setReadOnlyDetail(null)}>Fechar</Button>}
       >
-        {readOnlyDetail && <p className="text-sm text-text">{readOnlyDetail.message || 'Não há aula neste dia.'} A chamada não é cobrada e a presença automática do acesso não conta na frequência.</p>}
+        {readOnlyDetail && (readOnlyDetail.kind === 'nonSchoolDay' || readOnlyDetail.readOnly
+          ? <p className="text-sm text-text">{readOnlyDetail.message || 'Não há aula neste dia.'} A chamada não é cobrada e a presença automática do acesso não conta na frequência.</p>
+          : <div className="space-y-2 text-sm text-text">
+              <p className="text-xs font-semibold uppercase tracking-wide text-subtle">{TYPE_LABELS[readOnlyDetail.eventType] || 'Evento'}{readOnlyDetail.target === 'curso' ? ' · todas as turmas do curso' : ''}</p>
+              <p className="whitespace-pre-wrap">{readOnlyDetail.message || readOnlyDetail.description || 'Sem descrição.'}</p>
+            </div>)}
       </Modal>
     </div>
   )
+}
+
+// Data e horário do evento para ler: '15/11/2027 · 08:00 às 09:40'.
+function eventWhen(event) {
+  const range = formatRange(event.eventDate, event.endDate)
+  if (!event.startTime) return range
+  return `${range} · ${event.startTime}${event.endTime ? ` às ${event.endTime}` : ''}`
 }
 
 // '2027-11-15' → '15/11/2027'; com fim diferente, 'de 13/07/2027 a 24/07/2027'.

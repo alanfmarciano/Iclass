@@ -1,9 +1,10 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ChamadaPage from './ChamadaPage'
 
-const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }))
+const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), auth: undefined }))
+vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: mocks.auth }) }))
 vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post } }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => ({ success: vi.fn(), error: vi.fn() }) }))
 vi.mock('../../hooks/useAdminWorkspace', () => ({
@@ -35,6 +36,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  mocks.auth = undefined
 })
 
 describe('Chamada com presença automática', () => {
@@ -136,5 +138,50 @@ describe('Chamada em dia não letivo', () => {
     render(<ChamadaPage />)
     expect(await screen.findByText('Não há aula neste dia: Proclamação da República')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Fazer a chamada mesmo assim' })).not.toBeInTheDocument()
+  })
+})
+
+describe('Chamada da Coordenação (só consulta)', () => {
+  const coordenacao = {
+    role: 'admin', accountRole: 'coordenacao', readOnly: true,
+    effectivePermissions: ['page.dashboard', 'page.results', 'page.classes', 'page.students', 'page.forum', 'page.assignments', 'reports.view'],
+  }
+
+  it('[UC-PAPEIS-004] mostra a chamada como foi salva, sem concluir, marcar todos nem salvar sozinha (403)', async () => {
+    mocks.auth = coordenacao
+    const user = userEvent.setup()
+    mocks.get.mockImplementation(async (url) => (url.startsWith('/api/admin/attendance/roster') ? rosterWith([aluno('ana@x.local', { origin: 'chamada', salvo: true })]) : {}))
+    render(<ChamadaPage />)
+    expect(await screen.findByText('Sua conta é só de consulta: a chamada aparece como foi salva, sem alterar.')).toBeInTheDocument()
+    // Antes: "Concluir chamada" e "Todos presente" apareciam e o POST de /attendance/bulk dava 403.
+    expect(screen.queryByRole('button', { name: 'Concluir chamada' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Todos presente' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Exportar CSV' })).toBeInTheDocument()
+    const lista = screen.getByRole('group', { name: 'Chamada (só consulta)' })
+    expect(lista).toBeDisabled()
+    // Tecla de atalho (F = falta) não muda nada.
+    fireEvent.keyDown(document.body, { key: 'f' })
+    await user.click(lista)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(mocks.post).not.toHaveBeenCalled()
+  })
+
+  it('[UC-PAPEIS-004] em dia sem aula não oferece "Fazer a chamada mesmo assim"', async () => {
+    mocks.auth = coordenacao
+    const feriado = { id: 'nl_1', nome: 'Proclamação da República', tipo: 'feriado', tipoRotulo: 'Feriado', inicio: '2026-11-15', fim: '2026-11-15', escopo: 'instituicao' }
+    mocks.get.mockImplementation(async (url) => (url.startsWith('/api/admin/attendance/roster')
+      ? { ...rosterWith([aluno('ana@x.local')]), aulas: [], aulasGrade: aulas, naoLetivo: feriado, foraDoPeriodo: false, mesmoAssim: false }
+      : {}))
+    render(<ChamadaPage />)
+    expect(await screen.findByText('Não há aula neste dia: Proclamação da República')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Fazer a chamada mesmo assim' })).not.toBeInTheDocument()
+  })
+
+  it('[UC-PAPEIS-004] dia sem chamada salva: avisa que as marcações são o padrão da tela, não um registro', async () => {
+    mocks.auth = coordenacao
+    mocks.get.mockImplementation(async (url) => (url.startsWith('/api/admin/attendance/roster') ? rosterWith([aluno('ana@x.local')]) : {}))
+    render(<ChamadaPage />)
+    expect(await screen.findByText('Sua conta é só de consulta. A chamada deste dia ainda não foi salva: as marcações abaixo são o padrão da tela, não um registro.')).toBeInTheDocument()
+    expect(mocks.post).not.toHaveBeenCalled()
   })
 })

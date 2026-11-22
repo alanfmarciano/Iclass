@@ -16,7 +16,7 @@ import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { useBranding } from '../../context/BrandingProvider'
 import { useAuth } from '../../context/AuthProvider'
-import { ADMIN_PERMISSIONS, canAccessAdminPermission } from '../../lib/adminPermissions'
+import { ADMIN_PERMISSIONS, canWriteAdminPermission } from '../../lib/adminPermissions'
 import { schoolFromBranding } from '../../lib/printDocument'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { FinishApplicationModal } from './FinishApplicationModal'
@@ -155,11 +155,13 @@ function historyLabel(entry, index) {
 
 export default function ProvasPage() {
   const toast = useToast()
-  const auth = useAuth()
+  // A conta vem em useAuth().auth (antes a tela lia o objeto do contexto inteiro, sem
+  // readOnly nem permissões, e o botão aparecia para a Coordenação; B4).
+  const { auth } = useAuth()
   // Corrigir o gabarito depois da prova recorrige notas: page.results (P3-S6).
   // A Coordenação tem Resultados, mas é só de consulta (readOnly do whoami, B1): o servidor
   // recusaria a correção com 403, então o botão nem aparece.
-  const canCorrectAnswerKey = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_RESULTS) && auth?.readOnly !== true
+  const canCorrectAnswerKey = canWriteAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_RESULTS)
   const navigate = useNavigate()
   const { branding } = useBranding()
   const { courseId: activeCourseId, courseName, className: activeClassName } = useAdminWorkspace()

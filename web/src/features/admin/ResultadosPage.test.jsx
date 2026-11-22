@@ -1,8 +1,8 @@
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import ResultadosPage from './ResultadosPage'
+import ResultadosPage, { structureFromGradebook, studentResultsPath } from './ResultadosPage'
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   refetch: vi.fn(),
   applications: [],
   deletedItems: [],
+  auth: undefined,
   // Mesmos objetos a cada render, como o useApi de verdade: a tela da prova corrigida
   // (rota com :submissionId) recarrega a revisão quando a entrega muda de referência.
   stable: {
@@ -31,6 +32,8 @@ vi.mock('../../hooks/useAdminWorkspace', () => ({
 }))
 
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
+
+vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: mocks.auth }) }))
 
 vi.mock('../../hooks/useApi', () => ({
   useApi: (path) => {
@@ -77,6 +80,7 @@ afterEach(() => {
   vi.clearAllMocks()
   mocks.applications = []
   mocks.deletedItems = []
+  mocks.auth = undefined
 })
 
 function renderPage() {
@@ -376,4 +380,132 @@ describe('Resultados · regra de nota única', () => {
       window.matchMedia = matchMedia
     }
   })
+})
+
+describe('Resultados · Coordenação (só consulta)', () => {
+  const coordenacao = {
+    role: 'admin', accountRole: 'coordenacao', readOnly: true,
+    effectivePermissions: ['page.dashboard', 'page.results', 'page.classes', 'page.students', 'page.forum', 'page.assignments', 'reports.view'],
+  }
+
+  it('[UC-PAPEIS-004] não mostra lançar, publicar, ocultar, excluir nem a regra, e não pede estrutura nem aplicações (403)', async () => {
+    mocks.auth = coordenacao
+    mocks.get.mockImplementation(async (path) => {
+      if (path.startsWith('/api/admin/gradebook')) return { columns: [{ examKey: 'Avaliacao_P2', label: 'Prova 2', moduleName: 'Módulo 1' }], rows: [] }
+      return {}
+    })
+    renderPage()
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledWith('/api/admin/gradebook?courseId=DES&studentClass=1DES'))
+    for (const name of ['Lançar nota', 'Publicar notas', 'Ocultar notas', 'Notas excluídas']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
+    }
+    expect(screen.getByRole('button', { name: 'Exportar planilha (CSV)' })).toBeInTheDocument()
+    const gets = mocks.get.mock.calls.map(([path]) => path)
+    // Antes: GET /courses/:id/structure (pede o editor) e /exam-applications (Provas ou Monitor) davam 403 ao abrir.
+    expect(gets.some((path) => path.includes('/structure'))).toBe(false)
+    expect(gets.some((path) => path.includes('/exam-applications'))).toBe(false)
+    expect(mocks.post).not.toHaveBeenCalled()
+  })
+
+  it('[UC-PAPEIS-004] na prova do aluno, só ver e exportar: sem publicar, excluir, usar esta nota nem desconsiderar', async () => {
+    mocks.auth = coordenacao
+    render(
+      <MemoryRouter initialEntries={['/resultados/aluno/ana%40x.local/prova/old']}>
+        <Routes>
+          <Route path="/resultados/aluno/:studentId/prova/:submissionId" element={<ResultadosPage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByRole('button', { name: 'Exportar CSV da turma' })).toBeInTheDocument()
+    for (const name of ['Excluir registro', 'Ocultar do aluno', 'Publicar para o aluno', 'Usar esta nota', 'Desconsiderar', 'Reconsiderar']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
+    }
+    expect(screen.queryByRole('combobox', { name: /Regra de cálculo/ })).not.toBeInTheDocument()
+  })
+
+  it('[UC-PAPEIS-004] o administrador continua vendo os botões de escrita', async () => {
+    mocks.auth = { role: 'admin', accountRole: 'admin', readOnly: false }
+    renderPage()
+    expect(screen.getByRole('button', { name: 'Lançar nota' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Publicar notas' })).toBeInTheDocument()
+    await waitFor(() => expect(mocks.get.mock.calls.some(([path]) => path.includes('/structure'))).toBe(true))
+  })
+
+  it('[UC-PAPEIS-004] monta módulo e nome das provas pelo quadro de notas, sem "Outras avaliações"', () => {
+    expect(structureFromGradebook({
+      columns: [
+        { examKey: 'P1', label: 'Prova 1', moduleName: 'Módulo 1' },
+        { examKey: 'P2', label: 'Prova 2 (1ª aplicação)', moduleName: 'Módulo 1' },
+        { examKey: 'P2', label: 'Prova 2 (2ª aplicação)', moduleName: 'Módulo 1' },
+        { examKey: 'P3', label: 'Prova 3', moduleName: 'Módulo 2' },
+        { examKey: 'X', label: 'Avulsa', moduleName: 'Outras avaliações' },
+      ],
+    })).toEqual([
+      { id: 'Módulo 1', name: 'Módulo 1', units: [{ avaliacaoKey: 'P1', name: 'Prova 1' }, { avaliacaoKey: 'P2', name: 'Prova 2' }] },
+      { id: 'Módulo 2', name: 'Módulo 2', units: [{ avaliacaoKey: 'P3', name: 'Prova 3' }] },
+    ])
+    expect(structureFromGradebook(null)).toEqual([])
+  })
+})
+
+describe('Resultados · endereço do aluno pelo id', () => {
+  function LocationProbe() {
+    const location = useLocation()
+    return <output data-testid="location">{location.pathname}</output>
+  }
+  function renderAt(path) {
+    return render(
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route path="/resultados" element={<><ResultadosPage /><LocationProbe /></>} />
+          <Route path="/resultados/aluno/:studentId" element={<><ResultadosPage /><LocationProbe /></>} />
+          <Route path="/resultados/aluno/:studentId/prova/:submissionId" element={<><ResultadosPage /><LocationProbe /></>} />
+        </Routes>
+      </MemoryRouter>,
+    )
+  }
+  const internal = 'aluno-alu_00000000000000c1@sem-email.invalid'
+  function withIds(fn) {
+    return async () => {
+      const { students, submissions } = mocks.stable
+      mocks.stable.students = [
+        { ...students[0], id: 'alu_00000000000000a1' },
+        { id: 'alu_00000000000000c1', name: 'Caio', email: internal, semEmail: true, classes: [{ name: '1DES', courseId: 'DES' }] },
+      ]
+      mocks.stable.submissions = [...submissions, { id: 'caio1', student: { name: 'Caio', email: internal, courseId: 'DES', studentClass: '1DES' }, courseId: 'DES', examKey: 'Avaliacao_P2', score: 70, consolidatedScore: 70, gradePublished: true, timestamp: '2026-03-02T10:00:00Z' }]
+      try { await fn() } finally {
+        mocks.stable.students = students
+        mocks.stable.submissions = submissions
+      }
+    }
+  }
+
+  it('[UC-IDENT-003] studentResultsPath usa o id; sem id, o e-mail', () => {
+    expect(studentResultsPath({ id: 'alu_00000000000000c1', email: internal })).toBe('/resultados/aluno/alu_00000000000000c1')
+    expect(studentResultsPath({ email: 'ana@x.local' })).toBe('/resultados/aluno/ana%40x.local')
+  })
+
+  it('[UC-IDENT-003] abrir o aluno vai para /resultados/aluno/<id>; o endereço interno do aluno sem e-mail nunca vai para a barra', withIds(async () => {
+    const user = userEvent.setup()
+    renderAt('/resultados')
+    const caio = (await screen.findAllByText('Caio')).find((node) => node.closest('tr'))
+    await user.click(caio.closest('button'))
+    // Antes: /resultados/aluno/aluno-alu_00000000000000c1%40sem-email.invalid
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/resultados/aluno/alu_00000000000000c1'))
+    expect(screen.getByTestId('location').textContent).not.toContain('sem-email')
+    expect(document.body.textContent).not.toContain('sem-email.invalid')
+  }))
+
+  it('[UC-IDENT-003] endereço pelo id abre os resultados do aluno', withIds(async () => {
+    renderAt('/resultados/aluno/alu_00000000000000a1')
+    expect(await screen.findByRole('button', { name: 'Boletim (PDF)' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Ana' })).toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent('/resultados/aluno/alu_00000000000000a1')
+  }))
+
+  it('[UC-IDENT-003] endereço antigo com e-mail troca pelo id, mantendo a prova aberta', withIds(async () => {
+    renderAt('/resultados/aluno/ana%40x.local/prova/old')
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/resultados/aluno/alu_00000000000000a1/prova/old'))
+    expect(await screen.findByRole('button', { name: 'Exportar CSV da turma' })).toBeInTheDocument()
+  }))
 })

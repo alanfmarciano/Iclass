@@ -8,11 +8,12 @@ const mocks = vi.hoisted(() => ({
   refetch: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn() },
   announcements: [],
+  auth: { accountRole: 'professor' },
 }))
 
 vi.mock('../../lib/api', () => ({ api: { post: mocks.post, get: vi.fn() } }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
-vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: { accountRole: 'professor' } }) }))
+vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: mocks.auth }) }))
 vi.mock('../../hooks/useAdminWorkspace', () => ({
   useAdminWorkspace: () => ({ courseId: 'DES', courseName: 'Desenvolvimento', className: '1DES' }),
 }))
@@ -36,6 +37,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  mocks.auth = { accountRole: 'professor' }
 })
 
 const cardOf = (title) => screen.getByText(title).closest('.p-4')
@@ -67,5 +69,26 @@ describe('Avisos', () => {
     expect(screen.queryByText('Editar aviso')).not.toBeInTheDocument()
     await user.click(cardOf('Prova remarcada'))
     expect(screen.getByText('Editar aviso')).toBeInTheDocument()
+  })
+})
+
+describe('Avisos da Coordenação (só consulta)', () => {
+  it('[UC-PAPEIS-004] lê os avisos sem o formulário de publicar, editar nem excluir (403)', async () => {
+    mocks.auth = {
+      role: 'admin', accountRole: 'coordenacao', readOnly: true,
+      effectivePermissions: ['page.dashboard', 'page.results', 'page.classes', 'page.students', 'page.forum', 'page.assignments', 'reports.view'],
+    }
+    const user = userEvent.setup()
+    render(<AvisosPage />)
+    expect(screen.getByText('Prova remarcada')).toBeInTheDocument()
+    expect(screen.getByText('Recado da direção')).toBeInTheDocument()
+    // Antes: o formulário "Novo aviso" e o "Excluir" apareciam e o POST dava 403.
+    expect(screen.queryByText('Novo aviso')).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Publicar aviso' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Excluir' })).not.toBeInTheDocument()
+    expect(screen.queryByText('Só o administrador edita')).not.toBeInTheDocument()
+    await user.click(cardOf('Prova remarcada'))
+    expect(screen.queryByText('Editar aviso')).not.toBeInTheDocument()
+    expect(mocks.post).not.toHaveBeenCalled()
   })
 })

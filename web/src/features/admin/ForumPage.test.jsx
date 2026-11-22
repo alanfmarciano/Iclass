@@ -7,7 +7,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 const apiMock = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }))
 const workspace = vi.hoisted(() => ({ current: { courseId: 'curso-a', courseName: 'Curso A', className: 'A' } }))
 vi.mock('../../lib/api', () => ({ api: apiMock }))
-vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: { email: 'admin@escola.local', accountRole: 'admin' } }) }))
+const authMock = vi.hoisted(() => ({ current: { email: 'admin@escola.local', accountRole: 'admin' } }))
+vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: authMock.current }) }))
 vi.mock('../../hooks/useAdminWorkspace', () => ({ useAdminWorkspace: () => workspace.current }))
 const toastMock = vi.hoisted(() => ({ success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() }))
 const prefsMock = vi.hoisted(() => ({ current: {}, setPref: null }))
@@ -28,7 +29,10 @@ beforeEach(() => {
   apiMock.get.mockResolvedValue({ structure: [{ units: [{ apostilaKey: 'apostila_1' }] }] })
 })
 
-afterEach(() => cleanup())
+afterEach(() => {
+  cleanup()
+  authMock.current = { email: 'admin@escola.local', accountRole: 'admin' }
+})
 
 describe('[UC-DESEMPENHO-002] Fórum do instrutor: troca de curso no meio da consulta', () => {
   it('a resposta atrasada do curso anterior não substitui as dúvidas do curso novo', async () => {
@@ -158,5 +162,46 @@ describe('[UC-CONFIRMACAO-001] Fórum do instrutor: lixeira e diálogo de exclui
     const dialog = screen.getByRole('dialog', { name: 'Excluir mensagem?' })
     expect(dialog).toHaveTextContent('A mensagem vai para Excluídas e pode ser restaurada.')
     expect(dialog).not.toHaveTextContent('não pode ser desfeita')
+  })
+})
+
+// Fase 3, B4: a Coordenação (só consulta) lê as dúvidas sem moderar. Antes, abrir o Fórum
+// pedia a estrutura do curso (page.editor, 403) e os botões de responder, resolver, FAQ,
+// editar, excluir e restaurar davam 403 ao clicar.
+describe('[UC-PAPEIS-004] Fórum da Coordenação (só consulta)', () => {
+  it('lê dúvidas e respostas sem pedir a estrutura e sem botões de moderar', async () => {
+    authMock.current = {
+      email: 'coord@escola.local', role: 'admin', accountRole: 'coordenacao', readOnly: true,
+      effectivePermissions: ['page.dashboard', 'page.results', 'page.classes', 'page.students', 'page.forum', 'page.assignments', 'reports.view'],
+    }
+    const comments = [
+      { ...comment('c1', 'Dúvida da Ana'), replies: [{ id: 'r1', authorRole: 'Instrutor', authorName: 'Prof', text: 'Resposta do professor', timestamp: '2026-11-10T10:00:00.000Z' }] },
+      { ...comment('c2', 'Dúvida apagada'), deleted: true, deletedAt: '2026-11-11T10:00:00.000Z' },
+    ]
+    apiMock.post.mockImplementation((url) => (url === '/api/admin/forum/all' ? Promise.resolve({ comments }) : Promise.resolve({ success: true })))
+    render(<MemoryRouter><ForumPage /></MemoryRouter>)
+    expect(await screen.findByText('Dúvida da Ana')).toBeInTheDocument()
+    expect(screen.getByText('Resposta do professor')).toBeInTheDocument()
+    expect(screen.getByText(/Dúvidas dos alunos \(só consulta\)/)).toBeInTheDocument()
+    expect(apiMock.get).not.toHaveBeenCalledWith(expect.stringContaining('/structure'))
+    for (const name of ['Respostas rápidas', 'FAQ', 'Editar', 'Excluir', 'Excluir resposta', 'Resolver', 'Reabrir', 'Enviar']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
+    }
+    expect(document.getElementById('reply-c1')).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /Excluídas/ }))
+    expect(await screen.findByText('Dúvida apagada')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Restaurar' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Apagar de vez' })).not.toBeInTheDocument()
+    expect(apiMock.post.mock.calls.map(([url]) => url)).toEqual(expect.arrayContaining(['/api/admin/forum/all']))
+    expect(apiMock.post.mock.calls.every(([url]) => url === '/api/admin/forum/all')).toBe(true)
+  })
+
+  it('o administrador continua pedindo a estrutura e vendo responder e resolver', async () => {
+    apiMock.post.mockImplementation((url) => (url === '/api/admin/forum/all' ? Promise.resolve({ comments: [comment('c1', 'Dúvida da Ana')] }) : Promise.resolve({ success: true })))
+    render(<MemoryRouter><ForumPage /></MemoryRouter>)
+    expect(await screen.findByText('Dúvida da Ana')).toBeInTheDocument()
+    expect(apiMock.get).toHaveBeenCalledWith(expect.stringContaining('/structure'))
+    expect(screen.getByRole('button', { name: 'Resolver' })).toBeInTheDocument()
+    expect(document.getElementById('reply-c1')).not.toBeNull()
   })
 })

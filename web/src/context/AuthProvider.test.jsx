@@ -131,3 +131,27 @@ describe('[UC-REDE-001] painel do professor recusado neste aparelho', () => {
     expect(sessionStorage.getItem('iclass-logout-message')).toBe('Só no computador do IClass.')
   })
 })
+
+// Fase 3, B4: o contexto expõe readOnly (conta só de consulta, como a Coordenação). Antes
+// não havia o campo, e a guarda da tela Provas lia useAuth().readOnly, sempre indefinido.
+describe('[UC-PAPEIS-004] conta só de consulta no contexto', () => {
+  it('readOnly vem do whoami da Coordenação; o professor não é só de consulta', async () => {
+    localStorage.setItem('iclass-v3-auth', JSON.stringify({ role: 'admin', email: 'coord@teste.local', adminSession: 'sessao-coord', serverInstanceId: 'inst-1' }))
+    apiMock.get.mockImplementation(async (url) => {
+      if (url === '/api/admin/whoami') return { email: 'coord@teste.local', role: 'coordenacao', readOnly: true, roleLabel: 'Coordenação', effectivePermissions: ['page.dashboard', 'page.results'] }
+      if (url === '/api/session/status') return { instanceId: 'inst-1' }
+      return {}
+    })
+    const ctx = await mountAuth()
+    await act(async () => {})
+    expect(ctx.current.auth?.role).toBe('admin')
+    expect(ctx.current.readOnly).toBe(true)
+
+    cleanup()
+    localStorage.clear()
+    const prof = await mountAuth()
+    await act(async () => { await prof.current.loginAdmin('professor@teste.local', 'teste') })
+    expect(prof.current.auth?.role).toBe('admin')
+    expect(prof.current.readOnly).toBe(false)
+  })
+})

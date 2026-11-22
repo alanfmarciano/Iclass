@@ -18,7 +18,7 @@ const mocks = vi.hoisted(() => ({
 vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post, put: mocks.put } }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
 vi.mock('../../context/BrandingProvider', () => ({ useBranding: () => ({ branding: mocks.branding }) }))
-vi.mock('../../context/AuthProvider', () => ({ useAuth: () => mocks.auth }))
+vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: mocks.auth }) }))
 vi.mock('../../hooks/useAdminWorkspace', () => ({ useAdminWorkspace: () => ({ courseId: 'C1', courseName: 'Curso', className: '1DES' }) }))
 vi.mock('../../hooks/useApi', () => ({
   useApi: (path) => {
@@ -304,7 +304,9 @@ describe('[UC-PROVA-005] ProvasPage do professor · gabarito corrigido depois da
   })
 
   it('a Coordenação (só de consulta) vê as correções, mas não o botão "Corrigir gabarito"', async () => {
-    mocks.auth = { role: 'admin', accountRole: 'coordenacao', readOnly: true }
+    // Coordenação com Provas concedida (page.exams): o useAuth() real devolve { auth, ... },
+    // e a guarda lê readOnly e as permissões de auth (antes lia o contexto inteiro).
+    mocks.auth = { role: 'admin', accountRole: 'coordenacao', readOnly: true, effectivePermissions: ['page.dashboard', 'page.exams', 'page.results'] }
     await openPreparation({ letter: 'C' })
     expect(screen.queryByRole('button', { name: 'Corrigir gabarito' })).not.toBeInTheDocument()
   })

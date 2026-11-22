@@ -8,10 +8,12 @@ const mocks = vi.hoisted(() => ({
   refetch: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn() },
   events: [],
+  auth: undefined,
 }))
 
 vi.mock('../../lib/api', () => ({ api: { post: mocks.post, get: vi.fn() } }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
+vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: mocks.auth }) }))
 vi.mock('../../hooks/useAdminWorkspace', () => ({
   useAdminWorkspace: () => ({ courseId: 'TI', courseName: 'Informática', className: '1DES' }),
 }))
@@ -37,6 +39,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  mocks.auth = undefined
 })
 
 describe('Calendário do painel', () => {
@@ -67,5 +70,28 @@ describe('Calendário do painel', () => {
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/announcements/calendar/delete', { id: 'cal_1' }))
     expect(confirmSpy).not.toHaveBeenCalled()
     confirmSpy.mockRestore()
+  })
+})
+
+describe('Calendário da Coordenação (só consulta)', () => {
+  it('[UC-PAPEIS-004] sem "Novo evento"; o evento abre só para ler, sem Salvar nem Excluir (403)', async () => {
+    mocks.auth = {
+      role: 'admin', accountRole: 'coordenacao', readOnly: true,
+      effectivePermissions: ['page.dashboard', 'page.results', 'page.classes', 'page.students', 'page.forum', 'page.assignments', 'reports.view'],
+    }
+    const user = userEvent.setup()
+    render(<CalendarioPage />)
+    // Antes: "Novo evento" e o formulário de editar apareciam e o POST dava 403.
+    expect(screen.queryByRole('button', { name: 'Novo evento' })).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: /Prova de Redes/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'Prova de Redes' })
+    expect(screen.queryByRole('dialog', { name: 'Editar evento' })).toBeNull()
+    expect(within(dialog).getByText('Trazer calculadora')).toBeInTheDocument()
+    expect(within(dialog).getByText(/08:00/)).toBeInTheDocument()
+    expect(within(dialog).getByText('Prova')).toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: 'Excluir' })).toBeNull()
+    expect(within(dialog).queryByRole('button', { name: 'Salvar' })).toBeNull()
+    expect(within(dialog).queryByRole('textbox')).toBeNull()
+    expect(mocks.post).not.toHaveBeenCalled()
   })
 })

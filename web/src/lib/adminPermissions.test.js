@@ -7,9 +7,11 @@ import {
   canAccessAdminPath,
   canAccessAdminPermission,
   canReadStudentGrades,
+  canWriteAdminPermission,
   getEffectiveAdminPermissions,
   grantableOptionsForRole,
   isFullAdmin,
+  isReadOnlyAccount,
   roleLabelOf,
   roleScopeOf,
 } from './adminPermissions'
@@ -123,5 +125,42 @@ describe('[UC-PAPEIS-003] isProfessorRoleAccount: listas de professores sem comp
     expect(isProfessorRoleAccount({ role: ' Professor ' })).toBe(true)
     expect(['admin', 'monitor', 'secretaria', 'coordenacao', ''].map((role) => isProfessorRoleAccount({ role }))).toEqual([false, false, false, false, false])
     expect(isProfessorRoleAccount(null)).toBe(false)
+  })
+})
+
+// Fase 3, B4: a Coordenação (só consulta) abre Resultados, Chamada, Fórum, Avisos e
+// Calendário para ver. Os botões de gravar usam canWriteAdminPermission: ter a permissão
+// de abrir a tela não basta (o servidor recusa todo POST da conta com read_only_account).
+describe('[UC-PAPEIS-004] conta só de consulta', () => {
+  const coordenacao = {
+    accountRole: 'coordenacao',
+    effectivePermissions: ['page.dashboard', 'page.results', 'page.classes', 'page.students', 'page.forum', 'page.assignments', 'reports.view'],
+    scopeKind: 'escolas',
+    readOnly: true,
+    roleLabel: 'Coordenação',
+  }
+
+  it('isReadOnlyAccount: vale o readOnly do servidor; sessão antiga da Coordenação, só consulta', () => {
+    expect(isReadOnlyAccount(coordenacao)).toBe(true)
+    expect(isReadOnlyAccount(secretaria)).toBe(false)
+    expect(isReadOnlyAccount({ accountRole: 'professor' })).toBe(false)
+    expect(isReadOnlyAccount(undefined)).toBe(false)
+    // Sessão guardada por versão anterior, sem o campo: a reserva pelo papel.
+    expect(isReadOnlyAccount({ accountRole: 'coordenacao' })).toBe(true)
+    // O servidor manda: papel personalizado só de consulta, ou Coordenação que passou a gravar.
+    expect(isReadOnlyAccount({ accountRole: 'auditoria', readOnly: true })).toBe(true)
+    expect(isReadOnlyAccount({ accountRole: 'coordenacao', readOnly: false })).toBe(false)
+  })
+
+  it('canWriteAdminPermission: ver não é gravar', () => {
+    expect(canAccessAdminPermission(coordenacao, ADMIN_PERMISSIONS.PAGE_RESULTS)).toBe(true)
+    expect(canWriteAdminPermission(coordenacao, ADMIN_PERMISSIONS.PAGE_RESULTS)).toBe(false)
+    expect(canWriteAdminPermission(coordenacao, ADMIN_PERMISSIONS.PAGE_FORUM)).toBe(false)
+    expect(canWriteAdminPermission(coordenacao, ADMIN_PERMISSIONS.PAGE_STUDENTS)).toBe(false)
+    expect(canWriteAdminPermission({ accountRole: 'professor' }, ADMIN_PERMISSIONS.PAGE_RESULTS)).toBe(true)
+    expect(canWriteAdminPermission({ accountRole: 'admin' }, ADMIN_PERMISSIONS.PAGE_FORUM)).toBe(true)
+    // Sem a permissão, também não grava.
+    expect(canWriteAdminPermission(secretaria, ADMIN_PERMISSIONS.PAGE_RESULTS)).toBe(false)
+    expect(canWriteAdminPermission(secretaria, ADMIN_PERMISSIONS.PAGE_STUDENTS)).toBe(true)
   })
 })
