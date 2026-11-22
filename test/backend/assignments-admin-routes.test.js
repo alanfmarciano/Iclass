@@ -456,7 +456,15 @@ test('excluir: pede EXCLUIR, recusa com qualquer registro de aluno e guarda a c�
     const noConfirm = await post('professor', `/api/admin/assignments/${task.id}/delete`, {});
     assert.equal(noConfirm.status, 400);
     assert.equal(noConfirm.body.code, 'confirm_required');
+    // A lista só oferece "Excluir" quando o servidor também deixa (deletable, mesma regra).
+    const listed = async () => (await get('professor', `/api/admin/assignments?courseId=${task.courseId}&studentClass=${encodeURIComponent(task.studentClass)}`)).body.assignments.find(item => item.id === task.id);
+    assert.equal((await listed()).deletable, true);
+    assert.equal(task.deletable, true);
     addSubmission(task.id, 'bruno@tarefas.local', { versions: [], status: 'pendente', extension: { dueAt: Date.now(), by: 'prof@tarefas.local', at: Date.now(), reason: 'Atestado' } });
+    const blocked = await listed();
+    assert.equal(blocked.counts.enviadas, 0, 'sem envio, mas com registro do aluno');
+    assert.equal(blocked.deletable, false);
+    assert.equal((await get('professor', `/api/admin/assignments/${task.id}`)).body.assignment.deletable, false);
     const withRows = await post('professor', `/api/admin/assignments/${task.id}/delete`, { confirm: 'EXCLUIR' });
     assert.equal(withRows.status, 409);
     assert.equal(withRows.body.code, 'assignment_has_submissions');

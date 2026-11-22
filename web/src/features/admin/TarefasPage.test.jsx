@@ -102,6 +102,35 @@ describe('Tarefas', () => {
     expect(within(draft).getByRole('button', { name: 'Excluir a tarefa Projeto integrador' })).toBeInTheDocument()
   })
 
+  it('"Excluir" segue o deletable do servidor: tarefa só com nota ou prorrogação (sem envio) não oferece', () => {
+    mocks.lists.ativas = [
+      task('asg_5_eeeeee', { title: 'Só nota zero', deletable: false, counts: { alunos: 13, enviadas: 0, paraCorrigir: 0, atrasadas: 0, naoEntregues: 13, devolvidas: 0 } }),
+      task('asg_6_ffffff', { title: 'Sem ninguém', deletable: true, counts: { alunos: 13, enviadas: 0, paraCorrigir: 0, atrasadas: 0, naoEntregues: 13, devolvidas: 0 } }),
+    ]
+    renderAt()
+    expect(within(cardOf('Só nota zero')).queryByRole('button', { name: /Excluir/ })).not.toBeInTheDocument()
+    expect(within(cardOf('Só nota zero')).getByRole('button', { name: 'Arquivar a tarefa Só nota zero' })).toBeInTheDocument()
+    expect(within(cardOf('Sem ninguém')).getByRole('button', { name: 'Excluir a tarefa Sem ninguém' })).toBeInTheDocument()
+  })
+
+  it('recusa do servidor no diálogo nunca mostra o endereço interno de aluno sem e-mail (pendência da J1)', async () => {
+    const user = userEvent.setup()
+    mocks.post.mockRejectedValueOnce(Object.assign(new Error('Esta tarefa já tem registro de aluno-alu_00000000000000a1@sem-email.invalid.'), { status: 409 }))
+    renderAt()
+    await user.click(screen.getByRole('button', { name: 'Excluir a tarefa Projeto integrador' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Excluir a tarefa?' })
+    await user.click(within(dialog).getByRole('button', { name: 'Excluir' }))
+    expect(await within(dialog).findByText('Esta tarefa já tem registro de sem e-mail.')).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/sem-email\.invalid/)
+  })
+
+  it('no celular o título do cartão também é alvo de toque de 44 px, como os botões', () => {
+    renderAt()
+    const link = screen.getByRole('link', { name: 'Relatório de redes' })
+    expect(link.className).toMatch(/(^|\s)min-h-\[44px\](\s|$)/)
+    expect(link.className).toMatch(/(^|\s)inline-flex(\s|$)/)
+  })
+
   it('o link da fila "Precisa de você" (?filtro=para-corrigir) abre só as tarefas com entrega para corrigir', () => {
     renderAt('/tarefas?filtro=para-corrigir')
     expect(screen.getByRole('link', { name: 'Relatório de redes' })).toBeInTheDocument()

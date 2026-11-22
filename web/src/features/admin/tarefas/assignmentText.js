@@ -11,7 +11,9 @@
 //   e-mail de uma linha da lista da tarefa (GET /api/admin/assignments/:id, roster) e da
 //   entrega (GET .../submissions/:id) passam por studentLabel, que usa displayEmail de
 //   lib/studentProfile.js ('sem e-mail'); o endereço interno continua sendo o que a tela
-//   manda nas rotas (studentEmail é a chave). Pendência herdada da J1.
+//   manda nas rotas (studentEmail é a chave). Pendência herdada da J1. Texto livre que
+//   vem do servidor (recusa mostrada no formulário ou no diálogo) passa por
+//   hidePlaceholderEmails antes de aparecer.
 import { NO_EMAIL_LABEL, displayEmail, isPlaceholderEmail } from '../../../lib/studentProfile'
 
 export const ASSIGNMENT_STATUS = Object.freeze({
@@ -50,16 +52,20 @@ export function relativeDeadlineText(ms, now) {
   if (typeof ms !== 'number' || !Number.isFinite(ms) || typeof now !== 'number' || !Number.isFinite(now)) return ''
   const diff = ms - now
   const abs = Math.abs(diff)
+  // O arredondamento nunca mostra '60 minutos' nem '24 horas': de 59 min 30 s em diante
+  // já é '1 hora', e de 23 h 30 min em diante já é '1 dia'.
+  const minutes = Math.max(1, Math.round(abs / 60000))
+  const hours = Math.round(abs / (60 * 60 * 1000))
   let amount
   let unit
-  if (abs < 60 * 60 * 1000) {
-    amount = Math.max(1, Math.round(abs / 60000))
+  if (minutes < 60) {
+    amount = minutes
     unit = amount === 1 ? 'minuto' : 'minutos'
-  } else if (abs < DAY_MS) {
-    amount = Math.round(abs / (60 * 60 * 1000))
+  } else if (hours < 24) {
+    amount = Math.max(1, hours)
     unit = amount === 1 ? 'hora' : 'horas'
   } else {
-    amount = Math.floor(abs / DAY_MS)
+    amount = Math.max(1, Math.floor(abs / DAY_MS))
     unit = amount === 1 ? 'dia' : 'dias'
   }
   if (diff >= 0) return `${amount === 1 ? 'falta' : 'faltam'} ${amount} ${unit}`
@@ -118,4 +124,13 @@ export function studentLabel(row) {
   const matricula = String(row?.matricula || '').trim()
   const title = name ? `${name} (${email})` : email
   return { name: name || email, email, matricula, semEmail, title }
+}
+
+// Troca, num texto livre (recusa do servidor, aviso), todo endereço interno de aluno sem
+// e-mail por 'sem e-mail'. Texto sem o endereço volta igual.
+const PLACEHOLDER_IN_TEXT = /[^\s<>()"',;:]+@sem-email\.invalid\b/gi
+
+export function hidePlaceholderEmails(text) {
+  if (typeof text !== 'string' || !text) return text
+  return text.replace(PLACEHOLDER_IN_TEXT, NO_EMAIL_LABEL)
 }

@@ -99,7 +99,7 @@ Tarefa é um trabalho com prazo que o aluno entrega pelo IClass: um arquivo (PDF
 
 **Rascunho e publicar.** **Salvar como rascunho** guarda sem os alunos verem (o rascunho pode ficar sem prazo). **Publicar** exige o prazo; a tarefa aparece para a turma e o aluno recebe o aviso no sino. Mudar o prazo de uma tarefa que já tem entrega pede o motivo, que fica na Auditoria.
 
-**Arquivar e excluir.** **Arquivar** tira a tarefa dos alunos e guarda as entregas e as notas; ela fica na aba **Arquivadas**, de onde volta com **Reativar**. **Excluir** só existe para tarefa sem nenhuma entrega.
+**Arquivar e excluir.** **Arquivar** tira a tarefa dos alunos e guarda as entregas e as notas; ela fica na aba **Arquivadas**, de onde volta com **Reativar**. **Excluir** só aparece na tarefa sem nenhum registro de aluno: nem entrega, nem nota lançada, nem prazo prorrogado.
 
 <!-- P1 (trilha C) escreve aqui: entregas, correção, devolução e ZIP (C8). -->
 

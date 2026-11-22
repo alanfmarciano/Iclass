@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { countsLine, deadlineLine, latePolicyText, localDateTimeText, relativeDeadlineText, studentLabel } from './assignmentText'
+import { countsLine, deadlineLine, latePolicyText, localDateTimeText, relativeDeadlineText, studentLabel, hidePlaceholderEmails } from './assignmentText'
 
 describe('textos das telas de tarefa', () => {
   it('prazo no relógio da escola (os campos local do servidor) e quanto falta pelo relógio do servidor', () => {
@@ -12,6 +12,17 @@ describe('textos das telas de tarefa', () => {
     expect(deadlineLine({ status: 'rascunho', dueAt: null, local: {} }, 0)).toBe('Sem prazo definido')
     expect(relativeDeadlineText(1000 + 60000, 1000)).toBe('falta 1 minuto')
     expect(relativeDeadlineText(24 * 3600 * 1000 + 5, 0)).toBe('falta 1 dia')
+  })
+
+  it('o arredondamento nunca mostra "24 horas" nem "60 minutos" (vira 1 dia e 1 hora)', () => {
+    const HOUR = 3600 * 1000
+    expect(relativeDeadlineText(23 * HOUR + 40 * 60000, 0)).toBe('falta 1 dia')
+    expect(relativeDeadlineText(0, 23 * HOUR + 45 * 60000)).toBe('terminou há 1 dia')
+    expect(relativeDeadlineText(23 * HOUR + 20 * 60000, 0)).toBe('faltam 23 horas')
+    expect(relativeDeadlineText(59 * 60000 + 45000, 0)).toBe('falta 1 hora')
+    expect(relativeDeadlineText(59 * 60000, 0)).toBe('faltam 59 minutos')
+    expect(relativeDeadlineText(HOUR + 31 * 60000, 0)).toBe('faltam 2 horas')
+    expect(relativeDeadlineText(2 * 24 * HOUR - 1000, 0)).toBe('falta 1 dia')
   })
 
   it('contadores e regra de atraso por extenso', () => {
@@ -30,5 +41,10 @@ describe('textos das telas de tarefa', () => {
     expect(studentLabel({ studentEmail: internal, name: '' })).toMatchObject({ name: 'sem e-mail', email: 'sem e-mail', title: 'sem e-mail' })
     expect(JSON.stringify(studentLabel({ studentEmail: internal }))).not.toMatch(/sem-email\.invalid/)
     expect(studentLabel({ studentEmail: 'ana@x.com', name: 'Ana' }).title).toBe('Ana (ana@x.com)')
+    // Texto livre do servidor (recusa no formulário ou no diálogo).
+    expect(hidePlaceholderEmails(`O aluno ${internal} já enviou; fale com (ALUNO-ALU_1@SEM-EMAIL.INVALID).`)).toBe('O aluno sem e-mail já enviou; fale com (sem e-mail).')
+    expect(hidePlaceholderEmails('Ana (ana@x.com) já enviou.')).toBe('Ana (ana@x.com) já enviou.')
+    expect(hidePlaceholderEmails('')).toBe('')
+    expect(hidePlaceholderEmails(undefined)).toBe(undefined)
   })
 })

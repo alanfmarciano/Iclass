@@ -515,6 +515,9 @@ function presentAssignment(memory, raw, { tz, full = true } = {}) {
         archivedBy: task.archivedBy,
         local: localFields(task, tz),
         counts: assignments.assignmentStatusSummary(memory, task),
+        // A mesma regra do POST /:id/delete: qualquer linha de aluno (nota sem envio,
+        // prorrogação, entrega em mãos) segura a tarefa. A lista só mostra "Excluir" com true.
+        deletable: assignments.submissionsForAssignment(memory, task.id).length === 0,
     };
     if (full) {
         out.instructions = task.instructions;

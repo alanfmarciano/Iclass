@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   auth: { accountRole: 'professor' },
   paths: [],
   assignment: null,
+  roster: [],
 }))
 
 const OPTIONS = {
@@ -42,7 +43,7 @@ vi.mock('../../../hooks/useApi', () => ({
     if (path) mocks.paths.push(path)
     if (!path) return { data: null, loading: false, error: null, refetch: vi.fn() }
     if (path.startsWith('/api/admin/assignments/form-options')) return { data: OPTIONS, loading: false, error: null, refetch: vi.fn() }
-    return { data: { success: true, assignment: mocks.assignment, roster: [] }, loading: false, error: null, refetch: vi.fn() }
+    return { data: { success: true, assignment: mocks.assignment, roster: mocks.roster }, loading: false, error: null, refetch: vi.fn() }
   },
 }))
 
@@ -89,6 +90,7 @@ beforeEach(() => {
   mocks.auth = { accountRole: 'professor' }
   mocks.paths = []
   mocks.assignment = { ...SAVED }
+  mocks.roster = []
   mocks.post.mockResolvedValue({ success: true, changed: true, assignment: SAVED })
 })
 
@@ -232,6 +234,24 @@ describe('Editar tarefa', () => {
     await user.click(screen.getByRole('button', { name: 'Salvar e publicar' }))
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/assignments/asg_1_aaaaaa/publish', {}))
     expect(mocks.post.mock.calls[0]).toEqual(['/api/admin/assignments/asg_1_aaaaaa/update', { response: { files: true, text: true, link: false } }])
+  })
+
+  it('aluno sem e-mail na lista da tarefa: o endereço interno nunca aparece no formulário (pendência da J1)', async () => {
+    const internal = 'aluno-alu_00000000000000a1@sem-email.invalid'
+    mocks.roster = [
+      { studentEmail: internal, studentId: 'alu_00000000000000a1', semEmail: true, name: 'Zeca Sem Email', matricula: '2026-009', status: 'para_corrigir', versions: 1 },
+      { studentEmail: 'ana@x.com', studentId: 'alu_00000000000000a2', semEmail: false, name: 'Ana Lima', matricula: '2026-001', status: 'nao_entregue', versions: 0 },
+    ]
+    // Recusa do servidor que cite o aluno também não mostra o endereço interno.
+    mocks.post.mockRejectedValueOnce(Object.assign(new Error(`Aluno ${internal} já enviou.`), { field: 'reason', data: { error: `Aluno ${internal} já enviou.`, field: 'reason' } }))
+    const user = userEvent.setup()
+    const { container } = renderAt('/tarefas/asg_1_aaaaaa/editar')
+    expect(container.textContent).not.toMatch(/sem-email\.invalid/)
+    await user.clear(screen.getByLabelText('Título'))
+    await user.type(screen.getByLabelText('Título'), 'Relatório final')
+    await user.click(screen.getByRole('button', { name: /^Salvar/ }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalled())
+    expect(document.body.textContent).not.toMatch(/sem-email\.invalid/)
   })
 
   it('arquivada e conta só de consulta: formulário sem poder mudar e sem os botões de salvar', () => {

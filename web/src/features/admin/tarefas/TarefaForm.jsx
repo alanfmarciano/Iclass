@@ -16,7 +16,7 @@ import { useToast } from '../../../context/ToastProvider'
 import { api } from '../../../lib/api'
 import { markdownToHtml } from '../../../lib/contentMarkdown'
 import { createBody, deadlineChanged, emptyForm, formFieldOf, formFromAssignment, limitsOf, updateBody, validateForm } from './assignmentForm'
-import { latePolicyText } from './assignmentText'
+import { hidePlaceholderEmails, latePolicyText } from './assignmentText'
 
 // Formulário "Nova tarefa" e "Editar tarefa" (fase 3, C7 / P1-e; FUN-01, D6, D8 e D17 do
 // P1). Rotas /tarefas/nova e /tarefas/:id/editar.
@@ -129,7 +129,8 @@ export default function TarefaForm() {
     })
   }
 
-  function showError(field, error) {
+  function showError(field, message) {
+    const error = hidePlaceholderEmails(message)
     const key = formFieldOf(field) || ''
     setErrors(key ? { [key]: error } : {})
     setSummary(error)

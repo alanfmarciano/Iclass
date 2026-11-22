@@ -15,7 +15,7 @@ import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { useAuth } from '../../context/AuthProvider'
 import { useToast } from '../../context/ToastProvider'
 import { api } from '../../lib/api'
-import { assignmentStatusInfo, closeLine, countsLine, deadlineLine, opensLine } from './tarefas/assignmentText'
+import { assignmentStatusInfo, closeLine, countsLine, deadlineLine, hidePlaceholderEmails, opensLine } from './tarefas/assignmentText'
 
 // Tarefas do painel (fase 3, C7 / P1-e; FUN-01): a lista da turma em cartões, com o prazo
 // no relógio da escola (relativo e absoluto), a situação (Rascunho, Publicada, Arquivada)
@@ -76,6 +76,15 @@ export default function TarefasPage() {
   }
 
   async function run() {
+    try {
+      await runAction()
+    } catch (error) {
+      // O diálogo mostra a recusa do servidor; nunca com o endereço interno de aluno.
+      throw Object.assign(new Error(hidePlaceholderEmails(error?.message) || 'Não foi possível concluir. Tente de novo.'), { data: error?.data, status: error?.status })
+    }
+  }
+
+  async function runAction() {
     const { kind, assignment } = pending
     const base = `/api/admin/assignments/${encodeURIComponent(assignment.id)}`
     if (kind === 'publish') {
@@ -179,7 +188,7 @@ const DIALOGS = {
   }),
   delete: (assignment) => ({
     title: 'Excluir a tarefa?',
-    message: `"${assignment.title}" é apagada de vez. Só dá para excluir tarefa sem nenhuma entrega; com entrega, arquive.`,
+    message: `"${assignment.title}" é apagada de vez. Só dá para excluir tarefa sem nenhum registro de aluno; com entrega ou nota, arquive.`,
     confirmLabel: 'Excluir',
     tone: 'danger',
   }),
@@ -199,7 +208,9 @@ function AssignmentCard({ assignment, now, readOnly, onAction }) {
   const editPath = `/tarefas/${encodeURIComponent(assignment.id)}/editar`
   const opens = opensLine(assignment, now)
   const close = closeLine(assignment)
-  const hasDelivery = (assignment.counts?.enviadas || 0) > 0
+  // "Excluir" só quando o servidor deixa (deletable: nenhuma linha de aluno, nem nota sem
+  // envio ou prorrogação); resposta sem o campo cai nas contagens.
+  const canDelete = typeof assignment.deletable === 'boolean' ? assignment.deletable : !((assignment.counts?.enviadas || 0) > 0)
   const actionClass = 'min-h-[44px] sm:min-h-0'
   return (
     <Card className="p-4">
@@ -207,7 +218,7 @@ function AssignmentCard({ assignment, now, readOnly, onAction }) {
         <div className="min-w-0 space-y-1">
           <div className="flex flex-wrap items-center gap-2">
             <h2 className="min-w-0 break-words text-base font-semibold text-text">
-              <Link to={editPath} className="hover:underline">{assignment.title}</Link>
+              <Link to={editPath} className="inline-flex min-h-[44px] items-center hover:underline sm:min-h-0">{assignment.title}</Link>
             </h2>
             <Badge tone={info.tone}>{info.label}</Badge>
           </div>
@@ -227,7 +238,7 @@ function AssignmentCard({ assignment, now, readOnly, onAction }) {
               {assignment.status === 'rascunho' && <Button size="sm" icon={Send} className={actionClass} onClick={() => onAction('publish', assignment)} aria-label={`Publicar a tarefa ${assignment.title}`}>Publicar</Button>}
               {assignment.status !== 'arquivada' && <Button size="sm" variant="secondary" icon={Archive} className={actionClass} onClick={() => onAction('archive', assignment)} aria-label={`Arquivar a tarefa ${assignment.title}`}>Arquivar</Button>}
               {assignment.status === 'arquivada' && <Button size="sm" variant="secondary" icon={ArchiveRestore} className={actionClass} onClick={() => onAction('unarchive', assignment)} aria-label={`Reativar a tarefa ${assignment.title}`}>Reativar</Button>}
-              {!hasDelivery && <Button size="sm" variant="ghost" icon={Trash2} className={`text-danger ${actionClass}`} onClick={() => onAction('delete', assignment)} aria-label={`Excluir a tarefa ${assignment.title}`}>Excluir</Button>}
+              {canDelete && <Button size="sm" variant="ghost" icon={Trash2} className={`text-danger ${actionClass}`} onClick={() => onAction('delete', assignment)} aria-label={`Excluir a tarefa ${assignment.title}`}>Excluir</Button>}
             </>
           )}
         </div>
