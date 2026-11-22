@@ -76,6 +76,8 @@ const MESSAGES = Object.freeze({
     tooManyFields: 'Envio com campos demais. Atualize a página e tente de novo.',
     fieldTooLarge: 'Um campo do envio passou do tamanho permitido.',
     badRequest: 'O envio chegou incompleto. Confira a conexão e tente de novo.',
+    invalidForm: 'O envio não chegou no formato esperado. Atualize a página e tente de novo. Se continuar, renomeie o arquivo com um nome simples.',
+    readFailed: 'Não foi possível ler o arquivo agora. Tente de novo em alguns segundos.',
     receiveFailed: 'Não foi possível receber os arquivos agora. Tente de novo em alguns segundos.',
     writeFiles: 'Não foi possível gravar os arquivos do envio. Tente de novo.',
 });
@@ -197,9 +199,9 @@ function presentRedo(sub, window) {
 }
 
 // Uma linha da lista do aluno (contrato C4 do P1: situação e prazo efetivo prontos).
-function listRow(task, rawSub, { now, tz }) {
+function listRow(task, rawSub, { now, tz, classOpen = true }) {
     const sub = rawSub ? assignments.normalizeSubmission(rawSub) : null;
-    const situation = assignments.studentSituation(task, sub, { now, timezone: tz });
+    const situation = assignments.situationForClass(assignments.studentSituation(task, sub, { now, timezone: tz }), classOpen);
     const last = sub && sub.versions.length ? sub.versions[sub.versions.length - 1] : null;
     const devolucao = presentReturn(sub);
     return {
@@ -299,16 +301,21 @@ function multerErrorResponse(err, req, res, rules) {
             case 'LIMIT_FIELD_KEY':
                 return sendError(res, 400, MESSAGES.tooManyFields, { code: 'too_many_fields' });
             default:
-                return sendError(res, 400, MESSAGES.badRequest, { code: 'bad_upload' });
+                return sendError(res, 400, MESSAGES.invalidForm, { code: 'invalid_form' });
         }
     }
     if (err && (err.code === 'ENOSPC' || err.code === 'EDQUOT')) return sendError(res, 507, assignmentFiles.DISK_FULL_MESSAGE, { code: 'disk_full' });
-    // Formulário que o pedido estragou (cortado, conexão caída, cabeçalho multipart
-    // inválido): é do envio, não do servidor.
+    // Formulário que o pedido estragou: é do envio, não do servidor. Cortado no meio
+    // (conexão caída) pede para conferir a conexão; cabeçalho multipart inválido (nome de
+    // arquivo com caractere de controle, sem boundary) vem de um cliente com defeito e não
+    // tem a ver com a conexão.
     const message = String((err && err.message) || '');
-    if (/^(Unexpected end of (form|file)|Malformed |Multipart: |Unsupported content type|Missing Content-Type|Request (aborted|closed|error)$|aborted$)/.test(message)
+    if (/^(Unexpected end of (form|file)|Request (aborted|closed|error)$|aborted$)/.test(message)
         || (err && (err.code === 'ECONNRESET' || err.code === 'ECONNABORTED'))) {
         return sendError(res, 400, MESSAGES.badRequest, { code: 'bad_upload' });
+    }
+    if (/^(Malformed |Multipart: |Unsupported content type|Missing Content-Type)/.test(message)) {
+        return sendError(res, 400, MESSAGES.invalidForm, { code: 'invalid_form' });
     }
     logError('[TAREFAS] Falha ao receber os arquivos de uma entrega', err);
     return sendError(res, 503, MESSAGES.receiveFailed, { code: 'receive_failed', retryable: true });
@@ -514,25 +521,29 @@ function createStudentAssignmentsRouter() {
         if (!cls) return undefined;
         const now = Date.now();
         const tz = timezone();
+        const classOpen = assignments.classAcceptsSubmissions(cls);
         const rows = assignments.assignmentsForClass(db.memory, { courseId: cls.courseId, studentClass: cls.name, statuses: ['publicada'] })
             .map(raw => assignments.normalizeAssignment(raw))
             .filter(task => assignments.isVisibleToStudent(task, { now }))
-            .map(task => listRow(task, assignments.findSubmission(db.memory, task.id, req.studentEmail), { now, tz }))
+            .map(task => listRow(task, assignments.findSubmission(db.memory, task.id, req.studentEmail), { now, tz, classOpen }))
             .sort(compareRows);
         res.set('Cache-Control', 'no-store');
-        return res.json({ success: true, assignments: rows, serverNow: now, timezone: tz });
+        return res.json({ success: true, assignments: rows, turmaEncerrada: !classOpen, serverNow: now, timezone: tz });
     });
 
     router.get('/api/student/assignments/:id', validateStudentSession, (req, res) => {
         const now = Date.now();
         const found = loadVisibleAssignment(req, res, { now });
         if (!found) return undefined;
-        const { task } = found;
+        const { task, cls } = found;
         const tz = timezone();
         const rawSub = assignments.findSubmission(db.memory, task.id, req.studentEmail);
         const sub = rawSub ? assignments.normalizeSubmission(rawSub) : null;
         const acceptance = assignments.submissionAcceptance(task, sub, { now });
-        const situation = assignments.studentSituation(task, sub, { now, timezone: tz });
+        // Turma encerrada: o envio responderia 409 class_closed; o detalhe já diz isso.
+        const classOpen = assignments.classAcceptsSubmissions(cls);
+        const accepts = acceptance.accepts && classOpen;
+        const situation = assignments.situationForClass(assignments.studentSituation(task, sub, { now, timezone: tz }), classOpen);
         const rules = assignments.submissionRules(task, entregasSettings());
         res.set('Cache-Control', 'no-store');
         return res.json({
@@ -564,9 +575,10 @@ function createStudentAssignmentsRouter() {
                 textMax: rules.textMax,
                 linkMax: rules.linkMax,
             },
-            aceitaEnvio: acceptance.accepts,
-            motivo: acceptance.accepts ? '' : acceptance.message,
-            atrasoAgora: acceptance.accepts && acceptance.late,
+            aceitaEnvio: accepts,
+            motivo: accepts ? '' : (classOpen ? acceptance.message : MESSAGES.classClosed),
+            atrasoAgora: accepts && acceptance.late,
+            turmaEncerrada: !classOpen,
             situacao: situation.code,
             situacaoTexto: situation.label,
             minhaEntrega: sub ? {
@@ -609,7 +621,7 @@ function createStudentAssignmentsRouter() {
         const space = await assignmentFiles.checkFreeSpace({ minFreeMb: entregas.discoLivreMinimoMb, incomingBytes: Number.isFinite(declared) ? declared : 0 });
         if (!space.ok) return refuseBeforeBody(req, res, () => sendError(res, 507, assignmentFiles.DISK_FULL_MESSAGE, { code: 'disk_full' }));
         if (!/^multipart\/form-data/i.test(String(req.get('content-type') || ''))) {
-            return refuseBeforeBody(req, res, () => sendError(res, 400, MESSAGES.badRequest, { code: 'bad_upload' }));
+            return refuseBeforeBody(req, res, () => sendError(res, 400, MESSAGES.invalidForm, { code: 'invalid_form' }));
         }
 
         const uploadError = await receiveUpload(req, res, rules);
@@ -686,15 +698,23 @@ function createStudentAssignmentsRouter() {
         } catch (err) {
             return sendError(res, 404, MESSAGES.fileMissing, { code: 'file_missing' });
         }
-        res.set(assignmentFiles.downloadHeaders(file));
-        res.set('Content-Length', String(stat.size));
+        // Os cabeçalhos do anexo só entram quando o arquivo abriu: uma falha de leitura antes
+        // do primeiro byte responde 503 retryable em JSON, sem Content-Disposition de anexo
+        // (contrato nomes_e_formatos.erros); depois do primeiro byte, a conexão é cortada.
+        const headers = { ...assignmentFiles.downloadHeaders(file), 'Content-Length': String(stat.size) };
         const stream = fs.createReadStream(abs);
+        stream.once('open', () => {
+            res.set(headers);
+            stream.pipe(res);
+        });
+        res.once('close', () => stream.destroy());
         stream.on('error', err => {
             logError('[TAREFAS] Falha ao ler o arquivo de uma entrega', err);
-            if (!res.headersSent) sendError(res, 500, 'Não foi possível ler o arquivo agora.');
-            else res.destroy(err);
+            if (res.headersSent) return res.destroy(err);
+            Object.keys(headers).forEach(name => res.removeHeader(name));
+            return sendError(res, 503, MESSAGES.readFailed, { code: 'read_failed', retryable: true });
         });
-        return stream.pipe(res);
+        return undefined;
     });
 
     return router;

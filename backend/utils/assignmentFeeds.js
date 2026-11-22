@@ -10,7 +10,8 @@
 //   em que apareceu para o aluno (a publicação ou a abertura, a mais tarde);
 // - 'tarefa:<id>:prazo' Prazo termina em breve: tarefa que o aluno ainda precisa enviar
 //   ('A fazer' ou 'Refazer') e que aceita envio, com o prazo efetivo dele nas próximas
-//   24 h; no sino desde 24 h antes do prazo, some quando ele envia ou quando o prazo passa.
+//   24 h; no sino desde 24 h antes do prazo (ou desde que a tarefa apareceu, se for depois),
+//   some quando ele envia, quando o prazo passa ou quando a turma é encerrada.
 // Os itens de devolução e de "refazer" entram no C6 (P1-d), neste mesmo provedor.
 // Não lido: depois do último "Marcar como lidas" (seenAt), como as notas e as dúvidas.
 //
@@ -43,12 +44,16 @@ function visibleTasks(ctx, now) {
     const courseId = String((cls && cls.courseId) || (ctx && ctx.courseId) || '');
     const studentClass = String((cls && cls.name) || (ctx && ctx.studentClass) || '');
     const tz = timezone();
+    // Turma encerrada (quando o B10 ligar): a tarefa continua no sino e no calendário, mas
+    // sem pedir envio (situationForClass), como a lista e o detalhe.
+    const classOpen = assignments.classAcceptsSubmissions(cls);
     return assignments.assignmentsForClass(ctx.memory, { courseId, studentClass, statuses: ['publicada'] })
         .map(raw => assignments.normalizeAssignment(raw))
         .filter(task => assignments.isVisibleToStudent(task, { now }))
         .map(task => {
             const sub = assignments.findSubmission(ctx.memory, task.id, ctx.email);
-            return { task, sub, situation: assignments.studentSituation(task, sub, { now, timezone: tz }) };
+            const situation = assignments.situationForClass(assignments.studentSituation(task, sub, { now, timezone: tz }), classOpen);
+            return { task, sub, situation };
         });
 }
 
@@ -71,7 +76,10 @@ function notificationItems(ctx) {
         });
         if (NEEDS_SENDING.has(situation.code) && situation.aceitaEnvio && situation.dueAt !== null
             && situation.dueAt > now && situation.dueAt - now <= DAY_MS) {
-            const at = situation.dueAt - DAY_MS;
+            // Desde 24 h antes do prazo, mas nunca antes de a tarefa aparecer: publicada já
+            // com menos de 24 h, o lembrete nasce com a "Nova tarefa" e não sai como lido
+            // por um "Marcar como lidas" anterior à publicação.
+            const at = Math.max(situation.dueAt - DAY_MS, shownAt);
             items.push({
                 id: `tarefa:${task.id}:prazo`,
                 type: 'tarefa',

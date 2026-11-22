@@ -648,3 +648,121 @@ test('pré-visualização: lista e detalhe como aluno sem entrega; envio e downl
     assert.equal(download.status, 403);
     assert.equal(JSON.stringify(db.memory.assignmentSubmissions), before);
 });
+
+// ------------------------------------------------------------ ajuste 1 do C5
+test('download: falha ao ler o arquivo responde 503 retryable em JSON, sem cabeçalho de anexo (contrato de erros)', async () => {
+    const item = task();
+    db.memory.assignments = [item];
+    const sent = await submit(ANA, item.id, { files: [['Relatório.pdf', PDF]] });
+    assert.equal(sent.status, 201, JSON.stringify(sent.body));
+    const fileId = sent.body.version.files[0].id;
+    const { Readable } = require('node:stream');
+    const original = fs.createReadStream;
+    fs.createReadStream = () => {
+        const stream = new Readable({ read() {} });
+        process.nextTick(() => stream.emit('error', Object.assign(new Error('falha de leitura simulada'), { code: 'EIO' })));
+        return stream;
+    };
+    let res;
+    try {
+        res = await as(ANA, request(app).get(`/api/student/assignments/${item.id}/files/${fileId}`));
+    } finally {
+        fs.createReadStream = original;
+    }
+    assert.equal(res.status, 503);
+    assert.deepEqual(res.body, { success: false, error: 'Não foi possível ler o arquivo agora. Tente de novo em alguns segundos.', code: 'read_failed', retryable: true });
+    assert.match(res.headers['content-type'], /^application\/json/);
+    assert.equal(res.headers['content-disposition'], undefined);
+    // A leitura seguinte funciona.
+    const again = await as(ANA, request(app).get(`/api/student/assignments/${item.id}/files/${fileId}`));
+    assert.equal(again.status, 200);
+    assert.match(again.headers['content-disposition'], /^attachment;/);
+});
+
+test('sino: tarefa publicada já com menos de 24 h de prazo traz o lembrete não lido, mesmo depois de um "Marcar como lidas" anterior', async () => {
+    await as(ANA, request(app).post(`/api/student/notifications/seen?${Q}`)).send({});
+    await new Promise(resolve => setTimeout(resolve, 15));
+    const item = task({ title: 'Entrega relâmpago', dueAt: Date.now() + 3 * HOUR });
+    item.publishedAt = Date.now();
+    db.memory.assignments = [item];
+    const bell = await as(ANA, request(app).get(`/api/student/notifications?${Q}`));
+    assert.equal(bell.status, 200);
+    const fresh = bell.body.items.find(entry => entry.id === `tarefa:${item.id}:nova`);
+    const deadline = bell.body.items.find(entry => entry.id === `tarefa:${item.id}:prazo`);
+    assert.ok(fresh && deadline, JSON.stringify(bell.body.items));
+    assert.equal(fresh.unread, true);
+    assert.equal(deadline.unread, true, 'o lembrete nunca mostrado não pode sair como lido');
+    assert.ok(new Date(deadline.at).getTime() >= item.publishedAt, 'o lembrete não nasce antes da publicação');
+    // Tarefa antiga (publicada há dias) com prazo em 5 h: o lembrete continua em prazo - 24 h.
+    const old = task({ title: 'Antiga', dueAt: Date.now() + 5 * HOUR });
+    old.publishedAt = Date.now() - 3 * DAY;
+    db.memory.assignments = [old];
+    const oldBell = await as(ANA, request(app).get(`/api/student/notifications?${Q}`));
+    const oldDeadline = oldBell.body.items.find(entry => entry.id === `tarefa:${old.id}:prazo`);
+    assert.equal(new Date(oldDeadline.at).getTime(), old.dueAt - DAY);
+    assert.equal(oldDeadline.unread, false, 'apareceu antes do último "Marcar como lidas"');
+});
+
+test('turma encerrada: a lista, o detalhe, o sino e o calendário não oferecem envio (mesma regra do POST)', async () => {
+    const item = task({ title: 'Projeto final', dueAt: Date.now() + 5 * HOUR });
+    db.memory.assignments = [item];
+    const original = academicCalendar.assertClassOpen;
+    academicCalendar.assertClassOpen = cls => { if (cls && cls.name === CLASS) throw new academicCalendar.ClassClosedError(cls); return true; };
+    try {
+        const list = await as(ANA, request(app).get(`/api/student/assignments?${Q}`));
+        assert.equal(list.status, 200);
+        assert.equal(list.body.turmaEncerrada, true);
+        const row = list.body.assignments[0];
+        assert.equal(row.aceitaEnvio, false);
+        assert.equal(row.situacao, 'a_fazer');
+        assert.equal(row.situacaoTexto, 'Turma encerrada');
+        const detail = await as(ANA, request(app).get(`/api/student/assignments/${item.id}?${Q}`));
+        assert.equal(detail.status, 200);
+        assert.equal(detail.body.aceitaEnvio, false);
+        assert.equal(detail.body.turmaEncerrada, true);
+        assert.equal(detail.body.motivo, 'Esta turma foi encerrada. O envio não é mais aceito.');
+        assert.equal(detail.body.situacaoTexto, 'Turma encerrada');
+        const bell = await as(ANA, request(app).get(`/api/student/notifications?${Q}`));
+        const ids = bell.body.items.map(entry => entry.id);
+        assert.ok(ids.includes(`tarefa:${item.id}:nova`));
+        assert.ok(!ids.includes(`tarefa:${item.id}:prazo`), 'turma encerrada não pede envio no sino');
+        const calendar = await as(ANA, request(app).get(`/api/student/calendar-events?${Q}`));
+        const event = calendar.body.find(entry => entry.id === `tarefa:${item.id}`);
+        assert.match(event.description, /Situação: Turma encerrada\./);
+        assert.equal((await submit(ANA, item.id, { text: 'oi' })).body.code, 'class_closed');
+    } finally {
+        academicCalendar.assertClassOpen = original;
+    }
+    // Turma aberta (hoje, sem efeito): tudo como antes.
+    const open = await as(ANA, request(app).get(`/api/student/assignments/${item.id}?${Q}`));
+    assert.equal(open.body.aceitaEnvio, true);
+    assert.equal(open.body.turmaEncerrada, false);
+    assert.equal(open.body.situacaoTexto, 'A fazer');
+});
+
+test('formulário com defeito (corpo JSON, nome de arquivo com caractere de controle) recebe invalid_form, não a mensagem de conexão', async () => {
+    const item = task();
+    db.memory.assignments = [item];
+    const json = await as(ANA, request(app).post(`/api/student/assignments/${item.id}/submit`)).send({ text: 'oi' });
+    assert.equal(json.status, 400);
+    assert.equal(json.body.code, 'invalid_form');
+    assert.doesNotMatch(json.body.error, /conexão/);
+    const boundary = '----iclass-teste';
+    const raw = `--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="relat\u0000orio.pdf"\r\nContent-Type: application/pdf\r\n\r\n${PDF.toString('latin1')}\r\n--${boundary}--\r\n`;
+    const nul = await as(ANA, request(app).post(`/api/student/assignments/${item.id}/submit`))
+        .set('Content-Type', `multipart/form-data; boundary=${boundary}`)
+        .send(Buffer.from(raw, 'latin1'));
+    assert.equal(nul.status, 400);
+    assert.equal(nul.body.code, 'invalid_form');
+    assert.equal(nul.body.error, 'O envio não chegou no formato esperado. Atualize a página e tente de novo. Se continuar, renomeie o arquivo com um nome simples.');
+    // Cortado no meio (sem o fim do formulário): continua a mensagem de conexão.
+    const cut = await as(ANA, request(app).post(`/api/student/assignments/${item.id}/submit`))
+        .set('Content-Type', `multipart/form-data; boundary=${boundary}`)
+        .send(Buffer.from(`--${boundary}\r\nContent-Disposition: form-data; name="files"; filename="a.pdf"\r\nContent-Type: application/pdf\r\n\r\n%PDF-1.4\n`, 'latin1'));
+    assert.equal(cut.status, 400);
+    assert.equal(cut.body.code, 'bad_upload');
+    assert.match(cut.body.error, /conexão/);
+    assert.equal(db.memory.assignmentSubmissions.length, 0);
+    assert.deepEqual(storedFiles(), []);
+    assert.deepEqual(receivingFiles(), []);
+});

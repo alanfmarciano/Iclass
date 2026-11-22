@@ -45,6 +45,7 @@ const schoolTime = require('./schoolTime.js');
 const assignmentFiles = require('./assignmentFiles.js');
 const { normalizeEmail, studentInClass, isClosedStudentStatus, isAnonymizedStudent, displayName } = require('./students.js');
 const { compareText } = require('./textSearch.js');
+const academicCalendar = require('./academicCalendar.js');
 
 const SCHEMA_VERSION = 1;
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -848,6 +849,32 @@ function latePolicyText(assignment) {
     return `Depois do prazo, a entrega é aceita e fica marcada como atrasada.${close}`;
 }
 
+// ------------------------------------------------------------ turma encerrada (P1-c, C5)
+// A turma recebe envio? false quando academicCalendar.assertClassOpen recusa (turma
+// encerrada; sem efeito até o B10 ligar). A lista, o detalhe, o sino e o calendário do
+// aluno usam a mesma resposta que o POST do envio, para não oferecer o envio que ele
+// recusaria com 409 class_closed. Chamada pelo objeto do módulo (o teste troca a função).
+function classAcceptsSubmissions(cls) {
+    try {
+        return academicCalendar.assertClassOpen(cls) !== false;
+    } catch (err) {
+        if (err && err.code === academicCalendar.CLASS_CLOSED_CODE) return false;
+        throw err;
+    }
+}
+
+const CLOSED_CLASS_LABEL = 'Turma encerrada';
+const SITUATIONS_WAITING_FOR_STUDENT = new Set(['a_fazer', 'atrasada', 'refazer', 'nao_aberta']);
+
+// Situação do aluno numa turma encerrada: não aceita envio, e o que esperava o envio dele
+// ('A fazer', 'Atrasada', 'Refazer', 'Abre em ...') passa a dizer 'Turma encerrada'. O
+// código continua o mesmo; o que já foi enviado ou devolvido não muda.
+function situationForClass(situation, classOpen) {
+    if (classOpen || !situation) return situation;
+    const label = SITUATIONS_WAITING_FOR_STUDENT.has(situation.code) ? CLOSED_CLASS_LABEL : situation.label;
+    return { ...situation, aceitaEnvio: false, label, turmaEncerrada: true };
+}
+
 module.exports = {
     SCHEMA_VERSION,
     ASSIGNMENT_STATUSES,
@@ -899,4 +926,6 @@ module.exports = {
     fileReceiptCode,
     versionReceiptCode,
     latePolicyText,
+    classAcceptsSubmissions,
+    situationForClass,
 };
