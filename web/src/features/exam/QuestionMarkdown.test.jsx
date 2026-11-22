@@ -125,9 +125,58 @@ describe('[UC-PROVA-004] QuestionMarkdown: enunciado, alternativa e explicação
     expect(root.querySelector('code').textContent).toBe('<p>')
   })
 
+  // Ajuste 2 do A5: a alternativa era lida como bloco Markdown, e uma alternativa que é
+  // um sinal virava estrutura: '+', '-' e '*' um item de lista vazio, '>=' uma citação
+  // com '=', '#' um título vazio, '1984.' uma lista vazia. Em prova de operadores (Java,
+  // Excel, SQL), o aluno via a alternativa vazia ou com outro texto.
+  it('alternativa que é um sinal ou começa com um aparece como foi escrita', () => {
+    const literals = ['+', '-', '*', '>=', '<=', '>', '#', '=', '- 1', '* ponteiro', '+ item', '1984.', '1) a', '___', '---', '***', '# define X', '> 5']
+    for (const text of literals) {
+      const root = rendered(text, { choice: true, links: false, zoom: false })
+      expect(root.textContent.trim(), text).toBe(text)
+      expect(root.querySelector('ul, ol, li, h1, h2, h3, h4, h5, h6, blockquote, hr, pre'), text).toBeNull()
+      cleanup()
+    }
+  })
+
+  it('na alternativa, negrito, código, bloco de código cercado, tabela e imagem continuam', () => {
+    const root = rendered('**sim** e `x >= 1`\n\n```\nif (x > 0) {}\n```\n\n| a | b |\n| --- | --- |\n| 1 | 2 |\n\n![g](/uploads/g.png)', { choice: true, zoom: false })
+    expect(root.querySelector('strong').textContent).toBe('sim')
+    expect(root.querySelector('p code').textContent).toBe('x >= 1')
+    expect(root.querySelector('pre code').textContent).toContain('if (x > 0) {}')
+    expect(root.querySelector('.question-md-table table')).not.toBeNull()
+    expect(root.querySelector('img').getAttribute('src')).toContain('/uploads/g.png')
+  })
+
+  it('sublinhado, barra invertida, til simples e "[1]:" ficam como foram escritos', () => {
+    const literals = [
+      '__init__', 'if __name__ == "__main__":', "LIKE '_a%'", 'Complete: ____ é um protocolo.',
+      String.raw`\d+\.\d+`, String.raw`printf("\"oi\"\n")`, String.raw`C:\Users\aluno`, String.raw`\\servidor\pasta`,
+      '~x & ~y', '[1]: veja a tabela',
+    ]
+    for (const text of literals) {
+      expect(rendered(text).textContent.trim(), text).toBe(text)
+      cleanup()
+      expect(rendered(text, { choice: true }).textContent.trim(), text).toBe(text)
+      cleanup()
+    }
+    expect(rendered('~~riscado~~').querySelector('del').textContent).toBe('riscado')
+  })
+
+  it('no enunciado, "---" debaixo de uma linha não transforma a linha em título', () => {
+    const root = rendered('Qual é o resultado?\n---\nint x = 5;')
+    expect(root.querySelector('h1, h2')).toBeNull()
+    expect(root.textContent).toContain('Qual é o resultado?')
+    cleanup()
+    // O título do Markdown com '# ' continua valendo no enunciado.
+    expect(rendered('# Rede da sala').querySelector('h1').textContent).toBe('Rede da sala')
+  })
+
   it('as apostilas seguem o Markdown padrão (o conversor das questões não muda o leitor)', () => {
     expect(markdownToHtml('2*3*4')).toContain('<em>3</em>')
     expect(markdownToHtml('linha um\nlinha dois')).not.toContain('<br>')
     expect(markdownToHtml('<b>x</b>')).toContain('<b>x</b>')
+    expect(markdownToHtml('__init__')).toContain('<strong>init</strong>')
+    expect(markdownToHtml('- item')).toContain('<li>item</li>')
   })
 })

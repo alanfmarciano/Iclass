@@ -56,7 +56,7 @@ function typedQuestions(imageUrl) {
             alternatives: [{ text: 'Estrela' }, { text: 'Anel' }, { text: 'Barramento' }],
             correctAnswer: 'A',
         },
-        { type: 'multiple_answer', points: 2, text: 'Quais são protocolos de transporte? (2*3*4 não é protocolo)', alternatives: [{ text: 'TCP' }, { text: '<p>' }, { text: 'UDP' }], correctAnswers: ['A', 'C'] },
+        { type: 'multiple_answer', points: 2, text: 'Quais são protocolos de transporte? (2*3*4 não é protocolo)', alternatives: [{ text: 'TCP' }, { text: '<p>' }, { text: 'UDP' }, { text: '>=' }, { text: '*' }], correctAnswers: ['A', 'C'] },
         { type: 'true_false', points: 1, text: 'O IPv4 tem **32 bits**.', correctAnswer: 'A' },
         { type: 'numeric', points: 1, text: 'Qual a latência média?', numeric: { value: 3.5, tolerance: 0.25, unit: 'ms' } },
         { type: 'short_answer', points: 1, text: 'Qual o nome do endereço 255.255.255.0?', acceptedAnswers: ['Máscara de sub-rede'] },
@@ -185,6 +185,13 @@ test('[UC-PROVA-004] [UC-LAYOUT-001] prova com os seis tipos, imagem, tabela e c
         // HTML e asteriscos escritos no texto aparecem como foram escritos (ajuste do A5).
         await expect(page.getByText('Quais são protocolos de transporte? (2*3*4 não é protocolo)', { exact: true })).toBeVisible();
         await expect(page.getByRole('checkbox', { name: '<p>' })).toBeVisible();
+        // Alternativa que é um sinal aparece como sinal, e não como citação ou item de lista vazio (ajuste 2 do A5).
+        await expect(page.getByRole('checkbox', { name: /\)\s*>=$/ })).toBeVisible();
+        await expect(page.getByRole('checkbox', { name: /\)\s*\*$/ })).toBeVisible();
+        expect(await page.evaluate(() => Array.from(document.querySelectorAll('[data-exam-answer] label .question-md'))
+            .map(el => ({ text: el.textContent.trim(), structure: !!el.querySelector('ul, ol, li, blockquote, h1, hr') }))
+            .filter(item => item.text === '>=' || item.text === '*' || item.structure)))
+            .toEqual([{ text: '>=', structure: false }, { text: '*', structure: false }]);
 
         // Um campo para cada tipo.
         await page.getByRole('button', { name: /Estrela/ }).tap();
@@ -211,14 +218,26 @@ test('[UC-PROVA-004] [UC-LAYOUT-001] prova com os seis tipos, imagem, tabela e c
 
         // Toque longo (menu) na resposta escrita passa; no texto da questão continua bloqueado.
         const menuPrevented = await page.evaluate(() => {
-            const fire = (el) => {
-                const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true });
+            const fire = (el, init) => {
+                const event = new PointerEvent('contextmenu', { bubbles: true, cancelable: true, ...init });
                 el.dispatchEvent(event);
                 return event.defaultPrevented;
             };
-            return { essay: fire(document.querySelector('[data-exam-answer] textarea')), text: fire(document.querySelector('.question-md')) };
+            const essay = document.querySelector('[data-exam-answer] textarea');
+            return {
+                essayTouch: fire(essay, { pointerType: 'touch' }),
+                textTouch: fire(document.querySelector('.question-md'), { pointerType: 'touch' }),
+                essayMouse: fire(essay, { pointerType: 'mouse', button: 2 }),
+            };
         });
-        expect(menuPrevented).toEqual({ essay: false, text: true });
+        expect(menuPrevented).toEqual({ essayTouch: false, textTouch: true, essayMouse: true });
+        // Botão direito de verdade (mouse) na dissertativa: o menu do navegador não abre (ajuste 2 do A5).
+        await page.evaluate(() => {
+            window.__menus = [];
+            window.addEventListener('contextmenu', (event) => window.__menus.push(event.defaultPrevented));
+        });
+        await textAnswers.nth(1).click({ button: 'right' });
+        await expect.poll(() => page.evaluate(() => window.__menus)).toEqual([true]);
 
         await textAnswers.nth(1).fill('O traceroute mostra cada salto até o destino.');
         await expect(page.getByText('45 de 10.000')).toBeVisible();

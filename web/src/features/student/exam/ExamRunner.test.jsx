@@ -2185,27 +2185,37 @@ describe('[UC-PROVA-004] ExamRunner: um campo para cada tipo de questão', () =>
     expect(screen.queryByText('4,0')).not.toBeInTheDocument()
   })
 
-  // Rodada de ajuste do A5: no Android, o toque longo na resposta escrita dispara
+  // Rodadas de ajuste do A5: no Android, o toque longo na resposta escrita dispara
   // 'contextmenu'; antes ele era bloqueado e ia ao Monitor como "menu do botão direito".
+  // Só o toque passa: o botão direito do mouse continua bloqueado e registrado.
+  function contextMenuEvent({ pointerType, button = 0 } = {}) {
+    const event = new MouseEvent('contextmenu', { bubbles: true, cancelable: true, button })
+    if (pointerType !== undefined) Object.defineProperty(event, 'pointerType', { value: pointerType })
+    return event
+  }
+
   it('[UC-LGPD-009] toque longo (menu) dentro da resposta escrita passa sem registro; fora dela continua bloqueado e registrado', async () => {
     apiMock.get.mockResolvedValue(typedSync({ timerRemaining: 600 }))
     renderRunner()
     enterFullscreen()
     const [shortAnswer, essay] = await screen.findAllByLabelText('Sua resposta')
-    const inEssay = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
-    const inShort = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
-    const inNumeric = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    const inEssay = contextMenuEvent({ pointerType: 'touch' })
+    const inShort = contextMenuEvent({ pointerType: 'touch' })
+    // Navegador que não diz o tipo do ponteiro no menu: vale o toque que começou o gesto.
+    const inNumeric = contextMenuEvent()
+    const numeric = screen.getByLabelText('Sua resposta (número)')
     act(() => {
       essay.dispatchEvent(inEssay)
       shortAnswer.dispatchEvent(inShort)
-      screen.getByLabelText('Sua resposta (número)').dispatchEvent(inNumeric)
+      numeric.dispatchEvent(new Event('touchstart', { bubbles: true }))
+      numeric.dispatchEvent(inNumeric)
     })
     expect(inEssay.defaultPrevented).toBe(false)
     expect(inShort.defaultPrevented).toBe(false)
     expect(inNumeric.defaultPrevented).toBe(false)
-    // Na caixa de marcar e no texto da questão, o menu continua bloqueado e registrado.
-    const onCheckbox = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
-    const onText = new MouseEvent('contextmenu', { bubbles: true, cancelable: true })
+    // Na caixa de marcar e no texto da questão, até o toque longo continua bloqueado e registrado.
+    const onCheckbox = contextMenuEvent({ pointerType: 'touch' })
+    const onText = contextMenuEvent({ pointerType: 'touch' })
     act(() => {
       screen.getByRole('checkbox', { name: /UDP/ }).dispatchEvent(onCheckbox)
       screen.getByText('transporte').dispatchEvent(onText)
@@ -2213,6 +2223,37 @@ describe('[UC-PROVA-004] ExamRunner: um campo para cada tipo de questão', () =>
     expect(onCheckbox.defaultPrevented).toBe(true)
     expect(onText.defaultPrevented).toBe(true)
     await waitFor(() => expect(postsTo('/api/student/log-keystrokes').flatMap(([, body]) => body.events).map((event) => event.key)).toEqual(['contextmenu', 'contextmenu']), { timeout: 4000 })
+  })
+
+  // Ajuste 2 do A5: no computador do laboratório, o menu do Chrome dentro da resposta traz
+  // "Inspecionar", "Pesquisar no Google" e a ajuda de escrita. O botão direito do mouse
+  // (e a tecla de menu) continua bloqueado e registrado também na resposta escrita.
+  it('[UC-LGPD-009] botão direito do mouse dentro da resposta escrita continua bloqueado e registrado', async () => {
+    apiMock.get.mockResolvedValue(typedSync({ timerRemaining: 600 }))
+    renderRunner()
+    enterFullscreen()
+    const [shortAnswer, essay] = await screen.findAllByLabelText('Sua resposta')
+    const mouseInEssay = contextMenuEvent({ pointerType: 'mouse', button: 2 })
+    // Sem o tipo no evento: o último ponteiro foi o mouse, mesmo com um toque antes dele.
+    const mouseInShort = contextMenuEvent({ button: 2 })
+    // Tecla de menu do teclado: sem ponteiro nenhum.
+    const keyboardInNumeric = contextMenuEvent()
+    act(() => {
+      essay.dispatchEvent(mouseInEssay)
+      shortAnswer.dispatchEvent(new Event('touchstart', { bubbles: true }))
+      const mouseDown = new MouseEvent('pointerdown', { bubbles: true, button: 2 })
+      Object.defineProperty(mouseDown, 'pointerType', { value: 'mouse' })
+      shortAnswer.dispatchEvent(mouseDown)
+      shortAnswer.dispatchEvent(mouseInShort)
+      screen.getByLabelText('Sua resposta (número)').dispatchEvent(keyboardInNumeric)
+    })
+    expect(mouseInEssay.defaultPrevented).toBe(true)
+    expect(mouseInShort.defaultPrevented).toBe(true)
+    expect(keyboardInNumeric.defaultPrevented).toBe(true)
+    await waitFor(() => expect(postsTo('/api/student/log-keystrokes').flatMap(([, body]) => body.events)
+      .map((event) => [event.key, event.kind, event.blocked])).toEqual([
+      ['contextmenu', 'contextmenu', true], ['contextmenu', 'contextmenu', true], ['contextmenu', 'contextmenu', true],
+    ]), { timeout: 4000 })
   })
 
   it('[UC-LGPD-009] colar na resposta escrita pelo menu entra no registro (sem bloquear); Ctrl+V seguido do colar conta uma vez só', async () => {
@@ -2247,6 +2288,26 @@ describe('[UC-PROVA-004] ExamRunner: um campo para cada tipo de questão', () =>
     expect(screen.getByRole('button', { name: /<p>/ })).toHaveTextContent('<p>')
     expect(screen.getByRole('button', { name: /Lista<String> em Java/ })).toBeVisible()
     expect(screen.getByRole('button', { name: /<br>/ })).toHaveTextContent('<br>')
+  })
+
+  // Ajuste 2 do A5: '+', '-' e '*' viravam um item de lista vazio e '>=' uma citação com '='.
+  it('questão antiga (sem tipo) de operadores: as alternativas "+", "-", "*" e ">=" aparecem escritas', async () => {
+    const user = userEvent.setup()
+    const response = syncResponse({ timerRemaining: 600 })
+    response.questions = [{
+      originalNumber: 1,
+      text: 'Qual operador soma dois números em Java?',
+      alternatives: [{ letter: 'A', text: '+' }, { letter: 'B', text: '-' }, { letter: 'C', text: '*' }, { letter: 'D', text: '>=' }],
+    }]
+    apiMock.get.mockResolvedValue(response)
+    renderRunner()
+    enterFullscreen()
+    await screen.findByText('Qual operador soma dois números em Java?')
+    const choices = screen.getAllByRole('button').filter((button) => button.hasAttribute('aria-pressed'))
+    expect(choices.map((button) => button.querySelector('.question-md').textContent.trim())).toEqual(['+', '-', '*', '>='])
+    for (const button of choices) expect(button.querySelector('ul, li, blockquote')).toBeNull()
+    await user.click(choices[3])
+    expect(choices[3]).toHaveAttribute('aria-pressed', 'true')
   })
 
   it('prova sem dissertativa: o fim continua o de sempre', async () => {

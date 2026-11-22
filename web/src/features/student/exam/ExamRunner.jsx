@@ -708,10 +708,18 @@ export default function ExamRunner() {
       if (record(e, { key: 'copy', code: 'copy', mods: '', kind: 'clipboard', question: null, blocked: true, suspicious: true })) flushKeystrokes()
     }
     const onCut = onCopy
+    // Último ponteiro que tocou a página (mouse, toque ou caneta), para saber se o menu
+    // de contexto veio de um toque longo (keystrokePolicy.js isTouchContextMenu).
+    let lastPointer = null
+    const onPointerDown = (e) => {
+      if (typeof e.pointerType === 'string' && e.pointerType) lastPointer = { type: e.pointerType, at: Date.now() }
+    }
+    const onTouchStart = () => { lastPointer = { type: 'touch', at: Date.now() } }
     const onContext = (e) => {
-      // Toque longo ou botão direito dentro da resposta escrita: posicionar o cursor e
-      // selecionar a própria resposta (Android). Passa, sem registro (keystrokePolicy.js).
-      if (isAnswerFieldContextMenu(e)) return
+      // Toque longo dentro da resposta escrita: posicionar o cursor e selecionar a
+      // própria resposta (Android). Passa, sem registro. O botão direito do mouse
+      // continua bloqueado e registrado, inclusive na resposta (keystrokePolicy.js).
+      if (isAnswerFieldContextMenu(e, lastPointer)) return
       e.preventDefault()
       if (record(e, { key: 'contextmenu', code: 'contextmenu', mods: '', kind: 'contextmenu', question: null, blocked: true, suspicious: true })) flushKeystrokes()
     }
@@ -725,6 +733,8 @@ export default function ExamRunner() {
     window.addEventListener('keydown', onKeyDown, true)
     document.addEventListener('copy', onCopy, true)
     document.addEventListener('cut', onCut, true)
+    document.addEventListener('pointerdown', onPointerDown, true)
+    document.addEventListener('touchstart', onTouchStart, { capture: true, passive: true })
     document.addEventListener('contextmenu', onContext, true)
     document.addEventListener('paste', onPaste, true)
     const flushTimer = setInterval(() => flushKeystrokes(), KEYSTROKE_FLUSH_MS)
@@ -732,6 +742,8 @@ export default function ExamRunner() {
       window.removeEventListener('keydown', onKeyDown, true)
       document.removeEventListener('copy', onCopy, true)
       document.removeEventListener('cut', onCut, true)
+      document.removeEventListener('pointerdown', onPointerDown, true)
+      document.removeEventListener('touchstart', onTouchStart, { capture: true })
       document.removeEventListener('contextmenu', onContext, true)
       document.removeEventListener('paste', onPaste, true)
       clearInterval(flushTimer)

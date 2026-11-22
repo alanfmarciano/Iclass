@@ -89,43 +89,92 @@ function escapeHtmlText(value) {
 const WORD_CHAR_RE = /[\p{L}\p{N}]/u
 
 // Conversor só das questões de prova (fase 3, P3-S2, contrato C4 do P3). Difere do das
-// apostilas em três pontos, para o texto escrito antes do Markdown (e as questões de TI)
-// aparecer como foi escrito:
+// apostilas para o texto escrito antes do Markdown (e as questões de TI) aparecer como
+// foi escrito:
 // - quebra de linha mantida (breaks): o enunciado digitado em várias linhas não se junta;
 // - HTML cru é texto: '<p>', '<br>', 'Lista<String>' e '#include <stdio.h>' aparecem
 //   literais. O bloco HTML não existe (a linha vira parágrafo comum) e a tag no meio da
 //   linha vira texto escapado; a formatação é só a do Markdown;
 // - asterisco entre letras ou números não é ênfase: '2*3*4' e 'x**2' ficam com os
 //   sinais (o Markdown padrão faria '2<em>3</em>4'). '*palavra*' e '**negrito**' com
-//   espaço ou pontuação em volta continuam valendo.
+//   espaço ou pontuação em volta continuam valendo;
+// - sublinhado nunca é ênfase: '__init__', '__name__ == "__main__"', 'LIKE '_a%'' e a
+//   lacuna '____' ficam como foram escritos. Itálico e negrito na questão são com
+//   asterisco ('*itálico*', '**negrito**');
+// - barra invertida é texto: '\.' e '\d' da expressão regular, '"\""' e '\\' da string
+//   de C e Java ficam inteiros (o Markdown padrão comeria a barra);
+// - til simples não risca: '~x & ~y' (operador de bits) fica como foi escrito; riscado só
+//   com dois tis ('~~texto~~');
+// - definição de link de referência ('[1]: texto') não some: é texto;
+// - linha de '---' ou '===' debaixo do texto não transforma a linha de cima em título
+//   (título só com '# '); sozinha, '---' continua sendo uma linha horizontal.
 // Código entre crases e blocos de código não passam por essas regras (são do Markdown).
+const QUESTION_TOKENIZER = {
+  // undefined (e não false) desliga o tokenizador: false cairia no padrão.
+  html() { return undefined },
+  def() { return undefined },
+  lheading() { return undefined },
+  tag(src) {
+    const cap = this.rules.inline.tag.exec(src)
+    if (!cap) return undefined
+    return { type: 'text', raw: cap[0], text: escapeHtmlText(cap[0]) }
+  },
+  escape(src) {
+    const cap = this.rules.inline.escape.exec(src)
+    if (!cap) return undefined
+    return { type: 'text', raw: cap[0], text: escapeHtmlText(cap[0]) }
+  },
+  emStrong(src, maskedSrc, prevChar = '') {
+    const underscores = /^_+/.exec(src)
+    if (underscores) return { type: 'text', raw: underscores[0], text: underscores[0] }
+    const run = /^\*+/.exec(src)
+    if (!run || !WORD_CHAR_RE.test(prevChar || '') || !WORD_CHAR_RE.test(src.charAt(run[0].length))) return false
+    return { type: 'text', raw: run[0], text: run[0] }
+  },
+  del(src) {
+    const cap = this.rules.inline.del.exec(src)
+    if (!cap || cap[1].length < 2) return undefined
+    return { type: 'del', raw: cap[0], text: cap[2], tokens: this.lexer.inlineTokens(cap[2]) }
+  },
+}
+const QUESTION_RENDERER = {
+  // Defesa a mais: nenhum token HTML sai cru deste conversor.
+  html({ text }) { return escapeHtmlText(text) },
+}
+
 const questionMarked = new Marked({ gfm: true, breaks: true }, {
-  tokenizer: {
-    // undefined (e não false) desliga o bloco HTML: false cairia no tokenizador padrão.
-    html() { return undefined },
-    tag(src) {
-      const cap = this.rules.inline.tag.exec(src)
-      if (!cap) return undefined
-      return { type: 'text', raw: cap[0], text: escapeHtmlText(cap[0]) }
-    },
-    emStrong(src, maskedSrc, prevChar = '') {
-      const run = /^\*+/.exec(src)
-      if (!run || !WORD_CHAR_RE.test(prevChar || '') || !WORD_CHAR_RE.test(src.charAt(run[0].length))) return false
-      return { type: 'text', raw: run[0], text: run[0] }
-    },
-  },
-  renderer: {
-    // Defesa a mais: nenhum token HTML sai cru deste conversor.
-    html({ text }) { return escapeHtmlText(text) },
-  },
+  tokenizer: QUESTION_TOKENIZER,
+  renderer: QUESTION_RENDERER,
 })
 
-// question: true usa o conversor das questões de prova (acima). Sem a opção, o Markdown
-// padrão das apostilas, da ajuda e dos termos (linha em branco separa parágrafos).
-export function markdownToHtml(markdownText, { question = false } = {}) {
-  const html = question === true
-    ? questionMarked.parse(markdownText || '')
-    : marked.parse(markdownText || '', { gfm: true, breaks: false })
+// Alternativa de questão (choice: true): além das regras acima, não existe título, lista,
+// citação, linha horizontal nem bloco de código por recuo. A alternativa costuma ser uma
+// palavra, um número ou um sinal: '+', '-', '*', '>=', '#', '>', '- 1', '* ponteiro',
+// '1984.', '___' e '---' aparecem como foram escritos (como bloco, virariam um item de
+// lista vazio, um título, uma citação ou uma linha). Negrito, código entre crases, bloco
+// de código com ```, tabela e imagem continuam.
+const choiceMarked = new Marked({ gfm: true, breaks: true }, {
+  tokenizer: {
+    ...QUESTION_TOKENIZER,
+    heading() { return undefined },
+    hr() { return undefined },
+    blockquote() { return undefined },
+    list() { return undefined },
+    code() { return undefined },
+  },
+  renderer: QUESTION_RENDERER,
+})
+
+// question: true usa o conversor das questões de prova (acima); com choice: true, o das
+// alternativas. Sem a opção, o Markdown padrão das apostilas, da ajuda e dos termos
+// (linha em branco separa parágrafos).
+export function markdownToHtml(markdownText, { question = false, choice = false } = {}) {
+  let html
+  if (question === true) {
+    html = (choice === true ? choiceMarked : questionMarked).parse(markdownText || '')
+  } else {
+    html = marked.parse(markdownText || '', { gfm: true, breaks: false })
+  }
   return cleanGeneratedHtml(html)
 }
 

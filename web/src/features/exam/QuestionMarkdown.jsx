@@ -8,8 +8,12 @@ import { Modal } from '../../components/ui/Modal'
 //   script, iframe, svg nem atributo on*), com o conversor das questões (question: true):
 //   quebra de linha mantida (o enunciado digitado em várias linhas não vira uma linha só,
 //   como acontecia no <p>), HTML cru mostrado como texto ('<p>', 'Lista<String>') e
-//   asterisco entre números ('2*3*4') sem virar ênfase. O texto antigo aparece como foi
-//   escrito; só o Markdown formata.
+//   asterisco entre números ('2*3*4'), sublinhado ('__init__'), barra invertida ('\.')
+//   e til simples ('~x') sem virar formatação. O texto antigo aparece como foi escrito;
+//   só o Markdown formata.
+// - choice (alternativa): sem título, lista, citação nem linha horizontal. A alternativa
+//   que é um sinal ('+', '-', '*', '>=', '#') ou começa com um ('- 1', '1984.') aparece
+//   como foi escrita, e não como um item de lista vazio ou uma citação.
 // - Imagem de /uploads ganha ?access=<sessão> (o servidor só entrega a imagem da questão
 //   ao aluno durante a tentativa aberta ou com o gabarito liberado, backend/utils/
 //   examMedia.js) e cabe na largura (max-width 100%). Com zoom, tocar na imagem abre a
@@ -20,8 +24,8 @@ import { Modal } from '../../components/ui/Modal'
 //   prova levaria o aluno para fora dela, e a saída trava a prova.
 // O servidor nunca monta HTML de questão; esta é a única porta de entrada no navegador.
 
-export function questionMarkdownHtml(text, { links = true, zoom = false } = {}) {
-  const html = markdownToHtml(String(text ?? ''), { question: true })
+export function questionMarkdownHtml(text, { links = true, zoom = false, choice = false } = {}) {
+  const html = markdownToHtml(String(text ?? ''), { question: true, choice: choice === true })
   if (typeof DOMParser === 'undefined') return html
   const doc = new DOMParser().parseFromString(`<div>${html}</div>`, 'text/html')
   const root = doc.body.firstElementChild
@@ -56,8 +60,8 @@ export function questionMarkdownHtml(text, { links = true, zoom = false } = {}) 
   return root.innerHTML
 }
 
-export default function QuestionMarkdown({ text, className = '', links = true, zoom = true, id }) {
-  const html = useMemo(() => questionMarkdownHtml(text, { links, zoom }), [text, links, zoom])
+export default function QuestionMarkdown({ text, className = '', links = true, zoom = true, choice = false, id }) {
+  const html = useMemo(() => questionMarkdownHtml(text, { links, zoom, choice }), [text, links, zoom, choice])
   const [zoomed, setZoomed] = useState(null)
 
   function openZoom(target) {

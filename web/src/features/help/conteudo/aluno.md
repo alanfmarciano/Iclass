@@ -67,7 +67,7 @@ Cada questão mostra quanto vale. Se você apagar uma resposta, a questão volta
 - Tabela larga e código comprido rolam para o lado dentro do próprio quadro: arraste o quadro, e não a página.
 - Na prova, os links aparecem como texto e não abrem: sair da tela trava a prova.
 - A imagem só abre enquanto a sua prova está aberta.
-- Na resposta escrita, você pode tocar e segurar para mover o cursor ou selecionar uma palavra. Copiar continua bloqueado, e colar pode ficar registrado para o professor (veja o aviso nas instruções da prova).
+- No celular, dentro da resposta escrita, você pode tocar e segurar para mover o cursor ou selecionar uma palavra. No computador, o botão direito do mouse continua bloqueado em toda a prova e fica registrado. Copiar continua bloqueado, e colar pode ficar registrado para o professor (veja o aviso nas instruções da prova).
 
 ### Prova com dissertativa
 

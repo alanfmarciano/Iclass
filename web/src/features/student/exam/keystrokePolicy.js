@@ -58,14 +58,34 @@ export function isAnswerTextField(target) {
   return ANSWER_TEXT_INPUT_TYPES.has(String(field.getAttribute('type') || '').toLowerCase())
 }
 
-// Menu do botão direito (ou do toque longo, no celular) dentro de uma resposta escrita
-// (fase 3, ajuste do A5): é como o aluno posiciona o cursor e seleciona uma palavra da
-// própria resposta no Android. Não é bloqueado nem registrado como suspeito; copiar e
-// recortar desse menu continuam bloqueados (evento copy/cut), e colar entra no registro
-// (evento paste, kind 'clipboard'). Fora das respostas escritas, o menu continua
-// bloqueado e registrado.
-export function isAnswerFieldContextMenu(e) {
-  return !!e && isAnswerTextField(e.target)
+// O menu de contexto veio de um toque (toque longo no celular ou no tablet) e não do
+// botão direito do mouse nem da tecla de menu? Vale, nesta ordem: o tipo do ponteiro do
+// próprio evento (o Chrome atual manda o contextmenu como PointerEvent), a origem do
+// evento (sourceCapabilities.firesTouchEvents, Chrome do Android) e, sem nenhum dos dois,
+// o último pointerdown/touchstart da página, se foi um toque há pouco (lastPointer:
+// { type, at }). Na dúvida, não é toque: o menu fica bloqueado e registrado.
+export const TOUCH_CONTEXT_MENU_WINDOW_MS = 3000
+export function isTouchContextMenu(e, lastPointer = null, now = Date.now()) {
+  if (!e) return false
+  const pointerType = typeof e.pointerType === 'string' ? e.pointerType : ''
+  if (pointerType) return pointerType === 'touch' || pointerType === 'pen'
+  const caps = e.sourceCapabilities
+  if (caps && typeof caps.firesTouchEvents === 'boolean') return caps.firesTouchEvents
+  if (!lastPointer || (lastPointer.type !== 'touch' && lastPointer.type !== 'pen')) return false
+  const at = Number(lastPointer.at) || 0
+  return now >= at && now - at <= TOUCH_CONTEXT_MENU_WINDOW_MS
+}
+
+// Menu do toque longo dentro de uma resposta escrita (fase 3, ajustes do A5): é como o
+// aluno posiciona o cursor e seleciona uma palavra da própria resposta no Android. Não é
+// bloqueado nem registrado como suspeito; copiar e recortar desse menu continuam
+// bloqueados (evento copy/cut), e colar entra no registro (evento paste, kind
+// 'clipboard'). O botão direito do mouse (e a tecla de menu) continua bloqueado e
+// registrado em toda a prova, inclusive na resposta escrita: no computador do
+// laboratório, o menu do Chrome traz "Inspecionar", "Pesquisar no Google" e a ajuda de
+// escrita, que a prova não deixa usar.
+export function isAnswerFieldContextMenu(e, lastPointer = null, now = Date.now()) {
+  return !!e && isAnswerTextField(e.target) && isTouchContextMenu(e, lastPointer, now)
 }
 
 // O evento veio de um campo de texto fora das alternativas da prova (data-exam-answer)?

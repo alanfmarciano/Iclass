@@ -35,7 +35,7 @@ function ChoiceButtons({ question, value, onChange, disabled }) {
         className={`w-full min-w-0 text-left flex items-center gap-3 p-3 max-[359px]:gap-2 max-[359px]:p-2 rounded-lg border transition disabled:cursor-not-allowed disabled:opacity-60 ${sel ? 'border-primary bg-primary-soft' : 'border-border hover:bg-surface-2'}`}
       >
         <span className={`w-6 h-6 shrink-0 grid place-items-center rounded-full text-xs font-bold ${sel ? 'bg-primary text-primary-fg' : 'bg-surface-2 text-muted'}`}>{alt.label}</span>
-        <QuestionMarkdown text={alt.text} links={false} zoom={false} className="min-w-0 flex-1 text-sm text-text" />
+        <QuestionMarkdown text={alt.text} choice links={false} zoom={false} className="min-w-0 flex-1 text-sm text-text" />
       </button>
     )
   })
@@ -101,7 +101,7 @@ function MultipleAnswer({ question, value, onChange, disabled, describedBy }) {
               />
               <span className={`w-6 h-6 shrink-0 grid place-items-center rounded-full text-xs font-bold ${checked ? 'bg-primary text-primary-fg' : 'bg-surface-2 text-muted'}`} aria-hidden="true">{alt.label}</span>
               <span className="sr-only">{alt.label})</span>
-              <QuestionMarkdown text={alt.text} links={false} zoom={false} className="min-w-0 flex-1 text-sm text-text" />
+              <QuestionMarkdown text={alt.text} choice links={false} zoom={false} className="min-w-0 flex-1 text-sm text-text" />
             </label>
           )
         })}
