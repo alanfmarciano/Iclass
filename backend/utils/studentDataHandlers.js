@@ -15,8 +15,15 @@
 //   mexe só na memória. O que é em disco (arquivo de entrega para a lixeira, pacote de
 //   curso excluído regravado, C10) o handler devolve como função (ou lista de funções;
 //   null fica de fora): ela só roda depois que TODOS os handlers do passo deram certo e
-//   a gravação do banco terminou (se a gravação falha, nada sai do lugar); erro numa
-//   delas fica no crash.log e não desfaz o resto (a memória já está certa);
+//   a gravação do banco terminou. Se a gravação falha, nada sai do lugar na hora; a
+//   memória já mudou e a regravação em segundo plano a leva ao disco, e a função roda
+//   logo depois desse COMMIT (db.afterNextCommit), para o disco não ficar para trás do
+//   banco. Erro numa delas fica no crash.log e não desfaz o resto (a memória já está
+//   certa). Em vez da função, o handler pode devolver { accepted, afterSave }: accepted()
+//   roda na hora, sem esperar a gravação, assim que todos os handlers deram certo (o
+//   passo não volta mais atrás; ele só mexe em estado do processo, como a lista do que
+//   ainda vai ser regravado no pacote do curso) e afterSave({ deletedBy }) é a função de
+//   sempre;
 // - contagens (tela Cadastros encerrados, resposta e auditoria do anonimizar e do apagar,
 //   studentLifecycle.recordCounts e closedStudentRows): count(memory, aluno) => número.
 //   Com replaceCore, a contagem do handler substitui a de hoje com a mesma chave nos três
@@ -162,14 +169,24 @@ function renameStudentData(memory, oldEmail, newEmail) {
 }
 
 // O que o handler devolveu para rodar depois (efeitos em disco): uma função ou uma
-// lista delas; o resto é ignorado (o handler que não devolve nada continua valendo).
+// lista delas, ou { accepted, afterSave } (ver o começo do arquivo); o resto é ignorado
+// (o handler que não devolve nada continua valendo). Sai sempre como
+// { accepted, afterSave }, com as duas funções (a que faltar não faz nada).
+const NOOP = () => {};
 function deferredEffects(result) {
     const items = Array.isArray(result) ? result : [result];
-    return items.filter(item => typeof item === 'function');
+    return items.map(item => {
+        if (typeof item === 'function') return { accepted: NOOP, afterSave: item };
+        if (!item || typeof item !== 'object') return null;
+        const accepted = typeof item.accepted === 'function' ? item.accepted : null;
+        const afterSave = typeof item.afterSave === 'function' ? item.afterSave : null;
+        if (!accepted && !afterSave) return null;
+        return { accepted: accepted || NOOP, afterSave: afterSave || NOOP };
+    }).filter(Boolean);
 }
 
-// Anonimizar e apagar de vez devolvem as funções que os handlers deixaram para depois
-// (applyCascade roda todas quando o passo inteiro deu certo; ver o começo do arquivo).
+// Anonimizar e apagar de vez devolvem os efeitos que os handlers deixaram para depois
+// (applyCascade roda todos quando o passo inteiro deu certo; ver o começo do arquivo).
 function anonymizeStudentData(memory, aluno, pseudonimo) {
     const effects = [];
     withFunction('anonymize').forEach(handler => effects.push(...deferredEffects(handler.anonymize(memory, aluno, pseudonimo))));

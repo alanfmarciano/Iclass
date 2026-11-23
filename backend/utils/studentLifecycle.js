@@ -523,18 +523,47 @@ function applyCascade(db, { mode, student, ownership, keystrokeRows, actor, reas
         .filter(item => ownedRecord(item, item.studentEmail))
         .map(item => item.id);
     const keystrokesDone = keystrokeIds.length ? db.keystrokes.deleteRows(keystrokeIds) : Promise.resolve({ deleted: 0 });
-    const saved = db.save();
-    // O que os handlers deixaram para depois (arquivos das entregas de tarefa e do pacote
-    // de curso excluído para a lixeira, pacote regravado; C10): só depois de a gravação
-    // dar certo. Se ela falhar, nada sai do lugar (o banco no disco ainda aponta para os
-    // arquivos). Falha num efeito não desfaz o passo (o registro já está sem dado pessoal
-    // e a lápide já foi gravada): fica no crash.log.
-    const effectsDone = saved.then(() => {
-        diskEffects.forEach(effect => {
-            try { effect({ deletedBy: actor }); } catch (error) { logError(`studentLifecycle: efeito em disco de coleção nova falhou (${mode})`, error); }
-        });
+    // O passo deu certo (não volta mais atrás): o que os handlers pediram para a hora do
+    // aceite (C10: a lista do que ainda vai ser regravado no pacote do curso excluído,
+    // que a restauração do curso já respeita antes de o pacote ser regravado).
+    diskEffects.forEach(effect => {
+        try { effect.accepted(); } catch (error) { logError(`studentLifecycle: aceite de coleção nova falhou (${mode})`, error); }
     });
+    const saved = db.save();
+    const effectsDone = afterCommitEffects(db, saved, diskEffects, { mode, deletedBy: actor });
     return { pseudonym, counts, keystrokes: keystrokeIds.length, completion: Promise.all([effectsDone, keystrokesDone]) };
+}
+
+// O que os handlers deixaram para depois (arquivos das entregas de tarefa e do pacote de
+// curso excluído para a lixeira, pacote regravado; C10): só depois de a gravação dar
+// certo, uma vez. Se ela falhar, nada sai do lugar na hora (o banco no disco ainda aponta
+// para os arquivos) e o pedido recebe o 503; mas a memória já está anonimizada e a
+// regravação em segundo plano (ou a próxima gravação de qualquer rota) a leva ao disco:
+// os efeitos rodam logo depois desse COMMIT (db.afterNextCommit). Antes, eles se perdiam,
+// e a nova tentativa do administrador recebia 'já está anonimizado' com os arquivos fora
+// da lixeira e o pacote do curso com os dados. Banco fechado (a memória nunca vai para o
+// disco): os efeitos não rodam, e o disco continua igual ao banco. Falha num efeito não
+// desfaz o passo (o registro já está sem dado pessoal e a lápide já foi gravada): fica no
+// crash.log. Devolve a promessa da gravação (rejeita como ela).
+function afterCommitEffects(db, saved, effects, { mode, deletedBy }) {
+    if (!effects.length) return saved;
+    let ran = false;
+    const run = () => {
+        if (ran) return;
+        ran = true;
+        effects.forEach(effect => {
+            try { effect.afterSave({ deletedBy }); } catch (error) { logError(`studentLifecycle: efeito em disco de coleção nova falhou (${mode})`, error); }
+        });
+    };
+    return saved.then(run, error => {
+        const closed = error && error.sqliteCode === 'CLOSED';
+        let waiting = false;
+        if (!closed && typeof db.afterNextCommit === 'function') {
+            try { waiting = db.afterNextCommit(run) !== false; } catch (e) { waiting = false; }
+        }
+        if (!waiting) logError(`studentLifecycle: a gravação falhou e os arquivos das entregas ficaram no lugar (${mode}); o banco no disco ainda é o de antes`, error);
+        throw error;
+    });
 }
 
 // Anonimiza (mode 'anonymize') ou apaga de vez (mode 'purge') o cadastro encerrado.

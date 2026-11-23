@@ -688,13 +688,151 @@ test('[UC-ENCERRADOS-002] arquivo tirado na anonimização: o painel diz que foi
     });
 });
 
-test('[UC-ENCERRADOS-002] a gravação do banco falha: nenhum arquivo sai do lugar nem o pacote do curso muda', async () => {
-    const { anaSub } = seedDeliveries();
-    const failing = { memory: db.memory, keystrokes: db.keystrokes, save: () => Promise.reject(new Error('disco cheio de propósito')) };
+// Gravação que falha uma vez: o pedido recebe a falha (a rota responde 503) e nada sai do
+// lugar na hora; a memória já mudou e vai para o disco na próxima gravação que der certo
+// (a regravação em segundo plano do dbWriter, aqui o db.save() de verdade). Os efeitos
+// rodam logo depois desse COMMIT (db.afterNextCommit). Antes, eles se perdiam: o arquivo
+// ficava em data/entregas, o pacote do curso com o texto e o e-mail, a nova tentativa
+// recebia 409 'já está anonimizado' e restaurar o curso trazia a linha original de volta.
+function failingOnce() {
+    return {
+        memory: db.memory,
+        keystrokes: db.keystrokes,
+        save: () => Promise.reject(new Error('disco cheio de propósito')),
+        afterNextCommit: fn => db.afterNextCommit(fn),
+    };
+}
+
+for (const mode of ['anonymize', 'purge']) {
+    test(`[UC-ENCERRADOS-002] ${mode}: a gravação do banco falha; nada sai do lugar até a regravação dar certo, e aí os arquivos e o pacote do curso saem`, async () => {
+        const { biaSub, folder, archivedAbs, readBundle } = await purgeCourseKeepingBia();
+        const task = addTask({ courseId: OTHER_COURSE, studentClass: '2OUT', title: 'Do outro curso' });
+        const live = addSubmission(task, BIA, [{ files: [['bia-viva.pdf', PDF]], text: 'Viva da Bia.' }]);
+        live.courseId = OTHER_COURSE;
+        live.studentClass = '2OUT';
+        const bia = db.memory.students.find(item => item.email === BIA);
+        bia.status = 'Transferido';
+        bia.statusChangedAt = Date.now() - HOUR;
+        const bundleBefore = fs.readFileSync(path.join(runtimePaths.ARCHIVE_DIR, folder, 'curso.json'), 'utf8');
+        const studentLifecycle = require('../../backend/utils/studentLifecycle.js');
+        await assert.rejects(studentLifecycle.runStudentLifecycle(failingOnce(), { mode, email: BIA, actor: 'adm@ciclo.local', reason: 'Pedido da família' }), /disco cheio/);
+        // Na hora: nada saiu do lugar e o pacote está como estava.
+        filesOf(live).forEach(file => assert.equal(onDisk(file), true, file.storedRel));
+        filesOf(biaSub).forEach(file => assert.equal(fs.existsSync(archivedAbs(file)), true));
+        assert.equal(fs.readFileSync(path.join(runtimePaths.ARCHIVE_DIR, folder, 'curso.json'), 'utf8'), bundleBefore);
+        assert.equal(fileStore.listTrash().filter(item => /^entregas\//.test(item.originalRel)).length, 0);
+        // A memória já mudou (ela é que vai para o disco na regravação).
+        assert.equal(db.memory.students.some(item => item.email === BIA), false);
+        // A gravação seguinte dá certo: os efeitos rodam.
+        await db.save();
+        filesOf(live).forEach(file => assert.equal(onDisk(file), false, file.storedRel));
+        filesOf(biaSub).forEach(file => assert.equal(fs.existsSync(archivedAbs(file)), false));
+        assert.equal(fileStore.listTrash().filter(item => item.name === biaSub.id || item.name === live.id).length, 2);
+        const bundleText = JSON.stringify(readBundle().assignmentSubmissions);
+        ['bia@ciclo.local', 'Da Bia.', 'bia.pdf', 'Ótimo, ainda não devolvi'].forEach(piece => assert.equal(bundleText.includes(piece), false, piece));
+        // Uma vez só: a gravação seguinte não repete nada (nem quebra).
+        await db.save();
+        // Restaurar o curso não traz o dado de volta.
+        const restored = await asAdmin(request(app).post('/api/admin/archived-courses/restore')).send({ folder });
+        assert.equal(restored.status, 200, JSON.stringify(restored.body));
+        const back = JSON.stringify(db.memory.assignmentSubmissions);
+        ['bia@ciclo.local', 'Da Bia.', 'bia.pdf', 'Ótimo, ainda não devolvi'].forEach(piece => assert.equal(back.includes(piece), false, piece));
+    });
+}
+
+test('[UC-CURSO-001] restaurar o curso enquanto a regravação do pacote ainda espera a gravação: a entrega volta como ficaria, sem o dado pessoal', async () => {
+    const { biaSub, folder, archivedAbs } = await purgeCourseKeepingBia();
+    const bia = db.memory.students.find(item => item.email === BIA);
+    bia.status = 'Transferido';
+    bia.statusChangedAt = Date.now() - HOUR;
     const studentLifecycle = require('../../backend/utils/studentLifecycle.js');
-    await assert.rejects(studentLifecycle.runStudentLifecycle(failing, { mode: 'anonymize', email: ANA, actor: 'adm@ciclo.local', reason: 'Pedido da família' }), /disco cheio/);
-    filesOf(anaSub).forEach(file => assert.equal(onDisk(file), true, file.storedRel));
-    assert.equal(fileStore.listTrash().filter(item => /^entregas\//.test(item.originalRel)).length, 0);
+    await assert.rejects(studentLifecycle.runStudentLifecycle(failingOnce(), { mode: 'anonymize', email: BIA, actor: 'adm@ciclo.local', reason: 'Pedido da família' }), /disco cheio/);
+    const pseudo = db.memory.students.find(item => item.id === 'alu_00000000000000b2' || item.anonymizedAt);
+    // O pacote ainda tem a linha original (a regravação espera a gravação do banco).
+    assert.equal(fs.readFileSync(path.join(runtimePaths.ARCHIVE_DIR, folder, 'curso.json'), 'utf8').includes('Da Bia.'), true);
+    const restored = await asAdmin(request(app).post('/api/admin/archived-courses/restore')).send({ folder });
+    assert.equal(restored.status, 200, JSON.stringify(restored.body));
+    const row = db.memory.assignmentSubmissions.find(item => item.id === biaSub.id);
+    assert.equal(row.anonymized, true);
+    assert.equal(row.studentEmail, pseudo.email);
+    assert.equal(row.versions[0].text, '');
+    assert.deepEqual(row.versions[0].files.map(file => file.originalName), ['arquivo-1.pdf']);
+    const back = JSON.stringify(db.memory.assignmentSubmissions);
+    ['bia@ciclo.local', 'Da Bia.', 'bia.pdf', 'Ótimo, ainda não devolvi'].forEach(piece => assert.equal(back.includes(piece), false, piece));
+    // A gravação da restauração rodou os efeitos: os arquivos dela foram para a lixeira.
+    filesOf(biaSub).forEach(file => {
+        assert.equal(fs.existsSync(archivedAbs(file)), false);
+        assert.equal(onDisk(file), false);
+    });
+    assert.equal(fileStore.listTrash().filter(item => item.name === biaSub.id).length, 1);
+});
+
+// Dois alunos que ficam (Bia e Caio, também no outro curso) com entrega no pacote do curso
+// excluído de vez.
+async function purgeCourseKeepingTwo() {
+    const task = addTask();
+    db.memory.students.push({ id: 'alu_00000000000000c3', name: 'Caio Lima', email: 'caio@ciclo.local', matricula: 'MAT-7788', status: 'Ativo', password: db.hashPassword('Senha-forte-123'), classes: [{ name: CLASS, courseId: COURSE }] });
+    const both = [{ name: CLASS, courseId: COURSE }, { name: '2OUT', courseId: OTHER_COURSE }];
+    const subs = {};
+    [BIA, 'caio@ciclo.local'].forEach(email => {
+        const student = db.memory.students.find(item => item.email === email);
+        student.classes = both;
+        const mark = email === BIA ? 'BIA' : 'CAIO';
+        subs[email] = addSubmission(task, email, [{ files: [[`ARQ_${mark}.pdf`, PDF]], text: `TXT_${mark}`, link: `https://exemplo.local/LNK_${mark}` }]);
+    });
+    const res = await asAdmin(request(app).post(`/api/admin/courses/${COURSE}/purge`)).send({});
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    [BIA, 'caio@ciclo.local'].forEach(email => {
+        const student = db.memory.students.find(item => item.email === email);
+        student.status = 'Transferido';
+        student.statusChangedAt = Date.now() - HOUR;
+    });
+    return { folder: res.body.folder, subs };
+}
+
+for (const [first, second] of [['anonimizar', 'anonimizar'], ['apagar', 'anonimizar'], ['apagar', 'apagar']]) {
+    test(`[UC-CURSO-001] ${first} e ${second} dois alunos ao mesmo tempo com o curso excluído: nenhum pedido devolve ao pacote o que o outro tirou`, async () => {
+        const { folder, subs } = await purgeCourseKeepingTwo();
+        const call = (word, email) => (word === 'anonimizar' ? anonymize(email) : purge(email));
+        const [a, b] = await Promise.all([call(first, BIA), call(second, 'caio@ciclo.local')]);
+        assert.equal(a.status, 200, JSON.stringify(a.body));
+        assert.equal(b.status, 200, JSON.stringify(b.body));
+        const bundleText = fs.readFileSync(path.join(runtimePaths.ARCHIVE_DIR, folder, 'curso.json'), 'utf8');
+        ['TXT_BIA', 'TXT_CAIO', 'LNK_BIA', 'LNK_CAIO', 'ARQ_BIA', 'ARQ_CAIO', BIA, 'caio@ciclo.local'].forEach(piece => assert.equal(bundleText.includes(piece), false, piece));
+        const bundle = JSON.parse(bundleText);
+        assert.equal(bundle.assignmentSubmissions.some(item => item.id === subs[BIA].id), first === 'anonimizar');
+        assert.equal(bundle.assignmentSubmissions.some(item => item.id === subs['caio@ciclo.local'].id), second === 'anonimizar');
+        assert.equal(fileStore.listTrash().filter(item => item.name === subs[BIA].id || item.name === subs['caio@ciclo.local'].id).length, 2);
+        const restored = await asAdmin(request(app).post('/api/admin/archived-courses/restore')).send({ folder });
+        assert.equal(restored.status, 200, JSON.stringify(restored.body));
+        const back = JSON.stringify(db.memory.assignmentSubmissions);
+        ['TXT_BIA', 'TXT_CAIO', 'ARQ_BIA', 'ARQ_CAIO', BIA, 'caio@ciclo.local'].forEach(piece => assert.equal(back.includes(piece), false, piece));
+    });
+}
+
+test('[UC-CURSO-001] pacote cujo manifesto diz que não há entregas não é lido no anonimizar (o pacote grande com as provas fica fora)', async () => {
+    seedDeliveries();
+    const folder = 'curso-velho__2026-01-01T00-00-00-000Z';
+    const dir = path.join(runtimePaths.ARCHIVE_DIR, folder);
+    fs.mkdirSync(dir, { recursive: true });
+    // curso.json ilegível: se fosse lido, o erro iria para o crash.log.
+    fs.writeFileSync(path.join(dir, 'curso.json'), '{ ilegível');
+    fs.writeFileSync(path.join(dir, 'manifesto.json'), JSON.stringify({ folder, counts: { turmas: 1, alunos: 0, submissoes: 3, arquivos: 0, tarefas: 0, entregas: 0, arquivosEntregas: 0 } }));
+    const crashLog = path.join(runtimePaths.DATA_DIR, 'crash.log');
+    const before = fs.existsSync(crashLog) ? fs.readFileSync(crashLog, 'utf8') : '';
+    const res = await anonymize(ANA);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    const after = fs.existsSync(crashLog) ? fs.readFileSync(crashLog, 'utf8') : '';
+    assert.equal(after.slice(before.length).includes('ilegível'), false);
+    assert.equal(fs.readFileSync(path.join(dir, 'curso.json'), 'utf8'), '{ ilegível');
+    // Sem o manifesto, o pacote é lido (e o ilegível vai para o crash.log, como antes).
+    fs.rmSync(path.join(dir, 'manifesto.json'));
+    const bia = db.memory.students.find(item => item.email === BIA);
+    bia.status = 'Transferido';
+    bia.statusChangedAt = Date.now() - HOUR;
+    const second = await anonymize(BIA);
+    assert.equal(second.status, 200, JSON.stringify(second.body));
+    assert.equal(fs.readFileSync(crashLog, 'utf8').slice(after.length).includes(`pacote de curso excluído ilegível (${folder})`), true);
 });
 
 test('[UC-FUNDACAO-003] o handler das entregas vale fora das rotas (backup-cli): o registro já o traz ao ser consultado', () => {

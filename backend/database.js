@@ -2346,6 +2346,9 @@ module.exports = {
     save: saveToDisk,
     // Resolve quando toda gravação pedida até agora terminou (com sucesso ou não).
     flush: () => writer.flush(),
+    // fn roda uma vez depois do próximo COMMIT que der certo (efeitos em disco que esperam
+    // uma gravação que falhou; utils/studentLifecycle.js). false com o banco fechado.
+    afterNextCommit: fn => writer.afterNextCommit(fn),
     // VACUUM e VACUUM INTO só por aqui: fn(conexão) roda com a fila de gravação parada.
     runExclusive: fn => writer.runExclusive(fn),
     close,

@@ -243,7 +243,10 @@ function createAdminArchiveRouter({ studentClassNames }) {
             const existingTaskIds = new Set((db.memory.assignments || []).map(item => item && item.id));
             const restoredTasks = (Array.isArray(bundle.assignments) ? bundle.assignments : []).filter(item => item && item.id && !existingTaskIds.has(item.id));
             const existingDeliveryIds = new Set((db.memory.assignmentSubmissions || []).map(item => item && item.id));
-            const restoredDeliveries = (Array.isArray(bundle.assignmentSubmissions) ? bundle.assignmentSubmissions : []).filter(item => item && item.id && !existingDeliveryIds.has(item.id));
+            // Anonimizar ou apagar um aluno que já passou e cujo pacote ainda espera a
+            // regravação (ela vem depois da gravação do banco): a entrega volta como ficaria.
+            const bundleDeliveries = assignmentLifecycle.pendingBundleChangesApplied(path.basename(directory), Array.isArray(bundle.assignmentSubmissions) ? bundle.assignmentSubmissions : []);
+            const restoredDeliveries = bundleDeliveries.filter(item => item && item.id && !existingDeliveryIds.has(item.id));
             if (restoredTasks.length) db.memory.assignments = [...(db.memory.assignments || []), ...restoredTasks];
             if (restoredDeliveries.length) {
                 relinkRecordsByEmail(db.memory, restoredDeliveries, studentIdsByEmail(db.memory));

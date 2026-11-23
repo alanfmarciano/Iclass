@@ -29,6 +29,10 @@
 // Os arquivos só saem do lugar (e o pacote só é regravado) depois que todos os handlers
 // do passo deram certo e a gravação do banco terminou (efeito devolvido ao applyCascade):
 // falha de um handler ou da gravação não deixa arquivo na lixeira com o registro intacto.
+// Se a gravação falhou, o efeito roda depois do COMMIT da regravação em segundo plano
+// (db.afterNextCommit), em vez de se perder. A regravação do pacote lê o curso.json de
+// novo e troca só as linhas do aluno, pelo id (dois anonimizar ao mesmo tempo não
+// desfazem um ao outro); restaurar o curso antes dela já traz a entrega como ficaria.
 //
 // Curso excluído de vez (adminArchive.js, D14): as tarefas e as entregas vão para o pacote
 // do curso (cursos_arquivados/<pasta>/curso.json, que vai nos backups) e os arquivos
@@ -258,8 +262,20 @@ function scrubSubmissionAuditText(memory, submissionIds) {
 // Sem isto, anonimizar ou apagar o aluno com o curso excluído deixava o texto, o link, o
 // e-mail e os nomes dos arquivos no pacote (e restaurar o curso trazia tudo de volta), e
 // os arquivos fora da lixeira e sem lápide (o espelho os guardaria para sempre).
-// Leitura no passo da memória (o pacote ilegível fica de fora, com o erro no crash.log);
-// a regravação do pacote e os arquivos saem depois de gravar (efeito devolvido).
+// Leitura no passo da memória, para achar as entregas dele (o pacote ilegível fica de
+// fora, com o erro no crash.log); a regravação do pacote e os arquivos saem depois de
+// gravar o banco (efeito devolvido). Só o pacote que tem entregas é lido inteiro: o
+// manifesto (pequeno) diz quantas são; pacote de antes do C10 (sem a contagem) não tem.
+function bundleMayHaveSubmissions(folder) {
+    let manifest;
+    try { manifest = JSON.parse(fs.readFileSync(path.join(runtimePaths.ARCHIVE_DIR, folder, 'manifesto.json'), 'utf8')); } catch (e) { return true; }
+    const counts = isObject(manifest) && isObject(manifest.counts) ? manifest.counts : null;
+    if (!counts) return true;
+    if (typeof counts.entregas === 'number') return counts.entregas > 0;
+    // Manifesto de antes do C10: o pacote não levava tarefas nem entregas.
+    return counts.tarefas !== undefined;
+}
+
 function readArchivedBundles() {
     const out = [];
     let entries = [];
@@ -269,7 +285,7 @@ function readArchivedBundles() {
         let folder;
         try { folder = assertSafeId(entry.name); } catch (e) { return; }
         const file = path.join(runtimePaths.ARCHIVE_DIR, folder, 'curso.json');
-        if (!fs.existsSync(file)) return;
+        if (!fs.existsSync(file) || !bundleMayHaveSubmissions(folder)) return;
         let bundle;
         try { bundle = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (error) {
             logError(`assignmentLifecycle: pacote de curso excluído ilegível (${folder})`, error);
@@ -310,10 +326,63 @@ function writeBundle(file, bundle) {
     }
 }
 
-// As entregas do aluno nos pacotes: mode 'anonymize' troca a linha pela anonimizada,
-// 'purge' tira a linha. Grava as lápides na memória e devolve { ids, effect }: os ids das
-// entregas (para limpar a auditoria) e o efeito em disco (pacote regravado, arquivos do
-// pacote e os que ficaram em data/entregas para a lixeira), ou null sem nada a fazer.
+// Mudanças nas entregas de um pacote, por id da entrega: { mode, ids, pseudonimo, at }.
+// mode 'anonymize' troca a linha pela anonimizada; 'purge' tira a linha. Aplicar de novo
+// não muda nada (a linha anonimizada de novo fica igual).
+function applyBundleChange(rows, change) {
+    const out = [];
+    list(rows).forEach(sub => {
+        if (!isObject(sub) || typeof sub.id !== 'string' || !change.ids.has(sub.id)) { out.push(sub); return; }
+        if (change.mode === 'anonymize') out.push(anonymizedSubmissionRow(sub, change.pseudonimo, change.at));
+    });
+    return out;
+}
+
+// O que já foi aceito (o passo do anonimizar/apagar deu certo) e ainda não foi regravado
+// no pacote, por pasta: a regravação espera a gravação do banco (e, se ela falhou, a
+// regravação em segundo plano). Restaurar o curso nesse meio-tempo aplica estas mudanças
+// às entregas que voltam (pendingBundleChangesApplied), em vez de trazer do pacote ainda
+// não regravado o texto e o e-mail de quem já saiu.
+const pendingBundleChanges = new Map();
+
+function addPendingBundleChange(folder, change) {
+    if (!pendingBundleChanges.has(folder)) pendingBundleChanges.set(folder, []);
+    pendingBundleChanges.get(folder).push(change);
+}
+
+function dropPendingBundleChange(folder, change) {
+    const items = pendingBundleChanges.get(folder);
+    if (!items) return;
+    const index = items.indexOf(change);
+    if (index >= 0) items.splice(index, 1);
+    if (!items.length) pendingBundleChanges.delete(folder);
+}
+
+// As entregas do pacote (folder) com as mudanças que ainda esperam a regravação dele.
+function pendingBundleChangesApplied(folder, rows) {
+    return list(pendingBundleChanges.get(folder)).reduce((current, change) => applyBundleChange(current, change), list(rows));
+}
+
+// Regrava o pacote com uma mudança: lê o curso.json de novo na hora (outro anonimizar ou
+// apagar pode tê-lo regravado depois do passo da memória deste) e troca ou tira só as
+// linhas dela, pelo id. Leitura, troca e escrita sem pausa no meio (síncronas): duas
+// regravações nunca se cruzam, e nenhuma devolve ao pacote o que a outra tirou. Pacote
+// que já saiu (curso restaurado ou pacote excluído): nada a fazer.
+function rewriteBundleWithChange(folder, file, change) {
+    if (!fs.existsSync(file)) return false;
+    const bundle = JSON.parse(fs.readFileSync(file, 'utf8'));
+    if (!isObject(bundle) || !Array.isArray(bundle.assignmentSubmissions)) return false;
+    const rows = applyBundleChange(bundle.assignmentSubmissions, change);
+    if (JSON.stringify(rows) === JSON.stringify(bundle.assignmentSubmissions)) return false;
+    writeBundle(file, { ...bundle, assignmentSubmissions: rows });
+    return true;
+}
+
+// As entregas do aluno nos pacotes: grava as lápides na memória e devolve { ids, effect }:
+// os ids das entregas (para limpar a auditoria) e o efeito ({ accepted, afterSave }, ou
+// null sem nada a fazer). accepted() põe a mudança na lista do que espera a regravação;
+// afterSave() regrava o pacote (rewriteBundleWithChange) e manda os arquivos do pacote (e
+// os que ficaram em data/entregas) para a lixeira.
 function archivedBundleChanges(memory, aluno, { mode, pseudonimo, at }) {
     const isHis = ownedBy(aluno);
     const reason = mode === 'anonymize' ? 'anonimizar' : 'apagar_aluno';
@@ -321,33 +390,33 @@ function archivedBundleChanges(memory, aluno, { mode, pseudonimo, at }) {
     const jobs = [];
     readArchivedBundles().forEach(({ folder, file, bundle }) => {
         const files = [];
-        let touched = false;
-        const rows = [];
+        const changeIds = new Set();
         bundle.assignmentSubmissions.forEach(sub => {
-            if (!isHis(sub)) { rows.push(sub); return; }
-            touched = true;
-            if (typeof sub.id === 'string') ids.push(sub.id);
+            if (!isHis(sub)) return;
+            if (typeof sub.id === 'string' && sub.id) { ids.push(sub.id); changeIds.add(sub.id); }
             files.push(...submissionFiles(sub));
-            if (mode === 'anonymize') rows.push(anonymizedSubmissionRow(sub, pseudonimo, at));
         });
-        if (!touched) return;
+        if (!changeIds.size && !files.length) return;
         addFileTombstones(memory, files, { reason, at, extra: item => ({ archivedRel: archivedRelFor(folder, item.storedRel) }) });
-        jobs.push({ folder, file, bundle: { ...bundle, assignmentSubmissions: rows }, files });
+        jobs.push({ folder, file, files, change: { mode, ids: changeIds, pseudonimo, at } });
     });
     if (!jobs.length) return { ids, effect: null };
-    const effect = ({ deletedBy } = {}) => {
+    const accepted = () => jobs.forEach(job => addPendingBundleChange(job.folder, job.change));
+    const afterSave = ({ deletedBy } = {}) => {
         jobs.forEach(job => {
             try {
-                writeBundle(job.file, job.bundle);
+                rewriteBundleWithChange(job.folder, job.file, job.change);
             } catch (error) {
                 logError(`assignmentLifecycle: pacote do curso excluído não foi regravado (${job.folder})`, error);
             }
+            dropPendingBundleChange(job.folder, job.change);
             moveFilesToTrash(job.files, { deletedBy, resolve: item => archivedAbsFor(job.folder, item.storedRel) });
-            // O que ficou em data/entregas (o arquivamento não tinha conseguido mover).
+            // O que ficou em data/entregas (o arquivamento não tinha conseguido mover, ou o
+            // curso foi restaurado antes desta hora).
             moveFilesToTrash(job.files, { deletedBy });
         });
     };
-    return { ids, effect };
+    return { ids, effect: { accepted, afterSave } };
 }
 
 // ------------------------------------------------------------ Meus dados
@@ -755,6 +824,7 @@ module.exports = {
     mergeSubmissions,
     scrubSubmissionAuditText,
     followCurrentStudentEmails,
+    pendingBundleChangesApplied,
     courseAssignmentRecords,
     archiveCourseAssignmentFiles,
     restoreCourseAssignmentFiles,

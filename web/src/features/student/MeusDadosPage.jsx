@@ -69,7 +69,8 @@ export default function MeusDadosPage() {
           <p className="text-muted">
             A cópia traz o seu cadastro, as turmas, o aceite dos termos, as notas e entregas já liberadas, os trabalhos
             que você enviou nas atividades (cada versão, com o nome e o tamanho dos arquivos e o comprovante; a nota e o
-            comentário do professor depois de devolvidos), a frequência, os certificados, as observações compartilhadas
+            comentário do professor depois de devolvidos, e o comentário do pedido para refazer), a frequência, os
+            certificados, as observações compartilhadas
             com você, suas dúvidas no fórum, os acessos ao portal e o que foi registrado durante as provas (saídas da
             tela e o resumo do teclado).
           </p>

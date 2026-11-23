@@ -177,6 +177,30 @@ test('[UC-GRAVACAO-001] trava longa do arquivo: 503 retryable sem pendurar e reg
     assert.equal(JSON.parse(row.value).Apostila_FUTEC_2, 'gravada depois da trava');
 });
 
+test('[UC-GRAVACAO-001] afterNextCommit: o que espera a gravação que falhou roda uma vez, depois do COMMIT da regravação em segundo plano', async () => {
+    const release = await holdWriteLock();
+    let calls = 0;
+    let rowAtCall = null;
+    try {
+        db.memory.notes[STUDENT.email] = { ...(db.memory.notes[STUDENT.email] || {}), Apostila_FUTEC_3: 'depois do COMMIT' };
+        await assert.rejects(db.save(), error => error.code === 'ICLASS_DB_WRITE');
+        assert.equal(db.afterNextCommit(() => {
+            calls += 1;
+            rowAtCall = readRow('notes', STUDENT.email);
+        }), true);
+        await wait(300);
+        assert.equal(calls, 0, 'rodou antes de a gravação dar certo');
+    } finally {
+        await release();
+    }
+    await waitFor(() => calls > 0, 9000, 'tarefa depois da regravação');
+    const row = await rowAtCall;
+    assert.equal(JSON.parse(row.value).Apostila_FUTEC_3, 'depois do COMMIT');
+    await db.save();
+    assert.equal(calls, 1);
+    assert.throws(() => db.afterNextCommit('não é função'), TypeError);
+});
+
 // Servidor de verdade num processo próprio (fixtures/save-kill-server.js), com uma
 // pasta de dados só dele. Devolve { child, base, exited, output() }.
 async function startFixtureServer(dataDir, args, extraEnv = {}) {

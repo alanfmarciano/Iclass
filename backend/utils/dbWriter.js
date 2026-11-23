@@ -189,6 +189,8 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
     let processedSeq = 0;
     const exclusiveQueue = [];
     const flushWaiters = [];
+    // Quem espera o próximo COMMIT que der certo (afterNextCommit).
+    const commitListeners = [];
     let closed = false;
     let closePromise = null;
 
@@ -499,6 +501,7 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
             // gravação completa dela encontrou sozinha).
             const result = Object.freeze({ ...report, requests: waiters.length });
             waiters.forEach(waiter => waiter.resolve(result));
+            runCommitListeners(result);
         }
         running = false;
         settleFlushWaiters();
@@ -596,6 +599,28 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
             });
         }
         return scope;
+    }
+
+    // Roda uma vez, logo depois do próximo COMMIT que der certo, fn(resultado do ciclo).
+    // Para o que só pode acontecer depois de os dados estarem no disco e cuja gravação
+    // falhou (C10: os arquivos das entregas do aluno anonimizado vão para a lixeira quando
+    // a regravação em segundo plano consegue). Todo ciclo depois de uma falha leva as
+    // coleções que ficaram pendentes (retryScope), então o próximo COMMIT leva também o
+    // que fn espera. Erro em fn não chega à gravação (fica no console; quem pede trata o
+    // seu). Com o banco fechado, fn nunca roda: devolve false.
+    function afterNextCommit(fn) {
+        if (typeof fn !== 'function') throw new TypeError('afterNextCommit precisa de uma função.');
+        if (closed) return false;
+        commitListeners.push(fn);
+        return true;
+    }
+
+    function runCommitListeners(result) {
+        commitListeners.splice(0).forEach(fn => {
+            try { fn(result); } catch (err) {
+                console.error(`⚠️ [GRAVAÇÃO] tarefa depois do COMMIT falhou: ${(err && err.message) || err}`);
+            }
+        });
     }
 
     // Resolve quando toda gravação pedida até agora terminou (com sucesso ou não).
@@ -744,6 +769,7 @@ function createDbWriter({ connection, tables, getMemory, ready = () => Promise.r
         request,
         scopeFromOptions,
         flush,
+        afterNextCommit,
         runExclusive,
         waitIdle,
         close,
