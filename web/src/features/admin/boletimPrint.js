@@ -7,7 +7,7 @@
 // contrato C1 do P2): o boletim só formata. A nota abaixo da média mínima fica em vermelho
 // pelo critério que vem com o boletim (report.criterio; sem critérios, o padrão 6,0).
 import { fmtGradeValue, fmtMencao, isPassingGrade } from '../../lib/grades'
-import { html, printDocument, printDocumentHtml, trustedHtml } from '../../lib/printDocument'
+import { html, printDocument, printDocumentHtml, schoolFromBranding, trustedHtml } from '../../lib/printDocument'
 
 const grade = (value) => fmtGradeValue(value, '—')
 const pct = (value) => (value === null || value === undefined ? '—' : `${value}%`)
@@ -25,10 +25,20 @@ function gradeCell(value, criterio) {
   return isPassingGrade(value, criterio) === false ? html`<b class="nota-baixa">${grade(value)}</b>` : html`<b>${grade(value)}</b>`
 }
 
+// "Recuperação de" do plano, como o servidor manda (normalizeRecoveryTarget em
+// gradingRules.js): 'final' ou 'etapa:N', com N a ordem da etapa.
+export function recoveryLabel(target, etapaNome = new Map()) {
+  if (target === 'final') return 'recuperação final'
+  const match = /^etapa:(\d+)$/.exec(String(target || ''))
+  if (!match) return 'recuperação'
+  const ordem = Number(match[1])
+  return `recuperação: ${etapaNome.get(ordem) || `Etapa ${ordem}`}`
+}
+
 function examExtra(exam, etapaNome) {
   const parts = []
   if (exam.fora) parts.push('não conta na média')
-  else if (exam.recuperacaoDe) parts.push(`recuperação da ${etapaNome.get(exam.recuperacaoDe) || `etapa ${exam.recuperacaoDe}`}`)
+  else if (exam.recuperacaoDe) parts.push(recoveryLabel(exam.recuperacaoDe, etapaNome))
   else if (exam.etapa) parts.push(`${etapaNome.get(exam.etapa) || `Etapa ${exam.etapa}`}${exam.peso !== undefined && exam.peso !== null ? ` · peso ${weight(exam.peso)}` : ''}`)
   // Com mais de uma etapa, a avaliação sem etapa fica fora da média (o aviso vem embaixo).
   else if (etapaNome.size > 1 && exam.grade !== null && exam.grade !== undefined) parts.push('sem etapa, fora da média')
@@ -36,9 +46,11 @@ function examExtra(exam, etapaNome) {
   return parts.join(' · ')
 }
 
-// Opções do documento (printDocument) do boletim. identity: { escola, displayName, fuso }
-// da identidade visual da escola (schoolFromBranding); sem ela, o nome da instituição que
-// vem com o boletim.
+// Opções do documento (printDocument) do boletim. A escola do cabeçalho, o nome do rodapé
+// e o fuso da data vêm com o boletim (report.identidade e report.fuso: a escola do curso
+// DESTE boletim, que na ficha pode ser outro curso que o aberto no painel). identity
+// ({ escola, displayName, fuso }, da identidade do painel) só vale para boletim de versão
+// anterior, sem esses campos; sem nada, o nome da instituição que vem com o boletim.
 export function boletimDocument(report, identity = {}) {
   const student = report.student || {}
   const name = (student.nomeSocial && student.nomeSocial.trim()) || student.name || student.email || 'Aluno'
@@ -48,8 +60,11 @@ export function boletimDocument(report, identity = {}) {
   const withCriteria = etapas.length > 0
   const etapaNome = new Map(etapas.map((etapa) => [etapa.ordem, etapa.nome]))
   const institution = report.institution || ''
-  const escola = { nome: institution, ...(identity.escola || {}) }
+  const ownIdentity = report.identidade && typeof report.identidade === 'object' ? report.identidade : null
+  const escola = { nome: institution, ...((ownIdentity ? schoolFromBranding(ownIdentity) : identity.escola) || {}) }
   if (!escola.nome) escola.nome = institution
+  const displayName = (ownIdentity && ownIdentity.displayName) || identity.displayName || institution
+  const fuso = report.fuso || identity.fuso
 
   const subtitle = [
     report.course?.name || '',
@@ -194,8 +209,8 @@ export function boletimDocument(report, identity = {}) {
     titulo: `Boletim — ${name}`,
     subtitulo: subtitle,
     escola,
-    displayName: identity.displayName || institution,
-    fuso: identity.fuso,
+    displayName,
+    fuso,
     rodapeEsquerda: [escola.nome, report.course?.name].filter(Boolean).join(' · '),
     estilo: trustedHtml('.nota-baixa{color:#cf3943}'),
     secoes,

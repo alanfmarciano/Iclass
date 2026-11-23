@@ -74,6 +74,19 @@ describe('Quadro de notas com critérios', () => {
     expect(screen.getByText(/Quiz sem etapa: não entra na média\. Ajuste no Plano de avaliação\./)).toBeInTheDocument()
   })
 
+  it('[UC-NOTAS-008] a nota de cada prova tem a cor da faixa pela média mínima do curso (fora da média, sem cor)', () => {
+    const data = quadroComCriterios()
+    data.rows[0].cells.X = { score: 20, grade: 2, pending: 0 }
+    data.rows[0].cells.man_1 = { score: 92, grade: 9.2, pending: 0 }
+    render(<GradebookPanel courseId="DES" studentClass="1DES" gradebook={api(data)} />)
+    const table = screen.getByRole('table')
+    const ana = within(table).getByRole('rowheader', { name: /Ana/ }).closest('tr')
+    // Mínima 5,0: Prova 1 com 4,0 abaixo dela; Seminário com 9,2 acima; Simulado ("Não conta"), sem cor.
+    expect(within(ana).getByText('4,0').className).toMatch(/text-(warning|danger)/)
+    expect(within(ana).getByText('9,2').className).toMatch(/text-success/)
+    expect(within(ana).getByText('2,0').className || '').not.toMatch(/text-(warning|danger|success)/)
+  })
+
   it('[UC-NOTAS-008] no celular, a lista de alunos abre as notas por etapa', async () => {
     const user = userEvent.setup()
     const onOpenStudent = vi.fn()

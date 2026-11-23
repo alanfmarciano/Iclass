@@ -94,6 +94,17 @@ function renderPage() {
   return render(<MemoryRouter initialEntries={['/resultados']}><ResultadosPage /></MemoryRouter>)
 }
 
+// Quadro sem critérios como GET /api/admin/gradebook devolve, com o resumo da turma (B9):
+// a tela mostra a média do aluno, a média geral e a aprovação daqui, sem conta própria.
+// alunos: [[email, nome, média (0 a 100) ou null]]; resumo: os números do servidor.
+function quadroSemCriterios(alunos, resumo = {}) {
+  return {
+    criterio: { mediaMinima: 6, mencoes: null, regraAntiga: true }, etapas: [], mencoes: null, avisos: [], columns: [],
+    rows: alunos.map(([email, name, averageScore]) => ({ email, name, cells: {}, average: averageScore == null ? null : Math.round(averageScore) / 10, averageScore, gradedCount: averageScore == null ? 0 : 1, pendingCount: 0 })),
+    resumo: { media: null, mediaScore: null, comNota: 0, acimaDaMinima: 0, aprovacao: null, aprovacaoPor: 'media', porProva: {}, porAplicacao: {}, alunos: {}, ...resumo },
+  }
+}
+
 async function openManual(user) {
   await user.click(screen.getByRole('button', { name: 'Lançar nota' }))
   const dialog = await screen.findByRole('dialog')
@@ -333,6 +344,7 @@ describe('Resultados · regra de nota única', () => {
       entrega('b1', 'bia@x.local', 'Bia', 89.6, 89.6),
       entrega('d1', 'davi@x.local', 'Davi', 35, 35),
     ]
+    mocks.gradebook = quadroSemCriterios([['ana@x.local', 'Ana', 49.6], ['bia@x.local', 'Bia', 89.6], ['davi@x.local', 'Davi', 35]], { mediaScore: 58.07, media: 5.8, comNota: 3, acimaDaMinima: 1, aprovacao: 33 })
     try {
       renderPage()
       const dist = screen.getByText('Distribuição de notas').closest('div').parentElement
@@ -365,10 +377,14 @@ describe('Resultados · regra de nota única', () => {
       entrega('c1', 'caio@x.local', 'Caio', 90, undefined, { countsTowardResult: undefined }),
       entrega('c2', 'caio@x.local', 'Caio', 70, undefined, { countsTowardResult: undefined }),
     ]
+    // O servidor: Ana 6,0 (59,6) e Bia 4,0; Caio sem nota válida. Média geral 5,0 (média das
+    // médias) e aprovação 50% (alunos com média a partir de 6,0).
+    mocks.gradebook = quadroSemCriterios([['ana@x.local', 'Ana', 59.6], ['bia@x.local', 'Bia', 40], ['caio@x.local', 'Caio', null]], { mediaScore: 49.8, media: 5, comNota: 2, acimaDaMinima: 1, aprovacao: 50 })
     try {
       renderPage()
       const aprovacao = screen.getByText('Aprovação').closest('div').parentElement
       await waitFor(() => expect(within(aprovacao).getByText('50%')).toBeInTheDocument())
+      expect(within(aprovacao).getByText('Alunos com média a partir de 6,0')).toBeInTheDocument()
       const media = screen.getByText('Média geral').closest('div').parentElement
       expect(within(media).getByText('5,0')).toBeInTheDocument()
       const ana = screen.getByText('Ana').closest('tr')
@@ -528,6 +544,8 @@ describe('Resultados · avaliação manual da turma', () => {
     const base = mocks.stable.submissions[0]
     Object.assign(base, { scoreInvalid: false, score: 60, consolidatedScore: 60 })
     mocks.stable.submissions.push({ id: 'm1', student: { name: 'Ana', email: 'ana@x.local', courseId: 'DES', studentClass: '1DES' }, courseId: 'DES', examKey: 'man_1795400571237_2ae278', examTitle: 'Seminário de redes', assessmentArchived: true, score: 100, consolidatedScore: 100, gradePublished: true, timestamp: '2026-03-02T10:00:00Z' })
+    // O quadro do servidor já deixa a nota arquivada fora da média da Ana (6,0).
+    mocks.gradebook = quadroSemCriterios([['ana@x.local', 'Ana', 60]], { mediaScore: 60, media: 6, comNota: 1, acimaDaMinima: 1, aprovacao: 100, alunos: { 'ana@x.local': { porProva: { Avaliacao_P2: { score: 60, grade: 6 } }, porAplicacao: {}, porModulo: { m1: { score: 60, grade: 6 } } } } })
     try {
       render(
         <MemoryRouter initialEntries={['/resultados/aluno/ana%40x.local']}>
@@ -630,6 +648,7 @@ describe('Resultados · critérios do curso (B9)', () => {
       etapas: [{ ordem: 1, nome: '1º bimestre', peso: 1 }, { ordem: 2, nome: '2º bimestre', peso: 2 }],
       columns: [], avisos: [], mencoes: null,
       rows: [linha('ana@x.local', 'Ana', 52, 'aprovado', 'Aprovado'), linha('bia@x.local', 'Bia', 45, 'em_recuperacao', 'Em recuperação')],
+      resumo: { media: 4.9, mediaScore: 48.5, comNota: 2, acimaDaMinima: 1, aprovacaoPor: 'situacao', situacoesFechadas: 2, aprovados: 1, aprovacao: 50, porProva: {}, porAplicacao: {}, alunos: {} },
     }
     try {
       renderPage()
@@ -655,6 +674,7 @@ describe('Resultados · critérios do curso (B9)', () => {
       etapas: [{ ordem: 1, nome: '1º bimestre', peso: 1 }, { ordem: 2, nome: '2º bimestre', peso: 1 }],
       columns: [], avisos: [], mencoes: null,
       rows: [linha('ana@x.local', 'Ana', 85, 'cursando', 'Cursando')],
+      resumo: { media: 8.5, mediaScore: 85, comNota: 1, acimaDaMinima: 1, aprovacaoPor: 'situacao', situacoesFechadas: 0, aprovados: 0, aprovacao: null, porProva: {}, porAplicacao: {}, alunos: {} },
     }
     try {
       renderPage()
@@ -662,6 +682,54 @@ describe('Resultados · critérios do curso (B9)', () => {
       expect(within(aprovacao).getByText('—')).toBeInTheDocument()
       expect(within(aprovacao).getByText('Ninguém com a situação fechada ainda')).toBeInTheDocument()
       expect(within(aprovacao).queryByText('0%')).not.toBeInTheDocument()
+    } finally {
+      mocks.stable.submissions = original
+    }
+  })
+
+  it('[UC-NOTAS-008] "Média geral" é a do servidor, a mesma do quadro (médias finais por etapa), não a média das notas da lista', async () => {
+    // Antes: a média simples das notas consolidadas da lista (aqui (100 + 40) / 2 = 7,0),
+    // diferente da média final ponderada do quadro.
+    const original = mocks.stable.submissions
+    const matchMedia = window.matchMedia
+    window.matchMedia = (query) => ({ matches: query.includes('reduce'), media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} })
+    mocks.stable.submissions = [entrega('a1', 'ana@x.local', 'Ana', 100), entrega('a2', 'ana@x.local', 'Ana', 40, { examKey: 'Avaliacao_P3', applicationId: 'app_p3' })]
+    mocks.gradebook = {
+      criterio: { mediaMinima: 6, mencoes: null, regraAntiga: false },
+      etapas: [{ ordem: 1, nome: '1º bimestre', peso: 1 }, { ordem: 2, nome: '2º bimestre', peso: 2 }],
+      columns: [], avisos: [], mencoes: null,
+      rows: [linha('ana@x.local', 'Ana', 60, 'aprovado', 'Aprovado')],
+      resumo: { media: 6, mediaScore: 60, comNota: 1, acimaDaMinima: 1, aprovacaoPor: 'situacao', situacoesFechadas: 1, aprovados: 1, aprovacao: 100, porProva: { Avaliacao_P3: { media: 4, mediaScore: 40, comNota: 1, acimaDaMinima: 0, aprovacao: 0 } }, porAplicacao: {}, alunos: { 'ana@x.local': { porProva: { Avaliacao_P3: { score: 40, grade: 4 } }, porAplicacao: {}, porModulo: {} } } },
+    }
+    try {
+      renderPage()
+      const media = screen.getByText('Média geral').closest('div').parentElement
+      await waitFor(() => expect(within(media).getByText('6,0')).toBeInTheDocument())
+      expect(within(media).queryByText('7,0')).not.toBeInTheDocument()
+      // Filtro de prova: a média e a aprovação da turma nela, e a nota do aluno nela, do servidor.
+      await userEvent.selectOptions(screen.getByLabelText('Filtrar por prova'), 'Avaliacao_P3')
+      await waitFor(() => expect(within(media).getByText('4,0')).toBeInTheDocument())
+      const aprovacao = screen.getByText('Aprovação').closest('div').parentElement
+      expect(within(aprovacao).getByText('0%')).toBeInTheDocument()
+      expect(within(aprovacao).getByText('Alunos com nota a partir de 6,0')).toBeInTheDocument()
+      const ana = screen.getByText('Ana').closest('tr')
+      expect(within(ana).getByText('4,0')).toBeInTheDocument()
+    } finally {
+      mocks.stable.submissions = original
+      window.matchMedia = matchMedia
+    }
+  })
+
+  it('[UC-NOTAS-008] sem o quadro do servidor, a média fica "-" (o navegador não calcula)', async () => {
+    const original = mocks.stable.submissions
+    mocks.stable.submissions = [entrega('a1', 'ana@x.local', 'Ana', 80)]
+    mocks.gradebook = null
+    try {
+      renderPage()
+      const media = screen.getByText('Média geral').closest('div').parentElement
+      expect(within(media).getByText('-')).toBeInTheDocument()
+      const ana = screen.getByText('Ana').closest('tr')
+      expect(within(ana).queryByText('8,0')).not.toBeInTheDocument()
     } finally {
       mocks.stable.submissions = original
     }

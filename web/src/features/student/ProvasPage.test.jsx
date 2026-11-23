@@ -1,7 +1,7 @@
-import { cleanup, render, screen, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import ProvasPage, { buildExamPrintHtml, openExamPrintWindow } from './ProvasPage'
+import ProvasPage, { buildExamPrintHtml, gradesByStage, openExamPrintWindow, sectionsFromSummary } from './ProvasPage'
 
 const mocks = vi.hoisted(() => ({ post: vi.fn(), submissions: [], summary: null, paths: [] }))
 
@@ -10,7 +10,7 @@ vi.mock('./useStudent', () => ({ useStudent: () => ({ email: 'ana@x.local', stud
 vi.mock('../../hooks/useApi', () => ({
   useApi: (path) => {
     mocks.paths.push(path)
-    if (path && path.startsWith('/api/student/grades-summary')) return { data: mocks.summary, loading: false, error: null, refetch: vi.fn(), pollNow: vi.fn() }
+    if (path && path.startsWith('/api/student/grades-summary')) return { data: mocks.summary, loading: false, error: mocks.summaryError || null, refetch: vi.fn(), pollNow: vi.fn() }
     return { data: { applications: [] }, loading: false, error: null, refetch: vi.fn() }
   },
 }))
@@ -30,6 +30,7 @@ beforeEach(() => {
   window.matchMedia = vi.fn(() => ({ matches: true, addEventListener: vi.fn(), removeEventListener: vi.fn() }))
   mocks.post.mockImplementation(async () => ({ submissions: mocks.submissions }))
   mocks.summary = null
+  mocks.summaryError = null
   mocks.paths = []
 })
 
@@ -104,14 +105,79 @@ describe('Provas do aluno · média', () => {
     expect(within(card).getByText('Média final').nextSibling).toHaveTextContent('8,5')
     expect(within(card).getAllByText('Cursando').length).toBeGreaterThan(0)
     expect(within(card).getByText('Menção').nextSibling).toHaveTextContent('B')
-    expect(within(card).getByText(/1º bimestre/).parentElement).toHaveTextContent('Sem nota')
-    expect(within(card).getByText(/2º bimestre/).parentElement).toHaveTextContent('8,5')
+    // Etapas em acordeão: a etapa mostra a nota e, tocada, as avaliações publicadas dela.
+    const etapa1 = within(card).getByRole('button', { name: /1º bimestre/ })
+    const etapa2 = within(card).getByRole('button', { name: /2º bimestre/ })
+    expect(etapa1).toHaveTextContent('Sem nota')
+    expect(etapa2).toHaveTextContent('8,5')
+    expect(etapa2).toHaveAttribute('aria-expanded', 'false')
+    fireEvent.click(etapa2)
+    expect(etapa2).toHaveAttribute('aria-expanded', 'true')
+    expect(document.getElementById(etapa2.getAttribute('aria-controls'))).toHaveTextContent('Seminário')
+    fireEvent.click(etapa1)
+    expect(document.getElementById(etapa1.getAttribute('aria-controls'))).toHaveTextContent('Nenhuma avaliação com nota publicada nesta etapa ainda.')
+    // Nenhum texto do cartão abaixo de 14 px (text-sm).
+    expect(card.innerHTML).not.toMatch(/text-\[1[0-3]px\]|text-xs/)
     expect(card).toHaveTextContent('Média mínima para aprovação: 7,0.')
     expect(card).toHaveTextContent('Você ainda pode ter 6 faltas no período.')
     expect(within(card).getByText('Lógica')).toBeInTheDocument()
     // A avaliação da turma fica na seção da disciplina (Redes), pelo título.
     expect(screen.getAllByText('Redes').length).toBeGreaterThan(1)
     expect(document.body.textContent).not.toMatch(/man[ _]1795/)
+  })
+
+  it('[UC-NOTAS-008] etapas: a recuperação entra na etapa que recupera, a final e o que não conta ficam à parte', () => {
+    const grupos = gradesByStage(summary({
+      regraAntiga: false,
+      etapas: [{ ordem: 1, nome: '1º bimestre', peso: 1 }, { ordem: 2, nome: '2º bimestre', peso: 2 }],
+      itens: [
+        { id: 'P1', titulo: 'Prova 1', etapa: 1, nota: 5, publicada: true, recuperacaoDe: null },
+        { id: 'R1', titulo: 'Recuperação 1', etapa: null, nota: 8, publicada: true, recuperacao: true, recuperacaoDe: 'etapa:1' },
+        { id: 'P2', titulo: 'Prova 2', etapa: 2, nota: null, publicada: false, recuperacaoDe: null },
+        { id: 'RF', titulo: 'Recuperação final', etapa: null, nota: 7, publicada: true, recuperacao: true, recuperacaoDe: 'final' },
+        { id: 'Q', titulo: 'Quiz', etapa: null, nota: 9, publicada: true, recuperacaoDe: null },
+        { id: 'N', titulo: 'Não conta', etapa: 2, nota: 6, publicada: true, foraDaMedia: true, recuperacaoDe: null },
+      ],
+    }))
+    expect(grupos.porEtapa.get(1).map((item) => item.id)).toEqual(['P1', 'R1'])
+    expect(grupos.porEtapa.get(2)).toEqual([])
+    expect(grupos.final.map((item) => item.id)).toEqual(['RF'])
+    expect(grupos.fora.map((item) => item.id)).toEqual(['Q', 'N'])
+  })
+
+  it('[UC-NOTAS-008] nota publicada de avaliação arquivada fica em "Outras avaliações", e sem o resumo nada vira "Notas em revisão"', async () => {
+    // Antes do ajuste: o resumo não traz a avaliação arquivada, e a nota publicada dela caía
+    // em "Notas em revisão" (que é das notas ainda não publicadas).
+    const sectionOf = sectionsFromSummary(summary({ itens: [{ id: 'Avaliacao_FUTEC_1', moduloId: 'm1', modulo: 'Fundamentos', nota: 7, publicada: true }], modulos: [{ id: 'm1', nome: 'Fundamentos', media: 7 }] }))
+    expect(sectionOf({ examKey: 'man_arquivada', gradePublished: true }).name).toBe('Outras avaliações')
+    expect(sectionOf({ examKey: 'Avaliacao_FUTEC_9', gradePublished: false }).name).toBe('Notas em revisão')
+    expect(sectionOf('Avaliacao_FUTEC_1').name).toBe('Fundamentos')
+    expect(sectionsFromSummary(null)({ examKey: 'Avaliacao_FUTEC_1', gradePublished: true }).name).toBe('Avaliações')
+
+    mocks.submissions = [
+      sub('a1', { score: 70 }),
+      { ...sub('m1', { examKey: 'man_1795397447192_410b1b', score: 85, counts: false }), examTitle: 'Seminário', assessmentArchived: true },
+    ]
+    mocks.summary = summary({
+      notasPublicadas: 1, mediaFinal: 7,
+      modulos: [{ id: 'm1', nome: 'Fundamentos', media: 7 }],
+      itens: [{ id: 'Avaliacao_FUTEC_1', titulo: 'Prova 1', moduloId: 'm1', modulo: 'Fundamentos', nota: 7, publicada: true }],
+    })
+    render(<MemoryRouter><ProvasPage /></MemoryRouter>)
+    expect(await screen.findByText('Avaliação arquivada · fora da média')).toBeInTheDocument()
+    expect(screen.getAllByText('Outras avaliações').length).toBeGreaterThan(0)
+    expect(screen.queryByText('Notas em revisão')).not.toBeInTheDocument()
+  })
+
+  it('[UC-NOTAS-008] resumo de notas com erro: aviso com "Tentar de novo" e as provas sem "Notas em revisão"', async () => {
+    mocks.submissions = [sub('a1', { score: 70 })]
+    mocks.summary = null
+    mocks.summaryError = new Error('falhou')
+    render(<MemoryRouter><ProvasPage /></MemoryRouter>)
+    expect(await screen.findByText(/Não deu para carregar o resumo das suas notas agora/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Tentar de novo' })).toBeInTheDocument()
+    expect((await screen.findAllByText(/Avaliacao FUTEC 1/)).length).toBeGreaterThan(0)
+    expect(screen.queryByText('Notas em revisão')).not.toBeInTheDocument()
   })
 
   it('[UC-NOTAS-008] sem nota publicada, "Minhas notas" diz que ainda não há nota', async () => {

@@ -322,7 +322,7 @@ router.get('/:key.md', async (req, res, next) => {
     });
 });
 
-const { extractBranding, resolveEffectiveBranding, validateBrandingPatch } = require('../utils/branding.js');
+const { extractBranding, effectiveBrandingFor, validateBrandingPatch } = require('../utils/branding.js');
 
 function rejectInvalidBranding(res, body) {
     const validationError = validateBrandingPatch(body);
@@ -341,16 +341,10 @@ router.get('/api/branding', (req, res) => {
     if (req.query.raw === '1') {
         return res.json({ ...g, displayName: g.displayName || g.name || g.institutionName || '', primaryColor: g.primaryColor || g.color || '' });
     }
-    const global = { ...g, displayName: g.displayName || g.name || g.institutionName, primaryColor: g.primaryColor || g.color, logoLightUrl: g.logoLightUrl || g.logoUrl };
-    const course = courseId ? (db.memory.courses || []).find(c => c.id === courseId) : null;
-    const schoolId = (course && course.schoolId) || requestedSchoolId || null;
-    const school = schoolId
-        ? (db.memory.schools || []).find(s => s.id === schoolId)
-        : null;
+    const { effective, school } = effectiveBrandingFor(db.memory, { courseId, schoolId: requestedSchoolId });
     if (requestedSchoolId && !school) {
         return res.status(404).json({ error: 'Escola não encontrada.' });
     }
-    const effective = resolveEffectiveBranding({ global, school, course });
     // Aliases de compatibilidade com a tela de Identidade atual.
     effective.name = effective.displayName;
     effective.color = effective.primaryColor;

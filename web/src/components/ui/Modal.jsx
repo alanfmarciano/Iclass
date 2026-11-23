@@ -16,7 +16,8 @@ const openModals = []
 
 // fullScreenOnPhone: no celular (abaixo de 640 px) o diálogo ocupa a tela inteira, sem a
 // margem nem a borda arredondada, e os botões do rodapé quebram em linhas inteiras em vez
-// de espremer o texto (diálogos longos, como o "Corrigir gabarito" do P3-S6).
+// de espremer o texto (diálogos longos, como o "Corrigir gabarito" do P3-S6). O rodapé fica
+// preso embaixo (sticky) enquanto o conteúdo rola.
 export function Modal({ open, onClose, title, description, children, footer, size = 'md', fullScreenOnPhone = false }) {
   const dialogRef = useRef(null)
   const previousFocusRef = useRef(null)
@@ -73,7 +74,8 @@ export function Modal({ open, onClose, title, description, children, footer, siz
           <button onClick={onClose} aria-label="Fechar" className="text-subtle hover:text-text"><X size={20} /></button>
         </div>
         <div className="px-5 py-4">{children}</div>
-        {footer && <div className={`flex justify-end gap-2 px-5 py-4 border-t border-border ${fullScreenOnPhone ? 'flex-wrap [&>button]:whitespace-nowrap' : ''}`}>{footer}</div>}
+        {/* Em tela cheia no celular, o rodapé (Salvar, Cancelar) fica preso embaixo enquanto o conteúdo rola. */}
+        {footer && <div className={`flex justify-end gap-2 px-5 py-4 border-t border-border ${fullScreenOnPhone ? 'sticky bottom-0 z-10 bg-surface flex-wrap [&>button]:whitespace-nowrap' : ''}`}>{footer}</div>}
       </div>
     </div>,
     document.body

@@ -1183,6 +1183,7 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
                 cells: {},
                 scores: [],
                 groups: [],
+                countedGroups: [],
                 pendingCount: 0,
             });
         }
@@ -1208,7 +1209,10 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
             : { score: group.score, groups: 1, pending: group.pendingCount };
         row.groups.push(group);
         // A nota de avaliação manual arquivada fica na célula e sai da média.
-        if (!isArchivedItemGroup(grading, group)) row.scores.push(group.score);
+        if (!isArchivedItemGroup(grading, group)) {
+            row.scores.push(group.score);
+            row.countedGroups.push(group);
+        }
     });
 
     const rows = [...rowsByEmail.values()].map(row => {
@@ -1251,8 +1255,82 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
         result.etapas = withCriteria ? grading.criterios.etapas.map(etapa => ({ ordem: etapa.ordem, nome: etapa.nome, peso: etapa.peso })) : [];
         result.mencoes = withCriteria ? grading.criterios.mencoes : null;
         result.avisos = planWarnings(grading);
+        result.resumo = gradebookSummary([...rowsByEmail.values()], rows, { criterio: grading.criterio, withCriteria, examIndex });
     }
     return result;
+}
+
+// Situações que já dizem se o aluno passou (Cursando e Sem notas ainda não).
+const SITUACOES_FECHADAS = ['aprovado', 'em_recuperacao', 'reprovado_nota', 'reprovado_falta'];
+
+// Média e aprovação de uma lista de notas (0 a 100), uma por aluno.
+function scoreStats(scores, criterio) {
+    const valid = scores.filter(score => score !== null && score !== undefined && Number.isFinite(Number(score))).map(Number);
+    const mediaScore = average(valid);
+    const acimaDaMinima = valid.filter(score => isPassingGrade(roundGrade(score), criterio) === true).length;
+    return {
+        media: roundGrade(mediaScore),
+        mediaScore,
+        // Quantos alunos têm nota na conta.
+        comNota: valid.length,
+        acimaDaMinima,
+        aprovacao: valid.length ? Math.round((acimaDaMinima / valid.length) * 100) : null,
+    };
+}
+
+// Resumo da turma para Resultados (B9; D3 e C1 do P2: a tela não faz conta de média).
+// - média da turma: a média das médias dos alunos (a mesma coluna "Média" ou "Média final"
+//   do quadro); aprovação: com os critérios do curso, aprovados entre os que já têm a
+//   situação fechada; sem eles, alunos com média >= a média mínima;
+// - porProva / porAplicacao: a mesma conta só com as notas daquela prova ou aplicação
+//   (filtros de Resultados), com a nota de cada aluno nela;
+// - alunos[email].porProva, porAplicacao e porModulo: a nota do aluno em cada prova, em
+//   cada aplicação e a média dele em cada módulo da estrutura ('outros' para o que está
+//   fora dela), para a lista e a ficha do aluno em Resultados.
+// Nota de avaliação da turma arquivada fica fora de tudo, como na média do quadro.
+function gradebookSummary(internalRows, rows, { criterio = null, withCriteria = false, examIndex = new Map() } = {}) {
+    const geral = scoreStats(rows.map(row => row.averageScore), criterio);
+    if (withCriteria) {
+        const fechadas = rows.filter(row => SITUACOES_FECHADAS.includes(row.situacao));
+        geral.aprovacaoPor = 'situacao';
+        geral.situacoesFechadas = fechadas.length;
+        geral.aprovados = fechadas.filter(row => row.situacao === 'aprovado').length;
+        geral.aprovacao = fechadas.length ? Math.round((geral.aprovados / fechadas.length) * 100) : null;
+    } else {
+        geral.aprovacaoPor = 'media';
+    }
+    const alunos = {};
+    const porProva = new Map();
+    const porAplicacao = new Map();
+    const push = (map, key, email, score) => {
+        if (!map.has(key)) map.set(key, new Map());
+        const byEmail = map.get(key);
+        if (!byEmail.has(email)) byEmail.set(email, []);
+        byEmail.get(email).push(score);
+    };
+    internalRows.forEach(row => {
+        const prova = new Map();
+        const aplicacao = new Map();
+        const modulo = new Map();
+        row.countedGroups.forEach(group => {
+            push(porProva, group.examKey, row.email, group.score);
+            if (group.applicationId) push(porAplicacao, String(group.applicationId), row.email, group.score);
+            const add = (map, key) => { if (!map.has(key)) map.set(key, []); map.get(key).push(group.score); };
+            add(prova, group.examKey);
+            if (group.applicationId) add(aplicacao, String(group.applicationId));
+            add(modulo, (examIndex.get(group.examKey) || {}).moduleId || 'outros');
+        });
+        const scoreMap = (map) => Object.fromEntries([...map.entries()].map(([key, scores]) => {
+            const value = average(scores);
+            return [key, { score: value, grade: roundGrade(value) }];
+        }));
+        alunos[row.email] = { porProva: scoreMap(prova), porAplicacao: scoreMap(aplicacao), porModulo: scoreMap(modulo) };
+    });
+    const statsMap = (map) => Object.fromEntries([...map.entries()].map(([key, byEmail]) => [
+        key,
+        scoreStats([...byEmail.values()].map(average), criterio),
+    ]));
+    return { ...geral, porProva: statsMap(porProva), porAplicacao: statsMap(porAplicacao), alunos };
 }
 
 // Planilha do quadro de notas (UXI-01, FUN-06): o mesmo cabeçalho e as mesmas linhas

@@ -57,10 +57,10 @@ No alto de Provas, **Minhas notas** mostra o seu resultado na turma com as notas
 - a **média final** (ou a média geral, quando o curso não usa etapas);
 - a **situação**: Cursando (ainda falta nota de alguma etapa), Em recuperação, Aprovado, Reprovado por nota ou Reprovado por falta;
 - a **menção** (MB, B, R, I), se a escola usa conceitos;
-- as **notas por etapa** (1º bimestre, 2º bimestre...), com a recuperação quando houver;
+- as **notas por etapa** (1º bimestre, 2º bimestre...), com a recuperação quando houver. Toque na etapa para ver as avaliações dela e a nota de cada uma;
 - a **média mínima para aprovação** do seu curso e quantas faltas você ainda pode ter no período.
 
-Embaixo, as suas provas e avaliações (trabalhos, seminários) ficam agrupadas por disciplina ou por módulo. A nota que ainda não foi publicada aparece em "Notas em revisão" e não entra na média.
+Embaixo, as suas provas e avaliações (trabalhos, seminários) ficam agrupadas por disciplina ou por módulo. A nota que ainda não foi publicada aparece em "Notas em revisão" e não entra na média. Se o professor arquivar uma avaliação que já tinha nota, a nota continua em "Outras avaliações", marcada "Avaliação arquivada · fora da média".
 
 ### Como responder cada tipo de questão
 

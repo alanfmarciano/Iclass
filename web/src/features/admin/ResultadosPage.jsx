@@ -13,7 +13,7 @@ import { PageState } from '../../components/ui/PageState'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { useApi } from '../../hooks/useApi'
 import { api, downloadFile } from '../../lib/api'
-import { countByBand, criterioOf, fmtGrade, fmtGradeValue, fmtMencao, gradeBandRanges, gradeOf, gradeTone, isPassingGrade, isValidScore, previewQuickGrade, scoreBand, situacaoTone, validateQuickGrade } from '../../lib/grades'
+import { countByBand, criterioOf, fmtGrade, fmtGradeValue, fmtMencao, gradeBandRanges, gradeOf, gradeTone, isValidScore, previewQuickGrade, scoreBand, situacaoTone, validateQuickGrade } from '../../lib/grades'
 import { GradebookPanel } from './GradebookPanel'
 import { GradingPlanPanel } from './GradingPlanPanel'
 import { ApplicationAuditModal, DeletedGradesModal } from './GradeAuditPanels'
@@ -273,7 +273,9 @@ export default function ResultadosPage() {
   const withCriteria = Array.isArray(gradebookData?.etapas) && gradebookData.etapas.length > 0
   const gradeBandClass = (score) => BAND_CLASS[scoreBand(score, criterio)] || 'rb-gmuted'
   // Plano de avaliação da turma (etapa, peso e avaliações da turma; GET /grading/plan).
-  const planApi = useApi(activeCourseId && activeClassName ? `/api/admin/grading/plan?${contextQuery}` : null)
+  // Recarrega quando as entregas mudam: a contagem de notas lançadas e publicadas de cada
+  // avaliação (que decide se arquivar pede motivo) acompanha o que se lançou na aba Alunos.
+  const planApi = useApi(activeCourseId && activeClassName ? `/api/admin/grading/plan?${contextQuery}` : null, [data])
   const [del, setDel] = useState(null)
   const [detail, setDetail] = useState(null)
   const [review, setReview] = useState(null)
@@ -336,7 +338,9 @@ export default function ResultadosPage() {
     const map = new Map()
     ;(courseStructure || []).forEach((module, moduleIndex) => {
       const moduleName = module.name || module.title || `Módulo ${moduleIndex + 1}`
-      const moduleId = String(module.id || module.key || moduleName)
+      // O mesmo id de módulo do servidor (structureModuleId em gradebook.js): a média do
+      // módulo vem do resumo do quadro por ele.
+      const moduleId = String(module.id || module.key || module.name || module.title || `module_${moduleIndex}`)
       ;(module.units || module.items || []).forEach((unit) => {
         if (!unit.avaliacaoKey) return
         map.set(unit.avaliacaoKey, {
@@ -349,11 +353,20 @@ export default function ResultadosPage() {
     })
     return map
   }, [courseStructure])
-  // Linha do quadro de cada aluno (pelo e-mail), para a média que o servidor calculou. Com
-  // filtro de prova ou de aplicação, a média é a das notas filtradas (a de cada prova vem
-  // pronta do servidor, consolidatedScore).
+  // Linha do quadro de cada aluno (pelo e-mail), para a média que o servidor calculou, e o
+  // resumo da turma (gradebook.resumo, B9): com filtro de prova ou de aplicação, a nota do
+  // aluno e a média da turma naquela prova ou aplicação também vêm prontas do servidor. O
+  // navegador não faz conta de média (D3 e C1 do P2); sem o quadro ainda, a média fica "-".
   const gradebookRowByEmail = useMemo(() => new Map((gradebookData?.rows || []).map((row) => [String(row.email || '').trim().toLowerCase(), row])), [gradebookData])
   const useServerAverage = !!gradebookData && !filterExam && !filterApplication
+  const gradeSummary = gradebookData?.resumo || null
+  // A nota do aluno no recorte do filtro (ou a média dele no quadro, sem filtro).
+  const filteredScoreOf = (email, which = 'porProva') => {
+    const aluno = gradeSummary?.alunos?.[email]
+    if (!aluno) return null
+    const entry = filterApplication ? aluno.porAplicacao?.[filterApplication] : aluno[which]?.[filterExam]
+    return entry && isValidScore(entry.score) ? Number(entry.score) : null
+  }
   const studentRows = useMemo(() => {
     const grouped = new Map()
     filteredRows.forEach((submission) => {
@@ -371,19 +384,20 @@ export default function ResultadosPage() {
       grouped.get(key).submissions.push(submission)
     })
     return [...grouped.values()].map((student) => {
-      const scores = consolidatedScores(student.submissions)
       const modules = new Set(student.submissions.map((item) => examMeta.get(item.examKey)?.moduleId || 'outros'))
       const server = useServerAverage ? gradebookRowByEmail.get(student.studentEmail) : null
       return {
         ...student,
         gradebookRow: server || null,
-        average: server ? (isValidScore(server.averageScore) ? Number(server.averageScore) : null) : (scores.length ? scores.reduce((sum, value) => sum + value, 0) / scores.length : null),
+        average: server
+          ? (isValidScore(server.averageScore) ? Number(server.averageScore) : null)
+          : (useServerAverage || !gradebookData ? null : filteredScoreOf(student.studentEmail)),
         submissionCount: student.submissions.length,
         moduleCount: modules.size,
         publishedCount: student.submissions.filter((item) => item.gradePublished === true).length,
       }
     }).sort((a, b) => a.studentName.localeCompare(b.studentName, 'pt-BR'))
-  }, [filteredRows, examMeta, useServerAverage, gradebookRowByEmail])
+  }, [filteredRows, examMeta, useServerAverage, gradebookRowByEmail, gradebookData, filterExam, filterApplication]) // eslint-disable-line react-hooks/exhaustive-deps
   // Cadastro de cada e-mail (o id estável vem da lista de alunos da turma).
   const studentByEmail = useMemo(() => {
     const map = new Map()
@@ -468,29 +482,35 @@ export default function ResultadosPage() {
         ...p,
         applications: p.applications.slice().sort((a, b) => appTime(b) - appTime(a)),
       }))
-      const scores = examGroups.map((exam) => exam.score).filter(Number.isFinite)
-      return { ...module, submissions, examGroups, provas, average: scores.length ? scores.reduce((sum, value) => sum + value, 0) / scores.length : null }
+      // Média do módulo: a do servidor (resumo do quadro). Com filtro, o módulo só tem a
+      // prova filtrada, e a média é a nota do aluno nela.
+      const aluno = gradeSummary?.alunos?.[selectedStudent.studentEmail]
+      const serverEntry = !aluno ? null : (filterExam || filterApplication)
+        ? (filterApplication ? aluno.porAplicacao?.[filterApplication] : aluno.porProva?.[filterExam])
+        : aluno.porModulo?.[module.moduleId]
+      return { ...module, submissions, examGroups, provas, average: serverEntry && isValidScore(serverEntry.score) ? Number(serverEntry.score) : null }
     }).sort((a, b) => a.moduleIndex - b.moduleIndex || a.moduleName.localeCompare(b.moduleName, 'pt-BR'))
-  }, [selectedStudent, examMeta, applicationById])
+  }, [selectedStudent, examMeta, applicationById, gradeSummary, filterExam, filterApplication])
   const analytics = useMemo(() => {
     const scores = consolidatedScores(filteredRows)
-    const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0
-    const approved = scores.filter((x) => isPassingGrade(gradeOf(x), criterio)).length
-    // Com os critérios do curso ligados, a aprovação é a situação de cada aluno no quadro:
-    // aprovados entre os que já têm situação fechada (aprovado, em recuperação ou
-    // reprovado); "Cursando" e "Sem notas" ainda não contam. Ninguém fechado: "—".
-    const FECHADAS = ['aprovado', 'em_recuperacao', 'reprovado_nota', 'reprovado_falta']
-    const situacoes = withCriteria && useServerAverage ? (gradebookData.rows || []).filter((row) => FECHADAS.includes(row.situacao)) : null
+    // Média geral e aprovação da turma: as do servidor (gradebook.resumo, B9). Sem filtro,
+    // a média das médias dos alunos (a mesma do quadro) e, com os critérios do curso, a
+    // aprovação pela situação (aprovados entre os que já têm a situação fechada); sem
+    // critérios, alunos com média >= a média mínima. Com filtro de prova ou aplicação, as
+    // mesmas contas só naquela prova ou aplicação. Sem nota válida, "-".
+    const stats = !gradeSummary ? null
+      : filterApplication ? gradeSummary.porAplicacao?.[filterApplication] || null
+        : filterExam ? gradeSummary.porProva?.[filterExam] || null
+          : gradeSummary
+    const aprovPorSituacao = !!stats && stats === gradeSummary && gradeSummary.aprovacaoPor === 'situacao'
     // Uma barra por faixa de gradeBand, pela nota como aparece (4,96 é 5,0): a barra e a
-    // cor da nota na lista contam a mesma faixa.
+    // cor da nota na lista contam a mesma faixa (contagem, não média).
     const counts = countByBand(scores.map(gradeOf), criterio)
     const buckets = gradeBandRanges(criterio).map((range) => ({ ...range, n: counts[range.band], color: DISTRIBUTION_COLOR[range.band] }))
-    // Sem nota válida (só registros antigos inválidos), a média fica "-", não 0,0.
-    const aprov = situacoes
-      ? (situacoes.length ? Math.round((situacoes.filter((row) => row.situacao === 'aprovado').length / situacoes.length) * 100) : null)
-      : (scores.length ? Math.round((approved / scores.length) * 100) : 0)
-    return { avg: scores.length ? avg / 10 : null, aprov, aprovPorSituacao: !!situacoes, count: filteredRows.length, buckets, maxBucket: Math.max(1, ...buckets.map((b) => b.n)) }
-  }, [filteredRows, criterio, withCriteria, useServerAverage, gradebookData])
+    const avg = stats && isValidScore(stats.mediaScore) ? Number(stats.mediaScore) / 10 : null
+    const aprov = stats && stats.aprovacao !== undefined ? stats.aprovacao : null
+    return { avg, aprov, aprovPorSituacao, count: filteredRows.length, buckets, maxBucket: Math.max(1, ...buckets.map((b) => b.n)) }
+  }, [filteredRows, criterio, gradeSummary, filterExam, filterApplication])
   const avgCount = useCountUp(analytics.avg)
   const aprovCount = useCountUp(analytics.aprov ?? 0)
   const countCount = useCountUp(analytics.count)
@@ -971,11 +991,11 @@ export default function ResultadosPage() {
 
       <div className="flex gap-2 flex-wrap">
         <div className="flex h-[38px] items-center rounded-md border border-border bg-surface-2 px-3 text-sm font-semibold text-text">Turma {activeClassName}</div>
-        <select value={filterExam} onChange={(e) => { setFilterExam(e.target.value); setFilterApplication('') }} className="text-sm bg-surface border border-border rounded-md px-3 h-[38px] text-text">
+        <select aria-label="Filtrar por prova" value={filterExam} onChange={(e) => { setFilterExam(e.target.value); setFilterApplication('') }} className="text-sm bg-surface border border-border rounded-md px-3 h-[38px] text-text">
           <option value="">Todas as provas</option>
           {examOptions.map((k) => <option key={k} value={k}>{examLabels.get(k) || k}</option>)}
         </select>
-        <select value={filterApplication} onChange={(e) => setFilterApplication(e.target.value)} className="text-sm bg-surface border border-border rounded-md px-3 h-[38px] text-text">
+        <select aria-label="Filtrar por aplicação" value={filterApplication} onChange={(e) => setFilterApplication(e.target.value)} className="text-sm bg-surface border border-border rounded-md px-3 h-[38px] text-text">
           <option value="">Todas as aplicações</option>
           {applicationOptions.map((application) => (
             <option key={application.id} value={application.id}>
@@ -1005,7 +1025,9 @@ export default function ResultadosPage() {
           <div className="mt-2.5 h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
             <div className="meter-fill h-full rounded-full" style={{ width: `${analytics.aprov ?? 0}%`, background: 'var(--success)' }} />
           </div>
-          {analytics.aprovPorSituacao && <p className="mt-1 text-[11px] text-subtle">{analytics.aprov == null ? 'Ninguém com a situação fechada ainda' : 'Pela situação no curso'}</p>}
+          {analytics.aprovPorSituacao
+            ? <p className="mt-1 text-[11px] text-subtle">{analytics.aprov == null ? 'Ninguém com a situação fechada ainda' : 'Pela situação no curso'}</p>
+            : analytics.aprov != null && <p className="mt-1 text-[11px] text-subtle">{filterExam || filterApplication ? 'Alunos com nota' : 'Alunos com média'} a partir de {fmtGradeValue(criterio.mediaMinima)}</p>}
         </div>
         <div className="premium-card rounded-xl border border-border bg-surface p-4">
           <div className="flex items-center gap-2">

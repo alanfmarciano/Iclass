@@ -81,10 +81,14 @@ function columnTitle(column) {
   return parts.filter(Boolean).join(' · ')
 }
 
-function Cell({ cell }) {
+// Nota de uma prova no quadro, com a cor da faixa pela média mínima do curso
+// (gradeTone/gradeBand, a mesma regra do servidor). Coluna fora da média (sem etapa, "Não
+// conta" ou arquivada) fica sem cor.
+function Cell({ cell, criterio, muted = false }) {
+  const tone = cell && !muted ? gradeTone(cell.score == null ? null : cell.score / 10, criterio) : null
   return (
     <>
-      {cell ? fmtGrade(cell.score) : <span className="text-subtle">—</span>}
+      {cell ? <span className={tone ? TONE_TEXT[tone] : undefined}>{fmtGrade(cell.score)}</span> : <span className="text-subtle">—</span>}
       {cell?.pending > 0 && <span className="ml-1 text-[10px] text-warning" title="Há tentativa ainda não publicada para o aluno">•</span>}
     </>
   )
@@ -163,7 +167,7 @@ function PhoneList({ gradebook, criterio, withCriteria, groups, onOpenStudent })
                         {group.colunas.map((column) => (
                           <li key={column.id} className="flex items-start justify-between gap-2">
                             <span className="min-w-0 break-words text-text">{column.label}</span>
-                            <span className="shrink-0 tabular-nums"><Cell cell={row.cells?.[column.id]} /></span>
+                            <span className="shrink-0 tabular-nums"><Cell cell={row.cells?.[column.id]} criterio={criterio} muted={group.key === 'fora' || group.key === 'sem_etapa' || !!column.arquivado} /></span>
                           </li>
                         ))}
                         {group.colunas.length === 0 && <li className="text-xs text-subtle">Nenhuma avaliação nesta etapa.</li>}
@@ -175,7 +179,7 @@ function PhoneList({ gradebook, criterio, withCriteria, groups, onOpenStudent })
                     {columns.map((column) => (
                       <li key={column.id} className="flex items-start justify-between gap-2">
                         <span className="min-w-0 break-words text-text">{column.label}</span>
-                        <span className="shrink-0 tabular-nums"><Cell cell={row.cells?.[column.id]} /></span>
+                        <span className="shrink-0 tabular-nums"><Cell cell={row.cells?.[column.id]} criterio={criterio} muted={!!column.arquivado} /></span>
                       </li>
                     ))}
                   </ul>
@@ -279,7 +283,7 @@ export function GradebookPanel({ courseId, studentClass, refreshKey, onExport, o
                         {withCriteria ? groups.flatMap((group) => [
                           ...group.colunas.map((column, index) => (
                             <td key={column.id} className={`px-3 py-2 text-right tabular-nums text-text ${index === 0 ? 'border-l border-border' : ''} ${group.key === 'fora' || group.key === 'sem_etapa' || column.arquivado ? 'text-muted' : ''}`}>
-                              <Cell cell={row.cells?.[column.id]} />
+                              <Cell cell={row.cells?.[column.id]} criterio={criterio} muted={group.key === 'fora' || group.key === 'sem_etapa' || !!column.arquivado} />
                             </td>
                           )),
                           ...(group.etapa ? [
@@ -288,7 +292,7 @@ export function GradebookPanel({ courseId, studentClass, refreshKey, onExport, o
                             </td>,
                           ] : []),
                         ]) : columns.map((column) => (
-                          <td key={column.id} className="px-3 py-2 text-right tabular-nums text-text"><Cell cell={row.cells?.[column.id]} /></td>
+                          <td key={column.id} className="px-3 py-2 text-right tabular-nums text-text"><Cell cell={row.cells?.[column.id]} criterio={criterio} muted={!!column.arquivado} /></td>
                         ))}
                         {withCriteria ? (
                           <>

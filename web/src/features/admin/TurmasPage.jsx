@@ -84,9 +84,10 @@ export default function TurmasPage() {
   // Criar e mudar cursos e turmas, atribuir professor e arquivo: só o administrador pleno
   // (contrato C2 do P4; antes era "não é professor").
   const isAdmin = isFullAdmin(auth)
-  // Critérios de avaliação do curso (B9): quem gerencia cursos altera; quem abre Resultados
-  // (professor, Coordenação) vê sem alterar (o diálogo segue o podeAlterar do servidor).
-  const canSeeCriteria = canAccessAdminPermission(auth, [ADMIN_PERMISSIONS.COURSE_MANAGE, ADMIN_PERMISSIONS.PAGE_RESULTS])
+  // Critérios de avaliação do curso (B9): abrir pede page.results, como GET /grading/criteria
+  // e /grading/preview no servidor; quem também gerencia cursos (course.manage) altera, e
+  // o resto (professor, Coordenação) vê sem alterar (o diálogo segue o podeAlterar).
+  const canSeeCriteria = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_RESULTS)
   const coursesApi = useApi('/api/admin/course-summaries?includeDeleted=1')
   const classesApi = useApi('/api/admin/classes')
   const schoolsApi = useApi('/api/admin/schools')

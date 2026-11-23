@@ -97,6 +97,28 @@ describe('Critérios de avaliação do curso', () => {
     await user.click(within(dialog).getByRole('button', { name: 'Salvar critérios' }))
     expect(await within(dialog).findByText('O peso da etapa vai de 0,1 a 10.')).toBeInTheDocument()
     expect(within(dialog).getByLabelText('Peso')).toHaveAttribute('aria-invalid', 'true')
+    // A recusa veio na prévia que o Salvar pede antes: nada foi gravado.
+    expect(mocks.post.mock.calls.map(([path]) => path)).toEqual(['/api/admin/grading/preview'])
+  })
+
+  it('[UC-NOTAS-008] Salvar sem ver a prévia mostra a prévia primeiro e só grava no segundo toque', async () => {
+    const user = userEvent.setup()
+    mocks.criteria = criterios({ ativo: true, criterios: { ...criterios().padrao, ativo: true } })
+    mocks.post.mockImplementation(async (path) => (path === '/api/admin/grading/preview'
+      ? { success: true, resumo: 'Com esta regra, ninguém muda de média.', mudancas: [] }
+      : { success: true }))
+    renderDialog()
+    const dialog = await screen.findByRole('dialog')
+    const minima = await within(dialog).findByLabelText('Média mínima (0 a 10)')
+    await user.clear(minima)
+    await user.type(minima, '7')
+    await user.click(within(dialog).getByRole('button', { name: 'Salvar critérios' }))
+    expect(await within(dialog).findByText('Com esta regra, ninguém muda de média.')).toBeInTheDocument()
+    expect(mocks.post.mock.calls.map(([path]) => path)).toEqual(['/api/admin/grading/preview'])
+    await user.click(within(dialog).getByRole('button', { name: 'Salvar critérios' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/grading/criteria', expect.objectContaining({ ativo: true, mediaMinima: '7' })))
+    // Mudou o formulário depois da prévia: a prévia some e o Salvar a mostra de novo.
+    expect(mocks.post.mock.calls.filter(([path]) => path === '/api/admin/grading/preview')).toHaveLength(1)
   })
 
   it('[UC-NOTAS-008] curso com nota publicada: pede o motivo e manda junto', async () => {
@@ -106,6 +128,10 @@ describe('Critérios de avaliação do curso', () => {
     const dialog = await screen.findByRole('dialog')
     await within(dialog).findByLabelText('Média mínima (0 a 10)')
     await user.click(within(dialog).getByRole('switch', { name: /Usar critérios/ }))
+    // O primeiro Salvar mostra a prévia (B9: a prévia aparece antes de gravar); o segundo
+    // pede o motivo.
+    await user.click(within(dialog).getByRole('button', { name: 'Salvar critérios' }))
+    await within(dialog).findByText(/Prévia: nada foi gravado ainda/)
     await user.click(within(dialog).getByRole('button', { name: 'Salvar critérios' }))
     const ask = (await screen.findAllByRole('dialog')).at(-1)
     await user.type(within(ask).getByRole('textbox'), 'Regimento novo da escola')

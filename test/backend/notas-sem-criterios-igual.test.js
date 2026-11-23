@@ -18,10 +18,14 @@ const ROOT = path.join(__dirname, '../..');
 const GENERATOR = path.join(__dirname, 'fixtures/igualdade-notas-b6.js');
 const BEFORE = require('./fixtures/igualdade-notas-b6.json');
 
-// Campos que o boletim ganhou no B6 (gradingFields de studentReport.js).
-const REPORT_NEW_FIELDS = ['etapas', 'mediaFinal', 'recuperacaoFinal', 'situacao', 'situacaoRotulo', 'mencao', 'situacaoPorDisciplina', 'avisosNotas'];
-// Campos que o quadro ganhou no B6 (buildClassGradebook com o contexto de notas).
-const GRADEBOOK_NEW_FIELDS = ['etapas', 'mencoes', 'avisos'];
+// Campos que o boletim ganhou no B6 (gradingFields de studentReport.js) e no B9 (a
+// identidade da escola do curso do boletim e o fuso, para o cabeçalho e o rodapé do
+// documento impresso; não mudam nota nenhuma).
+const REPORT_NEW_FIELDS = ['etapas', 'mediaFinal', 'recuperacaoFinal', 'situacao', 'situacaoRotulo', 'mencao', 'situacaoPorDisciplina', 'avisosNotas', 'identidade', 'fuso'];
+// Campos que o quadro ganhou no B6 (buildClassGradebook com o contexto de notas) e no B9
+// (resumo: média da turma, aprovação e as notas por prova, aplicação e módulo que
+// Resultados mostra sem fazer conta; o resumo é conferido à parte abaixo).
+const GRADEBOOK_NEW_FIELDS = ['etapas', 'mencoes', 'avisos', 'resumo'];
 
 let now;
 test.before(() => {

@@ -838,3 +838,65 @@ test('[UC-NOTAS-008] as telas recebem o critério do curso: critérios (GET) e f
     const academicAfter = await as('prof', 'get', '/api/admin/student/academic?email=ana@grading.local');
     academicAfter.body.submissions.forEach(entry => assert.equal(entry.criterio.mediaMinima, 5));
 });
+
+test('[UC-NOTAS-008] resumo do quadro (B9): média e aprovação da turma, por prova, aplicação e módulo, sem conta na tela', async () => {
+    // Sem critérios: média das médias dos alunos (Ana 6,3 e Bia 6,3) e aprovação pelos
+    // alunos com média >= 6,0.
+    const before = await gradebookOf();
+    assert.equal(before.status, 200, JSON.stringify(before.body));
+    const resumo = before.body.resumo;
+    assert.equal(resumo.media, 6.3);
+    assert.equal(resumo.comNota, 2);
+    assert.equal(resumo.aprovacaoPor, 'media');
+    assert.equal(resumo.aprovacao, 100);
+    // Por prova: Ana 4,0 e Bia 10,0 na Prova 1 (média 7,0; só a Bia passa).
+    assert.deepEqual({ ...resumo.porProva.Av_P1, mediaScore: undefined }, { media: 7, mediaScore: undefined, comNota: 2, acimaDaMinima: 1, aprovacao: 50 });
+    // Nota de cada aluno: na prova e a média dele em cada módulo da estrutura.
+    assert.equal(resumo.alunos['ana@grading.local'].porProva.Av_P1.grade, 4);
+    assert.equal(resumo.alunos['ana@grading.local'].porModulo.M1.grade, 6);
+    assert.equal(resumo.alunos['ana@grading.local'].porModulo.M2.grade, 7);
+    // Aplicação: a nota daquela aplicação.
+    db.memory.submissions.push(sub('ana@grading.local', 'Av_P3', 90, { applicationId: 'app_res' }));
+    const withApp = await gradebookOf();
+    assert.equal(withApp.body.resumo.porAplicacao.app_res.media, 9);
+    assert.equal(withApp.body.resumo.alunos['ana@grading.local'].porAplicacao.app_res.grade, 9);
+    db.memory.submissions.pop();
+
+    // Com critérios: a média da turma é a das médias finais do quadro (Ana 7,0 e Bia 5,2)
+    // e a aprovação é pela situação (Bia em recuperação: 1 de 2).
+    assert.equal((await saveCriteria()).status, 200);
+    assert.equal((await savePlan(PLAN, { reason: 'Plano do semestre' })).status, 200);
+    const after = await gradebookOf();
+    const rows = after.body.rows;
+    const mediaDasMedias = rows.reduce((sum, row) => sum + row.averageScore, 0) / rows.length;
+    assert.equal(after.body.resumo.media, require('../../backend/utils/submissionAttempts.js').roundGrade(mediaDasMedias));
+    assert.equal(after.body.resumo.media, 6.1);
+    assert.equal(after.body.resumo.aprovacaoPor, 'situacao');
+    assert.equal(after.body.resumo.situacoesFechadas, 2);
+    assert.equal(after.body.resumo.aprovados, 1);
+    assert.equal(after.body.resumo.aprovacao, 50);
+});
+
+test('[UC-NOTAS-008] boletim traz a identidade da escola do curso do boletim e o fuso da escola; grades-summary diz de qual etapa é a recuperação', async () => {
+    db.memory.schools = [{ id: 'esc_a', name: 'Escola A', info: { tradeName: 'Escola A', legalName: 'Escola A Ensino Ltda', registrationId: '11.222.333/0001-44' } }];
+    const report = await as('admin', 'get', `/api/admin/student/report?email=ana@grading.local&courseId=${COURSE}&studentClass=1DES`);
+    assert.equal(report.status, 200, JSON.stringify(report.body));
+    assert.equal(report.body.identidade.schoolName, 'Escola A');
+    assert.equal(report.body.identidade.institution.legalName, 'Escola A Ensino Ltda');
+    assert.equal(report.body.identidade.institution.registrationId, '11.222.333/0001-44');
+    assert.ok(report.body.identidade.displayName);
+    // A mesma identidade de GET /api/branding?courseId= (a do curso do boletim).
+    const branding = await request(app).get(`/api/branding?courseId=${COURSE}`);
+    assert.equal(branding.body.displayName, report.body.identidade.displayName);
+    assert.deepEqual(branding.body.institution, report.body.identidade.institution);
+    assert.equal(report.body.fuso, require('../../backend/utils/settings.js').getSettings().timezone);
+
+    assert.equal((await saveCriteria()).status, 200);
+    assert.equal((await savePlan({ ...PLAN, Av_P3: { recuperacaoDe: 'etapa:1' } }, { reason: 'Plano do semestre' })).status, 200);
+    const summary = await asStudent('ana@grading.local', `/api/student/grades-summary?courseId=${COURSE}&studentClass=1DES`);
+    assert.equal(summary.status, 200);
+    const rec = summary.body.itens.find(item => item.id === 'Av_P3');
+    assert.equal(rec.recuperacao, true);
+    assert.equal(rec.recuperacaoDe, 'etapa:1');
+    assert.equal(summary.body.itens.find(item => item.id === 'Av_P1').recuperacaoDe, null);
+});

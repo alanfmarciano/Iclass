@@ -40,7 +40,8 @@ test('[UC-NOTAS-008] critérios com 2 etapas, seminário de 8,5 na 2ª etapa, qu
     await expect(admin).toHaveURL(/^http:\/\/127\.0\.0\.1:3132\/$/, { timeout: 15000 });
     await admin.getByRole('link', { name: 'Cursos e turmas', exact: true }).click();
     await admin.getByRole('button', { name: 'Critérios de avaliação', exact: true }).click();
-    const criterios = admin.getByRole('dialog', { name: 'Critérios de avaliação' });
+    // exact: o diálogo do motivo ("Salvar os critérios de avaliação?") também contém o nome.
+    const criterios = admin.getByRole('dialog', { name: 'Critérios de avaliação', exact: true });
     await expect(criterios.getByLabel('Média mínima (0 a 10)')).toBeVisible();
     await criterios.getByRole('switch', { name: 'Usar critérios de avaliação neste curso' }).click();
     await criterios.getByLabel('Nome da etapa 1', { exact: true }).fill('1º bimestre');
@@ -139,6 +140,13 @@ test('[UC-NOTAS-008] critérios com 2 etapas, seminário de 8,5 na 2ª etapa, qu
     await expect(minhas.getByText('Notas por etapa')).toBeVisible();
     await expect(minhas.getByText(/1º bimestre/)).toBeVisible();
     await expect(minhas.getByText(/2º bimestre/)).toBeVisible();
+    // Etapas em acordeão: tocar no 2º bimestre mostra o seminário publicado nele, com a nota.
+    const etapa2 = minhas.getByRole('button', { name: /2º bimestre/ });
+    await expect(etapa2).toHaveAttribute('aria-expanded', 'false');
+    await etapa2.click();
+    const painel = minhas.locator(`#${await etapa2.getAttribute('aria-controls')}`);
+    await expect(painel.getByText('Seminário de redes')).toBeVisible();
+    await expect(painel.getByText('8,5')).toBeVisible();
     await expect(minhas.getByText(/Média mínima para aprovação: 6,0\./)).toBeVisible();
     await expect(aluno.getByText('Seminário de redes').first()).toBeVisible();
     await noHorizontalScroll(aluno, 'Provas do aluno no celular');

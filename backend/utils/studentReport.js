@@ -14,6 +14,7 @@ const { effectiveStructure } = require('./classContent.js');
 const attendanceUtil = require('./attendance.js');
 const settingsUtil = require('./settings.js');
 const studentIdentity = require('./studentIdentity.js');
+const { effectiveBrandingFor } = require('./branding.js');
 const {
     attendanceAllowanceFor,
     buildStudentReportModules,
@@ -195,6 +196,12 @@ function buildStudentReport(memory, { student, courseId = '', studentClass = '',
         },
         progress: { completedUnits, totalUnits: unitKeys.length },
         issuedBy,
+        // Cabeçalho e rodapé do boletim impresso (printDocument, C5 do P4): a identidade da
+        // escola do curso DESTE boletim (a mesma de GET /api/branding?courseId=) e o fuso
+        // da escola (settings.timezone) para a data do rodapé. A tela não usa a identidade
+        // do curso aberto no painel, que pode ser outro (ficha do aluno com outra matrícula).
+        identidade: reportIdentity(memory, resolvedCourseId),
+        fuso: settingsUtil.getSettings().timezone,
     };
     return { ok: true, report };
 }
@@ -205,6 +212,18 @@ function buildStudentReport(memory, { student, courseId = '', studentClass = '',
 // (com critérios) ou por módulo (sem eles), a frequência e as faltas que ainda pode ter.
 // A tela não recalcula nada (D3 do P2).
 // options: { email (o da sessão), course, cls, hoje }.
+// Só o que o documento impresso usa da identidade efetiva (schoolFromBranding na tela).
+function reportIdentity(memory, courseId) {
+    const { effective } = effectiveBrandingFor(memory, { courseId });
+    return {
+        displayName: effective.displayName || '',
+        schoolName: effective.schoolName || '',
+        institution: effective.institution || {},
+        logoLightUrl: effective.logoLightUrl || '',
+        logoUrl: effective.logoUrl || '',
+    };
+}
+
 function buildStudentGradesSummary(memory, { email, course = null, cls = null, hoje = null } = {}) {
     const mail = String(email || '').trim().toLowerCase();
     const courseId = String((cls && cls.courseId) || (course && course.id) || '');
@@ -234,6 +253,9 @@ function buildStudentGradesSummary(memory, { email, course = null, cls = null, h
             etapaNome: ativo && exam.etapa ? (etapaNome.get(exam.etapa) || null) : null,
             peso: ativo ? exam.peso : null,
             recuperacao: ativo && !!exam.recuperacaoDe,
+            // De qual etapa é a recuperação ('etapa:N' ou 'final'): Minhas notas mostra a
+            // avaliação dentro da etapa que ela recupera.
+            recuperacaoDe: ativo && exam.recuperacaoDe ? exam.recuperacaoDe : null,
             foraDaMedia: ativo && exam.fora === true,
             nota: exam.grade,
             publicada: exam.grade !== null,

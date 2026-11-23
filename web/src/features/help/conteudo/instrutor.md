@@ -97,9 +97,11 @@ Mostra as entregas das provas da turma, aluno por aluno, com as notas. Daqui voc
 
 <!-- P2 escreve aqui: quadro de notas, plano de avaliação, média, etapas, situação e boletim. -->
 
+No alto, **Média geral** é a média das médias dos alunos da turma (a mesma do quadro de notas) e **Aprovação** diz quantos alunos passam: com os critérios de avaliação do curso, os aprovados entre os que já têm a situação fechada; sem eles, os alunos com média a partir da média mínima. Com o filtro de uma prova ou de uma aplicação, as duas contas valem só para ela.
+
 ### Quadro de notas
 
-A aba **Quadro de notas** mostra uma linha por aluno e uma coluna por prova ou avaliação da turma. Com os critérios de avaliação do curso ligados (veja "Cursos e turmas"), as colunas ficam agrupadas por etapa ("1º bimestre · peso 1"), cada etapa tem a **Média da etapa** (com "(rec.)" quando a recuperação mudou a nota) e, no fim, vêm a **Média final**, a **Frequência**, a **Situação** (Aprovado, Em recuperação, Reprovado por nota, Reprovado por falta, Cursando ou Sem notas) e a **Menção**, se o curso usa menções. A cor da nota segue a média mínima do curso. Tudo é calculado pelo IClass com a mesma conta do boletim e da planilha exportada.
+A aba **Quadro de notas** mostra uma linha por aluno e uma coluna por prova ou avaliação da turma. Com os critérios de avaliação do curso ligados (veja "Cursos e turmas"), as colunas ficam agrupadas por etapa ("1º bimestre · peso 1"), cada etapa tem a **Média da etapa** (com "(rec.)" quando a recuperação mudou a nota) e, no fim, vêm a **Média final**, a **Frequência**, a **Situação** (Aprovado, Em recuperação, Reprovado por nota, Reprovado por falta, Cursando ou Sem notas) e a **Menção**, se o curso usa menções. A cor de cada nota e das médias segue a média mínima do curso. Tudo é calculado pelo IClass com a mesma conta do boletim e da planilha exportada.
 
 No celular, o quadro vira uma lista de alunos: toque no aluno para ver as notas de cada etapa.
 
@@ -202,7 +204,7 @@ Lista os cursos da instituição e as turmas de cada um. Daqui você cria turmas
 3. Monte as **etapas** (de 1 a 6, por exemplo dois bimestres), cada uma com o nome e o peso.
 4. Escolha a regra da **recuperação de cada etapa** e da **recuperação final**. Embaixo de cada regra aparece um exemplo.
 5. Se a escola usa conceitos, ligue as **menções** (MB, B, R, I) e ajuste a nota a partir da qual cada uma vale. A mais baixa começa em 0,0.
-6. Clique em **Ver prévia** para saber quantos alunos mudam de média ou de situação, antes de gravar, e em **Salvar critérios**.
+6. Clique em **Salvar critérios**. Antes de gravar, o IClass mostra a prévia: quantos alunos mudam de média ou de situação, e quem. Confira e clique em **Salvar critérios** de novo para gravar. O botão **Ver prévia** mostra a prévia sem salvar.
 
 Se o curso já tem nota publicada, o IClass pede o motivo, que fica na Auditoria. Desligar os critérios volta à média de sempre e guarda os valores para quando você ligar de novo. Só quem gerencia cursos altera os critérios; o professor e a Coordenação veem os critérios sem alterar. A etapa e o peso de cada avaliação ficam no **Plano de avaliação**, em Resultados.
 

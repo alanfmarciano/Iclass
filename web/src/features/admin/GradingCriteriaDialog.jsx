@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Eye, Plus, Trash2 } from 'lucide-react'
 import { Modal } from '../../components/ui/Modal'
 import { Button } from '../../components/ui/Button'
@@ -92,6 +92,10 @@ export function GradingCriteriaDialog({ open, onClose, course, onSaved }) {
   const [preview, setPreview] = useState(null)
   const [previewing, setPreviewing] = useState(false)
   const [reasonOpen, setReasonOpen] = useState(false)
+  // A prévia aparece no fim do formulário: rola até ela quando chega (no celular o Salvar
+  // fica preso embaixo e a prévia poderia ficar fora da tela).
+  const previewRef = useRef(null)
+  useEffect(() => { if (preview) previewRef.current?.scrollIntoView?.({ block: 'nearest', behavior: 'smooth' }) }, [preview])
 
   useEffect(() => {
     if (!open) { setForm(null); setError(null); setPreview(null); return }
@@ -108,14 +112,17 @@ export function GradingCriteriaDialog({ open, onClose, course, onSaved }) {
   const updateEtapa = (index, patch) => update({ etapas: form.etapas.map((etapa, i) => (i === index ? { ...etapa, ...patch } : etapa)) })
   const updateMention = (index, patch) => update({ mencoes: form.mencoes.map((item, i) => (i === index ? { ...item, ...patch } : item)) })
 
+  // Devolve true quando a prévia chegou (o Salvar só grava depois de mostrá-la).
   async function runPreview() {
     setPreviewing(true)
     setError(null)
     try {
       const { ativo, ...criterios } = criteriaPayload(form)
       setPreview(await api.post('/api/admin/grading/preview', { courseId, criterios: { ...criterios, ativo } }))
+      return true
     } catch (e) {
       setError(e)
+      return false
     } finally {
       setPreviewing(false)
     }
@@ -131,6 +138,10 @@ export function GradingCriteriaDialog({ open, onClose, course, onSaved }) {
   }
 
   async function save() {
+    // Critérios ligados: a prévia (quem muda de média e de situação) aparece antes de
+    // gravar. O primeiro Salvar sem prévia mostra a prévia; o segundo grava (a prévia some
+    // a cada mudança no formulário, e o Salvar volta a mostrá-la).
+    if (form.ativo && !preview) { await runPreview(); return }
     // Com nota publicada no curso, o motivo é pedido antes (o servidor confere de novo).
     if (data?.temNotaPublicada && (form.ativo || data?.ativo)) { setReasonOpen(true); return }
     setSaving(true)
@@ -146,7 +157,7 @@ export function GradingCriteriaDialog({ open, onClose, course, onSaved }) {
   }
 
   const footer = canEdit
-    ? <><Button variant="ghost" onClick={onClose} disabled={saving}>Cancelar</Button>{form?.ativo && <Button variant="secondary" icon={Eye} loading={previewing} onClick={runPreview}>Ver prévia</Button>}<Button loading={saving} onClick={save} disabled={!form}>Salvar critérios</Button></>
+    ? <><Button variant="ghost" onClick={onClose} disabled={saving}>Cancelar</Button>{form?.ativo && <Button variant="secondary" icon={Eye} loading={previewing} onClick={runPreview}>Ver prévia</Button>}<Button loading={saving || (previewing && !preview)} onClick={save} disabled={!form}>Salvar critérios</Button></>
     : <Button variant="secondary" onClick={onClose}>Fechar</Button>
 
   return (
@@ -236,7 +247,7 @@ export function GradingCriteriaDialog({ open, onClose, course, onSaved }) {
               {general && <p role="alert" className="rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">{general}</p>}
 
               {preview && (
-                <section aria-label="Prévia" aria-live="polite" className="space-y-2 rounded-xl border border-border bg-surface-2 p-3">
+                <section ref={previewRef} aria-label="Prévia" aria-live="polite" className="space-y-2 rounded-xl border border-border bg-surface-2 p-3">
                   <p className="text-sm font-medium text-text">{preview.resumo}</p>
                   {(preview.mudancas || []).length > 0 && (
                     <ul className="max-h-56 divide-y divide-border overflow-auto text-sm">
@@ -251,7 +262,7 @@ export function GradingCriteriaDialog({ open, onClose, course, onSaved }) {
                       ))}
                     </ul>
                   )}
-                  <p className="text-xs text-subtle">Prévia: nada foi gravado ainda.</p>
+                  <p className="text-xs text-subtle">Prévia: nada foi gravado ainda. Confira e toque em Salvar critérios para gravar.</p>
                 </section>
               )}
             </div>

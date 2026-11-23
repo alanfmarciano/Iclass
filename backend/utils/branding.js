@@ -149,6 +149,19 @@ function resolveEffectiveBranding({ global, school, course }) {
     };
 }
 
+// Identidade efetiva de um curso (ou de uma escola) como GET /api/branding devolve: a do
+// sistema (com os nomes antigos de campo), a da escola e a do curso. Usada também pelo
+// boletim (studentReport.js), para o cabeçalho sair com a escola do curso DO BOLETIM, e
+// não com a do curso aberto no painel (C5 do P4).
+function effectiveBrandingFor(memory, { courseId = '', schoolId = '' } = {}) {
+    const g = (memory && memory.branding) || {};
+    const global = { ...g, displayName: g.displayName || g.name || g.institutionName, primaryColor: g.primaryColor || g.color, logoLightUrl: g.logoLightUrl || g.logoUrl };
+    const course = courseId ? ((memory && memory.courses) || []).find(c => c.id === courseId) || null : null;
+    const resolvedSchoolId = (course && course.schoolId) || schoolId || null;
+    const school = resolvedSchoolId ? ((memory && memory.schools) || []).find(s => s.id === resolvedSchoolId) || null : null;
+    return { effective: resolveEffectiveBranding({ global, school, course }), course, school };
+}
+
 module.exports = {
     BRANDING_KEYS,
     BOOLEAN_KEYS,
@@ -161,4 +174,5 @@ module.exports = {
     extractBranding,
     extractInstitutional,
     resolveEffectiveBranding,
+    effectiveBrandingFor,
 };

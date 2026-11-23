@@ -326,10 +326,13 @@ export function GradingPlanPanel({ plan, courseId, studentClass, onChanged }) {
               ? <p className="rounded-xl border border-border bg-surface px-4 py-8 text-center text-sm text-muted">Nenhuma avaliação nesta turma ainda.</p>
               : <ul className="space-y-2">{ativos.map(renderItem)}</ul>}
             {planEditable && (
-              <div className="sticky bottom-2 z-10 flex flex-wrap items-center justify-end gap-2 rounded-xl border border-border bg-surface px-3 py-2 shadow-lg">
-                <span className="text-xs text-subtle">{changedCount ? `${changedCount} avaliação(ões) alterada(s)` : 'Nenhuma mudança'}</span>
-                <Button variant="ghost" disabled={!changedCount || saving} onClick={() => { setDrafts({}); setRowErrors({}) }}>Desfazer</Button>
-                <Button icon={Save} loading={saving} disabled={!changedCount} onClick={savePlan}>Salvar plano</Button>
+              // Barra de salvar: fica presa embaixo da tela só com mudança a salvar (sem ela,
+              // fica no fim da lista e não cobre os cartões ao rolar no celular). Botões
+              // pequenos, numa linha só até 320 px.
+              <div className={`${changedCount ? 'sticky bottom-2 z-10 shadow-lg' : ''} flex items-center justify-end gap-2 rounded-xl border border-border bg-surface px-3 py-1.5`}>
+                <span className="mr-auto min-w-0 truncate text-xs text-subtle">{changedCount ? `${changedCount} ${changedCount === 1 ? 'alteração' : 'alterações'}` : 'Nenhuma mudança'}</span>
+                <Button size="sm" variant="ghost" disabled={!changedCount || saving} onClick={() => { setDrafts({}); setRowErrors({}) }}>Desfazer</Button>
+                <Button size="sm" icon={Save} loading={saving} disabled={!changedCount} onClick={savePlan}>Salvar plano</Button>
               </div>
             )}
             {arquivados.length > 0 && (

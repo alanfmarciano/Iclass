@@ -41,8 +41,14 @@ const labelOf = (s) => (isManualKey(s.examKey) ? clip(String(s.examTitle || 'Ava
 // A seção de cada avaliação é a disciplina (quando o curso calcula a situação por
 // disciplina) ou o módulo da estrutura, como o servidor diz no resumo de notas; antes era
 // o prefixo do examKey (FUTEC, FECOP...), que não diz nada em prova com outro nome. Nota
-// ainda não publicada não está no resumo: fica em "Notas em revisão" até publicar.
+// ainda não publicada não está no resumo: fica em "Notas em revisão" até publicar. Nota
+// publicada fora do resumo (avaliação da turma que o professor arquivou, fora da média)
+// fica em "Outras avaliações". Sem o resumo (ainda carregando ou com erro), tudo fica numa
+// seção só, "Avaliações", sem dizer que está em revisão.
 const REVIEW_SECTION = { key: 'revisao', name: 'Notas em revisão', media: null }
+const OTHER_SECTION_KEY = 'm:__outras__'
+const ALL_SECTION = { key: 'todas', name: 'Avaliações', media: null }
+// entry: a entrega (com gradePublished) ou só o examKey.
 export function sectionsFromSummary(summary) {
   const porDisciplina = new Map((summary?.situacaoPorDisciplina || []).map((item) => [String(item.id), item]))
   const modulos = new Map((summary?.modulos || []).map((item) => [String(item.id), item]))
@@ -58,7 +64,15 @@ export function sectionsFromSummary(summary) {
     const modulo = modulos.get(moduleId)
     byKey.set(item.id, { key: `m:${moduleId}`, name: item.modulo || modulo?.nome || 'Outras avaliações', media: modulo ? modulo.media ?? null : null })
   })
-  return (examKey) => byKey.get(String(examKey || '')) || REVIEW_SECTION
+  const other = { key: OTHER_SECTION_KEY, name: modulos.get('__outras__')?.nome || 'Outras avaliações', media: modulos.get('__outras__')?.media ?? null }
+  return (entry) => {
+    const examKey = entry && typeof entry === 'object' ? entry.examKey : entry
+    const found = byKey.get(String(examKey || ''))
+    if (found) return found
+    if (!summary) return ALL_SECTION
+    if (entry && typeof entry === 'object' && entry.gradePublished === true) return other
+    return REVIEW_SECTION
+  }
 }
 // Chave do grupo de tentativas: mesma aplicacao = mesmo grupo (espelha attemptGroupKey do backend).
 const groupKeyOf = (s) => String(s.applicationId || s.examKey || '')
@@ -416,7 +430,76 @@ function FullExamView({ detail, questions, answers }) {
 
 // "Minhas notas" (B9 / P2-S4): o resultado do aluno na turma como o servidor calculou
 // (GET /api/student/grades-summary, só o publicado): média final, situação ("Cursando"
-// enquanto falta nota de etapa), menção, notas por etapa e a média mínima do curso.
+// enquanto falta nota de etapa), menção, notas por etapa com as avaliações publicadas de
+// cada uma (em acordeão: toque na etapa para ver) e a média mínima do curso. Nenhum texto
+// abaixo de 14 px (text-sm), para ler no celular.
+const fmtWeight = (value) => String(value ?? '').replace('.', ',')
+// Selo da situação no cartão, em 14 px (o Badge comum é text-xs).
+const SELO_TOM = { neutral: 'bg-surface-2 text-muted', success: 'bg-success-soft text-success', danger: 'bg-danger-soft text-danger', warning: 'bg-warning-soft text-warning', info: 'bg-info-soft text-info' }
+function Selo({ tone = 'neutral', children }) {
+  return <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-sm font-medium ${SELO_TOM[tone] || SELO_TOM.neutral}`}>{children}</span>
+}
+
+// Avaliações publicadas de cada etapa (a recuperação da etapa entra nela), da recuperação
+// final e as que não entram na média (sem etapa ou "Não conta"). Só agrupa o que o servidor
+// mandou; nenhuma conta.
+export function gradesByStage(summary) {
+  const itens = (Array.isArray(summary?.itens) ? summary.itens : []).filter((item) => item && item.publicada && item.nota !== null && item.nota !== undefined)
+  const etapas = Array.isArray(summary?.etapas) ? summary.etapas : []
+  const ordens = new Set(etapas.map((etapa) => etapa.ordem))
+  const porEtapa = new Map(etapas.map((etapa) => [etapa.ordem, []]))
+  const final = []
+  const fora = []
+  itens.forEach((item) => {
+    const rec = /^etapa:(\d+)$/.exec(String(item.recuperacaoDe || ''))
+    if (item.foraDaMedia) fora.push(item)
+    else if (item.recuperacaoDe === 'final') final.push(item)
+    else if (rec && ordens.has(Number(rec[1]))) porEtapa.get(Number(rec[1])).push(item)
+    else if (!item.recuperacaoDe && ordens.has(item.etapa)) porEtapa.get(item.etapa).push(item)
+    else fora.push(item)
+  })
+  return { porEtapa, final, fora }
+}
+
+function StageRow({ id, title, value, valueTone, note, itens, criterio }) {
+  const [open, setOpen] = useState(false)
+  const panelId = `etapa-${id}`
+  return (
+    <li className="rounded-lg border border-border">
+      <button type="button" aria-expanded={open} aria-controls={panelId} onClick={() => setOpen((v) => !v)}
+        className="flex w-full min-w-0 items-center gap-2 px-3 py-2.5 text-left">
+        <ChevronRight size={16} className={`shrink-0 text-subtle transition-transform ${open ? 'rotate-90' : ''}`} aria-hidden />
+        <span className="min-w-0 flex-1">
+          <span className="block break-words text-sm font-medium text-text">{title}</span>
+          {note && <span className="block text-sm text-muted">{note}</span>}
+        </span>
+        <span className={`shrink-0 text-lg font-semibold tabular-nums ${valueTone}`}>{value}</span>
+      </button>
+      {open && (
+        <div id={panelId} className="border-t border-border px-3 py-2">
+          {itens.length === 0
+            ? <p className="text-sm text-muted">Nenhuma avaliação com nota publicada nesta etapa ainda.</p>
+            : (
+              <ul className="divide-y divide-border">
+                {itens.map((item) => (
+                  <li key={item.id} className="flex items-start justify-between gap-3 py-1.5 text-sm">
+                    <span className="min-w-0 break-words text-text">
+                      {item.titulo}
+                      {item.tipo ? <span className="text-muted"> · {item.tipo}</span> : null}
+                      {item.recuperacaoDe ? <span className="text-muted"> · recuperação</span> : null}
+                      {item.peso !== null && item.peso !== undefined && !item.recuperacaoDe && !item.foraDaMedia ? <span className="text-muted"> · peso {fmtWeight(item.peso)}</span> : null}
+                    </span>
+                    <span className={`shrink-0 font-semibold tabular-nums ${gradeText(item.nota, criterio) || 'text-text'}`}>{fmtGrade(item.nota)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+        </div>
+      )}
+    </li>
+  )
+}
+
 export function MyGradesCard({ summary }) {
   const criterio = useCriterio()
   const comCriterios = summary.regraAntiga === false
@@ -424,29 +507,31 @@ export function MyGradesCard({ summary }) {
   const disciplinas = Array.isArray(summary.situacaoPorDisciplina) ? summary.situacaoPorDisciplina : []
   const mencao = fmtMencao(summary.mencao)
   const semNotas = !summary.notasPublicadas
+  const grupos = useMemo(() => gradesByStage(summary), [summary])
+  const tone = (value) => (value != null ? gradeText(value, criterio) || 'text-text' : 'text-subtle')
   return (
     <Card as="section" className="p-5" aria-labelledby="minhas-notas-titulo">
       <div className="flex flex-wrap items-center justify-between gap-2">
         <h2 id="minhas-notas-titulo" className="flex items-center gap-2 font-semibold text-text"><Award size={17} className="text-primary" /> Minhas notas</h2>
-        {summary.situacaoRotulo && <Badge tone={situacaoTone(summary.situacao)}>{summary.situacaoRotulo}</Badge>}
+        {summary.situacaoRotulo && <Selo tone={situacaoTone(summary.situacao)}>{summary.situacaoRotulo}</Selo>}
       </div>
       {semNotas ? (
         <p className="mt-2 text-sm text-muted">Nenhuma nota publicada ainda. Quando o professor publicar, sua média aparece aqui.</p>
       ) : (
         <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
           <div className="rounded-xl bg-surface-2 p-3">
-            <dt className="text-[11px] font-medium uppercase tracking-wider text-subtle">{comCriterios ? 'Média final' : 'Média geral'}</dt>
+            <dt className="text-sm font-medium text-muted">{comCriterios ? 'Média final' : 'Média geral'}</dt>
             <dd className={`mt-1 text-2xl font-semibold tabular-nums ${summary.mediaFinal != null ? gradeText(summary.mediaFinal, criterio) || 'text-text' : 'text-text'}`}>{fmtGrade(summary.mediaFinal)}</dd>
           </div>
           {mencao && (
             <div className="rounded-xl bg-surface-2 p-3">
-              <dt className="text-[11px] font-medium uppercase tracking-wider text-subtle">Menção</dt>
-              <dd className="mt-1 text-base font-semibold text-text">{mencao}{summary.mencao?.nome ? <span className="ml-1 text-xs font-normal text-muted">{summary.mencao.nome}</span> : null}</dd>
+              <dt className="text-sm font-medium text-muted">Menção</dt>
+              <dd className="mt-1 text-base font-semibold text-text">{mencao}{summary.mencao?.nome ? <span className="ml-1 text-sm font-normal text-muted">{summary.mencao.nome}</span> : null}</dd>
             </div>
           )}
           {summary.frequencia !== null && summary.frequencia !== undefined && (
             <div className="rounded-xl bg-surface-2 p-3">
-              <dt className="text-[11px] font-medium uppercase tracking-wider text-subtle">Frequência</dt>
+              <dt className="text-sm font-medium text-muted">Frequência</dt>
               <dd className="mt-1 text-base font-semibold tabular-nums text-text">{summary.frequencia}%</dd>
             </div>
           )}
@@ -454,35 +539,45 @@ export function MyGradesCard({ summary }) {
       )}
       {comCriterios && etapas.length > 0 && (
         <div className="mt-4">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-subtle">Notas por etapa</h3>
-          <ul className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3">
+          <h3 className="text-sm font-semibold text-text">Notas por etapa</h3>
+          <p className="text-sm text-muted">Toque na etapa para ver as avaliações dela.</p>
+          <ul className="mt-2 space-y-2">
             {etapas.map((etapa) => (
-              <li key={etapa.ordem} className="min-w-0 rounded-lg border border-border px-3 py-2">
-                <span className="block truncate text-xs text-muted">{etapa.nome}{etapas.length > 1 ? ` · peso ${String(etapa.peso).replace('.', ',')}` : ''}</span>
-                <span className={`block text-lg font-semibold tabular-nums ${etapa.final != null ? gradeText(etapa.final, criterio) || 'text-text' : 'text-subtle'}`}>{etapa.semNota ? 'Sem nota' : fmtGrade(etapa.final)}</span>
-                {etapa.recuperacao != null && <span className="block text-[11px] text-subtle">Recuperação {fmtGrade(etapa.recuperacao)}</span>}
-              </li>
+              <StageRow key={etapa.ordem} id={etapa.ordem} criterio={criterio}
+                title={`${etapa.nome}${etapas.length > 1 ? ` · peso ${fmtWeight(etapa.peso)}` : ''}`}
+                value={etapa.semNota ? 'Sem nota' : fmtGrade(etapa.final)}
+                valueTone={etapa.semNota ? 'text-subtle' : tone(etapa.final)}
+                note={etapa.recuperacao != null ? `Média ${fmtGrade(etapa.media)} · recuperação ${fmtGrade(etapa.recuperacao)}` : ''}
+                itens={grupos.porEtapa.get(etapa.ordem) || []} />
             ))}
+            {(summary.recuperacaoFinal != null || grupos.final.length > 0) && (
+              <StageRow id="final" title="Recuperação final" criterio={criterio}
+                value={fmtGrade(summary.recuperacaoFinal)} valueTone={tone(summary.recuperacaoFinal)} itens={grupos.final} />
+            )}
+            {grupos.fora.length > 0 && (
+              <StageRow id="fora" title="Fora da média" criterio={criterio}
+                value={String(grupos.fora.length)} valueTone="text-subtle" note="Sem etapa ou marcadas para não contar" itens={grupos.fora} />
+            )}
           </ul>
         </div>
       )}
       {comCriterios && disciplinas.length > 1 && (
         <div className="mt-4">
-          <h3 className="text-xs font-semibold uppercase tracking-wider text-subtle">Por disciplina</h3>
+          <h3 className="text-sm font-semibold text-text">Por disciplina</h3>
           <ul className="mt-2 divide-y divide-border">
             {disciplinas.map((item) => (
               <li key={item.id} className="flex items-center justify-between gap-2 py-1.5 text-sm">
                 <span className="min-w-0 truncate text-text">{item.nome}</span>
                 <span className="flex shrink-0 items-center gap-2">
                   <span className="tabular-nums text-muted">{fmtGrade(item.mediaFinal)}</span>
-                  {item.situacaoRotulo && <Badge tone={situacaoTone(item.situacao)}>{item.situacaoRotulo}</Badge>}
+                  {item.situacaoRotulo && <Selo tone={situacaoTone(item.situacao)}>{item.situacaoRotulo}</Selo>}
                 </span>
               </li>
             ))}
           </ul>
         </div>
       )}
-      <p className="mt-3 text-xs text-subtle">
+      <p className="mt-3 text-sm text-muted">
         Média mínima para aprovação: {summary.mediaMinimaTexto || fmtGrade(criterio.mediaMinima)}.
         {summary.faltasPermitidasRestantes !== null && summary.faltasPermitidasRestantes !== undefined ? ` Você ainda pode ter ${summary.faltasPermitidasRestantes} ${summary.faltasPermitidasRestantes === 1 ? 'falta' : 'faltas'} no período.` : ''}
         {' '}Só notas publicadas entram na média.
@@ -572,7 +667,7 @@ export default function ProvasPage() {
   // revisão" por último.
   const materias = useMemo(() => {
     const seen = new Map()
-    mine.forEach((s) => { const sec = sectionOf(s.examKey); if (!seen.has(sec.key)) seen.set(sec.key, sec) })
+    mine.forEach((s) => { const sec = sectionOf(s); if (!seen.has(sec.key)) seen.set(sec.key, sec) })
     const list = [...seen.values()]
     return [...list.filter((sec) => sec.key !== REVIEW_SECTION.key), ...list.filter((sec) => sec.key === REVIEW_SECTION.key)]
   }, [mine, sectionOf])
@@ -587,13 +682,13 @@ export default function ProvasPage() {
 
   const matCounts = useMemo(() => {
     const map = {}
-    statusFiltered.forEach((s) => { const m = sectionOf(s.examKey).key; map[m] = (map[m] || 0) + 1 })
+    statusFiltered.forEach((s) => { const m = sectionOf(s).key; map[m] = (map[m] || 0) + 1 })
     return map
   }, [statusFiltered, sectionOf])
 
   const visible = useMemo(() => {
     return statusFiltered.filter((s) => {
-      if (mat !== 'all' && sectionOf(s.examKey).key !== mat) return false
+      if (mat !== 'all' && sectionOf(s).key !== mat) return false
       if (!matchesSearch([s.examTitle, s.examKey], query)) return false
       return true
     })
@@ -602,7 +697,7 @@ export default function ProvasPage() {
   // Monta as seções: por disciplina ou módulo -> por grupo de tentativas.
   const board = useMemo(() => materias.map((sec) => {
     const m = sec.key
-    const subs = visible.filter((s) => sectionOf(s.examKey).key === m)
+    const subs = visible.filter((s) => sectionOf(s).key === m)
     if (!subs.length) return null
     const groupsMap = new Map()
     subs.forEach((s) => { const k = groupKeyOf(s); if (!groupsMap.has(k)) groupsMap.set(k, []); groupsMap.get(k).push(s) })
@@ -622,6 +717,12 @@ export default function ProvasPage() {
       <PageState loading={status.loading || applications.loading} error={status.error || applications.error} onRetry={() => { status.refetch(); applications.refetch() }}>
 
         {summary && <MyGradesCard summary={summary} />}
+        {!summary && summaryApi.error && (
+          <p role="alert" className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-warning-soft px-4 py-3 text-sm text-warning">
+            <span className="min-w-0 flex-1">Não deu para carregar o resumo das suas notas agora. As provas aparecem abaixo, sem a média.</span>
+            <Button size="sm" variant="secondary" onClick={() => summaryApi.refetch?.()}>Tentar de novo</Button>
+          </p>
+        )}
 
         {metrics.hasData && (
           <div className="space-y-4">

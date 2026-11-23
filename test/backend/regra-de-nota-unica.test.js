@@ -198,3 +198,22 @@ test('[UC-TENTATIVA-003] pendências do B9 fechadas: nenhuma tela usa critério 
     const ficha = fs.readFileSync(path.join(ROOT, 'web', 'src', 'features', 'admin', 'AlunoDetailPage.jsx'), 'utf8');
     assert.match(ficha, /dash\?\.criterio/, 'a ficha usa o critério que vem com a ficha');
 });
+
+test('[UC-NOTAS-008] telas de nota sem média feita no navegador (soma / quantidade), nem a média de cada aluno nem a da turma', () => {
+    // B9 (ajuste): o cartão "Média geral" de Resultados era a média simples das notas da
+    // lista (scores.reduce(...) / scores.length), diferente da média final do quadro; a
+    // média do aluno com filtro e a do módulo na página do aluno também eram contas locais.
+    // Agora tudo vem do resumo do quadro (gradebook.resumo). Fórum fica de fora: a média lá
+    // é de tempo de resposta, não de nota.
+    const telas = walk(path.join(ROOT, 'web', 'src'), file => /\.(jsx?|mjs)$/.test(file)
+        && !/\.test\.(jsx?|mjs)$/.test(file)
+        && rel(file) !== 'web/src/lib/grades.js'
+        && rel(file) !== 'web/src/features/admin/ForumPage.jsx');
+    const mediaLocal = /\.reduce\([^\n]*\+[^\n]*\/\s*[A-Za-z_$][\w$.?]*\.length/;
+    assert.ok(mediaLocal.test('const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0'));
+    assert.ok(mediaLocal.test('average: scores.length ? scores.reduce((sum, value) => sum + value, 0) / scores.length : null'));
+    const comConta = telas.filter(file => fs.readFileSync(file, 'utf8').split('\n').some(line => mediaLocal.test(line))).map(rel).sort();
+    assert.deepEqual(comConta, []);
+    const resultados = fs.readFileSync(path.join(ROOT, 'web', 'src', 'features', 'admin', 'ResultadosPage.jsx'), 'utf8');
+    assert.match(resultados, /gradebookData\?\.resumo/, 'Resultados lê o resumo da turma do quadro');
+});

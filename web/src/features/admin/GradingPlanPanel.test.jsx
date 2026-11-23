@@ -62,7 +62,7 @@ describe('Plano de avaliação da turma', () => {
     const peso = within(prova).getByLabelText('Peso')
     await user.clear(peso)
     await user.type(peso, '2,5')
-    expect(screen.getByText('1 avaliação(ões) alterada(s)')).toBeInTheDocument()
+    expect(screen.getByText('1 alteração')).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Salvar plano' }))
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/grading/plan', { courseId: 'DES', studentClass: '1DES', itens: { P1: { etapa: 2, peso: 2.5 } } }))
     expect(api.refetch).toHaveBeenCalled()
