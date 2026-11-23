@@ -46,14 +46,21 @@ beforeEach(() => { mocks.get.mockReset(); mocks.post.mockReset() })
 afterEach(() => cleanup())
 
 describe('[UC-PROVA-006] Para quem da aplicação', () => {
-  it('Recuperação fica escondida até a J2 (D17): só turma inteira, segunda chamada e escolher alunos', () => {
-    expect(RECUPERACAO_VISIVEL).toBe(false)
+  it('J2 (X3): Recuperação aparece no Para quem; os alunos marcados vão com a finalidade recuperacao', () => {
+    // Escondida até a J2 (D17): o gradebook (P2-S3) já conta a recuperação como recuperação.
+    expect(RECUPERACAO_VISIVEL).toBe(true)
     render(<Harness />)
     const group = screen.getByRole('radiogroup', { name: 'Para quem' })
-    expect(within(group).getAllByRole('radio').map((radio) => radio.textContent)).toEqual(['Turma inteira', 'Segunda chamada', 'Escolher alunos'])
-    expect(screen.queryByText('Recuperação')).not.toBeInTheDocument()
+    expect(within(group).getAllByRole('radio').map((radio) => radio.textContent)).toEqual(['Turma inteira', 'Segunda chamada', 'Escolher alunos', 'Recuperação'])
     // Sem mudança: turma inteira, como antes.
     expect(payload()).toEqual({ finalidade: 'regular', participants: null })
+    fireEvent.click(screen.getByRole('radio', { name: 'Recuperação' }))
+    expect(screen.getByRole('radio', { name: 'Recuperação' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByText('Só os alunos marcados fazem a recuperação. A nota entra como recuperação pelos critérios do curso.')).toBeInTheDocument()
+    // Ninguém marcado: o pedido não sai (o servidor também recusa).
+    expect(audienceProblem({ mode: 'recuperacao', selected: [], overrides: {} })).toBe('Escolha pelo menos um aluno para esta aplicação.')
+    fireEvent.click(screen.getByRole('checkbox', { name: 'Bruno Lima' }))
+    expect(payload()).toEqual({ finalidade: 'recuperacao', participants: ['bruno@x.local'] })
   })
 
   it('segunda chamada vem marcada com quem não fez; desmarcar e marcar muda a lista do pedido', () => {
@@ -126,7 +133,7 @@ describe('[UC-PROVA-006] Para quem da aplicação', () => {
 
   it('nomes da tela batem com a Ajuda do professor ("Escolher alunos")', async () => {
     const help = (await import('../help/conteudo/instrutor.md?raw')).default
-    for (const label of ['Turma inteira', 'Segunda chamada', 'Escolher alunos', 'Já fez', 'Fez a segunda chamada', 'Alunos desta aplicação', 'Exceção por aluno', 'Pode começar até', 'Tirar o prazo']) {
+    for (const label of ['Turma inteira', 'Segunda chamada', 'Escolher alunos', 'Recuperação', 'Já fez', 'Fez a segunda chamada', 'Alunos desta aplicação', 'Exceção por aluno', 'Pode começar até', 'Tirar o prazo']) {
       expect(help).toContain(`**${label}**`)
     }
     expect(help).not.toContain('Alunos escolhidos')

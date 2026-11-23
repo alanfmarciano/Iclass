@@ -149,7 +149,7 @@ function clampCount(value, max) {
 // "Segunda chamada · 3 alunos" da aplicação preparada ou em andamento.
 function audienceLabel(application) {
   const list = Array.isArray(application?.participants) ? application.participants : null
-  const purpose = application?.finalidade === 'segunda_chamada' ? 'Segunda chamada' : 'Para quem'
+  const purpose = application?.finalidade === 'segunda_chamada' ? 'Segunda chamada' : application?.finalidade === 'recuperacao' ? 'Recuperação' : 'Para quem'
   if (!list) return `${purpose}: turma inteira`
   return `${purpose}: ${list.length} ${list.length === 1 ? 'aluno' : 'alunos'}`
 }
@@ -1175,7 +1175,7 @@ export default function ProvasPage() {
                         <p className="text-xs text-warning">{schedule.mode === 'agendar' ? 'Preparar com agenda: a prova abre sozinha no horário escolhido em “Quando”. Antes disso, os alunos só veem o horário.' : 'Preparar ainda não libera a prova. No monitor, clique em “Iniciar prova e avisar alunos” ou abra a sala de espera.'}</p>
                         {activeApplication && !['finished', 'cancelled'].includes(activeApplication.status) && (
                           <div className="flex flex-wrap items-center gap-2">
-                            <Badge tone={activeApplication.finalidade === 'segunda_chamada' || Array.isArray(activeApplication.participants) ? 'info' : 'neutral'}>{audienceLabel(activeApplication)}</Badge>
+                            <Badge tone={activeApplication.finalidade === 'segunda_chamada' || activeApplication.finalidade === 'recuperacao' || Array.isArray(activeApplication.participants) ? 'info' : 'neutral'}>{audienceLabel(activeApplication)}</Badge>
                             <Button size="sm" variant="secondary" icon={Users} onClick={() => setAudienceApplication(activeApplication)}>Alunos desta aplicação</Button>
                           </div>
                         )}

@@ -23,10 +23,11 @@ import { ApplicationDrawFields, initialDraw, isPerStudent, useDrawPool } from '.
 // prazo para começar. Quem pode fazer é decidido no servidor (applicationParticipant); a
 // tela só monta o pedido.
 //
-// Recuperação (finalidade 'recuperacao') fica escondida até o gradebook tratar a
-// finalidade (P2-S3, junção J2; D17): sem a regra do P2, a nota da recuperação entraria
-// como mais uma aplicação na média e baixaria a média de quem foi bem.
-export const RECUPERACAO_VISIVEL = false
+// Recuperação (finalidade 'recuperacao'): ficou escondida até o gradebook tratar a
+// finalidade (P2-S3, D17). Na junção J2 o quadro conta a aplicação de recuperação como
+// recuperação (pelas regras dos critérios do curso; sem critérios, como mais uma nota,
+// como sempre foi), e a opção aparece.
+export const RECUPERACAO_VISIVEL = true
 
 export const MAX_EXTRA_ATTEMPTS = 5
 const MAX_REASON_CHARS = 300
@@ -35,7 +36,7 @@ const AUDIENCE_MODES = [
   { value: 'turma', label: 'Turma inteira', hint: 'Todos os alunos da turma podem fazer.' },
   { value: 'segunda_chamada', label: 'Segunda chamada', hint: 'Já vem marcado quem ainda não fez a prova. Desmarque ou marque quem precisar.' },
   { value: 'escolher', label: 'Escolher alunos', hint: 'Só os alunos marcados veem e fazem esta aplicação.' },
-  { value: 'recuperacao', label: 'Recuperação', hint: 'Só os alunos marcados fazem a recuperação.', hidden: !RECUPERACAO_VISIVEL },
+  { value: 'recuperacao', label: 'Recuperação', hint: 'Só os alunos marcados fazem a recuperação. A nota entra como recuperação pelos critérios do curso.', hidden: !RECUPERACAO_VISIVEL },
 ]
 
 export function audienceModes() {
@@ -281,7 +282,7 @@ export function ApplicationAudienceFields({ value, onChange, candidates, loading
     <div className="space-y-3" data-testid="application-audience">
       <fieldset className="space-y-2">
         <legend className="text-[13px] font-medium text-muted">Para quem</legend>
-        <div role="radiogroup" aria-label="Para quem" className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+        <div role="radiogroup" aria-label="Para quem" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
           {audienceModes().map((mode) => (
             <button
               key={mode.value}
