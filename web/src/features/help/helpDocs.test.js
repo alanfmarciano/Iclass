@@ -38,6 +38,13 @@ describe('[UC-AJUDA-001] textos da ajuda', () => {
     expect(paragraph).not.toContain('outra turma, por exemplo')
   })
 
+  it('[UC-PRESENCA-005] Calendário: o dia da instituição altera o administrador ou quem gerencia as turmas, como no servidor e na tela', () => {
+    const calendario = parseHelpDocument(instrutor).secoes.find((section) => section.id === 'calendario')
+    // Antes dizia "só o administrador altera"; o servidor (canManageInstitution) deixa também classes.manage.
+    expect(calendario.corpo).not.toContain('só o administrador altera')
+    expect(calendario.corpo).toContain('O dia que vale para toda a instituição só o administrador ou quem gerencia as turmas altera.')
+  })
+
   it('a ajuda do aluno começa pelos temas de quem não consegue entrar e tem os temas do portal', () => {
     const doc = parseHelpDocument(aluno)
     const ids = doc.secoes.map((section) => section.id)

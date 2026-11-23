@@ -10,11 +10,13 @@ const TIPO_BORDA = {
 const DIAS = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb']
 
 // Agenda dos próximos 7 dias: eventos do calendário + próxima aplicação de prova.
+// Cada evento traz eventDate e, opcionalmente, agendaDate (o dia em que aparece aqui).
 export function WeekAgenda({ events = [], onOpen }) {
   return (
     <div className="premium-card flex flex-col rounded-2xl p-0">
       {events.map((ev) => {
-        const d = new Date(`${ev.eventDate}T12:00:00`)
+        // agendaDate: o dia em que o evento aparece na semana (o recesso em andamento, hoje).
+        const d = new Date(`${ev.agendaDate || ev.eventDate}T12:00:00`)
         return (
           <button key={ev.id} onClick={() => onOpen && onOpen(ev)}
             className="flex items-center gap-3.5 border-b border-border px-5 py-3 text-left transition-colors last:border-0 hover:bg-surface-2">

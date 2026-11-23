@@ -113,18 +113,19 @@ export default function DashboardPage() {
   const agenda = useMemo(() => {
     const fim = ymd(new Date(Date.now() + 7 * 86400000))
     const inicio = ymd(new Date())
-    // O recesso que já começou e ainda não acabou também entra (endDate, B7 / P2-S6).
+    // O recesso que já começou e ainda não acabou também entra (endDate, B7 / P2-S6), na
+    // data de hoje (agendaDate), não na de início, que já passou.
     const eventos = (calendar.data || [])
       .filter((ev) => (ev.endDate && ev.endDate > ev.eventDate ? ev.endDate : ev.eventDate) >= inicio && ev.eventDate <= fim)
-      .map((ev) => ({ ...ev, subtitle: ev.message ? ev.message.slice(0, 80) : '' }))
+      .map((ev) => ({ ...ev, agendaDate: ev.eventDate < inicio ? inicio : ev.eventDate, subtitle: ev.message ? ev.message.slice(0, 80) : '' }))
     const prox = now.data?.proximaAplicacao
     if (prox && !now.data?.aplicacao) {
       const data = ymd(new Date(prox.startsAt))
       if (data <= fim && !eventos.some((ev) => ev.eventType === 'prova' && ev.eventDate === data)) {
-        eventos.push({ id: `app_${prox.id}`, eventDate: data, eventType: 'prova', title: prox.titulo, subtitle: 'aplicação agendada', startTime: '' })
+        eventos.push({ id: `app_${prox.id}`, eventDate: data, agendaDate: data, eventType: 'prova', title: prox.titulo, subtitle: 'aplicação agendada', startTime: '' })
       }
     }
-    return eventos.sort((a, b) => compareOrdinal(a.eventDate, b.eventDate) || compareOrdinal(a.startTime, b.startTime)).slice(0, 6)
+    return eventos.sort((a, b) => compareOrdinal(a.agendaDate, b.agendaDate) || compareOrdinal(a.startTime, b.startTime)).slice(0, 6)
   }, [calendar.data, now.data])
 
   // Qualidade dos dados — junto do conteúdo, não no porão da tela.

@@ -7,7 +7,9 @@ import { Button } from '../ui/Button'
 // - events: [{ id, title, eventDate, endDate?, startTime?, eventType }]. O evento com
 //   endDate (o recesso de vários dias, B3 / P2-S5) aparece em todos os dias do intervalo.
 // - Dia não letivo (eventType 'nao_letivo': feriado, recesso, ponto facultativo) pinta o
-//   dia inteiro e mostra o selo "Sem aula" (B7 / P2-S6, FUN-15).
+//   dia inteiro e mostra o selo "Sem aula" (B7 / P2-S6, FUN-15). A cor do dia é
+//   bg-warning-soft sem "/opacidade": as cores do tailwind.config são var(--...), e o
+//   Tailwind 3 não gera classe com modificador de opacidade para elas (bg-x/40 sai sem CSS).
 // - No celular (abaixo de 768 px) a grade de 7 colunas não cabe com texto: o mês vira uma
 //   lista por dia, só com os dias que têm evento (o resto da tela não rola para o lado).
 const TYPE_STYLE = {
@@ -156,7 +158,7 @@ export function MonthCalendar({ month, onMonthChange, events = [], onDayClick, o
             const items = byDate[key]
             const semAula = items.some((event) => event.eventType === NON_SCHOOL_EVENT_TYPE)
             return (
-              <li key={key} className={`p-3 ${semAula ? 'bg-warning-soft/40' : ''}`}>
+              <li key={key} className={`p-3 ${semAula ? 'bg-warning-soft' : ''}`}>
                 <div className="mb-2 flex flex-wrap items-center gap-2">
                   <span className={`text-sm font-semibold ${key === today ? 'text-primary' : 'text-text'}`}>
                     {dayHeading(date)}{key === today ? ' · hoje' : ''}
@@ -188,7 +190,7 @@ export function MonthCalendar({ month, onMonthChange, events = [], onDayClick, o
                     data-date={key}
                     data-sem-aula={semAula ? 'true' : undefined}
                     onClick={() => onDayClick?.(key)}
-                    className={`min-h-28 border-b border-r border-border p-2 transition ${index % 7 === 6 ? 'border-r-0' : ''} ${index >= 35 ? 'border-b-0' : ''} ${outside ? 'bg-bg/35 text-subtle' : semAula ? 'bg-warning-soft/40 text-text' : 'text-text'} ${onDayClick ? 'cursor-pointer hover:bg-surface-2/45' : ''}`}
+                    className={`min-h-28 border-b border-r border-border p-2 transition ${index % 7 === 6 ? 'border-r-0' : ''} ${index >= 35 ? 'border-b-0' : ''} ${outside ? 'bg-bg/35 text-subtle' : semAula ? 'bg-warning-soft text-text' : 'text-text'} ${onDayClick ? 'cursor-pointer hover:bg-surface-2/45' : ''}`}
                   >
                     <div className="mb-1 flex items-center justify-between gap-1">
                       <span className={`grid h-6 w-6 place-items-center rounded-full text-xs font-semibold ${key === today ? 'bg-primary text-primary-fg' : ''}`}>{date.getDate()}</span>

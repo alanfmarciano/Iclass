@@ -143,7 +143,7 @@ Mostra as aulas, provas, entregas e avisos do curso e os dias sem aula. Clique n
 - a presença automática de quem entrou no IClass não conta na frequência (o registro fica guardado e volta a contar se você excluir o dia);
 - o aluno vê "Sem aula" no calendário e no Início.
 
-Os dias do mês aparecem pintados e listados em "Feriados e recessos deste mês"; clique num deles para alterar ou excluir. O dia que vale para toda a instituição só o administrador altera.
+Os dias do mês aparecem pintados e listados em "Feriados e recessos deste mês"; clique num deles para alterar ou excluir. O dia que vale para toda a instituição só o administrador ou quem gerencia as turmas altera.
 
 **Feriados nacionais de 2027** (o ano do mês que está na tela) traz de uma vez os feriados nacionais do ano, calculados pelo próprio IClass, sem internet. Carnaval e Corpus Christi vêm como ponto facultativo: desmarque se a escola tem aula nesses dias. Feriados estaduais e municipais você cadastra em "Dia não letivo". Adicionar de novo não repete nenhum.
 

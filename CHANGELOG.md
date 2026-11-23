@@ -111,7 +111,7 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 - "Baixar agenda (.ics)" no Calendário do painel e no do aluno: os eventos e os dias sem aula da turma (só os que a sua conta vê) num arquivo para o Google Agenda, o Outlook ou o celular; importar de novo atualiza em vez de repetir. (FUN-15)
 - No celular, o Calendário (do painel e do aluno) mostra o mês como uma lista dos dias com evento, e a página não rola mais para o lado. (FUN-15)
 - O aluno vê os dias sem aula como "Sem aula" no calendário e nos "Próximos compromissos" do Início (o recesso que já começou também), e no Início aparece "Hoje não tem aula: <nome>" no dia. (FUN-15)
-- Dashboard: no dia sem aula a faixa "Agora" diz "Hoje não tem aula: <nome>" (ou que a turma está fora do período letivo) com a próxima aula depois do feriado, e "Próximos 7 dias" mostra o recesso que já começou. A agenda dos 7 dias passa a começar no dia de hoje também depois das 21 h. (FUN-15)
+- Dashboard: no dia sem aula a faixa "Agora" diz "Hoje não tem aula: <nome>" (ou que a turma está fora do período letivo) com a próxima aula depois do feriado, e "Próximos 7 dias" mostra o recesso que já começou no dia de hoje. A agenda dos 7 dias passa a começar no dia de hoje também depois das 21 h. (FUN-15)
 - Chamada: o dia sem aula aparece numa faixa com o tipo e as datas do recesso, ou com o nome e as datas do período letivo; no celular, "Fazer a chamada mesmo assim" ocupa a largura toda. (FUN-15)
 - No Calendário do painel, excluir um evento pergunta antes na janela do IClass.
 

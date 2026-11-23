@@ -181,6 +181,15 @@ function holidayRange(item) {
 
 // Feriados nacionais do ano: o servidor calcula a lista (GET .../national-holidays?ano=) e
 // cria só os marcados que ainda não existem (POST .../national-holidays { ano, incluir }).
+// Anos do seletor: do ano passado a daqui a dois anos, mais o ano do mês que está na tela
+// (initialYear) e o escolhido. Sem isso, com o calendário em 2029 o seletor mostrava o
+// primeiro ano da lista enquanto o diálogo buscava e gravava 2029.
+export function nationalHolidayYearOptions(thisYear, ...extra) {
+  const years = new Set([thisYear - 1, thisYear, thisYear + 1, thisYear + 2])
+  extra.forEach((year) => { if (Number.isInteger(year)) years.add(year) })
+  return [...years].sort((a, b) => a - b)
+}
+
 export function NationalHolidaysDialog({ open, onClose, onSaved, initialYear, toast }) {
   const thisYear = new Date().getFullYear()
   const [ano, setAno] = useState(initialYear || thisYear)
@@ -249,7 +258,7 @@ export function NationalHolidaysDialog({ open, onClose, onSaved, initialYear, to
     >
       <div className="space-y-3">
         <Select id="nl-ano" label="Ano" value={String(ano)} onChange={(event) => setAno(Number(event.target.value))}>
-          {[thisYear - 1, thisYear, thisYear + 1, thisYear + 2].map((year) => <option key={year} value={year}>{year}</option>)}
+          {nationalHolidayYearOptions(thisYear, initialYear, ano).map((year) => <option key={year} value={year}>{year}</option>)}
         </Select>
         {state.loading && <p className="text-sm text-muted">Calculando os feriados de {ano}…</p>}
         {state.error && <p role="alert" className="text-sm text-danger">{state.error.message}</p>}

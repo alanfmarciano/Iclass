@@ -153,5 +153,26 @@ describe('[UC-DASH-005] Dashboard em dia não letivo', () => {
     // Antes só entrava o evento que começava dentro dos 7 dias (eventDate).
     expect(screen.getByText('Recesso de fim de ano')).toBeInTheDocument()
     expect(screen.getByText('sem aula')).toBeInTheDocument()
+    // E aparece no dia de hoje, não no de início (que já passou).
+    const hoje = new Date()
+    const linha = screen.getByRole('button', { name: /Recesso de fim de ano/ })
+    const dias = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb']
+    expect(linha).toHaveTextContent(new RegExp(`^${hoje.getDate()}${dias[hoje.getDay()]}`))
+    expect(linha).not.toHaveTextContent(new RegExp(`^${ontem.getDate()}${dias[ontem.getDay()]}`))
+  })
+
+  it('o recesso em andamento fica antes do evento de amanhã nos próximos 7 dias', () => {
+    mocks.auth = { accountRole: 'professor' }
+    const antes = new Date(); antes.setDate(antes.getDate() - 5)
+    const amanha = new Date(); amanha.setDate(amanha.getDate() + 1)
+    const depois = new Date(); depois.setDate(depois.getDate() + 3)
+    mocks.calendar = [
+      { id: 'cal_1', title: 'Reunião de pais', eventDate: localYmd(amanha), eventType: 'reuniao', startTime: '19:00' },
+      { kind: 'nonSchoolDay', id: 'nl_3', title: 'Recesso longo', eventDate: localYmd(antes), endDate: localYmd(depois), eventType: 'nao_letivo', readOnly: true },
+    ]
+    renderDashboard()
+    const titulos = screen.getAllByRole('button', { name: /Reunião de pais|Recesso longo/ }).map((el) => el.textContent)
+    expect(titulos[0]).toMatch(/Recesso longo/)
+    expect(titulos[1]).toMatch(/Reunião de pais/)
   })
 })

@@ -184,6 +184,37 @@ describe('Calendário do painel', () => {
     expect(mocks.toast.success).toHaveBeenCalledWith(`1 feriado adicionado ao calendário de ${ano}.`)
   })
 
+  it('[UC-PRESENCA-005] feriados nacionais de um ano longe do atual: o seletor mostra o ano que o diálogo busca e grava', async () => {
+    const ano = now.getFullYear() + 3
+    mocks.get.mockImplementation(async (url) => {
+      const pedido = Number(new URL(url, 'http://x').searchParams.get('ano'))
+      if (url.startsWith('/api/admin/calendar/non-school-days/national-holidays')) {
+        return { ano: pedido, feriados: [{ chave: 'tiradentes', inicio: `${pedido}-04-21`, fim: `${pedido}-04-21`, nome: 'Tiradentes', tipo: 'feriado', tipoRotulo: 'Feriado', jaCadastrado: false }] }
+      }
+      return {}
+    })
+    mocks.post.mockResolvedValue({ success: true, ano, criados: [{ id: 'nl_9' }], jaExistiam: [], presencasIgnoradas: 0 })
+    const user = userEvent.setup()
+    renderPage()
+    // Avança o calendário até janeiro de daqui a três anos.
+    const meses = (ano - now.getFullYear()) * 12 - now.getMonth()
+    for (let i = 0; i < meses; i += 1) await user.click(screen.getByRole('button', { name: 'Próximo mês' }))
+    await user.click(screen.getByRole('button', { name: `Feriados nacionais de ${ano}` }))
+    const dialog = await screen.findByRole('dialog', { name: `Adicionar feriados nacionais de ${ano}` })
+    // Antes o seletor só tinha do ano passado a daqui a dois anos e mostrava o primeiro.
+    expect(within(dialog).getByLabelText('Ano')).toHaveValue(String(ano))
+    await within(dialog).findByRole('checkbox', { name: /Tiradentes/ })
+    expect(mocks.get).toHaveBeenLastCalledWith(`/api/admin/calendar/non-school-days/national-holidays?ano=${ano}`)
+    await user.click(within(dialog).getByRole('button', { name: 'Adicionar 1 feriado' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/calendar/non-school-days/national-holidays', { ano, incluir: ['tiradentes'] }))
+    // O ano de agora continua no seletor e, escolhido, busca os feriados dele.
+    await user.click(screen.getByRole('button', { name: `Feriados nacionais de ${ano}` }))
+    const reaberto = await screen.findByRole('dialog', { name: `Adicionar feriados nacionais de ${ano}` })
+    await user.selectOptions(within(reaberto).getByLabelText('Ano'), String(now.getFullYear()))
+    await waitFor(() => expect(mocks.get).toHaveBeenLastCalledWith(`/api/admin/calendar/non-school-days/national-holidays?ano=${now.getFullYear()}`))
+    expect(within(reaberto).getByLabelText('Ano')).toHaveValue(String(now.getFullYear()))
+  })
+
   it('[UC-PRESENCA-005] "Baixar agenda (.ics)" baixa a agenda da turma com a sessão', async () => {
     const user = userEvent.setup()
     renderPage()
