@@ -29,7 +29,7 @@ vi.mock('../../hooks/useApi', () => ({
   },
 }))
 
-import ProvasPage from './ProvasPage'
+import ProvasPage, { audienceLabel } from './ProvasPage'
 
 const bankQuestion = { key: 'q1', category: 'Redes', questionText: 'O que é <b>DNS</b>?', alternatives: [{ letter: 'A', text: 'Nomes' }, { letter: 'B', text: 'Cabos' }], correctAnswer: 'A' }
 
@@ -445,5 +445,14 @@ describe('[UC-PROVA-007] ProvasPage do professor · como montar', () => {
       modo: 'por_aluno',
       grupos: [{ filtro: { dificuldade: 'dificil' }, quantidade: 1 }, { filtro: { tag: 'REDES' }, quantidade: 1 }],
     })
+  })
+})
+
+describe('[UC-GRUPO-003] rótulo do "Para quem" da aplicação', () => {
+  it('aplicação de um grupo mostra o nome do grupo e quantos alunos', () => {
+    expect(audienceLabel({ finalidade: 'regular', participants: null })).toBe('Para quem: turma inteira')
+    expect(audienceLabel({ finalidade: 'regular', participants: ['a@x', 'b@x'] })).toBe('Para quem: 2 alunos')
+    expect(audienceLabel({ finalidade: 'regular', participants: ['a@x', 'b@x'], groupId: 'grp_a', grupo: { nome: 'Laboratório A', arquivado: false } })).toBe('Grupo Laboratório A: 2 alunos')
+    expect(audienceLabel({ finalidade: 'regular', participants: ['a@x'], groupId: 'grp_a', grupo: { nome: 'Laboratório A', arquivado: true } })).toBe('Grupo Laboratório A (arquivado): 1 aluno')
   })
 })

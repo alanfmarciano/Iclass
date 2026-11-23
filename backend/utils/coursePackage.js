@@ -284,6 +284,8 @@ function remapCourseKeys({ course = null, classes = [], newCourseId, mapKey, map
                 },
             })),
         };
+        // Liberação por grupo (P5-S5): os grupos são da turma de origem e não vêm junto.
+        delete cloned.groupReleasedItems;
         cloned.releasedItems = Object.fromEntries(Object.entries(sourceClass.releasedItems || {}).map(([key, value]) => {
             if (key.startsWith('Gabarito_')) return [`Gabarito_${evaluationKey(key.slice('Gabarito_'.length))}`, value];
             return [mappedItemKey(key), value];

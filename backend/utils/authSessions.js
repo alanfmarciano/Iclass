@@ -574,6 +574,20 @@ function findPreviewSession(memory, raw, now = Date.now(), { absoluteTtlMs = ses
     return { hash, session, adminSession: admin.session };
 }
 
+// A prévia ainda no prazo do aluno virtual deste e-mail ('previa-<hex>@previa.invalid'),
+// ou null. Só leitura: os leitores de grupo (utils/classGroups.js) usam para saber o grupo
+// escolhido ao abrir a prévia quando só têm o e-mail (liberação, avisos, calendário).
+function previewSessionOfStudentEmail(memory, email, now = Date.now()) {
+    const map = previewMap(memory);
+    const wanted = normalizeEmail(email);
+    if (!map || !wanted || !wanted.endsWith(`@${PREVIEW_EMAIL_DOMAIN}`)) return null;
+    for (const key of Object.keys(map)) {
+        const value = map[key];
+        if (isPreviewValue(value) && value.studentEmail === wanted && Number(value.expiresAt) > now) return value;
+    }
+    return null;
+}
+
 // Encerra a prévia deste token. Com adminToken, só se ela é da mesma conta.
 function endPreviewSession(memory, raw, { adminEmail } = {}) {
     const hash = hashSessionToken(raw);
@@ -826,6 +840,7 @@ module.exports = {
     clearSessions,
     PREVIEW_TTL_MS,
     PREVIEW_EMAIL_DOMAIN,
+    previewSessionOfStudentEmail,
     adminSessionHashOf,
     createPreviewSession,
     findPreviewSession,

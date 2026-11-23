@@ -33,7 +33,7 @@ const {
     resolvePreviewSession,
     sendPreviewEnded,
 } = require('./utils/previewAccess.js');
-const { findGroup } = require('./utils/classGroups.js');
+const { findGroup, groupReleasedItemsFor } = require('./utils/classGroups.js');
 const { findConversation } = require('./utils/conversations.js');
 const {
     findStudentSession,
@@ -1398,6 +1398,16 @@ function getReleasedItemsForClass(cls, studentEmail) {
     });
 
     const normalizedEmail = (studentEmail || '').trim().toLowerCase();
+    // Fusão (P5-S5, D18): turma -> grupos do aluno (liberado em qualquer grupo vence) ->
+    // exceção individual. Sem grupos (ou sem groupReleasedItems), o mesmo de antes.
+    if (normalizedEmail && cls.groupReleasedItems) {
+        const examKeys = new Set();
+        courseStructure.forEach(mod => (mod.units || mod.items || []).forEach(u => { if (u.avaliacaoKey) examKeys.add(u.avaliacaoKey); }));
+        Object.entries(groupReleasedItemsFor(db.memory, cls, normalizedEmail)).forEach(([key, value]) => {
+            // A prova online não se libera por grupo (D18): só o "Para quem" da aplicação.
+            if (!examKeys.has(key)) released[key] = value;
+        });
+    }
     if (normalizedEmail && cls.studentReleasedItems && cls.studentReleasedItems[normalizedEmail]) {
         Object.assign(released, cls.studentReleasedItems[normalizedEmail]);
     }

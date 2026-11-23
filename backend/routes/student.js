@@ -121,6 +121,9 @@ const { recordAudit } = require('../utils/audit.js');
 const { previewToken } = require('../utils/previewAccess.js');
 const { keystrokeModeOf } = require('../utils/keystrokePolicy.js');
 const { assignmentGradeEntries } = require('../utils/assignments.js');
+// Grupos da turma (P5-S5): aviso e evento com destino 'grupo' e a liberação por grupo no
+// painel (contrato "classGroups": grupos só por utils/classGroups.js).
+const groupRules = require('../utils/classGroups.js');
 const {
     attemptContextForStudent,
     collectiveTimeOverForNewAttempt,
@@ -544,6 +547,12 @@ router.get('/api/status', validateAnySession, (req, res) => {
         releaseMeta: cls.releaseMeta || {},
         // Liberações agendadas da turma (P3-S12, D27), só para o painel (Materiais).
         ...(isAdmin ? { releaseSchedule: examSchedule.releaseScheduleView(cls, { memory: db.memory }) } : {}),
+        // Liberação por grupo (P5-S5): por item, os grupos ativos com ele liberado, e os
+        // grupos ativos da turma para o seletor "Liberar para um grupo" (só o painel).
+        ...(isAdmin ? {
+            groupReleases: groupRules.groupReleasesView(db.memory, cls),
+            grupos: groupRules.groupOptionsForClass(db.memory, cls).map(({ membros, ...group }) => group),
+        } : {}),
     });
 });
 
@@ -1237,6 +1246,8 @@ router.get('/api/student/library', validateStudentSession, (req, res) => {
 function announcementVisibleInContext(a, email, courseId, studentClass) {
     if (!a || a.kind === 'calendar') return false;
     if (a.target === 'todos') return true;
+    // Aviso para um grupo (P5-S5): só os membros atuais de um grupo ativo da turma.
+    if (a.target === 'grupo') return groupRules.groupTargetReaches(db.memory, a, { courseId, studentClass, email });
     if (a.target === 'turma') return String(a.targetValue || '') === studentClass && (!a.courseId || String(a.courseId) === courseId);
     if (a.target === 'curso') return String(a.targetValue || '') === courseId;
     if (a.target === 'aluno') return String(a.targetValue || '').toLowerCase() === email
@@ -1273,7 +1284,11 @@ router.get('/api/student/announcements', validateStudentSession, (req, res) => {
         return announcementVisibleInContext(a, email, courseId, studentClass);
     });
     list.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (b.createdAt || 0) - (a.createdAt || 0));
-    res.json(list.map(a => ({ id: a.id, title: a.title, message: a.message, priority: a.priority, pinned: a.pinned, createdAt: a.createdAt, authorName: a.authorName, read: (a.readBy || []).includes(email) })));
+    res.json(list.map(a => {
+        // Aviso de um grupo (P5-S5): o nome do grupo vai junto, para o selo em Avisos.
+        const grupo = a.target === 'grupo' ? groupRules.groupLabel(db.memory, a.targetValue) : null;
+        return { id: a.id, title: a.title, message: a.message, priority: a.priority, pinned: a.pinned, createdAt: a.createdAt, authorName: a.authorName, read: (a.readBy || []).includes(email), ...(grupo ? { grupo: grupo.nome } : {}) };
+    }));
 });
 
 router.post('/api/student/announcements/read', validateStudentSession, STUDENT_SCHEMAS.announcementRead, (req, res) => {
@@ -2421,7 +2436,9 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         || (item.target === 'turma' && classNames.has(item.targetValue) && (!item.courseId || courseIds.has(item.courseId)))
         || (item.target === 'aluno' && String(item.targetValue || '').toLowerCase() === email
             && (!item.courseId || String(item.courseId) === courseId)
-            && (!item.studentClass || String(item.studentClass) === className));
+            && (!item.studentClass || String(item.studentClass) === className))
+        // Aviso ou evento para um grupo (P5-S5): só os membros atuais.
+        || (item.target === 'grupo' && groupRules.groupTargetReaches(db.memory, item, { courseId, studentClass: className, email }));
     const today = settingsUtil.today();
     const announcements = (db.memory.announcements || [])
         .filter(item => item.kind !== 'calendar' && visibleTarget(item) && (!item.expiresAt || item.expiresAt >= today))

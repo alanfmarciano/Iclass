@@ -90,9 +90,9 @@ export default function CalendarioPage() {
           </div>
         ) : (
           <div className="space-y-4">
-            <div className="flex flex-wrap gap-2"><Badge tone="neutral">{TYPE_LABELS[detail.eventType] || 'Evento'}</Badge><Badge tone="info">{detail.target === 'turma' ? detail.targetValue : 'Curso inteiro'}</Badge></div>
+            <div className="flex flex-wrap gap-2"><Badge tone="neutral">{TYPE_LABELS[detail.eventType] || 'Evento'}</Badge><Badge tone="info">{detail.target === 'turma' ? detail.targetValue : detail.target === 'grupo' ? `Grupo ${detail.grupo || ''}`.trim() : 'Curso inteiro'}</Badge></div>
             {detail.endTime && <p className="flex items-center gap-2 text-sm text-muted"><Clock size={15} /> Termina às {detail.endTime}</p>}
-            <p className="flex items-center gap-2 text-sm text-muted"><Users size={15} /> {detail.target === 'turma' ? `Turma ${detail.targetValue}` : 'Todos os alunos do curso'}</p>
+            <p className="flex items-center gap-2 text-sm text-muted"><Users size={15} /> {detail.target === 'turma' ? `Turma ${detail.targetValue}` : detail.target === 'grupo' ? (detail.grupo ? `Só o grupo ${detail.grupo}` : 'Só o seu grupo') : 'Todos os alunos do curso'}</p>
             {detail.description ? <p className="whitespace-pre-wrap text-sm text-text">{detail.description}</p> : <p className="text-sm text-muted">Sem informações adicionais.</p>}
             {eventActivityHref(detail) && <Link to={eventActivityHref(detail)} className="inline-flex min-h-[44px] items-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-fg hover:bg-primary-hover">Abrir a atividade <ArrowRight aria-hidden="true" size={15} /></Link>}
           </div>

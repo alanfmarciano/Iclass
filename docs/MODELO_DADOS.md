@@ -31,7 +31,7 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 | Coleção | Tipo | Conteúdo |
 |---------|------|----------|
 | `students` | array | alunos (perfil, turmas, credencial; `id` estável `alu_` + 16 hex (fase 3, C1 / P4-S3: dado pela migração `2026-11-p4-ids-alunos` e conferido a todo boot e restauração pela normalização `2026-11-p4-ids-alunos-sempre`; restaurar backup devolve o id que o mesmo e-mail tinha antes); aluno sem e-mail: `semEmail: true` e e-mail interno `aluno-<id>@sem-email.invalid`, que nunca aparece (a tela, os CSV e as impressões mostram "sem e-mail"); a matrícula é o login dele; `sessionsInvalidBefore` opcional, ms: a sessão aberta antes dessa hora acaba fora de prova, gravado pelo "Redefinir senha", H5b; situação com `statusChangedAt` (ms), `statusChangedBy` e `statusReason`, gravados ao mudar a situação, H7c; cadastro anonimizado: `status: 'Anonimizado'`, e-mail `anonimizado-<ref>@anonimizado.invalid`, nome "Aluno anonimizado <REF>", `anonymizedRef`, `anonymizedAt` (ms), `anonymizedBy`, senha vazia e só turmas e datas, H7c. Cadastro antigo sem `statusChangedAt` vale como "data não registrada" ou pela última mudança de "Status" na auditoria; `birthDate` opcional `AAAA-MM-DD`, H8a-2; `termsAcceptance` e `privacyAcceptance` `{ documentId, version, schoolId, at, ip, device }` (modelo do IClass com `version: null`; o formato antigo `{ version: '1.0', at }` continua sendo lido e mostrado como "aceite antigo sem documento"); `legalAcceptances` com os aceites substituídos `{ kind, ...aceite, replacedAt }`, até 50. Cadastro sem `birthDate` continua valendo: o portal pede a data no próximo acesso) |
-| `classes` | array | turmas; `activeExamKey`, `examConfigs`, `onlineExamConfigs`, liberações |
+| `classes` | array | turmas; `activeExamKey`, `examConfigs`, `onlineExamConfigs`, liberações (da turma, por aluno e, desde a C19, por grupo em `groupReleasedItems`) |
 | `courses` | array | cursos (multi-curso); `structure`, `schoolId`, `status`/`deleted`/`deletedAt` (lixeira), `branding`, `permitirImpressao` (fase 3, C17: booleano, ausente = `true`; `false` tira do leitor do aluno o "Imprimir ou salvar em PDF"; sem migração: curso antigo imprime). O painel grava só `name`, `description`, `schoolId`, `branding` e `permitirImpressao` por `/api/admin/courses` (a estrutura vai por `/api/admin/courses/:id/structure`). `clonedFrom` (código do curso de origem do "Duplicar") e `importedFrom` (`{ codigo, nome, exportadoEm, versaoApp, importadoEm }`, curso que veio de um pacote `.iclass-curso.zip`, fase 3 P4-S14; o pacote leva só os campos de `COURSE_PACKAGE_FIELDS` em `utils/coursePackage.js`, e campo novo do curso entra nessa lista pelo dono, ver `docs/API.md`) |
 | `branding` | objeto | identidade white-label global |
 | `schools` | array | escolas/instituições (white-label, compartilháveis) |
@@ -53,7 +53,7 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 | `studentExamState` | objeto | estado da prova por `studentEmail_examKey` |
 | `proctoringLogs` | array | eventos de antifraude |
 | `broadcastMessages` | array | mensagens do professor no monitor |
-| `announcements` | array | avisos/comunicados (professor → turma/curso/aluno) |
+| `announcements` | array | avisos/comunicados (professor → turma/curso/aluno/grupo da turma) |
 | `attendance` | array | presença; a presença automática do acesso (`origin: 'login'`) num dia não letivo da turma leva `naoLetivoId` (o id do dia em `nonSchoolDays`) e fica fora da frequência, sem ser apagada (fase 3, B3; [abaixo](#dias-não-letivos-nonschooldays-fase-3-b3)) |
 | `certificates` | array | certificados emitidos |
 | `moduleAccess` | array | histórico de módulos acessados |
@@ -237,6 +237,15 @@ Antes, toda questão era "uma correta" (2 a 8 alternativas, `correctAnswer` com 
 - **`examApplications[].studentOverrides`** (novo, opcional): `{ [email]: { extraAttempts 0..5, prazoAte ms|null, motivo, por, em } }`. O limite do aluno é `maxAttempts + extraAttempts` (`effectiveMaxAttempts`); `prazoAte` é até quando ele pode começar (só no cronômetro por aluno). O "+N min" por aluno continua em `studentAdjustments`.
 - Nenhuma migração: aplicação sem os campos é regular, da turma inteira e sem exceções (leitura com padrão). As preparadas desta versão em diante gravam os três campos. Voltar para o 281029f pelo backup `pre-atualizacao` não tem problema; abrir o banco novo no 281029f faria a segunda chamada aparecer para a turma inteira.
 - **Ciclo de vida do aluno** (handler `examParticipation` em `utils/studentDataHandlers.js`): troca de e-mail renomeia a lista e as exceções; anonimizar e apagar de vez tiram o aluno das duas; mesclar passa o que era do que sai para o que fica; Meus dados ganha a seção "Participação e exceções em provas" (o administrador vê também quem concedeu e quando).
+
+## Grupos em avisos, liberação, chamada e provas (fase 3, C19 / P5-S5)
+
+Campos novos, todos opcionais e de leitura tolerante (nenhuma migração; dado antigo sem eles se comporta como antes):
+
+- **`classes[].groupReleasedItems`**: `{ [groupId]: { [itemKey]: true } }`, a liberação de uma apostila ou de um gabarito só para um grupo (bloquear tira a chave; grupo sem chaves sai do mapa). Lido em `getReleasedItemsForClass` (turma → grupos ativos do aluno → liberação individual), só por `utils/classGroups.js` (`groupReleasedItemsFor`, `setGroupRelease`). Chave de prova online nunca entra. Grupo arquivado fica no mapa e não vale; reativar devolve. Copiar uma variante (`classContent.js`) copia as chaves; o pacote de curso (`coursePackage.js`) não leva o mapa (os grupos são da turma).
+- **`announcements[].target = 'grupo'`** (avisos e eventos `kind: 'calendar'`): `targetValue` é o id do grupo e `courseId`/`studentClass` a turma dele. Chega só aos membros atuais de um grupo ativo.
+- **`examApplications[].groupId`**: o grupo escolhido no "Para quem" (só rótulo; `participants` guarda os membros na hora de preparar). Ausente ou `null` = aplicação sem grupo.
+- Voltar para o 281029f pelo backup `pre-atualizacao` não tem problema; abrir o banco novo numa versão anterior ignora os campos: o aviso de grupo não chega a ninguém, a liberação por grupo deixa de valer e a aplicação de grupo continua com a lista congelada.
 
 ## Ações por aluno no Monitor e token que aparece de novo (fase 3, A4)
 

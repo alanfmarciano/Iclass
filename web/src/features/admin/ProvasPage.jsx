@@ -146,10 +146,13 @@ function clampCount(value, max) {
   return Math.max(1, Math.min(Number(value) || 1, Math.max(1, max || 1)))
 }
 
-// "Segunda chamada · 3 alunos" da aplicação preparada ou em andamento.
-function audienceLabel(application) {
+// "Segunda chamada · 3 alunos" da aplicação preparada ou em andamento; preparada para um
+// grupo (P5-S5), "Grupo Laboratório A: 12 alunos".
+export function audienceLabel(application) {
   const list = Array.isArray(application?.participants) ? application.participants : null
-  const purpose = application?.finalidade === 'segunda_chamada' ? 'Segunda chamada' : application?.finalidade === 'recuperacao' ? 'Recuperação' : 'Para quem'
+  const group = application?.groupId && application?.grupo ? application.grupo : null
+  const purpose = application?.finalidade === 'segunda_chamada' ? 'Segunda chamada' : application?.finalidade === 'recuperacao' ? 'Recuperação'
+    : group ? `Grupo ${group.nome}${group.arquivado ? ' (arquivado)' : ''}` : 'Para quem'
   if (!list) return `${purpose}: turma inteira`
   return `${purpose}: ${list.length} ${list.length === 1 ? 'aluno' : 'alunos'}`
 }

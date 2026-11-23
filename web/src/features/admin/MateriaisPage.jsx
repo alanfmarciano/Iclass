@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { BookOpen, ClipboardList, FileCheck2, ChevronRight, Lock, Unlock, PackageOpen, Layers, CheckCircle2, XCircle, MonitorPlay, CalendarClock } from 'lucide-react'
+import { BookOpen, ClipboardList, FileCheck2, ChevronRight, Lock, Unlock, PackageOpen, Layers, CheckCircle2, XCircle, MonitorPlay, CalendarClock, Users } from 'lucide-react'
 import { Switch } from '../../components/ui/Switch'
 import { Button } from '../../components/ui/Button'
 import { Badge } from '../../components/ui/Badge'
@@ -14,6 +14,7 @@ import { useAuth } from '../../context/AuthProvider'
 import { compareOrdinal } from '../../lib/textSearch'
 import { ReleaseScheduleDialog, cancelReleaseSchedule, releaseScheduleText } from './ReleaseSchedule'
 import { PreviewButton } from './PreviewLauncher'
+import { GroupReleaseBadges, GroupReleaseDialog, setGroupRelease } from './GroupRelease'
 
 const TYPE_ICON = { 'Apostila': BookOpen, 'Prova online': ClipboardList, 'Gabarito': FileCheck2 }
 
@@ -115,6 +116,10 @@ export default function MateriaisPage() {
   const [releaseMeta, setReleaseMeta] = useState({})
   const [releaseSchedule, setReleaseSchedule] = useState({})
   const [scheduleItem, setScheduleItem] = useState(null)
+  // Liberação por grupo (P5-S5): { itemKey: [{ id, nome, conjunto }] } e os grupos ativos.
+  const [groupReleases, setGroupReleases] = useState({})
+  const [classGroups, setClassGroups] = useState([])
+  const [groupItem, setGroupItem] = useState(null)
   const [examApplications, setExamApplications] = useState([])
   const [selIdx, setSelIdx] = useState(0)
   const [loading, setLoading] = useState(false)
@@ -142,8 +147,10 @@ export default function MateriaisPage() {
         setReleased(st.releasedItems || {})
         setReleaseMeta(st.releaseMeta || {})
         setReleaseSchedule(st.releaseSchedule && typeof st.releaseSchedule === 'object' ? st.releaseSchedule : {})
+        setGroupReleases(st.groupReleases && typeof st.groupReleases === 'object' ? st.groupReleases : {})
+        setClassGroups(Array.isArray(st.grupos) ? st.grupos : [])
         setExamApplications(list && Array.isArray(list.applications) ? list.applications : applicationsFromConfigs(st.onlineExamConfigs))
-      } else { setReleased({}); setReleaseMeta({}); setReleaseSchedule({}); setExamApplications([]) }
+      } else { setReleased({}); setReleaseMeta({}); setReleaseSchedule({}); setGroupReleases({}); setClassGroups([]); setExamApplications([]) }
     } catch (e) { setError(e) } finally { setLoading(false) }
   }
 
@@ -186,6 +193,14 @@ export default function MateriaisPage() {
     try {
       setReleaseSchedule(await cancelReleaseSchedule({ studentClass: className, courseId, itemKey: item.key }))
       toast.success('Liberação agendada cancelada. O item continua bloqueado.')
+    } catch (e) { toast.error(e.message) }
+  }
+
+  async function removeGroupRelease(item, group) {
+    try {
+      const next = await setGroupRelease({ studentClass: className, courseId, itemKey: item.key, groupId: group.id, released: false })
+      if (next) setGroupReleases(next)
+      toast.success(`Liberação do grupo ${group.nome} retirada`)
     } catch (e) { toast.error(e.message) }
   }
 
@@ -329,6 +344,7 @@ export default function MateriaisPage() {
                               <div className="flex-1 min-w-[12rem]">
                                 <p className="text-sm text-text">{item.type}</p>
                                 {isOn && meta?.by && <p className="text-xs text-muted mt-0.5">liberado por {meta.by} {relTime(meta.at)}</p>}
+                                <GroupReleaseBadges itemKey={item.key} groups={groupReleases[item.key]} canChange={canSchedule && !lockedByExam} onRemove={(group) => removeGroupRelease(item, group)} />
                                 {lockedByExam && !scheduled && <p className="text-xs text-muted mt-0.5">{answerKeyLockHint(examState.status)}</p>}
                                 {scheduled && (
                                   <p data-testid={`release-schedule-${item.key}`} className={`text-xs mt-0.5 ${scheduled.adiado ? 'text-warning' : 'text-primary'}`}>
@@ -342,6 +358,9 @@ export default function MateriaisPage() {
                                 )}
                               </div>
                               <div className="ml-auto flex shrink-0 items-center gap-2">
+                                {canSchedule && !isOn && !lockedByExam && classGroups.length > 0 && (
+                                  <Button size="sm" variant="ghost" icon={Users} onClick={() => setGroupItem({ ...item, unitName: unit.name })} aria-label={`Liberar para um grupo: ${item.type} de ${unit.name}`}>Liberar para um grupo</Button>
+                                )}
                                 {canSchedule && !isOn && !scheduled && className && (
                                   <Button size="sm" variant="ghost" icon={CalendarClock} onClick={() => setScheduleItem(item)} aria-label={`Agendar a liberação: ${item.type} de ${unit.name}`}>Agendar</Button>
                                 )}
@@ -360,6 +379,18 @@ export default function MateriaisPage() {
           )}
         </PageState>
       )}
+      <GroupReleaseDialog
+        open={canSchedule && !!groupItem}
+        item={groupItem}
+        unitName={groupItem?.unitName}
+        groups={classGroups}
+        releasedGroups={groupItem ? groupReleases[groupItem.key] : []}
+        studentClass={className}
+        courseId={courseId}
+        toast={toast}
+        onClose={() => setGroupItem(null)}
+        onSaved={(next) => { if (next) setGroupReleases(next) }}
+      />
       <ReleaseScheduleDialog
         open={canSchedule && !!scheduleItem}
         item={scheduleItem}

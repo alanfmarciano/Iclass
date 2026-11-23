@@ -41,3 +41,15 @@ describe('[UC-BUSCA-003] Avisos do aluno · aviso aberto pelo endereço', () => 
     expect(mocks.post).not.toHaveBeenCalled()
   })
 })
+
+describe('[UC-GRUPO-003] Avisos do aluno · aviso de um grupo', () => {
+  it('o aviso para um grupo leva o selo com o nome do grupo', async () => {
+    mocks.get.mockResolvedValue([
+      { id: 'av3', title: 'Bancada 2', message: 'Tragam o multímetro.', read: false, createdAt: 3, grupo: 'Laboratório A' },
+      { id: 'av1', title: 'Feriado', message: 'Sem aula na segunda.', read: true, createdAt: 1 },
+    ])
+    render(<MemoryRouter initialEntries={['/aluno/avisos']}><AvisosPage /></MemoryRouter>)
+    expect(await screen.findByText('Para o grupo Laboratório A')).toBeInTheDocument()
+    expect(screen.getAllByText(/^Para o grupo/)).toHaveLength(1)
+  })
+})

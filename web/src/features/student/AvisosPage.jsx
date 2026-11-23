@@ -73,6 +73,7 @@ export default function AvisosPage() {
                       <div className="flex flex-wrap items-center gap-2">
                         <span className="font-semibold text-text">{announcement.title}</span>
                         {announcement.pinned && <span className="text-warning flex items-center gap-1 text-xs"><Pin size={11} /> Fixado</span>}
+                        {announcement.grupo && <span className="rounded bg-primary-soft px-1.5 py-0.5 text-[11px] font-medium text-primary">Para o grupo {announcement.grupo}</span>}
                         {!announcement.read && <span className="text-[11px] font-semibold text-primary">NOVO</span>}
                       </div>
                       {opened === announcement.id && <p className="text-sm text-text mt-1 whitespace-pre-wrap">{announcement.message}</p>}

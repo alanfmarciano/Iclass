@@ -147,7 +147,22 @@ function forkMaterial({ courseId, className, key }) {
     fs.writeFileSync(targetPath, fs.existsSync(sourcePath) ? fs.readFileSync(sourcePath, 'utf8') : '', 'utf8');
     overrides.materials[baseKey] = { key: variantKey, createdAt: Date.now() };
     if (cls.releasedItems && cls.releasedItems[baseKey] !== undefined) cls.releasedItems[variantKey] = cls.releasedItems[baseKey];
+    copyGroupReleases(cls, [[baseKey, variantKey]]);
     return { key: variantKey, baseKey, created: true };
+}
+
+// Liberação por grupo (P5-S5, classes[].groupReleasedItems): a variante "só desta turma"
+// nasce liberada para os mesmos grupos que o item de origem.
+function copyGroupReleases(cls, pairs) {
+    const map = cls && cls.groupReleasedItems && typeof cls.groupReleasedItems === 'object' ? cls.groupReleasedItems : null;
+    if (!map) return;
+    Object.keys(map).forEach(groupId => {
+        const items = map[groupId];
+        if (!items || typeof items !== 'object') return;
+        pairs.forEach(([from, to]) => {
+            if (Object.prototype.hasOwnProperty.call(items, from)) items[to] = items[from];
+        });
+    });
 }
 
 function forkEvaluation({ courseId, className, key }) {
@@ -170,6 +185,7 @@ function forkEvaluation({ courseId, className, key }) {
         if (cls.releasedItems[baseKey] !== undefined) cls.releasedItems[variantKey] = cls.releasedItems[baseKey];
         if (cls.releasedItems[`Gabarito_${baseKey}`] !== undefined) cls.releasedItems[`Gabarito_${variantKey}`] = cls.releasedItems[`Gabarito_${baseKey}`];
     }
+    copyGroupReleases(cls, [[`Gabarito_${baseKey}`, `Gabarito_${variantKey}`]]);
     return { key: variantKey, baseKey, created: true };
 }
 

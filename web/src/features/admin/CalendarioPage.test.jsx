@@ -282,3 +282,26 @@ describe('Calendário da Coordenação (só consulta)', () => {
     expect(mocks.post).not.toHaveBeenCalled()
   })
 })
+
+// Fase 3, C19 (P5-S5, CRIT-11): evento para um grupo da turma.
+describe('Calendário do painel: evento para um grupo', () => {
+  it('[UC-GRUPO-003] "Um grupo da turma" cria o evento com o id do grupo e a turma dele', async () => {
+    mocks.auth = { role: 'admin', accountRole: 'professor', effectivePermissions: ['page.forum', 'page.students'] }
+    mocks.get.mockResolvedValue({ grupos: [{ id: 'grp_a', nome: 'Laboratório A', conjunto: 'Laboratório', quantidade: 2 }] })
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByRole('button', { name: 'Novo evento' }))
+    const dialog = await screen.findByRole('dialog', { name: 'Novo evento' })
+    await user.type(within(dialog).getByLabelText('Título'), 'Bancada')
+    const destino = within(dialog).getByLabelText('Destino')
+    await waitFor(() => expect(within(destino).getByRole('option', { name: 'Um grupo da turma' })).toBeInTheDocument())
+    await user.selectOptions(destino, 'grupo')
+    await user.click(within(dialog).getByRole('button', { name: 'Salvar' }))
+    expect(mocks.toast.error).toHaveBeenCalledWith('Escolha o grupo')
+    await user.selectOptions(within(dialog).getByLabelText('Grupo'), 'grp_a')
+    await user.click(within(dialog).getByRole('button', { name: 'Salvar' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/announcements/calendar', expect.objectContaining({
+      title: 'Bancada', target: 'grupo', targetValue: 'grp_a', courseId: 'TI', studentClass: '1DES',
+    })))
+  })
+})

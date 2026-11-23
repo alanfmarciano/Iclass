@@ -16,9 +16,17 @@ import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { matchesSearch } from '../../lib/textSearch'
-import { ADMIN_PERMISSIONS, canWriteAdminPermission, isFullAdmin } from '../../lib/adminPermissions'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission, canWriteAdminPermission, isFullAdmin } from '../../lib/adminPermissions'
+import { groupOptionLabel, useClassGroupOptions } from './useClassGroupOptions'
 
 function when(ts) { try { return new Date(ts).toLocaleString('pt-BR') } catch { return '' } }
+
+// Rótulo do destino 'grupo' (P5-S5): o servidor manda o grupo junto (nome, conjunto e se
+// foi arquivado); sem ele, um texto neutro em vez do id interno.
+function groupTargetLabel(a) {
+  if (!a.grupo) return 'Grupo removido'
+  return `Grupo: ${groupOptionLabel(a.grupo)}${a.grupo.arquivado ? ' (arquivado)' : ''}`
+}
 
 export default function AvisosPage() {
   const { auth } = useAuth()
@@ -38,10 +46,21 @@ export default function AvisosPage() {
     a.target === 'todos' ||
     (a.target === 'curso' && a.targetValue === activeCourseId) ||
     (a.target === 'turma' && courseClassNames.has(a.targetValue)) ||
-    a.target === 'aluno'
+    a.target === 'aluno' ||
+    (a.target === 'grupo' && a.courseId === activeCourseId && courseClassNames.has(a.studentClass))
   ), [list, activeCourseId, courseClassNames])
+  // Grupos ativos da turma para o destino "Um grupo" (P5-S5). A lista vem de Alunos ›
+  // Grupos, então quem não vê Alunos não recebe a opção.
+  const { groups } = useClassGroupOptions({
+    courseId: activeCourseId,
+    studentClass: activeClassName,
+    enabled: canPublish && canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_STUDENTS),
+  })
 
   const [editingId, setEditingId] = useState(null)
+  // Na edição de um aviso para um grupo já arquivado, o grupo continua na lista para o
+  // professor corrigir o texto sem trocar o destino (o servidor aceita o mesmo grupo).
+  const [editingGroup, setEditingGroup] = useState(null)
   const [target, setTarget] = useState('turma')
   const [targetValue, setTargetValue] = useState(activeClassName)
   const [title, setTitle] = useState('')
@@ -62,7 +81,7 @@ export default function AvisosPage() {
       if (view === 'alta' && a.priority !== 'alta') return false
       if (view === 'ativos' && a.expiresAt && a.expiresAt < today) return false
       if (view === 'expirados' && (!a.expiresAt || a.expiresAt >= today)) return false
-      return matchesSearch([a.title, a.message, a.authorName, a.author, a.targetValue], query)
+      return matchesSearch([a.title, a.message, a.authorName, a.author, a.target === 'grupo' ? groupOptionLabel(a.grupo) : a.targetValue], query)
     })
   }, [visible, query, view])
   const pageSize = 10
@@ -73,9 +92,15 @@ export default function AvisosPage() {
   const targetLabel = (a) => a.target === 'todos' ? 'Toda a instituição'
     : a.target === 'curso' ? `Curso: ${a.targetValue}`
     : a.target === 'turma' ? `Turma: ${a.targetValue}`
+    : a.target === 'grupo' ? groupTargetLabel(a)
     : `Aluno: ${a.targetValue}`
 
-  function reset() { setEditingId(null); setTarget('turma'); setTargetValue(activeClassName); setTitle(''); setMessage(''); setPriority('normal'); setPinned(false); setExpiresAt('') }
+  function reset() { setEditingId(null); setEditingGroup(null); setTarget('turma'); setTargetValue(activeClassName); setTitle(''); setMessage(''); setPriority('normal'); setPinned(false); setExpiresAt('') }
+
+  const groupChoices = useMemo(() => {
+    if (!editingGroup || groups.some((group) => group.id === editingGroup.id)) return groups
+    return [...groups, { id: editingGroup.id, label: editingGroup.label, quantidade: null }]
+  }, [groups, editingGroup])
 
   // Aviso para toda a instituição: o professor lê, mas só o administrador muda (o servidor também recusa).
   const canChange = (a) => canPublish && a.canEdit !== false
@@ -84,6 +109,7 @@ export default function AvisosPage() {
     if (!canChange(a)) return
     setEditingId(a.id)
     setTarget(a.target); setTargetValue(a.targetValue || '')
+    setEditingGroup(a.target === 'grupo' && a.grupo ? { id: a.targetValue, label: `${groupOptionLabel(a.grupo)}${a.grupo.arquivado ? ' (arquivado)' : ''}` } : null)
     setTitle(a.title || ''); setMessage(a.message || '')
     setPriority(a.priority || 'normal'); setPinned(!!a.pinned); setExpiresAt(a.expiresAt || '')
     if (typeof window !== 'undefined') window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -93,6 +119,7 @@ export default function AvisosPage() {
     if (!title.trim() || !message.trim()) return toast.error('Preencha título e mensagem')
     const tv = target === 'curso' ? activeCourseId : target === 'todos' ? '' : targetValue
     if ((target === 'turma' || target === 'aluno') && !tv.trim()) return toast.error('Informe o destino')
+    if (target === 'grupo' && !tv) return toast.error('Escolha o grupo')
     setBusy(true)
     try {
       const payload = { title, message, target, targetValue: tv, courseId: activeCourseId, studentClass: activeClassName, priority, pinned, expiresAt: expiresAt || null }
@@ -122,10 +149,19 @@ export default function AvisosPage() {
             <option value="turma">Somente esta turma</option>
             <option value="curso">Todas as turmas do curso</option>
             <option value="aluno">Um aluno (e-mail)</option>
+            {(groupChoices.length > 0 || target === 'grupo') && <option value="grupo">Um grupo da turma</option>}
             {isAdmin && <option value="todos">Toda a instituição</option>}
           </Select>
           {target === 'turma' && (
             <div><p className="mb-1 text-sm font-medium text-text">Turma</p><div className="h-[38px] rounded-md border border-border bg-surface-2 px-3 py-2 text-sm font-semibold text-text">{activeClassName}</div></div>
+          )}
+          {target === 'grupo' && (
+            <Select label="Grupo" value={targetValue} onChange={(e) => setTargetValue(e.target.value)}>
+              <option value="">Escolha o grupo…</option>
+              {groupChoices.map((group) => (
+                <option key={group.id} value={group.id}>{group.label}{Number.isFinite(group.quantidade) ? ` (${group.quantidade} ${group.quantidade === 1 ? 'aluno' : 'alunos'})` : ''}</option>
+              ))}
+            </Select>
           )}
           {target === 'aluno' && (
             <Input id="av-al" label="E-mail do aluno" value={targetValue} onChange={(e) => setTargetValue(e.target.value)} placeholder="aluno@exemplo.com" />

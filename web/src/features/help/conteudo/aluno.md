@@ -170,6 +170,8 @@ Se você já tem uma conversa aberta com o mesmo professor, a mensagem entra nel
 
 ## Avisos {#avisos}
 
+Os comunicados do professor para a sua turma, o seu curso ou só para você. Toque no aviso para ler a mensagem inteira. Aviso mandado só para um grupo seu (o laboratório, a equipe do projeto) vem com o selo **Para o grupo** e o nome do grupo.
+
 ## Calendário {#calendario}
 
 Mostra as aulas, provas, entregas e avisos do seu curso. Feriados, recessos e outros dias sem aula aparecem marcados como **Sem aula** (no celular, o mês vira uma lista por dia). No Início, quando hoje não tem aula, aparece o aviso "Hoje não tem aula".

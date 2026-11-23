@@ -67,3 +67,19 @@ describe('Calendário do aluno', () => {
     } finally { window.matchMedia = original }
   })
 })
+
+describe('Calendário do aluno: evento de um grupo (P5-S5)', () => {
+  it('[UC-GRUPO-003] o evento de um grupo abre com o nome do grupo, não como "Curso inteiro"', async () => {
+    const user = userEvent.setup()
+    mocks.events = [
+      { id: 'cal_g', title: 'Bancada no laboratório', description: '', eventDate: plus(2), startTime: '10:00', eventType: 'aula', target: 'grupo', targetValue: 'grp_a', grupo: 'Laboratório A' },
+    ]
+    render(<CalendarioPage />)
+    const card = screen.getByRole('heading', { name: 'Próximos compromissos' }).parentElement
+    await user.click(within(card).getByRole('button', { name: /Bancada no laboratório/ }))
+    const dialog = await screen.findByRole('dialog', { name: 'Bancada no laboratório' })
+    expect(within(dialog).getByText('Grupo Laboratório A')).toBeInTheDocument()
+    expect(within(dialog).getByText('Só o grupo Laboratório A')).toBeInTheDocument()
+    expect(within(dialog).queryByText('Curso inteiro')).toBeNull()
+  })
+})

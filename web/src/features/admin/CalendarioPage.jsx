@@ -17,7 +17,8 @@ import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { useToast } from '../../context/ToastProvider'
 import { api, downloadFile } from '../../lib/api'
 import { useAuth } from '../../context/AuthProvider'
-import { ADMIN_PERMISSIONS, canWriteAdminPermission } from '../../lib/adminPermissions'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission, canWriteAdminPermission } from '../../lib/adminPermissions'
+import { groupOptionLabel, useClassGroupOptions } from './useClassGroupOptions'
 import { NonSchoolDayDialog, NationalHolidaysDialog } from './NonSchoolDayDialog'
 
 // Calendário do painel: eventos do curso e da turma e, desde a fase 3 (B7 / P2-S6,
@@ -37,6 +38,8 @@ export default function CalendarioPage() {
   // A Coordenação (só consulta) vê o calendário e abre cada evento para ler, sem criar,
   // alterar nem excluir (o servidor recusaria com 403; B4).
   const canEdit = canWriteAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_FORUM)
+  // Evento para um grupo da turma (P5-S5): os grupos ativos vêm de Alunos › Grupos.
+  const { groups } = useClassGroupOptions({ courseId, studentClass: className, enabled: canEdit && canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_STUDENTS) })
   const query = courseId ? `courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(className)}` : ''
   const eventsApi = useApi(courseId ? `/api/admin/announcements/calendar?${query}` : null)
   const daysApi = useApi(courseId ? `/api/admin/calendar/non-school-days?${query}` : null)
@@ -78,9 +81,10 @@ export default function CalendarioPage() {
   async function save() {
     if (!form.title.trim() || !form.eventDate) return toast.error('Informe título e data')
     if (form.target === 'turma' && !form.targetValue) return toast.error('Selecione a turma')
+    if (form.target === 'grupo' && !form.targetValue) return toast.error('Escolha o grupo')
     setBusy(true)
     try {
-      const payload = { ...form, courseId, targetValue: form.target === 'curso' ? courseId : form.targetValue }
+      const payload = { ...form, courseId, targetValue: form.target === 'curso' ? courseId : form.targetValue, ...(form.target === 'grupo' ? { studentClass: form.studentClass || className } : {}) }
       if (form.id) await api.post('/api/admin/announcements/calendar/update', payload)
       else await api.post('/api/admin/announcements/calendar', payload)
       toast.success(form.id ? 'Evento atualizado' : 'Evento criado')
@@ -169,8 +173,18 @@ export default function CalendarioPage() {
             <Select label="Destino" value={form.target} onChange={(event) => set({ target: event.target.value, targetValue: event.target.value === 'turma' ? className : '' })}>
               <option value="turma">Somente esta turma</option>
               <option value="curso">Todas as turmas do curso</option>
+              {(groups.length > 0 || form.target === 'grupo') && <option value="grupo">Um grupo da turma</option>}
             </Select>
           </div>
+          {form.target === 'grupo' && (
+            <Select label="Grupo" value={form.targetValue} onChange={(event) => set({ targetValue: event.target.value })}>
+              <option value="">Escolha o grupo…</option>
+              {groups.map((group) => <option key={group.id} value={group.id}>{group.label}</option>)}
+              {form.targetValue && !groups.some((group) => group.id === form.targetValue) && (
+                <option value={form.targetValue}>{form.grupo ? `${groupOptionLabel(form.grupo)}${form.grupo.arquivado ? ' (arquivado)' : ''}` : 'Grupo atual'}</option>
+              )}
+            </Select>
+          )}
           {form.target === 'turma' && <div><p className="mb-1 text-sm font-medium text-text">Turma</p><div className="h-[38px] rounded-md border border-border bg-surface-2 px-3 py-2 text-sm font-semibold text-text">{className}</div></div>}
           <Textarea id="cal-description" label="Descrição ou instruções" value={form.description} onChange={(event) => set({ description: event.target.value })} placeholder="Informações que o aluno precisa saber..." className="min-h-24" />
           {!form.id && canCreateDay && <p className="text-xs text-muted">Feriado, recesso ou outro dia sem aula? Use <strong>Dia não letivo</strong>: assim a chamada não é cobrada nesse dia.</p>}
@@ -220,7 +234,7 @@ export default function CalendarioPage() {
               {readOnlyDetail.kind === 'nonSchoolDay' && canEdit && <p className="text-xs text-muted">{readOnlyDetail.escopo === 'instituicao' ? 'Este dia vale para toda a instituição: só o administrador ou quem gerencia as turmas altera.' : 'Sua conta não altera este dia: peça a quem o cadastrou.'}</p>}
             </div>
           : <div className="space-y-2 text-sm text-text">
-              <p className="text-xs font-semibold uppercase tracking-wide text-subtle">{TYPE_LABELS[readOnlyDetail.eventType] || 'Evento'}{readOnlyDetail.target === 'curso' ? ' · todas as turmas do curso' : ''}</p>
+              <p className="text-xs font-semibold uppercase tracking-wide text-subtle">{TYPE_LABELS[readOnlyDetail.eventType] || 'Evento'}{readOnlyDetail.target === 'curso' ? ' · todas as turmas do curso' : readOnlyDetail.target === 'grupo' && readOnlyDetail.grupo ? ` · grupo ${groupOptionLabel(readOnlyDetail.grupo)}` : ''}</p>
               <p className="whitespace-pre-wrap">{readOnlyDetail.message || readOnlyDetail.description || 'Sem descrição.'}</p>
             </div>)}
       </Modal>

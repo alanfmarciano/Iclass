@@ -72,6 +72,9 @@ const {
     participantCandidates,
 } = require('../utils/examParticipants.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
+// Grupos da turma (P5-S5): liberação por grupo e "Para quem: um grupo" (contrato
+// "classGroups": grupos só por utils/classGroups.js).
+const groupRules = require('../utils/classGroups.js');
 // Versões montadas e conferidas no servidor e sorteio por aluno (P3-S11: AVA-16; D23 e
 // D24 do desenho do P3).
 const examVersions = require('../utils/examVersions.js');
@@ -268,6 +271,13 @@ function lockAnswerKeyForNewApplication(cls, examKey, actor) {
                 changedKeys.add(answerKey);
             }
         });
+        // Liberação por grupo (P5-S5): também volta a ficar bloqueada.
+        Object.values(cls.groupReleasedItems || {}).forEach(items => {
+            if (items && items[answerKey] === true) {
+                items[answerKey] = false;
+                changedKeys.add(answerKey);
+            }
+        });
     });
     if (changedKeys.size) {
         if (!cls.releaseMeta) cls.releaseMeta = {};
@@ -287,6 +297,43 @@ function openExamFamilyApplication(cls, examKey) {
         courseId: cls.courseId,
         statuses: OPEN_APPLICATION_STATUSES,
     }).find(application => family.has(String(application.examKey || ''))) || null;
+}
+
+// Liberação por grupo (P5-S5, D18; POST /api/admin/release-item com groupId). O grupo
+// precisa ser um grupo ativo da turma; a regra do gabarito com aplicação aberta já foi
+// conferida pela rota. Liberar grava true; desligar tira a liberação do grupo (o item volta
+// a seguir a turma). O gabarito liga e desliga junto as chaves da família que a turma já
+// tem gravadas (a variante "só desta turma"), como o interruptor da turma.
+async function releaseItemForGroup(req, res, cls, itemKey, groupId, released) {
+    const group = groupRules.activeGroupInClass(db.memory, cls, groupId);
+    if (!group) return res.status(404).json({ error: 'Grupo não encontrado nesta turma (ele pode ter sido arquivado).', code: 'group_not_found', field: 'groupId' });
+    const keys = [itemKey];
+    if (itemKey.startsWith('Gabarito_')) {
+        answerKeyFamily(itemKey.slice('Gabarito_'.length)).forEach(answerKey => {
+            if (answerKey !== itemKey && cls.releasedItems && cls.releasedItems[answerKey] !== undefined) keys.push(answerKey);
+        });
+    }
+    const changed = keys.filter(key => groupRules.setGroupRelease(cls, group.id, key, released));
+    const label = groupRules.groupLabel(db.memory, group.id);
+    if (changed.length) {
+        recordAudit(db.memory, {
+            action: released ? 'content_released' : 'content_hidden',
+            req,
+            courseId: cls.courseId || null,
+            studentClass: cls.name,
+            field: itemKey,
+            newValue: released ? 'liberado para o grupo' : 'liberação do grupo retirada',
+            details: { itemKey, groupId: group.id, grupo: label ? label.nome : '', conjunto: label ? label.conjunto : '', chaves: changed },
+        });
+        await db.save({ only: ['classes', 'auditLogs'] });
+    }
+    return res.json({
+        success: true,
+        scope: 'group',
+        groupId: group.id,
+        ...(changed.length ? {} : { unchanged: true }),
+        groupReleases: groupRules.groupReleasesView(db.memory, cls),
+    });
 }
 
 function prepareApplicationFromHistory(cls, examKey, historyEntry, applicationOptions, req, audience = null, draw = null) {
@@ -356,12 +403,15 @@ function recordAudienceAudit(application, actor, { participantsChanged = false, 
     const restricted = finalidade !== 'regular' || list !== null;
     if (participantsChanged && (!onlyWhenRestricted || restricted)) {
         const previousList = Array.isArray(before.participants) ? before.participants : null;
+        const group = application.groupId ? groupRules.groupLabel(db.memory, application.groupId) : null;
         recordExamAudit('exam_application_participants_set', application, actor, {
             finalidade,
             finalidadeAntes: before.finalidade || 'regular',
             quantidade: list === null ? null : list.length,
             quantidadeAntes: previousList === null ? null : previousList.length,
             status: application.status,
+            // "Para quem: um grupo" (P5-S5): o grupo de onde veio a lista.
+            ...(group ? { groupId: group.id, grupo: group.nome } : {}),
         });
     }
     changedOverrides(before.studentOverrides || {}, application.studentOverrides || {}).forEach(change => {
@@ -392,6 +442,8 @@ const SCHEDULE_SCHEMA = body({
 const RELEASE_ITEM_SCHEMA = body({
     releaseAtLocal: str({ max: 20, nullable: true, label: 'liberar em' }),
     cancelSchedule: bool({ nullable: true, label: 'cancelar a liberação agendada' }),
+    // Liberar para um grupo da turma (P5-S5, D18): só apostila e gabarito.
+    groupId: str({ max: 100, nullable: true, label: 'grupo' }),
 });
 
 const PREPARE_AUDIENCE_SCHEMA = body({
@@ -853,7 +905,10 @@ function withAgendaView(view, application) {
 }
 
 function adminApplicationView(application) {
-    return withAgendaView(withoutSealedToken(withKeystrokeMode(application)), application);
+    const view = withAgendaView(withoutSealedToken(withKeystrokeMode(application)), application);
+    // "Para quem: um grupo" (P5-S5): o nome do grupo para o rótulo da aplicação.
+    if (view && application && application.groupId) view.grupo = groupRules.groupLabel(db.memory, application.groupId);
+    return view;
 }
 
 // Letras das versões da aplicação (A, B...), para o Monitor oferecer só as que existem.
@@ -1192,7 +1247,12 @@ function createAdminExamConfigRouter() {
                     timerMode: application.timerMode || 'collective',
                     finalidade: applicationFinalidade(application),
                     participants: list,
+                    groupId: application.groupId || null,
+                    grupo: application.groupId ? groupRules.groupLabel(db.memory, application.groupId) : null,
                 } : null,
+                // "Para quem: um grupo" (P5-S5): os grupos ativos da turma, com os membros
+                // que estão na turma agora (a lista que a preparação vai gravar).
+                grupos: groupRules.groupOptionsForClass(db.memory, cls),
             });
         });
     });
@@ -1393,6 +1453,7 @@ function createAdminExamConfigRouter() {
                 finalidade: options.finalidade,
                 participants: options.participants,
                 studentOverrides: options.studentOverrides,
+                groupId: options.groupId,
             }, {
                 cls,
                 examKey,
@@ -1453,16 +1514,19 @@ function createAdminExamConfigRouter() {
                 finalidade: input.finalidade,
                 participants: input.participants,
                 studentOverrides: input.studentOverrides,
+                groupId: input.groupId,
             }, { cls, examKey: application.examKey, application, actor });
             if (!parsed.ok) return res.status(400).json({ success: false, error: parsed.error, field: parsed.field });
             const before = {
                 finalidade: applicationFinalidade(application),
                 participants: applicationParticipantList(application),
                 studentOverrides: JSON.parse(JSON.stringify(application.studentOverrides || {})),
+                groupId: typeof application.groupId === 'string' && application.groupId ? application.groupId : null,
             };
             const next = parsed.value;
             const participantsChanged = before.finalidade !== next.finalidade
-                || JSON.stringify(before.participants) !== JSON.stringify(next.participants);
+                || JSON.stringify(before.participants) !== JSON.stringify(next.participants)
+                || before.groupId !== (next.groupId || null);
             const overridesChanged = changedOverrides(before.studentOverrides, next.studentOverrides).length > 0;
             if (!participantsChanged && !overridesChanged) {
                 return res.json({ success: true, unchanged: true, application: adminApplicationView(application) });
@@ -1470,6 +1534,7 @@ function createAdminExamConfigRouter() {
             application.finalidade = next.finalidade;
             application.participants = next.participants;
             application.studentOverrides = next.studentOverrides;
+            application.groupId = next.groupId || null;
             application.updatedAt = new Date().toISOString();
             application.updatedBy = actor;
             recordAudienceAudit(application, actor, { participantsChanged, before });
@@ -2488,9 +2553,19 @@ function createAdminExamConfigRouter() {
                 return res.status(400).json({ error: 'Aluno inválido.' });
             }
             const actor = adminActor(req);
+            const groupId = typeof req.body.groupId === 'string' ? req.body.groupId.trim() : '';
+            const wantsSchedule = req.body.cancelSchedule === true || (req.body.releaseAtLocal !== undefined && req.body.releaseAtLocal !== null && req.body.releaseAtLocal !== '');
+            if (groupId) {
+                if (normalizedStudentEmail) return res.status(400).json({ error: 'Libere para um grupo ou para um aluno, não para os dois ao mesmo tempo.', field: 'groupId' });
+                if (String(itemKey).startsWith('Avaliacao_') || isCourseExamKey(cls, itemKey)) {
+                    return res.status(400).json({ error: 'Para prova online, use "Para quem" ao preparar a aplicação em Provas.', field: 'groupId', code: 'group_exam' });
+                }
+                if (!groupRules.isGroupReleaseKey(itemKey)) return res.status(400).json({ error: 'Só apostila e gabarito podem ser liberados para um grupo.', field: 'groupId' });
+                if (wantsSchedule) return res.status(400).json({ error: 'A liberação agendada vale para a turma inteira. Para o grupo, use "Liberar para um grupo" na hora.', field: 'groupId' });
+            }
             // Liberação agendada (P3-S12, D27): agendar ou cancelar não liga nem desliga
             // nada agora; a varredura do servidor libera na hora (utils/examSchedule.js).
-            if (req.body.cancelSchedule === true || (req.body.releaseAtLocal !== undefined && req.body.releaseAtLocal !== null && req.body.releaseAtLocal !== '')) {
+            if (wantsSchedule) {
                 return scheduleItemRelease(req, res, cls, String(itemKey), normalizedStudentEmail);
             }
             // Gabarito só é liberado pela chave própria e nunca enquanto a prova tem
@@ -2504,6 +2579,10 @@ function createAdminExamConfigRouter() {
                     });
                 }
             }
+            // Liberar ou tirar a liberação de um grupo (P5-S5, D18): grava
+            // cls.groupReleasedItems[groupId][itemKey] (o gabarito vale para a família da
+            // prova, como na turma) e registra content_released/content_hidden com o grupo.
+            if (groupId) return releaseItemForGroup(req, res, cls, String(itemKey), groupId, !!released);
             let affectedApplication = null;
             if (normalizedStudentEmail) {
                 if (!cls.studentReleasedItems) cls.studentReleasedItems = {};

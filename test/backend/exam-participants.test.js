@@ -89,6 +89,7 @@ function seed() {
     db.memory.proctoringLogs = [];
     db.memory.broadcastMessages = [];
     db.memory.auditLogs = [];
+    db.memory.classGroups = [];
 }
 
 test.before(async () => {
@@ -552,4 +553,71 @@ test('[UC-PROVA-006] [UC-IDENT-001] registro da aplicação com aluno sem e-mail
     const trail = await admin(request(app).get(`/api/admin/exam-applications/${id}/audit`)).expect(200);
     assert.ok(trail.body.entries.some(row => row.title === 'Exceção para Bruno Sem Email'));
     assert.equal(JSON.stringify(trail.body).includes('sem-email.invalid'), false, JSON.stringify(trail.body.entries));
+});
+
+// "Para quem: um grupo" (C19 / P5-S5, contrato C2 do P5): participants = os membros do
+// grupo na hora da preparação; groupId só como rótulo; mudar o grupo depois não muda a
+// aplicação; quem não é do grupo não faz.
+test('[UC-PROVA-006] [UC-GRUPO-003] Para quem: um grupo grava os membros na preparação e o grupo como rótulo', async () => {
+    const membro = email => ({ email, studentId: null, adicionadoEm: 1, adicionadoPor: 'admin@participantes.local' });
+    const grupo = (id, nome, membros, extra = {}) => ({
+        id, schemaVersion: 1, courseId, studentClass, nome, conjunto: 'Laboratório', tipo: 'subturma', membros: membros.map(membro),
+        criadoEm: 1, criadoPor: 'admin@participantes.local', atualizadoEm: 1, atualizadoPor: 'admin@participantes.local', arquivadoEm: null, arquivadoPor: null, ...extra,
+    });
+    db.memory.classGroups = [
+        grupo('grp_1_aaaaaa', 'Laboratório A', [ALICE, BRUNO]),
+        grupo('grp_1_bbbbbb', 'Arquivado', [CARLA], { arquivadoEm: 5 }),
+        grupo('grp_1_cccccc', 'Outra turma', [DIEGO], { studentClass: otherClass }),
+        grupo('grp_1_dddddd', 'Vazio', [DIEGO]),
+    ];
+    const candidates = await admin(request(app).get('/api/admin/exam-applications/participant-candidates')).query({ studentClass, courseId, examKey }).expect(200);
+    assert.deepEqual(candidates.body.grupos.map(item => [item.id, item.membros]), [['grp_1_aaaaaa', [ALICE, BRUNO]], ['grp_1_dddddd', []]]);
+
+    const historyId = await createHistory();
+    for (const groupId of ['grp_1_bbbbbb', 'grp_1_cccccc', 'grp_inexistente']) {
+        const refused = await prepare(historyId, { groupId }, 400);
+        assert.equal(refused.body.field, 'applicationOptions.groupId', groupId);
+    }
+    const empty = await prepare(historyId, { groupId: 'grp_1_dddddd' }, 400);
+    assert.match(empty.body.error, /não tem alunos ativos/);
+    const second = await prepare(historyId, { groupId: 'grp_1_aaaaaa', finalidade: 'segunda_chamada' }, 400);
+    assert.equal(second.body.field, 'applicationOptions.groupId');
+    assert.equal(db.memory.examApplications.length, 0);
+
+    // O grupo vale mais que uma lista mandada junto.
+    const prepared = await prepare(historyId, { groupId: 'grp_1_aaaaaa', participants: [CARLA] });
+    const application = prepared.body.application;
+    assert.deepEqual(application.participants, [ALICE, BRUNO]);
+    assert.equal(application.groupId, 'grp_1_aaaaaa');
+    assert.equal(application.finalidade, 'regular');
+    const audit = db.memory.auditLogs.filter(entry => entry.type === 'exam_application_participants_set');
+    assert.equal(audit.length, 1);
+    assert.equal(audit[0].details.groupId, 'grp_1_aaaaaa');
+    assert.equal(audit[0].details.grupo, 'Laboratório A');
+    assert.equal(audit[0].details.quantidade, 2);
+
+    // Mudar o grupo depois não muda quem pode fazer.
+    db.memory.classGroups[0].membros.push(membro(CARLA));
+    db.memory.classGroups[0].membros = db.memory.classGroups[0].membros.filter(item => item.email !== BRUNO);
+    const stored = db.memory.examApplications.find(item => item.id === application.id);
+    assert.deepEqual(stored.participants, [ALICE, BRUNO]);
+    assert.equal(applicationParticipant(stored, BRUNO), true);
+    assert.equal(applicationParticipant(stored, CARLA), false);
+    const view = await admin(request(app).get('/api/admin/exam-applications/participant-candidates')).query({ applicationId: application.id }).expect(200);
+    assert.deepEqual(view.body.application.grupo, { id: 'grp_1_aaaaaa', nome: 'Laboratório A', conjunto: 'Laboratório', arquivado: false });
+    assert.equal(view.body.application.groupId, 'grp_1_aaaaaa');
+
+    // Rota de participantes: escolher o grupo de novo pega os membros de agora; uma lista
+    // própria tira o rótulo.
+    const again = await admin(request(app).post(`/api/admin/exam-applications/${application.id}/participants`)).send({ groupId: 'grp_1_aaaaaa' }).expect(200);
+    assert.deepEqual(again.body.application.participants, [ALICE, CARLA]);
+    assert.equal(again.body.application.grupo.nome, 'Laboratório A');
+    const own = await admin(request(app).post(`/api/admin/exam-applications/${application.id}/participants`)).send({ participants: [ALICE] }).expect(200);
+    assert.equal(own.body.application.groupId, null);
+    assert.equal(own.body.application.grupo, undefined);
+    const whole = await admin(request(app).post(`/api/admin/exam-applications/${application.id}/participants`)).send({ groupId: 'grp_1_aaaaaa' }).expect(200);
+    assert.equal(whole.body.application.groupId, 'grp_1_aaaaaa');
+    const all = await admin(request(app).post(`/api/admin/exam-applications/${application.id}/participants`)).send({ participants: null }).expect(200);
+    assert.equal(all.body.application.participants, null);
+    assert.equal(all.body.application.groupId, null);
 });

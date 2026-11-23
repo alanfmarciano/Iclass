@@ -36,16 +36,25 @@ const AUDIENCE_MODES = [
   { value: 'turma', label: 'Turma inteira', hint: 'Todos os alunos da turma podem fazer.' },
   { value: 'segunda_chamada', label: 'Segunda chamada', hint: 'Já vem marcado quem ainda não fez a prova. Desmarque ou marque quem precisar.' },
   { value: 'escolher', label: 'Escolher alunos', hint: 'Só os alunos marcados veem e fazem esta aplicação.' },
+  // Um grupo da turma (P5-S5, D18): a lista é a do grupo no momento de preparar (quem
+  // entrar no grupo depois não entra nesta aplicação). Só aparece se a turma tem grupos.
+  { value: 'grupo', label: 'Um grupo', hint: 'Só os alunos do grupo escolhido, como ele está agora. Quem entrar no grupo depois não entra nesta aplicação.', needsGroups: true },
   { value: 'recuperacao', label: 'Recuperação', hint: 'Só os alunos marcados fazem a recuperação. A nota entra como recuperação pelos critérios do curso.', hidden: !RECUPERACAO_VISIVEL },
 ]
 
-export function audienceModes() {
-  return AUDIENCE_MODES.filter((mode) => !mode.hidden)
+export function audienceModes({ hasGroups = false, current = '' } = {}) {
+  return AUDIENCE_MODES.filter((mode) => !mode.hidden && (!mode.needsGroups || hasGroups || current === mode.value))
+}
+
+// Grupos ativos da turma que o "Para quem" oferece (participant-candidates manda os
+// grupos com os e-mails dos membros ativos).
+function candidateGroups(candidates) {
+  return Array.isArray(candidates?.grupos) ? candidates.grupos.filter((group) => group && group.id) : []
 }
 
 // Estado inicial do "Para quem": turma inteira, sem exceções.
 export function initialAudience() {
-  return { mode: 'turma', selected: [], overrides: {}, touched: false }
+  return { mode: 'turma', selected: [], overrides: {}, groupId: '', touched: false }
 }
 
 // Estado do "Para quem" a partir de uma aplicação já preparada (a resposta de
@@ -55,9 +64,14 @@ export function audienceFromApplication(data) {
   const students = data?.students || []
   const list = Array.isArray(application.participants) ? application.participants : null
   const finalidade = application.finalidade || 'regular'
+  // Aplicação preparada para um grupo (P5-S5): volta como "Um grupo" enquanto o grupo
+  // estiver ativo na turma; arquivado, a lista congelada aparece como "Escolher alunos".
+  const groupId = finalidade === 'regular' && list && application.groupId
+    && candidateGroups(data).some((group) => group.id === application.groupId) ? application.groupId : ''
   const mode = finalidade === 'segunda_chamada' ? 'segunda_chamada'
     : finalidade === 'recuperacao' ? 'recuperacao'
-      : list ? 'escolher' : 'turma'
+      : groupId ? 'grupo'
+        : list ? 'escolher' : 'turma'
   const overrides = {}
   students.forEach((student) => {
     if (!student.override) return
@@ -69,7 +83,7 @@ export function audienceFromApplication(data) {
       motivo: student.override.motivo || '',
     }
   })
-  return { mode, selected: list || [], overrides, touched: true }
+  return { mode, selected: list || [], overrides, groupId, touched: true }
 }
 
 function finalidadeOf(mode) {
@@ -81,6 +95,8 @@ function finalidadeOf(mode) {
 // Problema do "Para quem" antes de mandar (o servidor confere de novo), ou null.
 export function audienceProblem(audience) {
   if (!audience || audience.mode === 'turma') return overridesProblem(audience)
+  if (audience.mode === 'grupo' && !audience.groupId) return 'Escolha o grupo desta aplicação.'
+  if (audience.mode === 'grupo' && !audience.selected.length) return 'Este grupo não tem alunos ativos na turma.'
   if (!audience.selected.length) return 'Escolha pelo menos um aluno para esta aplicação.'
   return overridesProblem(audience)
 }
@@ -118,6 +134,9 @@ export function audiencePayload(audience, { timerMode } = {}) {
     finalidade: finalidadeOf(audience.mode),
     participants: audience.mode === 'turma' ? null : [...audience.selected],
   }
+  // Um grupo (P5-S5): o servidor grava os membros atuais do grupo como a lista e o grupo
+  // como rótulo da aplicação; sem groupId, a aplicação deixa de ser de um grupo.
+  if (audience.mode === 'grupo' && audience.groupId) payload.groupId = audience.groupId
   if (Object.keys(studentOverrides).length) payload.studentOverrides = studentOverrides
   return payload
 }
@@ -198,7 +217,10 @@ export function ApplicationAudienceFields({ value, onChange, candidates, loading
   const nameOf = useMemo(() => new Map(students.map((student) => [student.email, student.name || displayEmail(student.email)])), [students])
   const locked = useMemo(() => new Set(lockedEmails), [lockedEmails])
   const selected = useMemo(() => new Set(audience.selected), [audience.selected])
-  const restricted = audience.mode !== 'turma'
+  const restricted = audience.mode !== 'turma' && audience.mode !== 'grupo'
+  const groups = useMemo(() => candidateGroups(candidates), [candidates])
+  const groupMode = audience.mode === 'grupo'
+  const chosenGroup = groups.find((group) => group.id === audience.groupId) || null
   const visible = useMemo(() => students.filter((student) => matchesSearch([student.name, student.email], query)), [students, query])
   const modeInfo = AUDIENCE_MODES.find((mode) => mode.value === audience.mode) || AUDIENCE_MODES[0]
   const exceptionEmails = Object.keys(audience.overrides || {})
@@ -226,7 +248,7 @@ export function ApplicationAudienceFields({ value, onChange, candidates, loading
       touched: true,
     })
   }, [audience, candidates, locked, onChange])
-  const eligible = students.filter((student) => !exceptionEmails.includes(student.email) && (!restricted || selected.has(student.email)))
+  const eligible = students.filter((student) => !exceptionEmails.includes(student.email) && ((!restricted && !groupMode) || selected.has(student.email)))
 
   function update(next) { setLateDeliveries([]); onChange({ ...audience, ...next, touched: true }) }
 
@@ -235,12 +257,22 @@ export function ApplicationAudienceFields({ value, onChange, candidates, loading
     let nextSelected = audience.selected
     // Segunda chamada: a lista vem marcada com quem ainda não fez a prova.
     if (mode === 'segunda_chamada') nextSelected = [...(candidates?.segundaChamada || [])]
-    else if (mode === 'turma') nextSelected = []
+    else if (mode === 'turma' || mode === 'grupo') nextSelected = []
     else if (!audience.selected.length || audience.mode === 'turma') nextSelected = []
     const overrides = mode === 'turma'
       ? audience.overrides
       : Object.fromEntries(Object.entries(audience.overrides || {}).filter(([email]) => nextSelected.includes(email)))
-    update({ mode, selected: nextSelected, overrides, pendingSeed: mode === 'segunda_chamada' && !candidates })
+    update({ mode, selected: nextSelected, overrides, groupId: '', pendingSeed: mode === 'segunda_chamada' && !candidates })
+  }
+
+  // Escolher o grupo: a lista passa a ser a dos membros ativos dele (os que já estavam
+  // numa prova em andamento continuam, como em "Escolher alunos").
+  function chooseGroup(groupId) {
+    const group = groups.find((entry) => entry.id === groupId)
+    const members = group ? (group.membros || []) : []
+    const nextSelected = [...new Set([...members, ...audience.selected.filter((email) => locked.has(email))])]
+    const overrides = Object.fromEntries(Object.entries(audience.overrides || {}).filter(([email]) => nextSelected.includes(email)))
+    update({ groupId: group ? group.id : '', selected: nextSelected, overrides })
   }
 
   function toggle(email) {
@@ -283,7 +315,7 @@ export function ApplicationAudienceFields({ value, onChange, candidates, loading
       <fieldset className="space-y-2">
         <legend className="text-[13px] font-medium text-muted">Para quem</legend>
         <div role="radiogroup" aria-label="Para quem" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          {audienceModes().map((mode) => (
+          {audienceModes({ hasGroups: groups.length > 0, current: audience.mode }).map((mode) => (
             <button
               key={mode.value}
               type="button"
@@ -300,8 +332,25 @@ export function ApplicationAudienceFields({ value, onChange, candidates, loading
         <p className="text-xs text-subtle">{lockMode ? 'A prova já começou: dá para acrescentar alunos, não tirar.' : modeInfo.hint}</p>
       </fieldset>
 
-      {(restricted || exceptionEmails.length > 0) && loading && <p className="text-sm text-muted">Carregando os alunos da turma...</p>}
-      {(restricted || exceptionEmails.length > 0) && error && (
+      {groupMode && !loading && !error && (
+        <div className="space-y-2 rounded-lg border border-border p-3" data-testid="audience-group">
+          <Select label="Grupo" value={audience.groupId || ''} disabled={lockMode} onChange={(e) => chooseGroup(e.target.value)}>
+            <option value="">Escolha o grupo…</option>
+            {groups.map((group) => (
+              <option key={group.id} value={group.id}>{group.conjunto ? `${group.conjunto} · ${group.nome}` : group.nome} ({group.quantidade} {group.quantidade === 1 ? 'aluno' : 'alunos'})</option>
+            ))}
+          </Select>
+          {chosenGroup && (
+            <p className="text-sm text-text">
+              <Users size={15} className="mr-1 inline" aria-hidden />
+              {audience.selected.length ? audience.selected.map((email) => nameOf.get(email) || displayEmail(email)).join(', ') : 'Nenhum aluno ativo neste grupo.'}
+            </p>
+          )}
+        </div>
+      )}
+
+      {(restricted || groupMode || exceptionEmails.length > 0) && loading && <p className="text-sm text-muted">Carregando os alunos da turma...</p>}
+      {(restricted || groupMode || exceptionEmails.length > 0) && error && (
         <div role="alert" className="rounded-lg border border-danger/40 bg-danger-soft/40 p-3 text-sm text-text">
           {error} {onRetry && <Button size="sm" variant="secondary" icon={RefreshCw} onClick={onRetry}>Tentar de novo</Button>}
         </div>

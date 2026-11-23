@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import {
   ClipboardCheck, Download, Check, X, Clock, LogOut, FileText, Paperclip, Users,
   AlertTriangle, Search, PencilLine, TrendingDown, RotateCcw, Loader2, Wifi, UserX, CalendarOff,
@@ -13,6 +14,8 @@ import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { matchesSearch } from '../../lib/textSearch'
 import { useAuth } from '../../context/AuthProvider'
 import { ADMIN_PERMISSIONS, canWriteAdminPermission } from '../../lib/adminPermissions'
+import { Select } from '../../components/ui/Select'
+import { groupOptionLabel } from './useClassGroupOptions'
 
 // ---------------------------------------------------------------------------
 // Status exibido por ALUNO. O backend guarda status por AULA (presente/falta/
@@ -139,6 +142,21 @@ export default function ChamadaPage() {
   // chamada já lançada naquela data, o servidor já entra no "mesmo assim" (chamadaNoDia).
   const [semAula, setSemAula] = useState(null)
   const [mesmoAssim, setMesmoAssim] = useState(false)
+  // Chamada de um grupo da turma (P5-S5, D18): a escolha fica no endereço (?grupo=id),
+  // para o professor voltar ao mesmo grupo; vazio é a turma inteira, como sempre. O
+  // servidor manda os grupos ativos da turma junto com a lista (grupos) e o grupo da
+  // chamada (grupo); um grupo arquivado ou de outra turma volta para a turma inteira.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const groupId = searchParams.get('grupo') || ''
+  const [classGroups, setClassGroups] = useState([])
+  const [groupLabel, setGroupLabel] = useState(null)
+  const chooseGroup = useCallback((next) => {
+    setSearchParams((current) => {
+      const params = new URLSearchParams(current)
+      if (next) params.set('grupo', next); else params.delete('grupo')
+      return params
+    }, { replace: true })
+  }, [setSearchParams])
   const toast = useToast()
   const listRef = useRef(null)
   const autosaveRef = useRef(null)
@@ -147,7 +165,21 @@ export default function ChamadaPage() {
     if (!className || !date) { setRoster([]); setGrade([]); setUi({}); setSemAula(null); return }
     setLoading(true); setError(null)
     try {
-      const r = await api.get(`/api/admin/attendance/roster?studentClass=${encodeURIComponent(className)}&courseId=${encodeURIComponent(activeCourseId || '')}&date=${encodeURIComponent(date)}${forcar ? '&mesmoAssim=1' : ''}`)
+      const groupQuery = groupId ? `&groupId=${encodeURIComponent(groupId)}` : ''
+      let r
+      try {
+        r = await api.get(`/api/admin/attendance/roster?studentClass=${encodeURIComponent(className)}&courseId=${encodeURIComponent(activeCourseId || '')}&date=${encodeURIComponent(date)}${forcar ? '&mesmoAssim=1' : ''}${groupQuery}`)
+      } catch (e) {
+        // Grupo arquivado ou de outra turma (link antigo): volta para a turma inteira.
+        if (groupId && e?.data?.code === 'group_not_found') {
+          toast.info('Esse grupo não está mais ativo nesta turma: mostrando a turma inteira.')
+          chooseGroup('')
+          return
+        }
+        throw e
+      }
+      setClassGroups(Array.isArray(r.grupos) ? r.grupos : [])
+      setGroupLabel(r.grupo || null)
       setGrade(r.aulas || [])
       // O "mesmo assim" segue o servidor: vale o pedido do professor e a chamada já lançada.
       setMesmoAssim(!!r.mesmoAssim)
@@ -172,7 +204,7 @@ export default function ChamadaPage() {
   }
   useEffect(() => { api.get('/api/settings/public', { auth: false }).then((r) => { if (r && r.today) setDate(r.today) }).catch(() => {}) }, [])
   // Outra turma ou outra data começa sem o "mesmo assim".
-  useEffect(() => { setMesmoAssim(false); load(false) /* eslint-disable-next-line */ }, [className, date, activeCourseId])
+  useEffect(() => { setMesmoAssim(false); load(false) /* eslint-disable-next-line */ }, [className, date, activeCourseId, groupId])
   const fazerMesmoAssim = () => { setMesmoAssim(true); load(true) }
 
   // ---- edição ----
@@ -236,13 +268,14 @@ export default function ChamadaPage() {
     try {
       const r = await api.post('/api/admin/attendance/bulk', {
         studentClass: className, courseId: activeCourseId, date, concluida, entries: buildEntries(),
+        ...(groupId ? { groupId } : {}),
       })
       setDirty(false)
       setSavedAt(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }))
       if (concluida) { toast.success(`Chamada concluída (${r.saved} alunos)`); load() }
       return true
     } catch (e) { toast.error(e.message); return false } finally { setSaving(false) }
-  }, [readOnly, className, activeCourseId, date, grade.length, buildEntries]) // eslint-disable-line
+  }, [readOnly, className, activeCourseId, date, grade.length, buildEntries, groupId]) // eslint-disable-line
 
   // Autosave de rascunho: 2s após a última alteração. Não conclui a chamada.
   useEffect(() => {
@@ -254,10 +287,12 @@ export default function ChamadaPage() {
 
   async function exportCsv() {
     try {
-      const text = await api.get(`/api/admin/attendance/export?studentClass=${encodeURIComponent(className)}`, { raw: true })
+      const groupQuery = groupId ? `&groupId=${encodeURIComponent(groupId)}&courseId=${encodeURIComponent(activeCourseId || '')}` : ''
+      const text = await api.get(`/api/admin/attendance/export?studentClass=${encodeURIComponent(className)}${groupQuery}`, { raw: true })
       const blob = new Blob([text], { type: 'text/csv;charset=utf-8' })
       const a = document.createElement('a')
-      a.href = URL.createObjectURL(blob); a.download = `presenca_${className}.csv`; a.click(); URL.revokeObjectURL(a.href)
+      const groupSuffix = groupId && groupLabel ? `_${String(groupLabel.nome || 'grupo').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/gi, '_')}` : ''
+      a.href = URL.createObjectURL(blob); a.download = `presenca_${className}${groupSuffix}.csv`; a.click(); URL.revokeObjectURL(a.href)
     } catch (e) { toast.error(e.message) }
   }
 
@@ -336,7 +371,7 @@ export default function ChamadaPage() {
 
   return (
     <div className="max-w-6xl mx-auto space-y-4">
-      <PageHeader title="Chamada" subtitle={`Presença por aula · ${courseName || activeCourseId} · ${className}`}>
+      <PageHeader title="Chamada" subtitle={`Presença por aula · ${courseName || activeCourseId} · ${className}${groupId && groupLabel ? ` · ${groupOptionLabel(groupLabel)}` : ''}`}>
         {className && roster.length > 0 && grade.length > 0 && (
           <div className="flex gap-2">
             <Button size="sm" variant="secondary" icon={Download} onClick={exportCsv}>Exportar CSV</Button>
@@ -345,8 +380,15 @@ export default function ChamadaPage() {
         )}
       </PageHeader>
 
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-w-xl">
+      <div className={`grid grid-cols-1 gap-3 ${classGroups.length > 0 || groupId ? 'sm:grid-cols-3 max-w-3xl' : 'sm:grid-cols-2 max-w-xl'}`}>
         <div className="flex flex-col gap-1.5"><span className="text-sm font-medium text-text">Turma</span><div className="h-[38px] rounded-md border border-border bg-surface-2 px-3 py-2 text-sm font-semibold text-text">{className}</div></div>
+        {(classGroups.length > 0 || groupId) && (
+          <Select label="Chamada de" value={groupId} onChange={(e) => { if (dirty && !readOnly) salvar(false); chooseGroup(e.target.value) }}>
+            <option value="">Toda a turma</option>
+            {classGroups.map((group) => <option key={group.id} value={group.id}>{groupOptionLabel(group)}</option>)}
+            {groupId && !classGroups.some((group) => group.id === groupId) && <option value={groupId}>{groupLabel ? groupOptionLabel(groupLabel) : 'Grupo'}</option>}
+          </Select>
+        )}
         <div className="flex flex-col gap-1.5">
           <label htmlFor="attendance-date" className="text-sm font-medium text-text">Data</label>
           <input id="attendance-date" type="date" value={date} onChange={(e) => setDate(e.target.value)} className="h-[38px] px-3 rounded-md bg-surface border border-border text-text text-sm" />
@@ -358,7 +400,9 @@ export default function ChamadaPage() {
       ) : (
         <PageState loading={loading} error={error} onRetry={() => load()}>
           {roster.length === 0 ? (
-            <div className="bg-surface border border-border rounded-xl p-6"><EmptyState icon={Users} title="Turma sem alunos" description="Nenhum aluno matriculado nesta turma." /></div>
+            <div className="bg-surface border border-border rounded-xl p-6">{groupId
+              ? <EmptyState icon={Users} title="Grupo sem alunos" description="Nenhum aluno ativo da turma está neste grupo. Escolha Toda a turma ou ajuste o grupo em Alunos › Grupos." />
+              : <EmptyState icon={Users} title="Turma sem alunos" description="Nenhum aluno matriculado nesta turma." />}</div>
           ) : grade.length === 0 && semAula ? (
             // Dia sem aula (B3 e B7 / P2-S6, FUN-15): a faixa diz por quê, sem a grade; no
             // celular o texto quebra e o botão ocupa a largura toda.

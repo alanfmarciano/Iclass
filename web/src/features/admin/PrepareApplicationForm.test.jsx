@@ -453,3 +453,64 @@ describe('[UC-PROVA-007] Como montar na preparação', () => {
     expect(within(group).getByLabelText('Dificuldade').className).toContain('min-h-[44px]')
   })
 })
+
+// "Para quem: um grupo" (fase 3, C19 / P5-S5, D18): a lista é a do grupo ao preparar.
+describe('[UC-PROVA-006] [UC-GRUPO-003] Para quem: um grupo', () => {
+  const WITH_GROUPS = {
+    ...CANDIDATES,
+    grupos: [
+      { id: 'grp_a', nome: 'Laboratório A', conjunto: 'Laboratório', tipo: 'laboratorio', membros: ['alice@x.local', 'bruno@x.local'], quantidade: 2 },
+      { id: 'grp_b', nome: 'Laboratório B', conjunto: 'Laboratório', tipo: 'laboratorio', membros: ['carla@x.local'], quantidade: 1 },
+    ],
+  }
+
+  it('turma sem grupos não oferece "Um grupo"', () => {
+    render(<Harness />)
+    expect(screen.queryByRole('radio', { name: 'Um grupo' })).not.toBeInTheDocument()
+  })
+
+  it('escolher o grupo marca os membros e manda o grupo junto; sem grupo não deixa preparar', () => {
+    let latest = null
+    render(<Harness candidates={WITH_GROUPS} onValue={(next) => { latest = next }} />)
+    fireEvent.click(screen.getByRole('radio', { name: 'Um grupo' }))
+    expect(screen.getByText('Só os alunos do grupo escolhido, como ele está agora. Quem entrar no grupo depois não entra nesta aplicação.')).toBeInTheDocument()
+    expect(audienceProblem(latest)).toBe('Escolha o grupo desta aplicação.')
+    fireEvent.change(screen.getByLabelText('Grupo'), { target: { value: 'grp_a' } })
+    expect(screen.getByRole('option', { name: 'Laboratório · Laboratório A (2 alunos)' })).toBeInTheDocument()
+    expect(screen.getByTestId('audience-group')).toHaveTextContent('Alice Souza, Bruno Lima')
+    expect(audienceProblem(latest)).toBeNull()
+    expect(payload()).toEqual({ finalidade: 'regular', participants: ['alice@x.local', 'bruno@x.local'], groupId: 'grp_a' })
+    // Sem a lista de marcar: quem faz é o grupo.
+    expect(screen.queryByTestId('audience-list')).not.toBeInTheDocument()
+    fireEvent.change(screen.getByLabelText('Grupo'), { target: { value: 'grp_b' } })
+    expect(payload()).toEqual({ finalidade: 'regular', participants: ['carla@x.local'], groupId: 'grp_b' })
+    // Voltar para a turma inteira tira o grupo do pedido.
+    fireEvent.click(screen.getByRole('radio', { name: 'Turma inteira' }))
+    expect(payload()).toEqual({ finalidade: 'regular', participants: null })
+  })
+
+  it('aplicação preparada para um grupo abre como "Um grupo"; com o grupo arquivado, como "Escolher alunos"', async () => {
+    mocks.get.mockResolvedValueOnce({
+      ...WITH_GROUPS,
+      application: { id: 'app_g', status: 'prepared', timerMode: 'per_attempt', finalidade: 'regular', participants: ['carla@x.local'], groupId: 'grp_b', grupo: { id: 'grp_b', nome: 'Laboratório B', conjunto: 'Laboratório', arquivado: false } },
+    })
+    mocks.post.mockResolvedValue({ success: true, application: { id: 'app_g' } })
+    const toast = { success: vi.fn(), error: vi.fn() }
+    render(<ApplicationAudienceModal open application={{ id: 'app_g', status: 'prepared' }} onClose={vi.fn()} toast={toast} />)
+    expect(await screen.findByRole('radio', { name: 'Um grupo' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByLabelText('Grupo')).toHaveValue('grp_b')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Salvar' })) })
+    await waitFor(() => expect(mocks.post).toHaveBeenCalled())
+    expect(mocks.post.mock.calls[0][1]).toMatchObject({ finalidade: 'regular', participants: ['carla@x.local'], groupId: 'grp_b' })
+    cleanup()
+
+    mocks.get.mockResolvedValueOnce({
+      ...CANDIDATES,
+      grupos: [],
+      application: { id: 'app_h', status: 'prepared', timerMode: 'per_attempt', finalidade: 'regular', participants: ['carla@x.local'], groupId: 'grp_velho', grupo: { id: 'grp_velho', nome: 'Antigo', conjunto: '', arquivado: true } },
+    })
+    render(<ApplicationAudienceModal open application={{ id: 'app_h', status: 'prepared' }} onClose={vi.fn()} toast={toast} />)
+    expect(await screen.findByRole('radio', { name: 'Escolher alunos' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByRole('checkbox', { name: 'Carla Dias' })).toBeChecked()
+  })
+})

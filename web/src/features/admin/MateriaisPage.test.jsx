@@ -32,11 +32,11 @@ const STRUCTURE = [{
   ],
 }]
 
-function mockServer({ released = {}, configs = {}, applications = [], releaseSchedule } = {}) {
+function mockServer({ released = {}, configs = {}, applications = [], releaseSchedule, groups } = {}) {
   mocks.get.mockImplementation(async (url) => {
     if (url.includes('/structure')) return { structure: STRUCTURE }
     if (url.startsWith('/api/admin/exam-applications')) return { success: true, applications }
-    return { releasedItems: released, releaseMeta: {}, onlineExamConfigs: configs, ...(releaseSchedule ? { releaseSchedule } : {}) }
+    return { releasedItems: released, releaseMeta: {}, onlineExamConfigs: configs, ...(releaseSchedule ? { releaseSchedule } : {}), ...(groups || {}) }
   })
   mocks.post.mockResolvedValue({ success: true })
 }
@@ -218,5 +218,67 @@ describe('MateriaisPage', () => {
     expect(within(scheduled).queryByRole('button')).toBeNull()
     expect(screen.queryByRole('button', { name: /Agendar a liberação/ })).toBeNull()
     expect(screen.queryByText('Salvar horário')).toBeNull()
+  })
+})
+
+// Fase 3, C19 (P5-S5, CRIT-11): liberar uma apostila ou um gabarito só para um grupo.
+describe('MateriaisPage: liberação por grupo', () => {
+  beforeEach(() => { vi.clearAllMocks(); mocks.auth = {} })
+  afterEach(cleanup)
+  const grupos = [
+    { id: 'grp_a', nome: 'Laboratório A', conjunto: 'Laboratório', tipo: 'laboratorio', quantidade: 2 },
+    { id: 'grp_b', nome: 'Laboratório B', conjunto: 'Laboratório', tipo: 'laboratorio', quantidade: 1 },
+  ]
+
+  it('[UC-GRUPO-003] "Liberar para um grupo" manda o grupo e mostra o selo "Liberado para"', async () => {
+    const user = userEvent.setup()
+    mockServer({ groups: { grupos, groupReleases: {} } })
+    mocks.post.mockResolvedValue({ success: true, scope: 'group', groupId: 'grp_a', groupReleases: { Apostila_U1: [{ id: 'grp_a', nome: 'Laboratório A', conjunto: 'Laboratório' }] } })
+    render(<MateriaisPage />)
+    const row = await screen.findByTestId('release-row-Apostila_U1')
+    await user.click(within(row).getByRole('button', { name: 'Liberar para um grupo: Apostila de Unidade 1' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.selectOptions(within(dialog).getByLabelText('Grupo'), 'grp_a')
+    await user.click(within(dialog).getByRole('button', { name: 'Liberar para o grupo' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/release-item', { studentClass: '1DES', courseId: 'DES', itemKey: 'Apostila_U1', groupId: 'grp_a', released: true }))
+    expect(await within(screen.getByTestId('release-row-Apostila_U1')).findByText(/Liberado para Laboratório · Laboratório A/)).toBeInTheDocument()
+    // Para a turma o item continua bloqueado.
+    expect(within(screen.getByTestId('release-row-Apostila_U1')).getByText('Bloqueado')).toBeInTheDocument()
+    expect(mocks.toast.success).toHaveBeenCalledWith('Liberado para Laboratório · Laboratório A')
+  })
+
+  it('[UC-GRUPO-003] o "x" do selo tira a liberação do grupo', async () => {
+    const user = userEvent.setup()
+    mockServer({ groups: { grupos, groupReleases: { Gabarito_Avaliacao_U1: [{ id: 'grp_b', nome: 'Laboratório B', conjunto: 'Laboratório' }] } } })
+    mocks.post.mockResolvedValue({ success: true, scope: 'group', groupId: 'grp_b', groupReleases: {} })
+    render(<MateriaisPage />)
+    const row = await screen.findByTestId('release-row-Gabarito_Avaliacao_U1')
+    await user.click(within(row).getByRole('button', { name: 'Tirar a liberação do grupo Laboratório B' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/release-item', { studentClass: '1DES', courseId: 'DES', itemKey: 'Gabarito_Avaliacao_U1', groupId: 'grp_b', released: false }))
+    await waitFor(() => expect(within(screen.getByTestId('release-row-Gabarito_Avaliacao_U1')).queryByText(/Liberado para/)).not.toBeInTheDocument())
+  })
+
+  it('[UC-GRUPO-003] sem grupos, com o item liberado para a turma ou na conta só de consulta, o botão não aparece', async () => {
+    mockServer({ released: { Apostila_U2: true }, groups: { grupos, groupReleases: {} } })
+    render(<MateriaisPage />)
+    await screen.findByTestId('release-row-Apostila_U2')
+    expect(within(screen.getByTestId('release-row-Apostila_U2')).queryByRole('button', { name: /Liberar para um grupo/ })).not.toBeInTheDocument()
+    expect(within(screen.getByTestId('release-row-Apostila_U1')).getByRole('button', { name: /Liberar para um grupo/ })).toBeInTheDocument()
+    // A prova online nunca: o grupo dela é o "Para quem" em Provas.
+    expect(within(screen.getByTestId('exam-row-Avaliacao_U1')).queryByRole('button', { name: /Liberar para um grupo/ })).not.toBeInTheDocument()
+    cleanup()
+
+    mockServer({ groups: { grupos: [], groupReleases: {} } })
+    render(<MateriaisPage />)
+    await screen.findByTestId('release-row-Apostila_U1')
+    expect(screen.queryByRole('button', { name: /Liberar para um grupo/ })).not.toBeInTheDocument()
+    cleanup()
+
+    mocks.auth = { readOnly: true }
+    mockServer({ groups: { grupos, groupReleases: { Apostila_U1: [{ id: 'grp_a', nome: 'Laboratório A', conjunto: 'Laboratório' }] } } })
+    render(<MateriaisPage />)
+    const row = await screen.findByTestId('release-row-Apostila_U1')
+    expect(within(row).getByText(/Liberado para Laboratório · Laboratório A/)).toBeInTheDocument()
+    expect(within(row).queryByRole('button', { name: /Liberar para um grupo|Tirar a liberação/ })).not.toBeInTheDocument()
   })
 })

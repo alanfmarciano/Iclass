@@ -18,6 +18,12 @@
 //   Início do aluno (B7 / P2-S6).
 const academicCalendar = require('./academicCalendar.js');
 const studentFeeds = require('./studentFeeds.js');
+const { groupLabel, groupTargetReaches } = require('./classGroups.js');
+
+function groupNameOf(memory, groupId) {
+    const label = groupLabel(memory, groupId);
+    return label ? label.nome : '';
+}
 
 const NON_SCHOOL_EVENT_TYPE = 'nao_letivo';
 
@@ -63,6 +69,8 @@ function studentCalendarEvents(memory, { student, email, cls, courseId, studentC
             if (requestedCourse && item.courseId !== requestedCourse) return false;
             if (item.target === 'curso') return String(item.targetValue || '') === requestedCourse;
             if (item.target === 'turma') return String(item.targetValue || '') === requestedClass && (!item.courseId || String(item.courseId) === requestedCourse);
+            // Evento para um grupo da turma (P5-S5): só os membros atuais de um grupo ativo.
+            if (item.target === 'grupo') return groupTargetReaches(memory, item, { courseId: requestedCourse, studentClass: requestedClass, email });
             return false;
         })
         .sort((a, b) => String(a.eventDate).localeCompare(String(b.eventDate)) || String(a.startTime || '').localeCompare(String(b.startTime || '')))
@@ -78,6 +86,8 @@ function studentCalendarEvents(memory, { student, email, cls, courseId, studentC
             targetValue: item.targetValue,
             courseId: item.courseId,
             authorName: item.authorName || '',
+            // Evento de um grupo (P5-S5): o nome do grupo, para o selo no calendário.
+            ...(item.target === 'grupo' ? { grupo: groupNameOf(memory, item.targetValue) } : {}),
         }));
     // Eventos dos provedores da fase 3 (tarefas, dias não letivos, provas agendadas),
     // juntados depois dos de hoje e na mesma ordem (utils/studentFeeds.js).

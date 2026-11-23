@@ -31,6 +31,11 @@
 //
 // Leitores do contrato C2 (outros módulos usam só estes): activeGroupsForClass,
 // groupsOfStudent, groupMemberEmails e findGroup.
+// Usos do grupo (C19 / P5-S5, D18): aviso e evento com destino 'grupo'
+// (groupTargetReaches), liberação por grupo em classes[].groupReleasedItems
+// (groupReleasedItemsFor, groupReleasesView, setGroupRelease), chamada e "Para quem" por
+// grupo (groupMemberEmails, groupOptionsForClass) e o rótulo (groupLabel). Grupo
+// arquivado não vale em nenhum deles; a prévia do professor com grupo conta como membro.
 // Ciclo de vida do aluno: handler 'classGroups' em utils/studentDataHandlers.js (troca de
 // e-mail, anonimizar, apagar de vez, mesclar, religar, contar e Meus dados).
 // ---------------------------------------------------------------------------
@@ -194,13 +199,19 @@ function studentsByEmail(memory) {
 // E-mails dos membros do grupo que ainda estão na turma (matriculados e ativos), na
 // ordem do grupo. Grupo arquivado ou que não existe: lista vazia (falha fechada). cls
 // opcional: a turma do próprio grupo.
-function groupMemberEmails(memory, groupId, { cls } = {}) {
+// includeClosed (chamada por grupo, P5-S5): conta também o membro ainda matriculado na
+// turma com o cadastro encerrado (desligado, concluído...), que a chamada mostra nas datas
+// em que ele tem registro; quem saiu da turma continua fora.
+function groupMemberEmails(memory, groupId, { cls, includeClosed = false } = {}) {
     const group = typeof groupId === 'object' && groupId ? groupId : findGroup(memory, groupId);
     if (!group || isGroupArchived(group)) return [];
     const key = classKey(cls) || classKey({ courseId: group.courseId, studentClass: group.studentClass });
     if (!key || !sameClass(group, key)) return [];
     const students = studentsByEmail(memory);
-    return memberEmailsOf(group).filter(email => studentCountsInClass(students.get(email), key));
+    const counts = includeClosed
+        ? student => !!student && studentInClass(student, key.studentClass, key.courseId)
+        : student => studentCountsInClass(student, key);
+    return memberEmailsOf(group).filter(email => counts(students.get(email)));
 }
 
 // Alunos que podem entrar num grupo da turma: matriculados e ativos, por nome.
@@ -307,6 +318,154 @@ function studentGroupsView(memory, cls, email, { groups } = {}) {
             .sort(compareText);
         return { id: read.id, nome: read.nome, conjunto: read.conjunto, tipo: read.tipo, tipoTexto: TYPE_LABELS[read.tipo], colegas };
     }).sort((a, b) => compareSets(a.conjunto, b.conjunto) || compareText(a.nome, b.nome));
+}
+
+// ------------------------------------------------------------ usos do grupo (P5-S5)
+// Onde o grupo vale nesta fase (D18 do P5): aviso e evento do calendário com destino
+// 'grupo' (targetValue = id do grupo), liberação de apostila e de gabarito por grupo
+// (classes[].groupReleasedItems = { [groupId]: { [itemKey]: boolean } }), chamada filtrada
+// por grupo e o "Para quem: um grupo" da prova (participants = groupMemberEmails na
+// preparação, application.groupId só como rótulo). Grupo arquivado deixa de valer em
+// todos: os leitores daqui só olham os grupos ativos da turma.
+const PREVIEW_EMAIL_SUFFIX = '@previa.invalid';
+const INHERITED_KEYS = new Set(['__proto__', 'constructor', 'prototype']);
+
+// Chave que pode ser liberada por grupo: apostila e gabarito (a rota confere pela
+// estrutura do curso). A prova online nunca (ela usa o "Para quem"): a chave
+// 'Avaliacao_' fica de fora também na leitura, e getReleasedItemsForClass tira as provas
+// da estrutura. Chave herdada ('__proto__') nunca entra.
+function isGroupReleaseKey(key) {
+    const text = typeof key === 'string' ? key : '';
+    return !!text && !INHERITED_KEYS.has(text) && !text.startsWith('Avaliacao_');
+}
+
+// O grupo ativo da turma com este id, ou null (outra turma, arquivado ou inexistente).
+function activeGroupInClass(memory, cls, groupId) {
+    if (groupId === undefined || groupId === null || groupId === '') return null;
+    const wanted = String(groupId);
+    return activeGroupsForClass(memory, cls).find(group => String(group.id) === wanted) || null;
+}
+
+// Aluno virtual da pré-visualização (P5-S6a, e-mail '...@previa.invalid'): o grupo
+// escolhido ao abrir a prévia, se ainda é um grupo ativo da mesma turma. A prévia fica em
+// memory.previewSessions (utils/authSessions.js), lida aqui sem mudar nada.
+function previewGroupIds(memory, key, email) {
+    if (!email.endsWith(PREVIEW_EMAIL_SUFFIX)) return [];
+    const { previewSessionOfStudentEmail } = require('./authSessions.js');
+    const session = previewSessionOfStudentEmail(memory, email);
+    if (!session || !session.groupId) return [];
+    if (String(session.courseId || '') !== key.courseId || String(session.studentClass || '') !== key.studentClass) return [];
+    const group = activeGroupInClass(memory, key, session.groupId);
+    return group ? [String(group.id)] : [];
+}
+
+// Ids dos grupos ativos da turma que valem para o aluno: aqueles em que ele está e conta
+// na turma (matriculado e ativo), ou o grupo da pré-visualização. Conjunto vazio sem grupo.
+function studentGroupIdsInClass(memory, cls, email) {
+    const key = classKey(cls);
+    const wanted = normalizeEmail(email);
+    const ids = new Set();
+    if (!key || !wanted) return ids;
+    const groups = activeGroupsForClass(memory, key);
+    if (groups.length) {
+        const student = studentsByEmail(memory).get(wanted);
+        if (studentCountsInClass(student, key)) {
+            groups.forEach(group => { if (memberEmailsOf(group).includes(wanted)) ids.add(String(group.id)); });
+        }
+    }
+    previewGroupIds(memory, key, wanted).forEach(id => ids.add(id));
+    return ids;
+}
+
+// O aviso ou evento com destino 'grupo' (targetValue = id do grupo, courseId e
+// studentClass da turma) chega a este aluno no contexto curso + turma? Só para os membros
+// atuais de um grupo ativo; grupo arquivado não chega a ninguém.
+function groupTargetReaches(memory, item, { courseId, studentClass, email } = {}) {
+    if (!item || item.target !== 'grupo') return false;
+    const course = String(courseId || '');
+    const className = String(studentClass || '');
+    if (!course || !className) return false;
+    if (String(item.courseId || '') !== course || String(item.studentClass || '') !== className) return false;
+    return studentGroupIdsInClass(memory, { courseId: course, studentClass: className }, email).has(String(item.targetValue || ''));
+}
+
+// Liberação pelos grupos do aluno: { [itemKey]: boolean }. Liberado em qualquer grupo dele
+// vence; false só fica quando nenhum grupo dele libera. Só apostila e gabarito
+// (isGroupReleaseKey). Quem chama aplica a exceção individual por cima.
+function groupReleasedItemsFor(memory, cls, email) {
+    const map = cls && isObject(cls.groupReleasedItems) ? cls.groupReleasedItems : null;
+    if (!map) return {};
+    const ids = studentGroupIdsInClass(memory, cls, email);
+    const released = {};
+    ids.forEach(id => {
+        if (!Object.prototype.hasOwnProperty.call(map, id) || !isObject(map[id])) return;
+        Object.keys(map[id]).forEach(itemKey => {
+            if (!isGroupReleaseKey(itemKey) || typeof map[id][itemKey] !== 'boolean') return;
+            if (map[id][itemKey] === true) released[itemKey] = true;
+            else if (released[itemKey] !== true) released[itemKey] = false;
+        });
+    });
+    return released;
+}
+
+// Para o painel (Materiais): por item, os grupos ativos da turma com ele liberado, em
+// ordem de conjunto e nome: { [itemKey]: [{ id, nome, conjunto }] }.
+function groupReleasesView(memory, cls) {
+    const map = cls && isObject(cls.groupReleasedItems) ? cls.groupReleasedItems : null;
+    const out = {};
+    if (!map) return out;
+    activeGroupsForClass(memory, cls).map(readGroup)
+        .sort((a, b) => compareSets(a.conjunto, b.conjunto) || compareText(a.nome, b.nome))
+        .forEach(group => {
+            const items = Object.prototype.hasOwnProperty.call(map, group.id) && isObject(map[group.id]) ? map[group.id] : {};
+            Object.keys(items).forEach(itemKey => {
+                if (!isGroupReleaseKey(itemKey) || items[itemKey] !== true) return;
+                if (!out[itemKey]) out[itemKey] = [];
+                out[itemKey].push({ id: group.id, nome: group.nome, conjunto: group.conjunto });
+            });
+        });
+    return out;
+}
+
+// Liga ou desliga o item para o grupo (POST /api/admin/release-item com groupId). Liberar
+// grava true; desligar tira a liberação do grupo (o item volta a seguir a turma). Devolve
+// true quando mudou algo.
+function setGroupRelease(cls, groupId, itemKey, released) {
+    const id = String(groupId);
+    if (!isObject(cls.groupReleasedItems)) cls.groupReleasedItems = {};
+    const map = cls.groupReleasedItems;
+    const current = Object.prototype.hasOwnProperty.call(map, id) && isObject(map[id]) ? map[id] : null;
+    if (released) {
+        if (current && current[itemKey] === true) return false;
+        if (!current) map[id] = {};
+        map[id][itemKey] = true;
+        return true;
+    }
+    if (!current || !Object.prototype.hasOwnProperty.call(current, itemKey)) return false;
+    delete current[itemKey];
+    if (!Object.keys(current).length) delete map[id];
+    return true;
+}
+
+// Opções dos seletores das telas (Avisos, Materiais, Chamada, Para quem): os grupos ativos
+// da turma, por conjunto e nome, com os membros que ainda estão na turma.
+function groupOptionsForClass(memory, cls) {
+    const key = classKey(cls);
+    if (!key) return [];
+    return activeGroupsForClass(memory, key).map(group => {
+        const read = readGroup(group);
+        const membros = groupMemberEmails(memory, group, { cls: key });
+        return { id: read.id, nome: read.nome, conjunto: read.conjunto, tipo: read.tipo, membros, quantidade: membros.length };
+    }).sort((a, b) => compareSets(a.conjunto, b.conjunto) || compareText(a.nome, b.nome));
+}
+
+// Rótulo de um grupo já citado (aviso, aplicação de prova): { id, nome, conjunto,
+// arquivado } ou null quando ele não existe mais.
+function groupLabel(memory, groupId) {
+    const group = findGroup(memory, groupId);
+    if (!group) return null;
+    const read = readGroup(group);
+    return { id: read.id, nome: read.nome, conjunto: read.conjunto, arquivado: read.arquivadoEm !== null };
 }
 
 // ------------------------------------------------------------ regras
@@ -885,4 +1044,13 @@ module.exports = {
     drawProposal,
     confirmDraw,
     replaceGroupsWithPrefix,
+    isGroupReleaseKey,
+    activeGroupInClass,
+    studentGroupIdsInClass,
+    groupTargetReaches,
+    groupReleasedItemsFor,
+    groupReleasesView,
+    setGroupRelease,
+    groupOptionsForClass,
+    groupLabel,
 };

@@ -184,6 +184,8 @@ function calendarEventInScope(account, item) {
     if (accountScopeKind(account) === 'tudo') return true;
     if (item.target === 'todos') return true;
     if (item.target === 'turma') return adminCanAccessClass(account, item.targetValue, item.courseId);
+    // Evento para um grupo (P5-S5): a turma do grupo.
+    if (item.target === 'grupo') return !!item.studentClass && adminCanAccessClass(account, item.studentClass, item.courseId);
     if (item.target === 'curso') return adminAllowedCourseIds(account).has(String(item.courseId || item.targetValue));
     if (item.target === 'aluno') {
         const email = String(item.targetValue || '').toLowerCase();
@@ -880,7 +882,8 @@ function createAdminAcademicRouter() {
             const eventos = (db.memory.announcements || [])
                 .filter(item => item && item.kind === 'calendar' && item.courseId === courseId
                     && calendarEventInScope(account, item)
-                    && (item.target === 'curso' || !studentClass || item.targetValue === studentClass))
+                    && (item.target === 'curso' || !studentClass
+                        || (item.target === 'grupo' ? item.studentClass === studentClass : item.targetValue === studentClass)))
                 .map(item => ({ ...item, description: item.message || '' }))
                 // Mesmo UID da agenda do aluno (nao-letivo:<id>): importar as duas não duplica.
                 .concat(nonSchoolDayCalendarItems(db.memory, { courseId, studentClass })

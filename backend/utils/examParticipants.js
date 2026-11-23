@@ -26,6 +26,7 @@ const { dict, either, int, list, oneOf, shape, str } = require('./inputSchema.js
 const { registerStudentDataHandler } = require('./studentDataHandlers.js');
 const { displayName, normalizeEmail, studentInClass } = require('./students.js');
 const { compareText } = require('./textSearch.js');
+const classGroups = require('./classGroups.js');
 
 const APPLICATION_PURPOSES = Object.freeze(['regular', 'segunda_chamada', 'recuperacao']);
 const PURPOSE_LABELS = Object.freeze({
@@ -282,6 +283,8 @@ const emailField = (label = 'aluno', options = {}) => str({ max: 254, pattern: S
 
 const AUDIENCE_INPUT_FIELDS = Object.freeze({
     finalidade: oneOf(APPLICATION_PURPOSES, { nullable: true, label: 'finalidade' }),
+    // "Para quem: um grupo" (P5-S5, contrato C2 do P5): o id de um grupo ativo da turma.
+    groupId: str({ max: 100, nullable: true, label: 'grupo' }),
     participants: list(emailField(), { max: MAX_PARTICIPANTS, nullable: true, label: 'alunos' }),
     studentOverrides: dict(OVERRIDE_INPUT, { maxKeys: MAX_PARTICIPANTS, keyMax: 254, nullable: true, label: 'exceções por aluno' }),
 });
@@ -350,6 +353,23 @@ function parseApplicationAudience(memory, input = {}, {
             if (source.participants.some(item => typeof item !== 'string')) return fail('A lista de alunos está em formato inválido.', 'participants');
             participants = [...new Set(source.participants.map(normalizeEmail).filter(Boolean))];
         }
+    }
+    // "Para quem: um grupo" (P5-S5, contrato C2 do P5): a lista é a dos membros do grupo
+    // que estão na turma agora (groupMemberEmails), congelada na aplicação; groupId fica só
+    // como rótulo. Mudar o grupo depois não muda quem pode fazer. Uma lista própria
+    // (participants sem groupId) ou a turma inteira tiram o rótulo.
+    let groupId = application && typeof application.groupId === 'string' && application.groupId ? application.groupId : null;
+    if (source.groupId !== undefined && source.groupId !== null && source.groupId !== '') {
+        if (typeof source.groupId !== 'string') return fail('Grupo inválido.', 'groupId');
+        if (finalidade === 'segunda_chamada') return fail('A segunda chamada usa a lista de quem não fez a prova. Para um grupo, escolha "Um grupo".', 'groupId');
+        const group = classGroups.activeGroupInClass(memory, cls, source.groupId.trim());
+        if (!group) return fail('Grupo não encontrado nesta turma (ele pode ter sido arquivado).', 'groupId');
+        const members = classGroups.groupMemberEmails(memory, group, { cls });
+        if (!members.length) return fail('Este grupo não tem alunos ativos na turma.', 'groupId');
+        participants = members;
+        groupId = String(group.id);
+    } else if (source.groupId === null || source.groupId === '' || source.participants !== undefined) {
+        groupId = null;
     }
     // Segunda chamada sem lista: a lista é a de quem ainda não fez a prova.
     if (finalidade === 'segunda_chamada' && participants === null) {
@@ -429,7 +449,8 @@ function parseApplicationAudience(memory, input = {}, {
         // Exceção de quem saiu da lista não vale mais.
         studentOverrides = Object.fromEntries(Object.entries(studentOverrides).filter(([email]) => participants.includes(normalizeEmail(email))));
     }
-    return { ok: true, value: { finalidade, participants, studentOverrides } };
+    if (participants === null || finalidade === 'segunda_chamada') groupId = null;
+    return { ok: true, value: { finalidade, participants, studentOverrides, groupId } };
 }
 
 // O que mudou nas exceções (para a auditoria, um registro por aluno): [{ email, antes, depois }].

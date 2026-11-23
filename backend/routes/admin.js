@@ -106,6 +106,9 @@ const {
 const ANONYMIZED_EDIT_REFUSAL = 'Este cadastro foi anonimizado e não pode ser alterado.';
 const ANONYMIZED_STATUS_REFUSAL = 'A situação Anonimizado só é aplicada em Cadastros encerrados.';
 const { recordAudit, auditTimestamp, normalizeAuditEntry, auditEntryWithoutSecrets } = require('../utils/audit.js');
+// Grupos da turma (P5-S5): aviso e evento com destino 'grupo' e a chamada por grupo
+// (contrato "classGroups": grupos só por utils/classGroups.js).
+const groupRules = require('../utils/classGroups.js');
 const { generateTemporaryPassword, passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
 const { passwordChangeRuleActive, requirePasswordChange, studentHasExamInProgress, studentHasOpenAttempt } = require('../utils/passwordChange.js');
 const { sessionEventsSummary, sharedIpSummary } = require('../utils/examSessionIntegrity.js');
@@ -2509,6 +2512,19 @@ function _gradeAulasForRoster(gradeAulas, course) {
     }));
 }
 
+// Chamada por grupo (P5-S5, D18): groupId vazio é a turma inteira, como sempre. Com o id
+// de um grupo ativo da turma, a chamada mostra, grava e exporta só os membros dele (os que
+// ainda estão na turma, com o cadastro encerrado também, que a chamada mostra nas datas em
+// que ele tem registro). Devolve { members: Set | null, group } ou { status, error, code }.
+function _attendanceGroupFilter(groupId, courseId, className) {
+    const id = String(groupId || '').trim();
+    if (!id) return { members: null, group: null };
+    const cls = { courseId: String(courseId || ''), studentClass: String(className || '') };
+    const group = cls.courseId ? groupRules.activeGroupInClass(db.memory, cls, id) : null;
+    if (!group) return { status: 404, error: 'Grupo não encontrado nesta turma (ele pode ter sido arquivado).', code: 'group_not_found' };
+    return { group, members: new Set(groupRules.groupMemberEmails(db.memory, group, { cls, includeClosed: true })) };
+}
+
 // Roster da chamada: grade do dia + aulas já marcadas por aluno.
 // Dia não letivo e fora do período letivo da turma (FUN-15): naoLetivo ({ id, nome,
 // tipo, tipoRotulo, inicio, fim, escopo }) ou foraDoPeriodo vêm preenchidos, a grade da
@@ -2526,6 +2542,9 @@ router.get('/api/admin/attendance/roster', (req, res) => {
         if (!className) return res.status(400).json({ error: 'Turma é obrigatória.' });
         const cls = findClassByNameAndCourse(db.memory.classes || [], className, courseId)
             || (db.memory.classes || []).find(c => c.name === className);
+        const groupCourseId = courseId || (cls && cls.courseId) || '';
+        const groupFilter = _attendanceGroupFilter(req.query.groupId, groupCourseId, className);
+        if (groupFilter.error) return res.status(groupFilter.status).json({ error: groupFilter.error, code: groupFilter.code });
         const course = (db.memory.courses || []).find(c => String(c.id) === courseId);
         const cfg = attendanceUtil.effectiveAttendanceConfig(cls);
         const mesmoAssim = ['1', 'true', 'sim'].includes(String(req.query.mesmoAssim || '').trim().toLowerCase());
@@ -2534,7 +2553,8 @@ router.get('/api/admin/attendance/roster', (req, res) => {
         const semAulaNoCalendario = !!(dia.naoLetivo || dia.foraDoPeriodo);
         const timezone = settingsUtil.getSettings().timezone;
         const sinceOf = _closedSinceResolver();
-        const alunosDaTurma = filterStudentsForAdmin((db.memory.students || []).filter(s => _studentInClass(s, className, courseId)), matchedAdmin)
+        const alunosDaTurma = filterStudentsForAdmin((db.memory.students || []).filter(s => _studentInClass(s, className, courseId)
+            && (!groupFilter.members || groupFilter.members.has(String(s.email || '').toLowerCase()))), matchedAdmin)
             .map(s => ({ s, recs: _rosterDayRecords((s.email || '').toLowerCase(), date, className, courseId) }));
         const chamadaNoDia = semAulaNoCalendario && alunosDaTurma.some(({ recs }) => recs.some(rec => rec && rec.origin !== 'login'));
         const comGrade = !semAulaNoCalendario || mesmoAssim || chamadaNoDia;
@@ -2600,6 +2620,10 @@ router.get('/api/admin/attendance/roster', (req, res) => {
             periodoLetivo: dia.periodo,
             mesmoAssim: semAulaNoCalendario && comGrade,
             chamadaNoDia,
+            // Grupo da chamada (null = turma inteira) e os grupos ativos da turma para o
+            // seletor "Toda a turma | grupo" (P5-S5).
+            grupo: groupFilter.group ? groupRules.groupLabel(db.memory, groupFilter.group.id) : null,
+            grupos: groupCourseId ? groupRules.groupOptionsForClass(db.memory, { courseId: groupCourseId, studentClass: className }).map(({ membros, ...group }) => group) : [],
             roster,
         });
     });
@@ -2628,6 +2652,10 @@ router.post('/api/admin/attendance/bulk', (req, res) => {
         if (!className || !courseId || !date || !entries) return res.status(400).json({ error: 'Curso, turma, data e lançamentos são obrigatórios.' });
         // Turma encerrada não recebe chamada (sem efeito até o B10).
         if (!assertClassOpen(findClassByNameAndCourse(db.memory.classes || [], className, courseId), { res })) return;
+        // Chamada de um grupo (P5-S5): só os membros são gravados; quem não é do grupo
+        // fica como estava (conta em skipped).
+        const groupFilter = _attendanceGroupFilter(req.body.groupId, courseId, className);
+        if (groupFilter.error) return res.status(groupFilter.status).json({ error: groupFilter.error, code: groupFilter.code });
         if (!Array.isArray(db.memory.attendance)) db.memory.attendance = [];
         const now = Date.now();
         const markedBy = (matchedAdmin && matchedAdmin.email) || 'admin';
@@ -2638,11 +2666,13 @@ router.post('/api/admin/attendance/bulk', (req, res) => {
         const studentsByEmail = new Map();
         (db.memory.students || []).forEach(s => { if (s && s.email) studentsByEmail.set(String(s.email).toLowerCase(), s); });
         const pending = new Map();
+        const outsideGroup = new Set();
         entries.forEach(entry => {
             const email = String(entry && entry.email || '').trim().toLowerCase();
             if (!email) return;
             const student = studentsByEmail.get(email);
             if (!student || !_studentInClass(student, className, courseId)) return;
+            if (groupFilter.members && !groupFilter.members.has(email)) { outsideGroup.add(email); return; }
             pending.delete(email);
             pending.set(email, { entry, student });
         });
@@ -2664,7 +2694,7 @@ router.post('/api/admin/attendance/bulk', (req, res) => {
 
         const added = [];
         let saved = 0;
-        let skipped = 0;
+        let skipped = outsideGroup.size;
         pending.forEach(({ entry, student }, email) => {
             // Cadastro encerrado que a chamada desta data não mostra (página aberta antes
             // do desligamento) não ganha registro novo. Sem registro na data, também não
@@ -2705,7 +2735,7 @@ router.post('/api/admin/attendance/bulk', (req, res) => {
         });
         db.memory.attendance = kept.concat(added);
         db.save();
-        res.json({ success: true, saved, skipped, concluida });
+        res.json({ success: true, saved, skipped, concluida, ...(groupFilter.group ? { groupId: groupFilter.group.id, foraDoGrupo: outsideGroup.size } : {}) });
     });
 });
 
@@ -2719,7 +2749,18 @@ router.get('/api/admin/attendance/export', (req, res) => {
         if (!className) return res.status(400).json({ error: 'Turma é obrigatória.' });
         const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : null;
         const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : null;
-        const emailsInScope = new Set(filterStudentsForAdmin((db.memory.students || []).filter(s => _studentInClass(s, className)), matchedAdmin).map(s => (s.email || '').toLowerCase()));
+        // Exportar a chamada de um grupo (P5-S5): só as linhas dos membros. O grupo é da
+        // turma do curso informado (ou da única turma com esse nome).
+        let groupFilter = { members: null, group: null };
+        if (String(req.query.groupId || '').trim()) {
+            const courseIdQuery = String(req.query.courseId || '').trim();
+            const exportCls = findClassByNameAndCourse(db.memory.classes || [], className, courseIdQuery || undefined)
+                || (db.memory.classes || []).find(c => c && c.name === className);
+            groupFilter = _attendanceGroupFilter(req.query.groupId, courseIdQuery || (exportCls && exportCls.courseId) || '', className);
+            if (groupFilter.error) return res.status(groupFilter.status).json({ error: groupFilter.error, code: groupFilter.code });
+        }
+        const emailsInScope = new Set(filterStudentsForAdmin((db.memory.students || []).filter(s => _studentInClass(s, className)), matchedAdmin).map(s => (s.email || '').toLowerCase())
+            .filter(email => !groupFilter.members || groupFilter.members.has(email)));
         const nameByEmail = {};
         (db.memory.students || []).forEach(s => { if (s.email) nameByEmail[s.email.toLowerCase()] = (s.nomeSocial && s.nomeSocial.trim()) || s.name || ''; });
         // Nome de disciplina por curso.
@@ -2757,7 +2798,8 @@ router.get('/api/admin/attendance/export', (req, res) => {
         });
         const csv = buildCsv(lines);
         res.set('Content-Type', 'text/csv; charset=utf-8');
-        res.set('Content-Disposition', `attachment; filename="presenca_${className.replace(/[^a-z0-9]/gi, '_')}.csv"`);
+        const groupSuffix = groupFilter.group ? `_${String(groupFilter.group.nome || 'grupo').normalize('NFD').replace(/[\u0300-\u036f]/g, '').replace(/[^a-z0-9]/gi, '_')}` : '';
+        res.set('Content-Disposition', `attachment; filename="presenca_${className.replace(/[^a-z0-9]/gi, '_')}${groupSuffix}.csv"`);
         res.send(csv);
     });
 });
@@ -2765,7 +2807,34 @@ router.get('/api/admin/attendance/export', (req, res) => {
 
 
 // ===================== AVISOS / COMUNICADOS =====================
-const ANN_TARGETS = ['todos', 'curso', 'turma', 'aluno'];
+// 'grupo' (P5-S5, D18): targetValue é o id de um grupo ativo da turma (courseId e
+// studentClass obrigatórios); o aviso chega só aos membros atuais do grupo e deixa de
+// valer quando ele é arquivado.
+const ANN_TARGETS = ['todos', 'curso', 'turma', 'aluno', 'grupo'];
+
+// Confere o destino 'grupo' de um aviso ou evento: o grupo precisa ser da turma
+// informada e estar ativo; na edição, o mesmo grupo de antes passa mesmo arquivado (o
+// professor corrige o texto de um aviso antigo). Devolve { groupId } ou { error }.
+function _groupTarget(matchedAdmin, { groupId, courseId, studentClass, keepGroupId = null }) {
+    const id = String(groupId || '').trim();
+    const course = String(courseId || '').trim();
+    const className = String(studentClass || '').trim();
+    if (!id) return { status: 400, error: 'Escolha o grupo.' };
+    if (!course || !className) return { status: 400, error: 'Escolha a turma do grupo.' };
+    if (!adminCanAccessClass(matchedAdmin, className, course)) return { status: 403, error: 'Turma fora do seu escopo.' };
+    const cls = { courseId: course, studentClass: className };
+    const group = groupRules.activeGroupInClass(db.memory, cls, id);
+    if (group) return { groupId: String(group.id) };
+    const kept = keepGroupId && id === String(keepGroupId) ? groupRules.findGroup(db.memory, id) : null;
+    if (kept && String(kept.courseId || '') === course && String(kept.studentClass || '') === className) return { groupId: id };
+    return { status: 400, error: 'Grupo não encontrado nesta turma (ele pode ter sido arquivado).' };
+}
+
+// Aviso ou evento como o painel lê: com o grupo do destino (nome, conjunto, arquivado).
+function _withGroupLabel(item) {
+    if (!item || item.target !== 'grupo') return item;
+    return { ...item, grupo: groupRules.groupLabel(db.memory, item.targetValue) };
+}
 
 function _annProfessorScope(matchedAdmin) {
     const assignments = (matchedAdmin.assignedClasses || []).filter(item => item && typeof item === 'object');
@@ -2782,6 +2851,7 @@ function _annInScope(a, matchedAdmin) {
         const student = (db.memory.students || []).find(item => String(item.email || '').toLowerCase() === String(a.targetValue || '').toLowerCase());
         return !!student && adminCanAccessStudent(matchedAdmin, student);
     }
+    if (a.target === 'grupo') return !!a.studentClass && adminCanAccessClass(matchedAdmin, a.studentClass, a.courseId);
     return false;
 }
 
@@ -2805,6 +2875,7 @@ router.get('/api/admin/announcements', (req, res) => {
                 if (a.target === 'todos') return true;
                 if (a.target === 'curso') return String(a.courseId || a.targetValue) === courseId;
                 if (a.target === 'turma') return String(a.courseId || '') === courseId && String(a.targetValue || '') === studentClass;
+                if (a.target === 'grupo') return String(a.courseId || '') === courseId && String(a.studentClass || '') === studentClass;
                 if (a.target === 'aluno') {
                     if (a.courseId || a.studentClass) return String(a.courseId || '') === courseId && String(a.studentClass || '') === studentClass;
                     const student = (db.memory.students || []).find(item => String(item.email || '').toLowerCase() === String(a.targetValue || '').toLowerCase());
@@ -2814,7 +2885,7 @@ router.get('/api/admin/announcements', (req, res) => {
             });
         }
         list.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0) || (b.createdAt || 0) - (a.createdAt || 0));
-        res.json(list.map(a => ({ ...a, readCount: (a.readBy || []).length, canEdit: _annCanChange(a, matchedAdmin) })));
+        res.json(list.map(a => ({ ..._withGroupLabel(a), readCount: (a.readBy || []).length, canEdit: _annCanChange(a, matchedAdmin) })));
     });
 });
 
@@ -2836,6 +2907,10 @@ router.post('/api/admin/announcements', (req, res) => {
             if (!student) return res.status(400).json({ error: 'Nenhum aluno cadastrado com esse e-mail.' });
             if (!studentClass || !studentBelongsToClass(student, studentClass, courseId)) return res.status(403).json({ error: 'O aluno não pertence à turma ativa.' });
         }
+        if (tgt === 'grupo') {
+            const checked = _groupTarget(matchedAdmin, { groupId: targetValue, courseId, studentClass });
+            if (checked.error) return res.status(checked.status).json({ error: checked.error, field: 'targetValue' });
+        }
         if (!Array.isArray(db.memory.announcements)) db.memory.announcements = [];
         const ann = {
             id: 'ann_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
@@ -2844,7 +2919,7 @@ router.post('/api/admin/announcements', (req, res) => {
             target: tgt,
             targetValue: tgt === 'todos' ? '' : String(targetValue || '').trim(),
             courseId: tgt === 'todos' ? null : String(courseId || (tgt === 'curso' ? targetValue : '')).trim(),
-            studentClass: tgt === 'turma' ? String(targetValue || '').trim() : tgt === 'aluno' ? String(studentClass || '').trim() : '',
+            studentClass: tgt === 'turma' ? String(targetValue || '').trim() : (tgt === 'aluno' || tgt === 'grupo') ? String(studentClass || '').trim() : '',
             priority: priority === 'alta' ? 'alta' : 'normal',
             pinned: !!pinned,
             expiresAt: (expiresAt && /^\d{4}-\d{2}-\d{2}$/.test(expiresAt)) ? expiresAt : null,
@@ -2855,7 +2930,7 @@ router.post('/api/admin/announcements', (req, res) => {
         };
         db.memory.announcements.push(ann);
         db.save();
-        res.json({ success: true, announcement: ann });
+        res.json({ success: true, announcement: _withGroupLabel(ann) });
     });
 });
 
@@ -2879,18 +2954,27 @@ router.post('/api/admin/announcements/update', (req, res) => {
             if (!student) return res.status(400).json({ error: 'Nenhum aluno cadastrado com esse e-mail.' });
             if (!studentClass || !studentBelongsToClass(student, studentClass, courseId || ann.courseId)) return res.status(403).json({ error: 'O aluno não pertence à turma ativa.' });
         }
+        if (tgt === 'grupo') {
+            const checked = _groupTarget(matchedAdmin, {
+                groupId: targetValue !== undefined ? targetValue : ann.targetValue,
+                courseId: courseId || ann.courseId,
+                studentClass: studentClass || ann.studentClass,
+                keepGroupId: ann.target === 'grupo' ? ann.targetValue : null,
+            });
+            if (checked.error) return res.status(checked.status).json({ error: checked.error, field: 'targetValue' });
+        }
         if (title !== undefined) ann.title = String(title).slice(0, 200);
         if (message !== undefined) ann.message = String(message).slice(0, 5000);
         ann.target = tgt;
         ann.targetValue = tgt === 'todos' ? '' : String(targetValue !== undefined ? targetValue : ann.targetValue || '').trim();
         ann.courseId = tgt === 'todos' ? null : String(courseId || ann.courseId || (tgt === 'curso' ? ann.targetValue : '')).trim();
-        ann.studentClass = tgt === 'turma' ? ann.targetValue : tgt === 'aluno' ? String(studentClass || ann.studentClass || '').trim() : '';
+        ann.studentClass = tgt === 'turma' ? ann.targetValue : (tgt === 'aluno' || tgt === 'grupo') ? String(studentClass || ann.studentClass || '').trim() : '';
         if (priority !== undefined) ann.priority = priority === 'alta' ? 'alta' : 'normal';
         if (pinned !== undefined) ann.pinned = !!pinned;
         if (expiresAt !== undefined) ann.expiresAt = (expiresAt && /^\d{4}-\d{2}-\d{2}$/.test(expiresAt)) ? expiresAt : null;
         ann.updatedAt = Date.now();
         db.save();
-        res.json({ success: true, announcement: ann });
+        res.json({ success: true, announcement: _withGroupLabel(ann) });
     });
 });
 
@@ -2937,6 +3021,28 @@ function _calendarTargetAllowed(matchedAdmin, target, targetValue, courseId) {
     return adminCanAccessClass(matchedAdmin, targetValue, courseId);
 }
 
+// Destino do evento do calendário: 'curso', 'turma' ou 'grupo' (P5-S5; targetValue = id
+// do grupo e studentClass a turma dele). Devolve { target, targetValue, studentClass } ou
+// { status, error }. item: o evento que está sendo editado (o grupo dele passa mesmo
+// arquivado).
+function _calendarTarget(matchedAdmin, body, courseId, item = null) {
+    const target = body.target === 'turma' ? 'turma' : body.target === 'grupo' ? 'grupo' : 'curso';
+    if (target === 'grupo') {
+        const studentClass = String(body.studentClass || (item && item.studentClass) || '').trim();
+        const checked = _groupTarget(matchedAdmin, {
+            groupId: body.targetValue,
+            courseId,
+            studentClass,
+            keepGroupId: item && item.target === 'grupo' ? item.targetValue : null,
+        });
+        if (checked.error) return checked;
+        return { target, targetValue: checked.groupId, studentClass };
+    }
+    const targetValue = target === 'curso' ? courseId : String(body.targetValue || '').trim();
+    if (targetValue && !_calendarTargetAllowed(matchedAdmin, target, targetValue, courseId)) return { status: 403, error: 'Destino fora do seu escopo.' };
+    return { target, targetValue, studentClass: target === 'turma' ? targetValue : '' };
+}
+
 router.get('/api/admin/announcements/calendar', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const courseId = String(req.query.courseId || '').trim();
@@ -2945,7 +3051,9 @@ router.get('/api/admin/announcements/calendar', (req, res) => {
             .filter(item => item.kind === 'calendar'
                 && _annInScope(item, matchedAdmin)
                 && (!courseId || item.courseId === courseId)
-                && (!studentClass || item.target === 'curso' || item.targetValue === studentClass))
+                && (!studentClass || item.target === 'curso'
+                    || (item.target === 'grupo' ? item.studentClass === studentClass : item.targetValue === studentClass)))
+            .map(_withGroupLabel)
             // Dias não letivos que valem para o curso e a turma (FUN-15), como itens só de
             // leitura (kind 'nonSchoolDay', readOnly): mudam pela rota deles, não por aqui.
             .concat(courseId ? nonSchoolDayCalendarItems(db.memory, { courseId, studentClass }) : [])
@@ -2960,12 +3068,15 @@ router.post('/api/admin/announcements/calendar', (req, res) => {
         const title = String(body.title || '').trim();
         const eventDate = String(body.eventDate || '');
         const courseId = String(body.courseId || '').trim();
-        const target = body.target === 'turma' ? 'turma' : 'curso';
-        const targetValue = target === 'curso' ? courseId : String(body.targetValue || '').trim();
-        if (!title || !/^\d{4}-\d{2}-\d{2}$/.test(eventDate) || !courseId || !targetValue) {
+        const isGroup = body.target === 'grupo';
+        const plainTarget = body.target === 'turma' ? 'turma' : 'curso';
+        const plainValue = plainTarget === 'curso' ? courseId : String(body.targetValue || '').trim();
+        if (!title || !/^\d{4}-\d{2}-\d{2}$/.test(eventDate) || !courseId || (!isGroup && !plainValue)) {
             return res.status(400).json({ error: 'Título, data, curso e destino são obrigatórios.' });
         }
-        if (!_calendarTargetAllowed(matchedAdmin, target, targetValue, courseId)) return res.status(403).json({ error: 'Destino fora do seu escopo.' });
+        const destination = _calendarTarget(matchedAdmin, body, courseId);
+        if (destination.error) return res.status(destination.status).json({ error: destination.error, field: 'targetValue' });
+        const { target, targetValue } = destination;
         if (!Array.isArray(db.memory.announcements)) db.memory.announcements = [];
         const item = {
             id: 'cal_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8),
@@ -2979,6 +3090,7 @@ router.post('/api/admin/announcements/calendar', (req, res) => {
             target,
             targetValue,
             courseId,
+            ...(target === 'grupo' ? { studentClass: destination.studentClass } : {}),
             author: matchedAdmin?.email || 'admin',
             authorName: matchedAdmin?.name || '',
             createdAt: Date.now(),
@@ -2986,7 +3098,7 @@ router.post('/api/admin/announcements/calendar', (req, res) => {
         };
         db.memory.announcements.push(item);
         db.save();
-        res.json({ success: true, event: item });
+        res.json({ success: true, event: _withGroupLabel(item) });
     });
 });
 
@@ -2996,13 +3108,15 @@ router.post('/api/admin/announcements/calendar/update', (req, res) => {
         const item = (db.memory.announcements || []).find(entry => entry.id === body.id && entry.kind === 'calendar');
         if (!item) return res.status(404).json({ error: 'Evento não encontrado.' });
         if (!_annInScope(item, matchedAdmin)) return res.status(403).json({ error: 'Evento fora do seu escopo.' });
-        const target = body.target === 'turma' ? 'turma' : 'curso';
         const courseId = String(body.courseId || item.courseId || '').trim();
-        const targetValue = target === 'curso' ? courseId : String(body.targetValue || '').trim();
-        if (!_calendarTargetAllowed(matchedAdmin, target, targetValue, courseId)) return res.status(403).json({ error: 'Destino fora do seu escopo.' });
-        if (!String(body.title || '').trim() || !/^\d{4}-\d{2}-\d{2}$/.test(body.eventDate || '') || !courseId || !targetValue) {
+        const isGroup = body.target === 'grupo';
+        const plainValue = body.target === 'turma' ? String(body.targetValue || '').trim() : courseId;
+        if (!String(body.title || '').trim() || !/^\d{4}-\d{2}-\d{2}$/.test(body.eventDate || '') || !courseId || (!isGroup && !plainValue)) {
             return res.status(400).json({ error: 'Título, data, curso e destino são obrigatórios.' });
         }
+        const destination = _calendarTarget(matchedAdmin, body, courseId, item);
+        if (destination.error) return res.status(destination.status).json({ error: destination.error, field: 'targetValue' });
+        const { target, targetValue } = destination;
         item.title = String(body.title).trim().slice(0, 200);
         item.message = String(body.description || '').slice(0, 5000);
         item.eventDate = body.eventDate;
@@ -3012,9 +3126,11 @@ router.post('/api/admin/announcements/calendar/update', (req, res) => {
         item.target = target;
         item.targetValue = targetValue;
         item.courseId = courseId;
+        if (target === 'grupo') item.studentClass = destination.studentClass;
+        else delete item.studentClass;
         item.updatedAt = Date.now();
         db.save();
-        res.json({ success: true, event: item });
+        res.json({ success: true, event: _withGroupLabel(item) });
     });
 });
 
@@ -3031,7 +3147,7 @@ router.post('/api/admin/announcements/calendar/delete', (req, res) => {
             action: 'calendar_event_deleted',
             category: 'academic',
             courseId: item.courseId || undefined,
-            studentClass: item.target === 'turma' && item.targetValue ? item.targetValue : undefined,
+            studentClass: item.target === 'turma' && item.targetValue ? item.targetValue : (item.target === 'grupo' && item.studentClass ? item.studentClass : undefined),
             details: { deleted: deletedItemCopy(item) },
         });
         db.save();
