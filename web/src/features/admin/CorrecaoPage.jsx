@@ -52,8 +52,10 @@ import {
 // - Salvar guarda sem concluir; "Concluir correção" pede os pontos de todas as questões
 //   que esperam o professor e mostra a nota antes e depois (a conta é do servidor).
 // - Sair com mudanças não gravadas pede confirmação em qualquer caminho: Anterior e
-//   Próxima, o filtro, o menu lateral, o sino, o voltar do navegador (useBlocker) e
-//   fechar ou recarregar a aba (beforeunload). Antes, só os botões da própria tela.
+//   Próxima, o filtro, o menu lateral, o sino, o voltar do navegador (useBlocker),
+//   "Trocar curso ou turma" e o "Sair" do topo (guarda de saída do AuthProvider, porque
+//   não mudam o endereço) e fechar ou recarregar a aba (beforeunload). Antes, só os
+//   botões da própria tela.
 // - Conflito (409 correction_conflict: outra aba gravou antes): aviso com "Recarregar".
 // - Nota já publicada que muda: o GradeReasonDialog pede o motivo (reason_required).
 // - A Coordenação (só consulta) vê a correção sem os campos.
@@ -260,7 +262,9 @@ export default function CorrecaoPage() {
   const toast = useToast()
   const [params, setParams] = useSearchParams()
   const { courseId, courseName, className } = useAdminWorkspace()
-  const auth = useAuth()?.auth
+  const authCtx = useAuth()
+  const auth = authCtx?.auth
+  const setLeaveGuard = authCtx?.setLeaveGuard
   const canWrite = canWriteAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_RESULTS)
   const examKey = params.get('examKey') || ''
   const applicationId = params.get('applicationId') || ''
@@ -348,7 +352,31 @@ export default function CorrecaoPage() {
     unsavedRef.current
       && (currentLocation.pathname !== nextLocation.pathname || currentLocation.search !== nextLocation.search)
   ), []))
-  const leaving = blocker.state === 'blocked'
+  // Saídas que não mudam o endereço ("Trocar curso ou turma" e o "Sair" do topo, que
+  // limpam a turma ou a sessão no AuthProvider): a guarda de saída pergunta aqui antes.
+  // outsideLeave guarda o "seguir" do AuthProvider enquanto o diálogo está aberto.
+  const [outsideLeave, setOutsideLeave] = useState(null)
+  useEffect(() => {
+    if (typeof setLeaveGuard !== 'function') return undefined
+    return setLeaveGuard((proceed) => {
+      if (!unsavedRef.current) return false
+      setOutsideLeave(() => proceed)
+      return true
+    })
+  }, [setLeaveGuard])
+  const leaving = blocker.state === 'blocked' || !!outsideLeave
+
+  function stayHere() {
+    if (blocker.state === 'blocked') blocker.reset()
+    setOutsideLeave(null)
+  }
+
+  function leaveAnyway() {
+    if (blocker.state === 'blocked') { blocker.proceed(); return }
+    const proceed = outsideLeave
+    setOutsideLeave(null)
+    if (typeof proceed === 'function') proceed()
+  }
 
   // Fechar ou recarregar a aba: o navegador pergunta (o texto é dele).
   useEffect(() => {
@@ -637,13 +665,13 @@ export default function CorrecaoPage() {
 
       <ConfirmDialog
         open={leaving}
-        onClose={() => { if (blocker.state === 'blocked') blocker.reset() }}
+        onClose={stayHere}
         title="Sair sem salvar?"
         message="Os pontos e comentários que você digitou nesta entrega ainda não foram gravados."
         confirmLabel="Sair sem salvar"
         cancelLabel="Continuar corrigindo"
         tone="danger"
-        onConfirm={() => { if (blocker.state === 'blocked') blocker.proceed() }}
+        onConfirm={leaveAnyway}
       />
     </div>
   )

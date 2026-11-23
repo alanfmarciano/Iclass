@@ -5,11 +5,20 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import CorrecaoPage from './CorrecaoPage'
 import { correctionBody, initialDraft, missingQuestions, parsePoints, queueLabel, validateDraft } from './correctionForm'
 
-const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), auth: undefined, toast: { success: vi.fn(), error: vi.fn() } }))
+const mocks = vi.hoisted(() => {
+  const state = { get: vi.fn(), post: vi.fn(), auth: undefined, toast: { success: vi.fn(), error: vi.fn() }, leaveGuard: null }
+  // Guarda de saída do AuthProvider (A18): a tela registra aqui; "Trocar curso ou turma" e o
+  // "Sair" do topo chamam leaveGuard(proceed) antes de limpar a turma ou a sessão.
+  state.setLeaveGuard = (guard) => {
+    state.leaveGuard = guard
+    return () => { if (state.leaveGuard === guard) state.leaveGuard = null }
+  }
+  return state
+})
 
 vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post } }))
 vi.mock('../../hooks/useAdminWorkspace', () => ({ useAdminWorkspace: () => ({ courseId: 'DES', courseName: 'Desenvolvimento', className: '1DES' }) }))
-vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: mocks.auth }) }))
+vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: mocks.auth, setLeaveGuard: mocks.setLeaveGuard }) }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
 
 // Fila e entrega como GET /api/admin/corrections e GET /api/admin/submissions/:id/correction
@@ -229,6 +238,51 @@ describe('Corrigir provas (A18)', () => {
     await user.click(screen.getByRole('link', { name: 'Chamada' }))
     await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent('/chamada'))
     expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('[UC-CORRECAO-001] "Trocar curso ou turma" e o "Sair" do topo com mudanças também perguntam antes de descartar', async () => {
+    // Antes (ajuste 2 do A18): a troca de turma só limpava o estado no AuthProvider, sem
+    // mudar o endereço; nem o useBlocker nem o beforeunload viam, e o texto se perdia.
+    const user = userEvent.setup()
+    const { unmount } = renderPage()
+    await screen.findByRole('heading', { name: 'Ana Souza' })
+    expect(typeof mocks.leaveGuard).toBe('function')
+    // Sem mudanças: a guarda deixa sair na hora.
+    const free = vi.fn()
+    expect(mocks.leaveGuard(free)).toBe(false)
+    expect(free).not.toHaveBeenCalled()
+
+    await user.type(screen.getByLabelText(/Comentário geral/), 'Rascunho do professor.')
+    const proceed = vi.fn()
+    let held
+    act(() => { held = mocks.leaveGuard(proceed) })
+    expect(held).toBe(true)
+    let dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Sair sem salvar?')).toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Continuar corrigindo' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(proceed).not.toHaveBeenCalled()
+    expect(screen.getByLabelText(/Comentário geral/)).toHaveValue('Rascunho do professor.')
+    expect(screen.getByTestId('where')).toHaveTextContent('/resultados/correcao')
+
+    // Confirmar segue a saída pedida (limpar a turma ou a sessão), uma vez só.
+    act(() => { mocks.leaveGuard(proceed) })
+    dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Sair sem salvar' }))
+    expect(proceed).toHaveBeenCalledTimes(1)
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+
+    // Fora da tela, a guarda sai do registro.
+    unmount()
+    expect(mocks.leaveGuard).toBe(null)
+  })
+
+  it('[UC-CORRECAO-001] a Coordenação (só consulta) sai sem pergunta pela troca de turma', async () => {
+    mocks.auth = { role: 'admin', accountRole: 'coordenacao', readOnly: true, effectivePermissions: ['page.results'] }
+    renderPage()
+    await screen.findByRole('heading', { name: 'Ana Souza' })
+    const proceed = vi.fn()
+    expect(mocks.leaveGuard(proceed)).toBe(false)
   })
 
   it('[UC-CORRECAO-001] fechar ou recarregar a aba com mudanças pede a confirmação do navegador', async () => {

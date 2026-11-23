@@ -769,6 +769,46 @@ test('[UC-PROVA-008] A18: start-attempt na prova encerrada pela agenda fala do h
     }
 });
 
+test('[UC-PROVA-008] A18: horário de fechar adiado (tempo extra ou tempo devolvido): aluno, log e registro falam da mesma hora', async () => {
+    // Antes (ajuste 2): a varredura fechava no horário efetivo e o log dizia "no horário
+    // marcado", mas o aluno lia que o horário de fechar "passou e ela fechou" 6 min depois.
+    const now = Date.now();
+    const application = await preparedWithAgenda(now - 30 * MINUTE, now + 30 * MINUTE);
+    examSchedule.sweepSchedules(db.memory, { now: now - 29 * MINUTE });
+    assert.equal(application.status, 'running');
+    // 6 min a mais para a turma (o mesmo efeito do tempo devolvido de uma queda).
+    application.globalTimeAdjustment = 6;
+    const notYet = examSchedule.sweepSchedules(db.memory, { now: now + 31 * MINUTE });
+    assert.equal(notYet.finished.length, 0);
+    assert.equal(application.status, 'running');
+    const closeAt = now + 36 * MINUTE + 5000;
+    const closed = examSchedule.sweepSchedules(db.memory, { now: closeAt });
+    assert.equal(closed.finished.length, 1);
+    assert.equal(application.status, 'finished');
+    assert.equal(application.agenda.fechaEfetivaEm, now + 36 * MINUTE);
+    assert.equal(closed.finished[0].adiadoSegundos, 6 * 60);
+    assert.ok(closed.finished[0].atrasoSegundos <= 60);
+    // Log: fechou no horário adiado, com as duas horas; não diz "no horário marcado" nem "desligado".
+    const lines = examSchedule.sweepLogLines(closed);
+    assert.equal(lines.length, 1);
+    assert.match(lines[0], /encerrada\(s\) no horário de fechar adiado pelo tempo extra ou pelo tempo em que a prova ficou parada/);
+    assert.ok(lines[0].includes(`marcado para ${examSchedule.formatWhen(now + 30 * MINUTE)}, fechou às ${schoolTime.localParts(closeAt).time}`), lines[0]);
+    assert.doesNotMatch(lines[0], /no horário marcado|desligado/);
+    // Aluno: a mesma referência (não "o horário de fechar passou").
+    const refused = await asStudent(request(app).post(`/api/student/exam-applications/${application.id}/start-attempt`), ALICE).send({}).expect(409);
+    assert.equal(refused.body.closedBySchedule, true);
+    assert.equal(refused.body.error, `Esta prova já foi encerrada pela agenda em ${examSchedule.formatWhen(closeAt)}. O horário marcado para fechar era ${examSchedule.formatWhen(now + 30 * MINUTE)}; ela ficou aberta 6 min a mais pelo tempo extra ou pelo tempo em que a prova ficou parada.`);
+    assert.doesNotMatch(refused.body.error, /passou|professor/);
+    // Registro da aplicação: a hora em que fechou e a marcada.
+    const trail = await admin(request(app).get(`/api/admin/exam-applications/${application.id}/audit`)).expect(200);
+    const row = (trail.body.entries || []).find(item => item.title === 'Prova encerrada pelo agendamento');
+    assert.ok(row, JSON.stringify(trail.body).slice(0, 2000));
+    assert.match(row.detail, /^em .*, 6 min depois de .* pelo tempo extra ou pelo tempo em que a prova ficou parada · /);
+    // Adiada e ainda atrasada (servidor desligado no horário adiado): a referência é o adiado.
+    const late = examSchedule.closedResponse({ status: 'finished', agenda: { abreEm: now - 90 * MINUTE, fechaEm: now - 60 * MINUTE, fechaEfetivaEm: now - 50 * MINUTE, encerradaEm: now } });
+    assert.equal(late.error, `Esta prova já foi encerrada pela agenda: o horário de fechar (${examSchedule.formatWhen(now - 50 * MINUTE)}) passou e ela fechou em ${examSchedule.formatWhen(now)}.`);
+});
+
 test('[UC-PROVA-008] A18: liberação e encerramento atrasados no boot ficam com a hora real no log e no registro', async () => {
     const now = Date.now();
     const at = Math.ceil((now + 10 * MINUTE) / MINUTE) * MINUTE;

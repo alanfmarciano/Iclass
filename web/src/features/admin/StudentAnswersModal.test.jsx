@@ -13,6 +13,11 @@ afterEach(() => {
   apiMock.get.mockReset()
 })
 
+// Linha da alternativa: o texto vem dentro do bloco do QuestionMarkdown (contrato C4).
+function altRow(text) {
+  return screen.getByText(text).closest('.question-md').parentElement
+}
+
 // Tentativa nova: a revisão traz a letra vista (posição) e a original (gabarito).
 function positionReview() {
   return {
@@ -48,11 +53,11 @@ describe('[UC-PROVA-003] revisão das respostas no Monitor', () => {
     apiMock.get.mockResolvedValue(positionReview())
     render(<StudentAnswersModal open onClose={() => {}} student={{ email: 'ana@escola.local', name: 'Ana' }} className="1DES" courseId="curso" examKey="Avaliacao" applicationId="app-1" />)
     expect(await screen.findByText(/Letras como apareceram para o aluno/)).toBeVisible()
-    const chosen = screen.getByText('Certa').parentElement
+    const chosen = altRow('Certa')
     expect(within(chosen).getByText('A')).toBeVisible()
     expect(within(chosen).getByText('(original C)')).toBeVisible()
     expect(within(chosen).getByText('Resposta do aluno')).toBeVisible()
-    const same = screen.getByText('Errada três').parentElement
+    const same = altRow('Errada três')
     expect(within(same).queryByText(/original/)).not.toBeInTheDocument()
   })
 
@@ -122,7 +127,7 @@ describe('[UC-CORRECAO-001] revisão do Monitor com os tipos novos', () => {
           position: 3, questionNumber: 3, type: 'multiple_answer', text: 'Protocolos?', answered: true, isCorrect: false, pending: false, studentChoices: ['A'], correctAnswersSeen: ['A', 'C'], pointsEarned: 1, pointsPossible: 2,
           alternatives: [
             { letter: 'A', canonicalLetter: 'A', text: 'TCP', selectedByStudent: true, correct: true },
-            { letter: 'B', canonicalLetter: 'B', text: 'HTML', selectedByStudent: false, correct: false },
+            { letter: 'B', canonicalLetter: 'B', text: '**HTML** e `<p>`', selectedByStudent: false, correct: false },
             { letter: 'C', canonicalLetter: 'C', text: 'UDP', selectedByStudent: false, correct: true },
           ],
         },
@@ -138,6 +143,10 @@ describe('[UC-CORRECAO-001] revisão do Monitor com os tipos novos', () => {
     expect(screen.getByText('4 ms')).toBeVisible()
     expect(screen.getByText('3,5 (± 0,25) ms')).toBeVisible()
     expect(screen.getByText('Parcial · 1 de 2 pontos')).toBeVisible()
-    expect(within(screen.getByText('UDP').parentElement).getByText('Gabarito')).toBeVisible()
+    expect(within(altRow('UDP')).getByText('Gabarito')).toBeVisible()
+    // Alternativa em Markdown (contrato C4): antes aparecia crua, com os asteriscos.
+    expect(screen.getByText('HTML', { selector: 'strong' })).toBeVisible()
+    expect(screen.getByText('<p>', { selector: 'code' })).toBeVisible()
+    expect(screen.queryByText(/\*\*HTML\*\*/)).not.toBeInTheDocument()
   })
 })

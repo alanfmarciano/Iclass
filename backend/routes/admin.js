@@ -37,7 +37,7 @@ const { importWarningsFor, parseEvaluationMarkdown, parseEvaluationMarkdownWithW
 const { gradeAttempt, correctAnswerFor, newCorrection } = require('../utils/examGrading.js');
 const { isPerStudentDraw } = require('../utils/examDraw.js');
 const { alternativeLabelsMode, seenAlternativeLetter, seenLetterFor } = require('../utils/examAnswerIds.js');
-const { DEFAULT_POINTS, describeAnswer, isAnswered, questionType } = require('../utils/examScoring.js');
+const { DEFAULT_POINTS, answerKeyText, describeAnswer, isAnswered, questionType } = require('../utils/examScoring.js');
 
 // Resposta de uma questão para a revisão do professor (contrato C3 do P3): tipo, texto da
 // resposta pelas letras que o aluno viu, resposta digitada e pontos. labelsRecord diz que
@@ -57,30 +57,13 @@ function reviewAnswerFields(labelsRecord, question, graded, rawAlternatives) {
         answerText: seenGraded ? describeAnswer(question, seenGraded) : '',
         // Gabarito das questões sem letra (A18): o professor vê o que valia na revisão e no
         // Monitor (estas rotas já exigem quem lê nota).
-        answerKeyText: answerKeyTextOf(question, type),
+        answerKeyText: answerKeyText(question, type),
         studentChoices: seenGraded ? seenGraded.studentChoices : [],
         studentResponse: graded && graded.studentResponse != null ? String(graded.studentResponse) : null,
         correctAnswersSeen: correctLetters.map(letter => seen(String(letter).toUpperCase())).sort(),
         ...reviewPoints(graded),
         pending: graded?.pending === true,
     };
-}
-
-// Texto do gabarito da numérica ("3,5 (± 0,1) ms") e da resposta curta ("rede ou
-// network"); vazio nos tipos com letra (o gabarito está nas alternativas) e na
-// dissertativa (a resposta esperada fica na tela Corrigir).
-function answerKeyTextOf(question, type) {
-    const br = value => String(value).replace('.', ',');
-    if (type === 'numeric' && question?.numeric && Number.isFinite(Number(question.numeric.value))) {
-        const tolerance = Number(question.numeric.tolerance) > 0 ? ` (± ${br(Number(question.numeric.tolerance))})` : '';
-        const unit = typeof question.numeric.unit === 'string' && question.numeric.unit.trim() ? ` ${question.numeric.unit.trim()}` : '';
-        return `${br(Number(question.numeric.value))}${tolerance}${unit}`;
-    }
-    if (type === 'short_answer' && Array.isArray(question?.acceptedAnswers)) {
-        const accepted = question.acceptedAnswers.map(item => String(item || '').trim()).filter(Boolean);
-        if (accepted.length) return accepted.length === 1 ? accepted[0] : `${accepted.slice(0, -1).join(', ')} ou ${accepted[accepted.length - 1]}`;
-    }
-    return '';
 }
 
 // Alternativa certa na revisão: a letra única (studentChoice/correctAnswer) ou, em várias

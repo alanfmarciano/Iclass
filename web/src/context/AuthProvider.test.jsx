@@ -155,3 +155,57 @@ describe('[UC-PAPEIS-004] conta só de consulta no contexto', () => {
     expect(prof.current.readOnly).toBe(false)
   })
 })
+
+describe('[UC-CORRECAO-001] guarda de saída: troca de turma e Sair perguntam à tela com mudanças (A18)', () => {
+  it('clearActiveWorkspace e logout esperam a tela confirmar; o fim da sessão pelo sistema e a limpeza automática não', async () => {
+    const ref = await mountAuth()
+    await act(async () => { await ref.current.loginAdmin('professor@teste.local', 'teste') })
+    const workspace = { courseId: 'DES', courseName: 'Desenvolvimento', className: '1DES' }
+    act(() => { ref.current.setActiveWorkspace(workspace) })
+    expect(ref.current.auth.activeWorkspace).toMatchObject({ className: '1DES' })
+
+    let pending = null
+    let unregister = null
+    act(() => { unregister = ref.current.setLeaveGuard((proceed) => { pending = proceed; return true }) })
+
+    // "Trocar curso ou turma" (o botão passa o evento do clique): segura até a tela confirmar.
+    let result
+    act(() => { result = ref.current.clearActiveWorkspace({ type: 'click' }) })
+    expect(result).toBe(false)
+    expect(ref.current.auth.activeWorkspace).toMatchObject({ className: '1DES' })
+    expect(typeof pending).toBe('function')
+    act(() => { pending() })
+    expect(ref.current.auth.activeWorkspace).toBe(null)
+    expect(sessionStorage.getItem('iclass-workspace-switch')).toBe('1')
+
+    // Limpeza automática (o curso sumiu): não pergunta.
+    act(() => { ref.current.setActiveWorkspace(workspace) })
+    pending = null
+    act(() => { ref.current.clearActiveWorkspace(false, { force: true }) })
+    expect(pending).toBe(null)
+    expect(ref.current.auth.activeWorkspace).toBe(null)
+
+    // "Sair" da pessoa: segura; confirmar encerra.
+    act(() => { result = ref.current.logout({ type: 'click' }) })
+    expect(result).toBe(false)
+    expect(ref.current.auth.role).toBe('admin')
+    act(() => { pending() })
+    expect(ref.current.auth.role).toBeUndefined()
+
+    // Fim da sessão pelo sistema (reason em texto) sai sem perguntar.
+    await act(async () => { await ref.current.loginAdmin('professor@teste.local', 'teste') })
+    pending = null
+    act(() => { result = ref.current.logout('expired') })
+    expect(result).toBe(true)
+    expect(pending).toBe(null)
+    expect(ref.current.auth.role).toBeUndefined()
+
+    // Sem guarda registrada (a tela saiu): sai na hora.
+    act(() => { unregister() })
+    await act(async () => { await ref.current.loginAdmin('professor@teste.local', 'teste') })
+    act(() => { ref.current.setActiveWorkspace(workspace) })
+    act(() => { result = ref.current.clearActiveWorkspace() })
+    expect(result).toBe(true)
+    expect(ref.current.auth.activeWorkspace).toBe(null)
+  })
+})

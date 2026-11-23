@@ -457,6 +457,37 @@ describe('Provas do aluno · revisão corrigida (A18)', () => {
     expect(screen.getByText('Tentativa anulada: não conta')).toBeInTheDocument()
   })
 
+  it('[UC-CORRECAO-001] com o gabarito liberado, a numérica e a resposta curta erradas mostram a resposta correta', async () => {
+    // Antes (ajuste 2 do A18): "Errada" e "-" na coluna Correta, sem o valor certo.
+    const detail = reviewed({
+      examQuestions: [
+        { number: 1, type: 'numeric', text: 'Latência medida?', points: 1, unit: 'ms', answerKeyText: '3,5 (± 0,1) ms', alternatives: [] },
+        { number: 2, type: 'short_answer', text: 'Protocolo confiável?', points: 1, answerKeyText: 'TCP ou Transmission Control Protocol', alternatives: [] },
+        { number: 3, type: 'essay', text: 'Explique o modelo OSI.', points: 2, alternatives: [] },
+      ],
+      gradedAnswers: [
+        { questionNumber: 1, type: 'numeric', studentResponse: '9', isCorrect: false, pointsEarned: 0, pointsPossible: 1 },
+        { questionNumber: 2, type: 'short_answer', studentResponse: 'udp', isCorrect: false, pointsEarned: 0, pointsPossible: 1 },
+        { questionNumber: 3, type: 'essay', studentResponse: 'Sete camadas.', isCorrect: false, pointsEarned: 1, pointsPossible: 2 },
+      ],
+    })
+    const dialog = await openDetail(detail)
+    const numeric = within(dialog).getByText('Latência medida?').closest('li')
+    expect(within(numeric).getByText('3,5 (± 0,1) ms').parentElement).toHaveTextContent('Resposta correta: 3,5 (± 0,1) ms')
+    const short = within(dialog).getByText('Protocolo confiável?').closest('li')
+    expect(within(short).getByText('TCP ou Transmission Control Protocol')).toBeInTheDocument()
+    const essay = within(dialog).getByText('Explique o modelo OSI.').closest('li')
+    expect(within(essay).queryByText(/Resposta correta:/)).not.toBeInTheDocument()
+    const rows = within(dialog).getAllByRole('row')
+    expect(rows[1]).toHaveTextContent('3,5 (± 0,1) ms')
+    expect(rows[2]).toHaveTextContent('TCP ou Transmission Control Protocol')
+    expect(within(rows[3]).getAllByRole('cell')[2]).toHaveTextContent('-')
+    // A impressão também.
+    const html = buildExamPrintHtml(detail, detail.examQuestions, new Map(detail.gradedAnswers.map((a) => [a.questionNumber, a])))
+    expect(html).toContain('<td>3,5 (± 0,1) ms</td>')
+    expect(html).toContain('Resposta correta: TCP ou Transmission Control Protocol')
+  })
+
   it('[UC-CORRECAO-001] a impressão traz a resposta escrita, os pontos, o comentário e a explicação', () => {
     const detail = reviewed({ comentarioGeral: 'Bom trabalho.' })
     const answers = new Map(detail.gradedAnswers.map((a) => [a.questionNumber, a]))

@@ -417,13 +417,44 @@ export function AuthProvider({ children }) {
     }))
   }, [])
 
-  const clearActiveWorkspace = useCallback((preservePath = true) => {
+  // Guarda de saída (A18): uma tela com mudanças não gravadas (Corrigir provas) registra
+  // aqui uma função guard(proceed). As saídas que não mudam o endereço, e por isso não
+  // passam pelo useBlocker nem pelo beforeunload da tela ("Trocar curso ou turma" e o
+  // "Sair" do topo), perguntam a ela antes: guard devolve true quando assumiu a saída (mostra
+  // o diálogo e chama proceed se a pessoa confirmar) e false quando não há o que perder.
+  // setLeaveGuard(guard) devolve a função que tira o registro (para o efeito da tela).
+  const leaveGuardRef = useRef(null)
+  const setLeaveGuard = useCallback((guard) => {
+    leaveGuardRef.current = typeof guard === 'function' ? guard : null
+    return () => { if (leaveGuardRef.current === guard) leaveGuardRef.current = null }
+  }, [])
+  // Devolve true quando saiu agora e false quando a tela segurou a saída para perguntar.
+  const leaveGuarded = useCallback((proceed) => {
+    const guard = leaveGuardRef.current
+    let held = false
+    if (guard) {
+      try { held = guard(proceed) === true } catch { held = false }
+    }
+    if (held) return false
+    proceed()
+    return true
+  }, [])
+
+  const doClearActiveWorkspace = useCallback((preservePath) => {
     try {
       if (preservePath !== false) sessionStorage.setItem('iclass-workspace-switch', '1')
       else sessionStorage.removeItem('iclass-workspace-switch')
     } catch {}
     setAuth((current) => ({ ...current, activeWorkspace: null, activeCourse: null }))
   }, [])
+
+  // clearActiveWorkspace(preservePath?, { force }?): "Trocar curso ou turma". O botão do
+  // topo passa o evento do clique (preservePath vira true). force pula a guarda de saída:
+  // só para a limpeza automática (o curso ou a turma sumiu, AdminCourseGate).
+  const clearActiveWorkspace = useCallback((preservePath = true, options = {}) => {
+    if (options && options.force === true) { doClearActiveWorkspace(preservePath); return true }
+    return leaveGuarded(() => doClearActiveWorkspace(preservePath))
+  }, [doClearActiveWorkspace, leaveGuarded])
 
   // --- Pré-visualização como aluno (C15 / P5-S6b) --------------------------------------
   // startPreview(resposta do POST /api/admin/preview-sessions, { origem }): grava a prévia
@@ -477,16 +508,22 @@ export function AuthProvider({ children }) {
   }, [preview, endPreview])
 
   // logout(reason?, message?): reason só como texto (um onClick={logout} passaria o evento).
+  // O "Sair" da pessoa (sem reason: o onClick passa o evento) passa pela guarda de saída
+  // (A18) e devolve false quando a tela segurou a saída para perguntar; o fim da sessão
+  // pelo sistema (reason em texto: prazo, reinício, revogada) sai sempre.
   const logout = useCallback((reason, message) => {
-    doLogout(typeof reason === 'string' ? reason : undefined, typeof message === 'string' ? message : undefined)
-  }, [doLogout])
+    const why = typeof reason === 'string' ? reason : undefined
+    const text = typeof message === 'string' ? message : undefined
+    if (why) { doLogout(why, text); return true }
+    return leaveGuarded(() => doLogout(why, text))
+  }, [doLogout, leaveGuarded])
 
   // Conta do painel só de consulta (Coordenação): as telas escondem os botões de gravar.
   // Vem do readOnly do whoami e do login (adminAccountFields); o aluno nunca é.
   const readOnly = auth?.role === 'admin' && isReadOnlyAccount(auth)
 
   return (
-    <AuthCtx.Provider value={{ auth, readOnly, authReady, maintenance, loginAdmin, loginAdminSetup, loginLocalQuick, loginStudent, logout, endSessionFromError, setAuth, setActiveClass, setActiveCourse, setActiveWorkspace, clearActiveWorkspace, syncPasswordChange, preview, startPreview, endPreview, previewNotice, clearPreviewNotice, previewReturn }}>
+    <AuthCtx.Provider value={{ auth, readOnly, authReady, maintenance, loginAdmin, loginAdminSetup, loginLocalQuick, loginStudent, logout, endSessionFromError, setAuth, setActiveClass, setActiveCourse, setActiveWorkspace, clearActiveWorkspace, setLeaveGuard, syncPasswordChange, preview, startPreview, endPreview, previewNotice, clearPreviewNotice, previewReturn }}>
       {children}
     </AuthCtx.Provider>
   )

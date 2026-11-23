@@ -188,19 +188,30 @@ function notStartedResponse(application, { now = Date.now(), timezone } = {}) {
 // Começar uma prova já encerrada (link salvo, aba antiga): quem encerrou foi a agenda
 // (fechou no horário marcado) ou o professor. Antes a agenda também dizia "pelo
 // professor" (A18, revisão da J2).
+//
+// A referência é o horário de fechar EFETIVO, o mesmo da varredura e do log
+// (agenda.fechaEfetivaEm, gravado no encerramento): com tempo a mais ou com o tempo
+// devolvido de uma queda do servidor, a prova fecha depois do fechaEm marcado sem estar
+// "atrasada". Antes, o aluno lia que o horário de fechar "passou e ela fechou" 6 min
+// depois enquanto o log dizia "no horário marcado" (A18, ajuste 2). O registro antigo,
+// sem fechaEfetivaEm, usa o fechaEm.
 function closedResponse(application, { timezone } = {}) {
     const agenda = applicationAgenda(application);
     const encerradaEm = agenda && application.status === 'finished' ? positive(agenda.encerradaEm) : null;
     if (encerradaEm) {
         const fechaEm = positive(agenda.fechaEm);
-        const late = fechaEm && encerradaEm - fechaEm > MINUTE_MS;
-        return {
-            error: late
-                ? `Esta prova já foi encerrada pela agenda: o horário de fechar (${formatWhen(fechaEm, timezone)}) passou e ela fechou em ${formatWhen(encerradaEm, timezone)}.`
-                : `Esta prova já foi encerrada no horário marcado (${formatWhen(fechaEm || encerradaEm, timezone)}).`,
-            applicationClosed: true,
-            closedBySchedule: true,
-        };
+        const fechaRef = positive(agenda.fechaEfetivaEm) || fechaEm;
+        const late = fechaRef && encerradaEm - fechaRef > MINUTE_MS;
+        const adiadoMin = fechaEm && fechaRef ? Math.round((fechaRef - fechaEm) / MINUTE_MS) : 0;
+        let error;
+        if (late) {
+            error = `Esta prova já foi encerrada pela agenda: o horário de fechar (${formatWhen(fechaRef, timezone)}) passou e ela fechou em ${formatWhen(encerradaEm, timezone)}.`;
+        } else if (adiadoMin >= 1) {
+            error = `Esta prova já foi encerrada pela agenda em ${formatWhen(encerradaEm, timezone)}. O horário marcado para fechar era ${formatWhen(fechaEm, timezone)}; ela ficou aberta ${adiadoMin} min a mais pelo tempo extra ou pelo tempo em que a prova ficou parada.`;
+        } else {
+            error = `Esta prova já foi encerrada no horário marcado (${formatWhen(fechaEm || encerradaEm, timezone)}).`;
+        }
+        return { error, applicationClosed: true, closedBySchedule: true };
     }
     return { error: 'Esta aplicação já foi encerrada pelo professor.', applicationClosed: true };
 }
@@ -341,14 +352,29 @@ function finishScheduledApplication(memory, application, agenda, cls, now, close
     // registro e o log dizem a hora real (A18, pendência do A11).
     const fechaEfetivaEm = positive(closeAt) || Number(agenda.fechaEm);
     const atrasoSegundos = Math.max(0, Math.round((now - fechaEfetivaEm) / 1000));
+    // Horário de fechar adiado (tempo a mais do professor ou tempo devolvido de uma queda):
+    // fica na agenda para o aluno, o log e o registro falarem da mesma hora (A18, ajuste 2).
+    agenda.fechaEfetivaEm = fechaEfetivaEm;
+    const adiadoSegundos = Math.max(0, Math.round((fechaEfetivaEm - Number(agenda.fechaEm)) / 1000));
     recordExamAudit(memory, 'exam_application_auto_finished', application, SYSTEM_ACTOR, {
         fechaEm: Number(agenda.fechaEm),
         fechaEfetivaEm,
         encerradaEm: now,
         atrasoSegundos,
+        adiadoSegundos,
         entregues,
     });
-    return { applicationId: application.id, examKey: application.examKey, studentClass: application.studentClass, entregues, fechaEfetivaEm, encerradaEm: now, atrasoSegundos };
+    return {
+        applicationId: application.id,
+        examKey: application.examKey,
+        studentClass: application.studentClass,
+        entregues,
+        fechaEm: Number(agenda.fechaEm),
+        fechaEfetivaEm,
+        encerradaEm: now,
+        atrasoSegundos,
+        adiadoSegundos,
+    };
 }
 
 // Aplicação preparada ou em andamento de qualquer prova da família na turma (a mesma
@@ -503,12 +529,18 @@ function clockOf(ms, timezone) {
     return parts ? parts.time : '';
 }
 
-function lateDetail(items, scheduledField, realField, timezone) {
+function lateDetail(items, scheduledField, realField, timezone, verb = 'saiu') {
     return items.map(item => {
         const marked = formatWhen(item[scheduledField], timezone);
         const real = clockOf(item[realField], timezone);
-        return marked && real ? `marcado para ${marked}, saiu às ${real}` : '';
+        return marked && real ? `marcado para ${marked}, ${verb} às ${real}` : '';
     }).filter(Boolean).join('; ');
+}
+
+// Encerrada no horário de fechar, mas esse horário foi adiado mais de 1 min (tempo a mais
+// ou tempo devolvido de uma queda do servidor).
+function postponedItem(item) {
+    return Number(item && item.adiadoSegundos) * 1000 > LATE_OPEN_WARN_MS;
 }
 
 function sweepLogLines(outcome, { timezone } = {}) {
@@ -523,10 +555,15 @@ function sweepLogLines(outcome, { timezone } = {}) {
     const finished = outcome.finished || [];
     if (finished.length) {
         const late = finished.filter(lateItem);
-        const onTime = finished.length - late.length;
+        const postponed = finished.filter(item => !lateItem(item) && postponedItem(item));
+        const onTime = finished.length - late.length - postponed.length;
         if (onTime) lines.push(`🗓️  Agendamento: ${onTime} prova(s) encerrada(s) no horário marcado (entregue o que estava salvo).`);
+        if (postponed.length) {
+            const detail = lateDetail(postponed, 'fechaEm', 'encerradaEm', timezone, 'fechou');
+            lines.push(`🗓️  Agendamento: ${postponed.length} prova(s) encerrada(s) no horário de fechar adiado pelo tempo extra ou pelo tempo em que a prova ficou parada (entregue o que estava salvo)${detail ? `: ${detail}` : ''}.`);
+        }
         if (late.length) {
-            const detail = lateDetail(late, 'fechaEfetivaEm', 'encerradaEm', timezone);
+            const detail = lateDetail(late, 'fechaEfetivaEm', 'encerradaEm', timezone, 'fechou');
             lines.push(`🗓️  Agendamento: ${late.length} prova(s) encerrada(s) agora, depois do horário de fechar, porque o servidor estava desligado (entregue o que estava salvo)${detail ? `: ${detail}` : ''}.`);
         }
     }

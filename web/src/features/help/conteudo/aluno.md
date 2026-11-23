@@ -107,7 +107,7 @@ Quando a prova tem questão dissertativa, a tela final diz "Sua prova foi entreg
 
 Toque na prova em Provas para ver o resultado. Com a nota liberada, aparecem a nota e o comentário geral do professor. Com o gabarito liberado, cada questão mostra:
 
-- a sua resposta e a resposta correta (em "Várias corretas", todas as certas ficam marcadas);
+- a sua resposta e a resposta correta (em "Várias corretas", todas as certas ficam marcadas; na numérica e na resposta curta, o valor ou as respostas aceitas);
 - os pontos que você fez ("1,5 de 2 pontos"); em "Várias corretas", acertar parte das alternativas aparece como **Parcial**;
 - na dissertativa, o seu texto, os pontos e, quando o professor usou critérios, os pontos de cada critério; a dissertativa nunca aparece como "Errada";
 - o comentário do professor na questão e a explicação, quando houver.

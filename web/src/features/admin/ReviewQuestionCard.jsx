@@ -10,6 +10,8 @@ import { OriginalLetter, seenWithOriginal } from './reviewLetters'
 // de reviewAnswerFields (backend/routes/admin.js): type, answerText, answerKeyText,
 // studentChoices, studentResponse, correctAnswersSeen, pointsEarned, pointsPossible,
 // pending e annulled.
+// Enunciado e alternativas passam por QuestionMarkdown (contrato C4): antes, a
+// alternativa aparecia crua e '**negrito**' ou '`código`' mostravam os símbolos.
 // Antes, as duas telas só sabiam de "uma correta": a dissertativa e a resposta curta
 // apareciam como "Errada" sem o texto do aluno, a numérica sem o número digitado, e em
 // "várias corretas" só uma alternativa aparecia como gabarito.
@@ -80,7 +82,8 @@ export function ReviewQuestionCard({ question, unansweredText = 'Questão não r
                   <div key={`${question.position}-${alternative.canonicalLetter || alternative.letter}`} className={`flex flex-wrap items-center gap-3 px-2 py-2.5 ${optionStyle}`}>
                     <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-surface-2 text-xs font-bold text-muted">{alternative.letter}</span>
                     <OriginalLetter seen={alternative.letter} original={alternative.canonicalLetter} />
-                    <span className="min-w-0 flex-1 break-words text-sm text-text">{alternative.text}</span>
+                    {/* Alternativa em Markdown, como o aluno viu (contrato C4: só por QuestionMarkdown). */}
+                    <QuestionMarkdown text={alternative.text} choice className="min-w-0 flex-1 break-words text-sm text-text" />
                     {alternative.selectedByStudent && (
                       <span className={`inline-flex items-center gap-1 text-xs font-semibold ${alternative.correct ? 'text-success' : 'text-danger'}`}>
                         {alternative.correct ? <CheckCircle2 size={14} /> : <XCircle size={14} />}

@@ -112,12 +112,13 @@ test.after(async () => {
 });
 
 // Entrega online pelo mesmo caminho do envio do aluno (createSubmissionFromAttempt).
-function deliver(email, answers, extra = {}) {
+function deliver(email, answers, options = {}) {
+    const { assignedQuestionNumbers = [1, 2, 3], ...extra } = options;
     const application = db.memory.examApplications[0];
     const submission = createSubmissionFromAttempt({
         application,
         onlineConfig: {},
-        state: { studentEmail: email, studentClass, courseId, examKey, applicationId: application.id, assignedVersion: 'A', assignedQuestionNumbers: [1, 2, 3], attemptNumber: extra.attemptNumber || 1 },
+        state: { studentEmail: email, studentClass, courseId, examKey, applicationId: application.id, assignedVersion: 'A', assignedQuestionNumbers, attemptNumber: extra.attemptNumber || 1 },
         evaluation: db.memory.evaluations[examKey],
         student: db.memory.students.find(item => item.email === email),
         answers,
@@ -356,6 +357,32 @@ test('[UC-CORRECAO-001] aluno: sem nota parcial com correção pendente; coment�
     // Os dois: tudo.
     const both = sanitizeSubmissionForStudent(corrected, true);
     assert.match(JSON.stringify(both), /Ótima explicação/);
+});
+
+test('[UC-CORRECAO-001] A18: com o gabarito liberado o aluno vê o valor certo da numérica e as respostas aceitas da resposta curta', () => {
+    // Antes (ajuste 2): a coluna "Correta" ficava "-" e "Errada" vinha sem o porquê.
+    const numeric = {
+        originalNumber: 4, number: 4, type: 'numeric', points: 1, text: 'Latência medida?',
+        numeric: { value: 3.5, tolerance: 0.1, unit: 'ms' },
+    };
+    db.memory.evaluations[examKey].questions.push(JSON.parse(JSON.stringify(numeric)));
+    db.memory.examApplications[0].versionSnapshots[0].questions.push(JSON.parse(JSON.stringify(numeric)));
+    db.memory.evaluations[examKey].questions[2].acceptedAnswers = ['TCP', 'Transmission Control Protocol'];
+    db.memory.examApplications[0].versionSnapshots[0].questions[2].acceptedAnswers = ['TCP', 'Transmission Control Protocol'];
+    const submission = deliver(ALICE, { 1: 'A', 2: { texto: 'Regras.' }, 3: { texto: 'udp' }, 4: { numero: '9' } }, { gradePublished: true, assignedQuestionNumbers: [1, 2, 3, 4] });
+    const withKey = sanitizeSubmissionForStudent(submission, true);
+    const byNumber = new Map(withKey.examQuestions.map(question => [question.number, question]));
+    assert.equal(byNumber.get(4).answerKeyText, '3,5 (± 0,1) ms');
+    assert.equal(byNumber.get(3).answerKeyText, 'TCP ou Transmission Control Protocol');
+    // A dissertativa e a de letra não levam: a resposta esperada é só do professor.
+    assert.equal(byNumber.get(2).answerKeyText, undefined);
+    assert.equal(byNumber.get(1).answerKeyText, undefined);
+    assert.doesNotMatch(JSON.stringify(withKey), /Conjunto de regras/);
+    // Os campos do gabarito em si nunca saem (só o texto).
+    assert.doesNotMatch(JSON.stringify(withKey.examQuestions), /acceptedAnswers|"value"|"tolerance"/);
+    // Sem o gabarito liberado, nada do gabarito.
+    const withoutKey = sanitizeSubmissionForStudent(submission, false);
+    assert.doesNotMatch(JSON.stringify(withoutKey), /3,5|Transmission Control|answerKeyText/);
 });
 
 test('[UC-CORRECAO-001] entrega antiga (sem correcao) com dissertativa pendente também espera; a concluída antiga conta', () => {

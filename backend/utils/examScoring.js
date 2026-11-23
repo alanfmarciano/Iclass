@@ -386,6 +386,25 @@ function describeAnswer(question, gradedAnswer, { blank = '' } = {}) {
     return String(answer);
 }
 
+// Texto do gabarito das questões sem letra (A18): "3,5 (± 0,1) ms" na numérica e
+// "rede ou network" na resposta curta; vazio nos tipos com letra (o gabarito está nas
+// alternativas) e na dissertativa (a resposta esperada é só do professor, na tela
+// Corrigir). Usado pela revisão do professor (routes/admin.js) e, com o gabarito liberado,
+// pela revisão do aluno (middlewares.js sanitizeSubmissionForStudent).
+function answerKeyText(question, type = questionType(question)) {
+    const br = value => String(value).replace('.', ',');
+    if (type === 'numeric' && question?.numeric && Number.isFinite(Number(question.numeric.value))) {
+        const tolerance = Number(question.numeric.tolerance) > 0 ? ` (± ${br(Number(question.numeric.tolerance))})` : '';
+        const unit = typeof question.numeric.unit === 'string' && question.numeric.unit.trim() ? ` ${question.numeric.unit.trim()}` : '';
+        return `${br(Number(question.numeric.value))}${tolerance}${unit}`;
+    }
+    if (type === 'short_answer' && Array.isArray(question?.acceptedAnswers)) {
+        const accepted = question.acceptedAnswers.map(item => String(item || '').trim()).filter(Boolean);
+        if (accepted.length) return accepted.length === 1 ? accepted[0] : `${accepted.slice(0, -1).join(', ')} ou ${accepted[accepted.length - 1]}`;
+    }
+    return '';
+}
+
 // A entrega tem dissertativa escrita esperando o professor? (P3-S2, P-B6: o aluno vê "Sua
 // prova foi entregue. As dissertativas serão corrigidas." no fim da prova.) Só conta a
 // dissertativa, que fica pendente sempre que está respondida: a resposta curta ou
@@ -404,6 +423,7 @@ module.exports = {
     alternativeLetters,
     answerFingerprint,
     answerFromGraded,
+    answerKeyText,
     answersFromGradedAnswers,
     correctLetterFor,
     correctLettersFor,

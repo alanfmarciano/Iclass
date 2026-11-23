@@ -285,7 +285,7 @@ export function buildExamPrintHtml(detail, questions, answerByNumber) {
       return `<div class="${cls}"><span class="ltr">${letter}</span><span>${escapeHtml(alt.text)}${tag ? `<i>${tag}</i>` : ''}</span></div>`
     }).join('')
     const written = isTextType(type)
-      ? `<div class="resp"><span>Sua resposta</span>${escapeHtml(a.studentResponse ? studentAnswerText({ ...a, type: type === 'essay' ? 'short_answer' : type }, q) : 'Em branco')}</div>`
+      ? `<div class="resp"><span>Sua resposta</span>${escapeHtml(a.studentResponse ? studentAnswerText({ ...a, type: type === 'essay' ? 'short_answer' : type }, q) : 'Em branco')}${q.answerKeyText && type !== 'essay' ? `<b class="key">Resposta correta: ${escapeHtml(q.answerKeyText)}</b>` : ''}</div>`
       : ''
     const points = pointsLabel(a.pointsEarned, a.pointsPossible)
     const extra = [
@@ -298,7 +298,7 @@ export function buildExamPrintHtml(detail, questions, answerByNumber) {
   const resumoRows = (questions || []).map((q) => {
     const a = answerByNumber.get(Number(q.number)) || {}
     const type = answerType(a, q)
-    return `<tr><td>${escapeHtml(q.number)}</td><td>${escapeHtml(studentAnswerText(a, q, { blank: '-' }))}</td><td>${escapeHtml(correctText(a, type))}</td><td>${escapeHtml(answerStatus({ ...a, type }, { awaiting }).text)}</td></tr>`
+    return `<tr><td>${escapeHtml(q.number)}</td><td>${escapeHtml(studentAnswerText(a, q, { blank: '-' }))}</td><td>${escapeHtml(correctText(a, type, q))}</td><td>${escapeHtml(answerStatus({ ...a, type }, { awaiting }).text)}</td></tr>`
   }).join('')
 
   const comentario = detail?.comentarioGeral ? `<div class="note"><b>Comentário do professor:</b> ${escapeHtml(detail.comentarioGeral)}</div>` : ''
@@ -319,6 +319,7 @@ export function buildExamPrintHtml(detail, questions, answerByNumber) {
     .alt i{color:#555;font-style:italic;font-size:11px}
     .resp{border:1px solid #e6e6e6;border-radius:6px;padding:8px 10px;white-space:pre-wrap;word-break:break-word}
     .resp span{display:block;color:#777;font-size:11px;margin-bottom:4px}
+    .resp .key{display:block;margin-top:6px;color:#1a7f37;font-size:12px}
     .note{margin-top:8px;font-size:12px;line-height:1.45;white-space:pre-wrap;word-break:break-word}
     h2{font-size:14px;margin:22px 0 8px}table{width:100%;border-collapse:collapse;font-size:12px}
     th,td{border:1px solid #ddd;padding:6px 10px;text-align:left}th{background:#f3f3f3}
@@ -408,7 +409,7 @@ function FullExamView({ detail, questions, answers }) {
                   <tr key={q.number ?? i} className="border-t border-border">
                     <td className="px-3 py-2">{q.number}</td>
                     <td className="max-w-[12rem] truncate px-3 py-2">{studentAnswerText(a, q, { blank: '-' })}</td>
-                    <td className="px-3 py-2">{correctText(a, type)}</td>
+                    <td className="px-3 py-2">{correctText(a, type, q)}</td>
                     <td className="px-3 py-2"><Badge tone={status.tone}>{status.text}</Badge></td>
                   </tr>
                 )
@@ -429,14 +430,16 @@ function choiceSets(answer, type) {
   return { chosen: upper([answer?.studentChoice]), correct: upper([answer?.correctAnswer]) }
 }
 
-// O que vale como certo, para o resumo: a letra, as letras ou um traço (nas questões
-// sem letra o gabarito é a explicação do professor).
-function correctText(answer, type) {
+// O que vale como certo, para o resumo: a letra, as letras, o gabarito da numérica e da
+// resposta curta como o servidor escreve com o gabarito liberado (question.answerKeyText:
+// "3,5 (± 0,1) ms", "TCP ou UDP"; A18, ajuste 2: antes era "-") ou um traço (dissertativa:
+// a resposta esperada é só do professor).
+function correctText(answer, type, question) {
   if (type === 'multiple_answer') {
     const letters = [...choiceSets(answer, type).correct]
     return letters.length ? studentAnswerText({ studentChoices: letters }, null) : '-'
   }
-  if (isTextType(type)) return '-'
+  if (isTextType(type)) return question?.answerKeyText ? String(question.answerKeyText) : '-'
   return answer?.correctAnswer ? String(answer.correctAnswer).toUpperCase() : '-'
 }
 
@@ -508,6 +511,9 @@ function ReviewQuestion({ question: q, answer, awaiting }) {
           {answer.studentResponse
             ? <p className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap break-words text-sm text-text">{type === 'essay' ? answer.studentResponse : studentAnswerText(answer, q)}</p>
             : <p className="mt-1 text-sm text-muted">Em branco</p>}
+          {q.answerKeyText && type !== 'essay' && (
+            <p className="mt-2 break-words text-sm text-muted">Resposta correta: <b className="font-semibold text-success">{q.answerKeyText}</b></p>
+          )}
         </div>
       )}
       {rubric.length > 0 && (

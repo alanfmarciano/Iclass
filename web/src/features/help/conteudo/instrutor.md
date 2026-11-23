@@ -182,7 +182,7 @@ Para corrigir, toque em **Corrigir provas** no aviso de **Resultados** (ou em **
 
 Em cada questão aparecem a resposta do aluno, a resposta esperada e a explicação. Lance os pontos (aceita vírgula: 1,5) ou os pontos de cada critério da rubrica, que somam os pontos da questão, e escreva, se quiser, um comentário para o aluno. No fim, há o comentário geral da prova. **Salvar** guarda sem concluir; **Concluir correção** pede os pontos de todas as questões que esperam você, recalcula a nota e mostra a nota antes e depois, com **Corrigir a próxima**. A nota só aparece para o aluno depois que você a liberar em Resultados.
 
-Se você sair da tela (por outra entrega, pelo menu, pelo voltar do navegador ou fechando a aba) com pontos ou comentários ainda não salvos, o IClass pergunta antes de descartar.
+Se você sair da tela (por outra entrega, pelo menu, pelo voltar do navegador, por **Trocar curso ou turma**, pelo **Sair** ou fechando a aba) com pontos ou comentários ainda não salvos, o IClass pergunta antes de descartar.
 
 Para mudar os pontos de uma questão que o sistema corrigiu pelo gabarito, toque em **Ajustar pontos** e informe o motivo (**Cancelar ajuste** volta à conta do sistema antes de salvar); para mudar uma nota já liberada, o IClass também pede o motivo. Se outra pessoa (ou outra aba sua) gravou a mesma correção enquanto você corrigia, o IClass avisa e oferece **Recarregar**: nada do que você digitou é gravado por cima. A Coordenação vê a correção, sem os campos.
 

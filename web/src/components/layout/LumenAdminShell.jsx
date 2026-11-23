@@ -50,7 +50,8 @@ export function LumenAdminShell() {
         title: 'Trocar curso ou turma',
         onClick: clearActiveWorkspace,
       } : null}
-      onLogout={() => { logout(); navigate('/login') }}
+      // logout() devolve false quando a tela aberta segurou a saída para perguntar (A18).
+      onLogout={() => { if (logout() !== false) navigate('/login') }}
       notifications={<NotificationBell buttonClassName="lumen-icon-button relative" endpoint={workspace ? `/api/admin/notifications?courseId=${encodeURIComponent(workspace.courseId)}&studentClass=${encodeURIComponent(workspace.className)}` : '/api/admin/notifications'} seenEndpoint="/api/admin/notifications/seen" onOpenItem={openNotification} onData={(data) => setMessageCount(adminMessageCount(data))} />}
     >
       {/* Painel por http em outro aparelho (SEG-03): aviso fixo, fora do key da rota. */}

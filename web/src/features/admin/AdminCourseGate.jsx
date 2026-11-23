@@ -118,7 +118,7 @@ export function AdminCourseGate({ children }) {
 
   useEffect(() => {
     if (!workspace || courses.loading) return
-    if (!activeItem) clearActiveWorkspace(false)
+    if (!activeItem) clearActiveWorkspace(false, { force: true })
     else {
       const canonical = {
         courseId: activeItem.course.id,

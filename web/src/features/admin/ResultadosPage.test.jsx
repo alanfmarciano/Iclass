@@ -871,4 +871,29 @@ describe('Resultados · correção do professor (A18)', () => {
       Object.assign(mocks.stable.submissions[0], original)
     }
   })
+
+  it('[UC-PAPEIS-004] na prova que espera o professor, a Coordenação lê "a correção do professor", não "a sua correção"', async () => {
+    mocks.auth = {
+      role: 'admin', accountRole: 'coordenacao', readOnly: true,
+      effectivePermissions: ['page.dashboard', 'page.results', 'page.classes', 'page.students', 'page.forum', 'page.assignments', 'reports.view'],
+    }
+    const original = { ...mocks.stable.submissions[0] }
+    Object.assign(mocks.stable.submissions[0], { id: 'esp', score: 40, scoreInvalid: false, awaitingCorrection: true, aguardandoCorrecao: true, gradePublished: false })
+    mocks.get.mockImplementation(async (path) => (path.includes('/review') ? { questions: [], history: [] } : {}))
+    try {
+      render(
+        <MemoryRouter initialEntries={['/resultados/aluno/ana%40x.local/prova/esp']}>
+          <Routes>
+            <Route path="/resultados/aluno/:studentId/prova/:submissionId" element={<ResultadosPage />} />
+          </Routes>
+        </MemoryRouter>,
+      )
+      expect(await screen.findByText(/Esta entrega tem questões que esperam a correção do professor\./)).toBeInTheDocument()
+      expect(screen.queryByText(/a sua correção/)).not.toBeInTheDocument()
+      expect(screen.getByRole('button', { name: 'Ver a correção' })).toBeInTheDocument()
+    } finally {
+      for (const key of Object.keys(mocks.stable.submissions[0])) delete mocks.stable.submissions[0][key]
+      Object.assign(mocks.stable.submissions[0], original)
+    }
+  })
 })

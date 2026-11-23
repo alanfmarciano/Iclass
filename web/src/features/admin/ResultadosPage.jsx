@@ -1290,7 +1290,10 @@ export default function ResultadosPage() {
           {detail.awaitingCorrection && (
             <p className="flex items-start gap-2 rounded-lg bg-warning-soft px-3 py-2 text-sm text-text" role="status">
               <PenLine size={16} className="mt-0.5 shrink-0 text-warning" />
-              Esta entrega tem questões que esperam a sua correção. A nota só sai quando você concluir a correção.
+              {/* A Coordenação só consulta: o texto fala da correção do professor, como o aviso do topo. */}
+              {canWrite
+                ? 'Esta entrega tem questões que esperam a sua correção. A nota só sai quando você concluir a correção.'
+                : 'Esta entrega tem questões que esperam a correção do professor. A nota só sai quando ele concluir a correção.'}
             </p>
           )}
           {!detail.awaitingCorrection && !detail.integrityDecision && !isValidScore(detail.score) && (

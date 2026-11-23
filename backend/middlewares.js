@@ -21,6 +21,7 @@ const { examFamilyIndex } = require('./utils/examFamily.js');
 const { ensureAttemptDraw, isPerStudentDraw } = require('./utils/examDraw.js');
 const { answerIdScope, studentAlternatives, submissionWithSeenLetters } = require('./utils/examAnswerIds.js');
 const { integrityDecision, isAwaitingCorrection } = require('./utils/submissionAttempts.js');
+const { answerKeyText } = require('./utils/examScoring.js');
 const { recordBackupAudit, isBackupRestoreRequest } = require('./utils/backupAudit.js');
 const { installProfessorResponseRedaction } = require('./utils/studentPrivacy.js');
 const { logError } = require('./utils/errorLog.js');
@@ -1162,6 +1163,14 @@ function studentReviewQuestionFields(question) {
     if (question.numeric && typeof question.numeric === 'object' && typeof question.numeric.unit === 'string' && question.numeric.unit) {
         out.unit = question.numeric.unit;
     }
+    // O valor certo da numérica e as respostas aceitas da resposta curta, como texto
+    // ("3,5 (± 0,1) ms", "rede ou network"): com o gabarito liberado o aluno vê o que
+    // valia, como vê a letra certa nas de escolha (A18, ajuste 2; antes ficava "-"). A
+    // resposta esperada da dissertativa continua só do professor.
+    if (question.type === 'numeric' || question.type === 'short_answer') {
+        const key = answerKeyText(question, question.type);
+        if (key) out.answerKeyText = key;
+    }
     return out;
 }
 
@@ -1228,8 +1237,9 @@ function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
         // a partir do examSnapshot para permitir a visualização completa da prova.
         // O snapshot em si não é devolvido; apenas os campos necessários e seguros.
         // Com o gabarito vêm também a explicação, o tipo, os pontos e os critérios da
-        // rubrica de cada questão (D12 do P3); a resposta esperada da dissertativa e as
-        // respostas aceitas continuam só do professor.
+        // rubrica de cada questão (D12 do P3), e o gabarito da numérica e da resposta curta
+        // como texto (answerKeyText); a resposta esperada da dissertativa continua só do
+        // professor.
         const snapshotQuestions = Array.isArray(examSnapshot?.questions) ? examSnapshot.questions : [];
         if (snapshotQuestions.length) {
             safeGrade.examQuestions = snapshotQuestions.map(question => ({

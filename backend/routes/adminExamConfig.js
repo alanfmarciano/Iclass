@@ -958,6 +958,14 @@ function describeMonitorActionAudit(entry, nameByEmail) {
         if (late > 60) {
             return { title: 'Prova encerrada pelo agendamento', detail: `${Math.round(late / 60)} min depois de ${when(details.fechaEfetivaEm || details.fechaEm)} (o computador estava desligado) · ${deliveredText}` };
         }
+        // Horário de fechar adiado (tempo a mais ou tempo devolvido de uma queda): a hora em
+        // que fechou e a marcada, como o aluno e o log dizem (A18, ajuste 2). O registro
+        // antigo, sem adiadoSegundos, calcula pelos dois horários.
+        const postponed = Number(details.adiadoSegundos)
+            || (Number(details.fechaEfetivaEm) && Number(details.fechaEm) ? Math.round((Number(details.fechaEfetivaEm) - Number(details.fechaEm)) / 1000) : 0);
+        if (postponed > 60) {
+            return { title: 'Prova encerrada pelo agendamento', detail: `em ${when(details.fechaEfetivaEm)}, ${Math.round(postponed / 60)} min depois de ${when(details.fechaEm)} pelo tempo extra ou pelo tempo em que a prova ficou parada · ${deliveredText}` };
+        }
         return { title: 'Prova encerrada pelo agendamento', detail: deliveredText };
     }
     // O encerramento da agenda (finishApplication com o ator 'sistema'): antes o registro
