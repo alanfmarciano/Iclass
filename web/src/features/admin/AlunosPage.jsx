@@ -19,7 +19,7 @@ import { PageState } from '../../components/ui/PageState'
 import { Switch } from '../../components/ui/Switch'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
-import { CRITERIO_PADRAO, fmtGrade, gradeOf, gradeTone } from '../../lib/grades'
+import { criterioOf, fmtGrade, gradeOf, gradeTone } from '../../lib/grades'
 import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
@@ -89,6 +89,10 @@ export default function AlunosPage() {
   const { data: classes } = useApi(`/api/admin/classes?${contextQuery}`)
   const { data: courses } = useApi('/api/courses')
   const submissions = useApi(canResults ? `/api/admin/submissions?${contextQuery}` : null)
+  // Critério do curso ativo (C1 do P2, B9): a cor da nota no Histórico segue a média
+  // mínima do curso (sem critérios ligados, 6,0). Mesma permissão do histórico.
+  const criteriaApi = useApi(canResults && activeCourseId ? `/api/admin/grading/criteria?courseId=${encodeURIComponent(activeCourseId)}` : null)
+  const courseCriterio = criterioOf(criteriaApi.data)
   const [open, setOpen] = useState(false)
   const [form, setForm] = useState(emptyForm())
   const [menuRow, setMenuRow] = useState(null)
@@ -361,7 +365,7 @@ export default function AlunosPage() {
           {filteredSubmissions.filter((s) => (s.studentEmail || s.student?.email || s.email)?.toLowerCase() === history?.email?.toLowerCase()).map((s, i) => (
             <div key={s.id || i} className="flex items-center justify-between rounded-md border border-border p-3 text-sm">
               <span className="text-text">{s.examKey}</span>
-              <Badge tone={gradeTone(gradeOf(s.score), CRITERIO_PADRAO, 'simples', 'warning')}>{fmtGrade(s.score)}</Badge>
+              <Badge tone={gradeTone(gradeOf(s.score), courseCriterio, 'simples', 'warning')}>{fmtGrade(s.score)}</Badge>
             </div>
           ))}
           {!submissions.loading && filteredSubmissions.filter((s) => (s.studentEmail || s.student?.email || s.email)?.toLowerCase() === history?.email?.toLowerCase()).length === 0 && <p className="text-sm text-muted">Nenhum resultado encontrado.</p>}
@@ -443,7 +447,7 @@ export default function AlunosPage() {
                         <div key={sb.id} className="flex items-center justify-between gap-2 text-xs rounded-md border border-border p-2">
                           <span className="text-text truncate">{sb.examKey}</span>
                           <span className="text-subtle whitespace-nowrap">{Number.isInteger(sb.correctCount) && Number.isInteger(sb.totalCount) ? `${sb.correctCount}/${sb.totalCount} · ` : ''}{sb.timestamp ? new Date(sb.timestamp).toLocaleDateString('pt-BR') : ''}</span>
-                          <Badge tone={gradeTone(gradeOf(sb.score), CRITERIO_PADRAO, 'simples', 'warning')}>{fmtGrade(sb.score)}</Badge>
+                          <Badge tone={gradeTone(gradeOf(sb.score), sb.criterio, 'simples', 'warning')}>{fmtGrade(sb.score)}</Badge>
                         </div>
                       ))}
                     </div>

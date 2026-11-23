@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { CRITERIO_PADRAO, boletimChoiceOptions, boletimContext, consolidatedAverage, countByBand, fmtGrade, fmtGradeValue, fmtMinimumGrade, gradeBand, gradeBandRanges, gradeOf, gradeRangeLabel, gradeTone, isPassingGrade, isValidScore, parseGradeInput, previewQuickGrade, roundGrade, scoreBand, scoreFromGrade, validateQuickGrade } from './grades'
+import { CRITERIO_PADRAO, boletimChoiceOptions, boletimContext, criterioOf, fmtMencao, situacaoTone, countByBand, fmtGrade, fmtGradeValue, fmtMinimumGrade, gradeBand, gradeBandRanges, gradeOf, gradeRangeLabel, gradeTone, isPassingGrade, isValidScore, parseGradeInput, previewQuickGrade, roundGrade, scoreBand, scoreFromGrade, validateQuickGrade } from './grades'
 
 describe('notas na interface', () => {
   it('[UC-NOTAS-001] formata 0 a 100 como 0 a 10 com vírgula e esconde nota inválida', () => {
@@ -83,17 +83,21 @@ describe('notas na interface', () => {
     expect(validateQuickGrade({ grade: '6,6', correctCount: '2', totalCount: '3' }).errors).toEqual({})
   })
 
-  it('[UC-NOTAS-003] média do aluno: uma nota por prova (a consolidada), como no painel e no boletim', () => {
-    const subs = [
-      { id: 'a1', examKey: 'P1', applicationId: null, gradePublished: true, score: 60, consolidatedScore: 70 },
-      { id: 'a2', examKey: 'P1', applicationId: null, gradePublished: true, score: 80, consolidatedScore: 70 },
-      { id: 'b1', examKey: 'P2', applicationId: 'app_1', gradePublished: true, score: 100, consolidatedScore: 100 },
-      { id: 'c1', examKey: 'P3', applicationId: null, gradePublished: false, score: 20, consolidatedScore: null },
-    ]
-    expect(consolidatedAverage(subs)).toBe(85)
-    expect(fmtGrade(consolidatedAverage(subs))).toBe('8,5')
-    expect(consolidatedAverage([{ examKey: 'P1', gradePublished: true, consolidatedScore: 150 }])).toBeNull()
-    expect(consolidatedAverage([])).toBeNull()
+  it('[UC-NOTAS-008] situação e menção vêm prontas do servidor: a tela só escolhe a cor e o texto', () => {
+    expect(situacaoTone('aprovado')).toBe('success')
+    expect(situacaoTone('em_recuperacao')).toBe('warning')
+    expect(situacaoTone('reprovado_nota')).toBe('danger')
+    expect(situacaoTone('reprovado_falta')).toBe('danger')
+    expect(situacaoTone('cursando')).toBe('info')
+    expect(situacaoTone('sem_notas')).toBe('neutral')
+    expect(situacaoTone(undefined)).toBe('neutral')
+    expect(fmtMencao({ sigla: 'MB', nome: 'Muito bom' })).toBe('MB')
+    expect(fmtMencao(null, '—')).toBe('—')
+    // Critério da resposta do servidor; sem resposta, o padrão 6,0.
+    expect(criterioOf({ criterio: { mediaMinima: 5, mencoes: null, regraAntiga: false } })).toEqual({ mediaMinima: 5, mencoes: null, regraAntiga: false })
+    expect(criterioOf(null)).toEqual({ mediaMinima: 6, mencoes: null, regraAntiga: true })
+    expect(gradeTone(5, criterioOf({ criterio: { mediaMinima: 5 } }))).toBe('success')
+    expect(gradeTone(5, criterioOf(null))).toBe('warning')
   })
 
   it('[UC-NOTAS-003] seletor do boletim: nome do curso e, para o professor, só as matrículas do seu escopo', () => {

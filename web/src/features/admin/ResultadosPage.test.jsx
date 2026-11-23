@@ -13,6 +13,9 @@ const mocks = vi.hoisted(() => ({
   applications: [],
   deletedItems: [],
   auth: undefined,
+  // Quadro e plano da turma (useApi); null = como antes (sem quadro carregado).
+  gradebook: null,
+  plan: null,
   // Mesmos objetos a cada render, como o useApi de verdade: a tela da prova corrigida
   // (rota com :submissionId) recarrega a revisão quando a entrega muda de referência.
   stable: {
@@ -54,6 +57,8 @@ vi.mock('../../hooks/useApi', () => ({
       }
     }
     if (path.startsWith('/api/admin/exam-applications')) return { data: { applications: mocks.applications }, loading: false, error: null, refetch: vi.fn() }
+    if (path.startsWith('/api/admin/gradebook')) return { data: mocks.gradebook, loading: false, error: null, refetch: vi.fn() }
+    if (path.startsWith('/api/admin/grading/plan')) return { data: mocks.plan, loading: false, error: null, refetch: vi.fn() }
     if (path.startsWith('/api/admin/submissions/deleted')) return { data: { items: mocks.deletedItems }, loading: false, error: null, refetch: mocks.refetch }
     if (path.startsWith('/api/admin/submissions')) {
       return { data: mocks.stable.submissions, loading: false, error: null, refetch: mocks.refetch }
@@ -81,6 +86,8 @@ afterEach(() => {
   mocks.applications = []
   mocks.deletedItems = []
   mocks.auth = undefined
+  mocks.gradebook = null
+  mocks.plan = null
 })
 
 function renderPage() {
@@ -599,4 +606,107 @@ describe('Resultados · endereço do aluno pelo id', () => {
     await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/resultados/aluno/alu_00000000000000a1/prova/old'))
     expect(await screen.findByRole('button', { name: 'Exportar CSV da turma' })).toBeInTheDocument()
   }))
+})
+
+describe('Resultados · critérios do curso (B9)', () => {
+  const entrega = (id, email, name, score, extra = {}) => ({
+    id, student: { name, email, courseId: 'DES', studentClass: '1DES' }, courseId: 'DES', studentClass: '1DES',
+    examKey: 'Avaliacao_P2', applicationId: `app_${email}`, score, consolidatedScore: score, countsTowardResult: true,
+    gradePublished: true, timestamp: '2026-03-01T10:00:00Z', ...extra,
+  })
+  const linha = (email, name, averageScore, situacao, situacaoRotulo) => ({
+    email, name, cells: {}, average: averageScore / 10, averageScore, gradedCount: 1, pendingCount: 0,
+    etapas: [{ ordem: 1, nome: '1º bimestre', peso: 1, media: averageScore / 10, final: averageScore / 10, semNota: false }, { ordem: 2, nome: '2º bimestre', peso: 2, media: null, final: null, semNota: true }],
+    mediaFinal: averageScore / 10, situacao, situacaoRotulo, mencao: null, frequencia: 90, avisos: [],
+  })
+
+  it('[UC-NOTAS-008] média mínima do curso (5,0), média do aluno e aprovação pela situação vêm do quadro do servidor', async () => {
+    const original = mocks.stable.submissions
+    const matchMedia = window.matchMedia
+    window.matchMedia = (query) => ({ matches: query.includes('reduce'), media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} })
+    mocks.stable.submissions = [entrega('a1', 'ana@x.local', 'Ana', 55), entrega('b1', 'bia@x.local', 'Bia', 45)]
+    mocks.gradebook = {
+      criterio: { mediaMinima: 5, mencoes: null, regraAntiga: false },
+      etapas: [{ ordem: 1, nome: '1º bimestre', peso: 1 }, { ordem: 2, nome: '2º bimestre', peso: 2 }],
+      columns: [], avisos: [], mencoes: null,
+      rows: [linha('ana@x.local', 'Ana', 52, 'aprovado', 'Aprovado'), linha('bia@x.local', 'Bia', 45, 'em_recuperacao', 'Em recuperação')],
+    }
+    try {
+      renderPage()
+      // Antes: média mínima fixa 6,0 — Ana (5,5) aparecia abaixo da média.
+      const ana = screen.getByText('Ana').closest('tr')
+      expect(within(ana).getByText('5,2').className).toMatch(/text-success/)
+      const bia = screen.getByText('Bia').closest('tr')
+      expect(within(bia).getByText('4,5').className).toMatch(/text-(warning|danger)/)
+      const aprovacao = screen.getByText('Aprovação').closest('div').parentElement
+      await waitFor(() => expect(within(aprovacao).getByText('50%')).toBeInTheDocument())
+      expect(within(aprovacao).getByText('Pela situação no curso')).toBeInTheDocument()
+    } finally {
+      mocks.stable.submissions = original
+      window.matchMedia = matchMedia
+    }
+  })
+
+  it('[UC-NOTAS-008] com todos "Cursando", a aprovação fica "—" (ninguém com a situação fechada), não 0%', async () => {
+    const original = mocks.stable.submissions
+    mocks.stable.submissions = [entrega('a1', 'ana@x.local', 'Ana', 85)]
+    mocks.gradebook = {
+      criterio: { mediaMinima: 6, mencoes: null, regraAntiga: false },
+      etapas: [{ ordem: 1, nome: '1º bimestre', peso: 1 }, { ordem: 2, nome: '2º bimestre', peso: 1 }],
+      columns: [], avisos: [], mencoes: null,
+      rows: [linha('ana@x.local', 'Ana', 85, 'cursando', 'Cursando')],
+    }
+    try {
+      renderPage()
+      const aprovacao = screen.getByText('Aprovação').closest('div').parentElement
+      expect(within(aprovacao).getByText('—')).toBeInTheDocument()
+      expect(within(aprovacao).getByText('Ninguém com a situação fechada ainda')).toBeInTheDocument()
+      expect(within(aprovacao).queryByText('0%')).not.toBeInTheDocument()
+    } finally {
+      mocks.stable.submissions = original
+    }
+  })
+
+  it('[UC-NOTAS-008] lançamento rápido de avaliação da turma: tipo no seletor, só a nota, sem acertos nem cartão', async () => {
+    const user = userEvent.setup()
+    mocks.plan = {
+      ativo: true, etapas: [{ ordem: 1, nome: 'Etapa única', peso: 1 }], itens: [], modulos: [], tipos: [], avisos: [], podeAlterar: true,
+      manuais: [
+        { id: 'man_1', titulo: 'Seminário de redes', tipo: 'seminario', tipoRotulo: 'Seminário', arquivado: false },
+        { id: 'man_2', titulo: 'Trabalho antigo', tipo: 'trabalho', tipoRotulo: 'Trabalho', arquivado: true },
+      ],
+    }
+    renderPage()
+    await user.click(screen.getByRole('button', { name: 'Lançar nota' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.selectOptions(within(dialog).getByLabelText('Aluno'), 'ana@x.local')
+    const select = within(dialog).getByLabelText('Prova ou avaliação')
+    expect(within(select).getByRole('option', { name: 'Seminário - Seminário de redes' })).toBeInTheDocument()
+    expect(within(select).queryByRole('option', { name: /Trabalho antigo/ })).not.toBeInTheDocument()
+    await user.selectOptions(select, 'man_1')
+    expect(within(dialog).queryByLabelText('Acertos')).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Total de questões')).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: 'Cartão-resposta' })).not.toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Salvar nota' }))
+    expect(await within(dialog).findByText('Informe a nota de 0 a 10 (ex.: 8,5).')).toBeInTheDocument()
+    await user.type(within(dialog).getByLabelText('Nota (0 a 10)'), '8,5')
+    await user.click(within(dialog).getByRole('button', { name: 'Salvar nota' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/submissions/create', { studentEmail: 'ana@x.local', examKey: 'man_1', courseId: 'DES', studentClass: '1DES', grade: 8.5 }))
+    // Avaliação da turma não pede questões, histórico nem totais da prova.
+    const gets = mocks.get.mock.calls.map(([path]) => path)
+    expect(gets.some((path) => path.includes('examKey=man_1') || path.includes('/evaluation/man_1'))).toBe(false)
+  })
+
+  it('[UC-NOTAS-008] a aba "Plano de avaliação" mostra o plano da turma', async () => {
+    const user = userEvent.setup()
+    mocks.plan = {
+      ativo: true, etapas: [{ ordem: 1, nome: 'Etapa única', peso: 1 }], manuais: [], modulos: [], tipos: [], avisos: [], podeAlterar: true,
+      itens: [{ id: 'Avaliacao_P2', titulo: 'Prova 2', origem: 'prova', etapa: 1, peso: 1, recuperacaoDe: null, fora: false, notasLancadas: 1, notasPublicadas: 1 }],
+    }
+    renderPage()
+    await user.click(screen.getByRole('tab', { name: 'Plano de avaliação' }))
+    const panel = screen.getByRole('region', { name: 'Plano de avaliação da turma' })
+    expect(within(panel).getByRole('listitem', { name: 'Prova 2' })).toBeInTheDocument()
+    expect(within(panel).getByRole('button', { name: 'Salvar plano' })).toBeDisabled()
+  })
 })

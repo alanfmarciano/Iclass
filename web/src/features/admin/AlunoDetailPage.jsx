@@ -13,6 +13,8 @@ import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { printBoletim } from './boletimPrint'
+import { openPrintWindow as openDocumentWindow, schoolFromBranding } from '../../lib/printDocument'
+import { useBranding } from '../../context/BrandingProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { StudentAuditPanel } from './StudentAuditPanel'
 import { Modal } from '../../components/ui/Modal'
@@ -92,6 +94,7 @@ export default function AlunoDetailPage() {
   const toast = useToast()
   const { auth } = useAuth()
   const workspace = useAdminWorkspace()
+  const branding = useBranding()?.branding
   const [boletimChoices, setBoletimChoices] = useState(null)
   // Boletim do curso/turma ativos (UXI-X1, FUN-X1). Aluno em vários cursos e fora
   // do curso ativo: o professor escolhe a matrícula.
@@ -106,11 +109,17 @@ export default function AlunoDetailPage() {
       return
     }
     setBoletimChoices(null)
+    // Janela aberta no clique, antes de esperar o servidor (depois do await o navegador
+    // costuma bloquear o pop-up).
+    const win = openDocumentWindow('Preparando o boletim…')
     try {
       const query = new URLSearchParams({ email, courseId: ctx.courseId || '', studentClass: ctx.studentClass || '' })
       const report = await api.get(`/api/admin/student/report?${query}`)
-      if (!printBoletim(report)) toast.error('O navegador bloqueou a janela de impressão. Libere pop-ups para este site.')
-    } catch (e) { toast.error(e.message) }
+      if (!printBoletim(report, { escola: schoolFromBranding(branding), displayName: branding?.displayName || '' }, win)) toast.error('O navegador bloqueou a janela de impressão. Libere pop-ups para este site.')
+    } catch (e) {
+      try { win?.close() } catch { /* janela já fechada */ }
+      toast.error(e.message)
+    }
   }
   // Auditoria (audit.view) e Segurança (students.security) seguem a permissão (só o
   // administrador pleno hoje); antes era "não é professor" (contrato C2 do P4).

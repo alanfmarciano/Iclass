@@ -11,7 +11,8 @@
 //
 // Rotas:
 // - GET  /api/admin/grading/criteria?courseId=
-//   { courseId, ativo, regraAntiga, criterios (normalizados, com os padrões), padrao,
+//   { courseId, ativo, regraAntiga, criterio (o da tela, C1), criterios (normalizados,
+//     com os padrões), padrao,
 //     regrasRecuperacao, unidades, limites, temNotaPublicada, podeAlterar }.
 // - POST /api/admin/grading/criteria { courseId, ativo, mediaMinima, frequenciaMinima,
 //   etapas, recuperacao, mencoes, unidadeSituacao, reason? }: grava course.avaliacao
@@ -651,6 +652,9 @@ function registerGradingRoutes(router) {
                 courseName: course.name || String(course.id),
                 ativo: criterios.ativo,
                 regraAntiga: !criterios.ativo,
+                // O que a tela usa para pintar a nota (C1 do P2): com os critérios
+                // desligados, o padrão da regra antiga (6,0), nunca a mínima guardada.
+                criterio: gradingRules.criterioForScreen(raw),
                 criterios,
                 padrao: criteriaView(null),
                 regrasRecuperacao: RECUPERACAO_REGRAS.map(value => ({ value, label: RECUPERACAO_ROTULOS[value] })),

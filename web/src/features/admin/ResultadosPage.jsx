@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { AlertTriangle, ArrowLeft, ArrowRight, BarChart3, BookOpen, CheckCircle2, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, Download, Eye, EyeOff, FilePlus2, FileStack, History, Info, Layers3, Loader2, RotateCcw, Table2, Target, Trash2, TrendingUp, Users, XCircle } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, ArrowRight, BarChart3, BookOpen, CheckCircle2, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, ClipboardList, Download, Eye, EyeOff, FilePlus2, FileStack, History, Info, Layers3, Loader2, RotateCcw, Table2, Target, Trash2, TrendingUp, Users, XCircle } from 'lucide-react'
 import '../../styles/resultados-board.css'
 import { DataTable } from '../../components/ui/Table'
 import { Badge } from '../../components/ui/Badge'
@@ -13,10 +13,13 @@ import { PageState } from '../../components/ui/PageState'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { useApi } from '../../hooks/useApi'
 import { api, downloadFile } from '../../lib/api'
-import { CRITERIO_PADRAO, countByBand, fmtGrade, fmtGradeValue, gradeBandRanges, gradeOf, gradeTone, isPassingGrade, isValidScore, previewQuickGrade, scoreBand, validateQuickGrade } from '../../lib/grades'
+import { countByBand, criterioOf, fmtGrade, fmtGradeValue, fmtMencao, gradeBandRanges, gradeOf, gradeTone, isPassingGrade, isValidScore, previewQuickGrade, scoreBand, situacaoTone, validateQuickGrade } from '../../lib/grades'
 import { GradebookPanel } from './GradebookPanel'
+import { GradingPlanPanel } from './GradingPlanPanel'
 import { ApplicationAuditModal, DeletedGradesModal } from './GradeAuditPanels'
 import { printBoletim } from './boletimPrint'
+import { openPrintWindow, schoolFromBranding } from '../../lib/printDocument'
+import { useBranding } from '../../context/BrandingProvider'
 import { useToast } from '../../context/ToastProvider'
 import { normalizeEvaluation, snapshotsFromHistory } from './examTools'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
@@ -84,15 +87,10 @@ const MODULE_ACCENTS = ['#d9776b', '#6fa294', '#6f88b0', '#c6a35b', '#9b7fa6', '
 // Rótulo curto da política para a linha compacta.
 const POLICY_SHORT = { highest: 'Maior nota', latest: 'Última', average: 'Média', selected: 'Escolhida' }
 
-// Critério de nota da turma. Sem critérios configurados (hoje), o padrão: média
-// mínima 6,0. Quando o servidor mandar o critério do curso (P2-S3), ele entra aqui.
-const criterio = CRITERIO_PADRAO
-
 // Faixa de cor da nota (escala 0-100) — gradação quente "Brasa", não arco-íris.
 // A faixa vem de gradeBand (web/src/lib/grades.js), a mesma regra do servidor.
 // Nota inválida de registro antigo (vazia ou fora de 0 a 10) fica neutra.
 const BAND_CLASS = { excelente: 'rb-g9', bom: 'rb-g7', suficiente: 'rb-g6', abaixo: 'rb-g0', muito_abaixo: 'rb-g0' }
-const gradeBandClass = (score) => BAND_CLASS[scoreBand(score, criterio)] || 'rb-gmuted'
 const TONE_COLOR = { success: 'var(--success)', warning: 'var(--warning)', danger: 'var(--danger)', neutral: 'var(--border)' }
 // Cor de cada barra da "Distribuição de notas" (faixas de gradeBand, da mais baixa à mais alta).
 const DISTRIBUTION_COLOR = { muito_abaixo: 'var(--danger)', abaixo: 'var(--warning)', suficiente: 'var(--info)', bom: 'var(--primary)', excelente: 'var(--success)' }
@@ -240,6 +238,7 @@ export default function ResultadosPage() {
   const { studentId = '', submissionId = '' } = useParams()
   const { courseId: activeCourseId, courseName, className: activeClassName } = useAdminWorkspace()
   const auth = useAuth()?.auth
+  const branding = useBranding()?.branding
   // A Coordenação (só consulta) abre Resultados para ver: sem lançar, publicar, ocultar,
   // excluir nem mudar a regra das tentativas (o servidor recusaria com 403). A lista de
   // aplicações (Provas ou Monitor) e a estrutura do curso (editor) só para quem abre essas
@@ -248,17 +247,33 @@ export default function ResultadosPage() {
   const canReadApplications = canAccessAdminPermission(auth, [ADMIN_PERMISSIONS.PAGE_EXAMS, ADMIN_PERMISSIONS.PAGE_MONITOR])
   const canReadStructure = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_EDITOR)
   // Boletim consolidado (provas + frequência) do aluno, pela caixa de impressão.
+  // Passa pelo documento impresso da escola (printDocument): a janela abre no clique,
+  // antes de esperar o servidor.
   async function openBoletim(email) {
+    const win = openPrintWindow('Preparando o boletim…')
     try {
       const report = await api.get(`/api/admin/student/report?email=${encodeURIComponent(email)}&courseId=${encodeURIComponent(activeCourseId || '')}&studentClass=${encodeURIComponent(activeClassName || '')}`)
-      if (!printBoletim(report)) toast.error('O navegador bloqueou a janela de impressão. Libere pop-ups para este site.')
-    } catch (e) { toast.error(e.message) }
+      if (!printBoletim(report, { escola: schoolFromBranding(branding), displayName: branding?.displayName || '' }, win)) toast.error('O navegador bloqueou a janela de impressão. Libere pop-ups para este site.')
+    } catch (e) {
+      try { win?.close() } catch { /* janela já fechada */ }
+      toast.error(e.message)
+    }
   }
   const contextQuery = new URLSearchParams({ courseId: activeCourseId, studentClass: activeClassName }).toString()
   const { data, loading, error, refetch } = useApi(`/api/admin/submissions?${contextQuery}`)
   const { data: students, loading: studentsLoading } = useApi(`/api/admin/students?${contextQuery}`)
   const { data: classes } = useApi(`/api/admin/classes?${contextQuery}`)
   const { data: applicationsData } = useApi(canReadApplications ? `/api/admin/exam-applications?${contextQuery}` : null)
+  // Quadro de notas da turma (média, etapas, situação e menção que o servidor calculou) e o
+  // critério do curso que vem com ele (C1 do P2): a cor da nota, a aprovação e a média do
+  // aluno saem daqui; o navegador não recalcula a média (D3). Recarrega quando as entregas mudam.
+  const gradebookApi = useApi(activeCourseId && activeClassName ? `/api/admin/gradebook?${contextQuery}` : null, [data])
+  const gradebookData = gradebookApi.data
+  const criterio = criterioOf(gradebookData)
+  const withCriteria = Array.isArray(gradebookData?.etapas) && gradebookData.etapas.length > 0
+  const gradeBandClass = (score) => BAND_CLASS[scoreBand(score, criterio)] || 'rb-gmuted'
+  // Plano de avaliação da turma (etapa, peso e avaliações da turma; GET /grading/plan).
+  const planApi = useApi(activeCourseId && activeClassName ? `/api/admin/grading/plan?${contextQuery}` : null)
   const [del, setDel] = useState(null)
   const [detail, setDetail] = useState(null)
   const [review, setReview] = useState(null)
@@ -334,6 +349,11 @@ export default function ResultadosPage() {
     })
     return map
   }, [courseStructure])
+  // Linha do quadro de cada aluno (pelo e-mail), para a média que o servidor calculou. Com
+  // filtro de prova ou de aplicação, a média é a das notas filtradas (a de cada prova vem
+  // pronta do servidor, consolidatedScore).
+  const gradebookRowByEmail = useMemo(() => new Map((gradebookData?.rows || []).map((row) => [String(row.email || '').trim().toLowerCase(), row])), [gradebookData])
+  const useServerAverage = !!gradebookData && !filterExam && !filterApplication
   const studentRows = useMemo(() => {
     const grouped = new Map()
     filteredRows.forEach((submission) => {
@@ -353,15 +373,17 @@ export default function ResultadosPage() {
     return [...grouped.values()].map((student) => {
       const scores = consolidatedScores(student.submissions)
       const modules = new Set(student.submissions.map((item) => examMeta.get(item.examKey)?.moduleId || 'outros'))
+      const server = useServerAverage ? gradebookRowByEmail.get(student.studentEmail) : null
       return {
         ...student,
-        average: scores.length ? scores.reduce((sum, value) => sum + value, 0) / scores.length : null,
+        gradebookRow: server || null,
+        average: server ? (isValidScore(server.averageScore) ? Number(server.averageScore) : null) : (scores.length ? scores.reduce((sum, value) => sum + value, 0) / scores.length : null),
         submissionCount: student.submissions.length,
         moduleCount: modules.size,
         publishedCount: student.submissions.filter((item) => item.gradePublished === true).length,
       }
     }).sort((a, b) => a.studentName.localeCompare(b.studentName, 'pt-BR'))
-  }, [filteredRows, examMeta])
+  }, [filteredRows, examMeta, useServerAverage, gradebookRowByEmail])
   // Cadastro de cada e-mail (o id estável vem da lista de alunos da turma).
   const studentByEmail = useMemo(() => {
     const map = new Map()
@@ -454,15 +476,23 @@ export default function ResultadosPage() {
     const scores = consolidatedScores(filteredRows)
     const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0
     const approved = scores.filter((x) => isPassingGrade(gradeOf(x), criterio)).length
+    // Com os critérios do curso ligados, a aprovação é a situação de cada aluno no quadro:
+    // aprovados entre os que já têm situação fechada (aprovado, em recuperação ou
+    // reprovado); "Cursando" e "Sem notas" ainda não contam. Ninguém fechado: "—".
+    const FECHADAS = ['aprovado', 'em_recuperacao', 'reprovado_nota', 'reprovado_falta']
+    const situacoes = withCriteria && useServerAverage ? (gradebookData.rows || []).filter((row) => FECHADAS.includes(row.situacao)) : null
     // Uma barra por faixa de gradeBand, pela nota como aparece (4,96 é 5,0): a barra e a
     // cor da nota na lista contam a mesma faixa.
     const counts = countByBand(scores.map(gradeOf), criterio)
     const buckets = gradeBandRanges(criterio).map((range) => ({ ...range, n: counts[range.band], color: DISTRIBUTION_COLOR[range.band] }))
     // Sem nota válida (só registros antigos inválidos), a média fica "-", não 0,0.
-    return { avg: scores.length ? avg / 10 : null, aprov: scores.length ? Math.round((approved / scores.length) * 100) : 0, count: filteredRows.length, buckets, maxBucket: Math.max(1, ...buckets.map((b) => b.n)) }
-  }, [filteredRows])
+    const aprov = situacoes
+      ? (situacoes.length ? Math.round((situacoes.filter((row) => row.situacao === 'aprovado').length / situacoes.length) * 100) : null)
+      : (scores.length ? Math.round((approved / scores.length) * 100) : 0)
+    return { avg: scores.length ? avg / 10 : null, aprov, aprovPorSituacao: !!situacoes, count: filteredRows.length, buckets, maxBucket: Math.max(1, ...buckets.map((b) => b.n)) }
+  }, [filteredRows, criterio, withCriteria, useServerAverage, gradebookData])
   const avgCount = useCountUp(analytics.avg)
-  const aprovCount = useCountUp(analytics.aprov)
+  const aprovCount = useCountUp(analytics.aprov ?? 0)
   const countCount = useCountUp(analytics.count)
   const selectedClass = courseClasses.find((c) => c.name === manual.className && (!manual.courseId || c.courseId === manual.courseId))
   const classStudents = (students || []).filter((student) => {
@@ -474,8 +504,16 @@ export default function ResultadosPage() {
   const examsFromStructure = structure.flatMap((mod) => (mod.units || mod.items || [])
     .filter((unit) => unit.avaliacaoKey)
     .map((unit) => ({ key: unit.avaliacaoKey, label: `${mod.name || mod.title || mod.id} - ${unit.name || unit.title || unit.avaliacaoKey}` })))
-  const fallbackExams = [...new Set(rows.map((r) => r.examKey).filter(Boolean))].map((key) => ({ key, label: key }))
-  const exams = examsFromStructure.length > 0 ? examsFromStructure : fallbackExams
+  // Avaliações da turma (trabalho, seminário...; man_*, B6) ativas, do plano: entram no
+  // lançamento rápido com o tipo na frente, e recebem só a nota (sem acertos nem cartão).
+  const manualItems = (planApi.data?.manuais || []).filter((item) => item && item.id && item.arquivado !== true)
+    .map((item) => ({ key: item.id, label: `${item.tipoRotulo || 'Avaliação da turma'} - ${item.titulo}`, manual: true }))
+  const manualKeys = new Set(manualItems.map((item) => item.key))
+  const fallbackExams = [...new Set(rows.map((r) => r.examKey).filter(Boolean))]
+    .filter((key) => !manualKeys.has(key) && !String(key).startsWith('man_'))
+    .map((key) => ({ key, label: key }))
+  const exams = [...(examsFromStructure.length > 0 ? examsFromStructure : fallbackExams), ...manualItems]
+  const isManualItem = String(manual.examKey || '').startsWith('man_')
   const normalizedEval = useMemo(() => evaluation ? normalizeEvaluation(evaluation) : null, [evaluation])
   const manualQuestionCount = manualContext?.questionCount || normalizedEval?.questions?.length || null
   const manualDefaultTotal = manualContext?.defaultTotal || manualQuestionCount
@@ -540,7 +578,8 @@ export default function ResultadosPage() {
   }, [manual.courseId])
 
   useEffect(() => {
-    if (!manual.examKey) {
+    // Avaliação da turma (man_*) não tem questões, versões nem total: só a nota.
+    if (!manual.examKey || String(manual.examKey).startsWith('man_')) {
       setEvaluation(null)
       setHistory([])
       setManualContext(null)
@@ -652,7 +691,13 @@ export default function ResultadosPage() {
     // mesmo quando o aluno tem mais de uma matrícula.
     const context = { studentEmail: manual.studentEmail, examKey: manual.examKey, courseId: activeCourseId, studentClass: activeClassName }
     let body
-    if (manual.mode === 'card') {
+    if (isManualItem) {
+      const quick = validateQuickGrade({ grade: manual.grade, correctCount: '', totalCount: '' })
+      if (!String(manual.grade || '').trim()) errors.grade = 'Informe a nota de 0 a 10 (ex.: 8,5).'
+      else if (quick.errors.grade) errors.grade = quick.errors.grade
+      if (Object.keys(errors).length) { setManualErrors(errors); return }
+      body = { ...context, grade: quick.payload.grade }
+    } else if (manual.mode === 'card') {
       if (Object.keys(errors).length) { setManualErrors(errors); return }
       const answers = {}
       const questionNumbers = []
@@ -956,10 +1001,11 @@ export default function ResultadosPage() {
             <span className="grid h-9 w-9 shrink-0 place-items-center rounded-lg bg-success-soft text-success"><Target size={18} /></span>
             <span className="text-xs font-medium text-muted">Aprovação</span>
           </div>
-          <p className="mt-3 text-3xl font-semibold tabular-nums text-success">{Math.round(aprovCount)}%</p>
+          <p className="mt-3 text-3xl font-semibold tabular-nums text-success">{analytics.aprov == null ? '—' : `${Math.round(aprovCount)}%`}</p>
           <div className="mt-2.5 h-1.5 w-full overflow-hidden rounded-full bg-surface-2">
-            <div className="meter-fill h-full rounded-full" style={{ width: `${analytics.aprov}%`, background: 'var(--success)' }} />
+            <div className="meter-fill h-full rounded-full" style={{ width: `${analytics.aprov ?? 0}%`, background: 'var(--success)' }} />
           </div>
+          {analytics.aprovPorSituacao && <p className="mt-1 text-[11px] text-subtle">{analytics.aprov == null ? 'Ninguém com a situação fechada ainda' : 'Pela situação no curso'}</p>}
         </div>
         <div className="premium-card rounded-xl border border-border bg-surface p-4">
           <div className="flex items-center gap-2">
@@ -987,13 +1033,19 @@ export default function ResultadosPage() {
           </div>
         </div>
       </div>
-      <div className="flex gap-2" role="tablist" aria-label="Visualização dos resultados">
+      <div className="flex flex-wrap gap-2 [&>*]:shrink-0" role="tablist" aria-label="Visualização dos resultados">
         <Button size="sm" variant={view === 'alunos' ? 'primary' : 'secondary'} icon={Users} role="tab" aria-selected={view === 'alunos'} onClick={() => setView('alunos')}>Alunos</Button>
         <Button size="sm" variant={view === 'quadro' ? 'primary' : 'secondary'} icon={Table2} role="tab" aria-selected={view === 'quadro'} onClick={() => setView('quadro')}>Quadro de notas</Button>
+        <Button size="sm" variant={view === 'plano' ? 'primary' : 'secondary'} icon={ClipboardList} role="tab" aria-selected={view === 'plano'} onClick={() => setView('plano')}>Plano de avaliação</Button>
       </div>
 
       {view === 'quadro' && (
-        <GradebookPanel courseId={activeCourseId} studentClass={activeClassName} refreshKey={data} onExport={exportGradebook} onOpenStudent={(email) => openStudentResults({ studentEmail: email })} />
+        <GradebookPanel courseId={activeCourseId} studentClass={activeClassName} gradebook={gradebookApi} onExport={exportGradebook} onOpenStudent={(email) => openStudentResults({ studentEmail: email })} />
+      )}
+
+      {view === 'plano' && (
+        <GradingPlanPanel plan={planApi} courseId={activeCourseId} studentClass={activeClassName}
+          onChanged={() => Promise.all([gradebookApi.refetch(), refetch()])} />
       )}
 
       {view === 'alunos' && <div className="app-enter">
@@ -1021,7 +1073,7 @@ export default function ResultadosPage() {
           <div className="space-y-5">
             <dl className="stagger-grid grid grid-cols-2 gap-3 sm:grid-cols-4">
               <div className="rounded-xl bg-surface-2 p-3">
-                <dt className="text-[11px] font-medium uppercase tracking-wider text-subtle">Média geral</dt>
+                <dt className="text-[11px] font-medium uppercase tracking-wider text-subtle">{withCriteria && selectedStudent.gradebookRow ? 'Média final' : 'Média geral'}</dt>
                 <dd className="mt-1 text-2xl font-semibold tabular-nums text-text">{fmtGrade(selectedStudent.average, '-')}</dd>
               </div>
               <div className="rounded-xl bg-surface-2 p-3">
@@ -1037,6 +1089,25 @@ export default function ResultadosPage() {
                 <dd className="mt-1 text-2xl font-semibold tabular-nums text-success">{selectedStudent.publishedCount}</dd>
               </div>
             </dl>
+
+            {withCriteria && selectedStudent.gradebookRow && (
+              <section aria-label="Resultado pelos critérios do curso" className="rounded-xl border border-border bg-surface p-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <span className="text-sm font-medium text-text">Situação</span>
+                  <Badge tone={situacaoTone(selectedStudent.gradebookRow.situacao)}>{selectedStudent.gradebookRow.situacaoRotulo || '-'}</Badge>
+                  {fmtMencao(selectedStudent.gradebookRow.mencao) && <Badge tone="neutral">Menção {fmtMencao(selectedStudent.gradebookRow.mencao)}</Badge>}
+                  <span className="text-xs text-subtle">Média mínima para aprovação: {fmtGradeValue(criterio.mediaMinima)}</span>
+                </div>
+                <ul className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
+                  {(selectedStudent.gradebookRow.etapas || []).map((etapa) => (
+                    <li key={etapa.ordem} className="rounded-lg bg-surface-2 px-2.5 py-2">
+                      <span className="block truncate text-[11px] text-subtle">{etapa.nome}</span>
+                      <span className="block text-sm font-semibold tabular-nums text-text">{etapa.semNota ? 'sem nota' : fmtGradeValue(etapa.final, '-')}{etapa.recuperacaoAplicada ? ' (rec.)' : ''}</span>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            )}
 
             <div className="space-y-4">
               <div className="flex flex-wrap items-center justify-between gap-2">
@@ -1273,21 +1344,35 @@ export default function ResultadosPage() {
       <Modal open={manualOpen} onClose={() => setManualOpen(false)} title="Lançamento manual" description="Use a nota rápida ou corrija uma prova impressa pelo cartão-resposta."
         footer={<><Button variant="ghost" onClick={() => setManualOpen(false)}>Cancelar</Button><Button loading={loadingManual || savingManual} onClick={() => createManual()}>Salvar nota</Button></>}>
         <div className="space-y-4">
+          {!isManualItem && (
           <div className="grid grid-cols-2 gap-2">
             <Button variant={manual.mode === 'quick' ? 'primary' : 'secondary'} onClick={() => setManual({ ...manual, mode: 'quick' })}>Rápido</Button>
             <Button variant={manual.mode === 'card' ? 'primary' : 'secondary'} onClick={() => setManual({ ...manual, mode: 'card' })}>Cartão-resposta</Button>
           </div>
+          )}
           <div><p className="mb-1 text-sm font-medium text-text">Turma</p><div className="h-[38px] rounded-md border border-border bg-surface-2 px-3 py-2 text-sm font-semibold text-text">{activeClassName}</div></div>
           <Select label="Aluno" value={manual.studentEmail} error={manualErrors.studentEmail} onChange={(e) => setManual({ ...manual, studentEmail: e.target.value })}>
             <option value="">Selecione...</option>
             {classStudents.map((s) => <option key={s.email} value={s.email}>{s.name} - {displayEmail(s.email)}</option>)}
           </Select>
-          <Select label="Prova" value={manual.examKey} error={manualErrors.examKey} onChange={(e) => setManual({ ...manual, examKey: e.target.value, answers: {}, snapshotId: '' })}>
+          <Select label={manualItems.length ? 'Prova ou avaliação' : 'Prova'} value={manual.examKey} error={manualErrors.examKey}
+            onChange={(e) => {
+              const key = e.target.value
+              // Avaliação da turma só pelo lançamento rápido, sem acertos nem total.
+              setManual({ ...manual, examKey: key, answers: {}, snapshotId: '', ...(String(key).startsWith('man_') ? { mode: 'quick', correctCount: '', totalCount: '' } : {}) })
+              setManualErrors((err) => ({ ...err, examKey: undefined, grade: undefined }))
+            }}>
             <option value="">Selecione...</option>
             {exams.map((e) => <option key={e.key} value={e.key}>{e.label}</option>)}
           </Select>
 
-          {manual.mode === 'quick' ? (
+          {isManualItem ? (
+            <>
+              <Input label="Nota (0 a 10)" inputMode="decimal" placeholder="ex.: 8,5" value={manual.grade} error={manualErrors.grade}
+                onChange={(e) => { setManual({ ...manual, grade: e.target.value }); setManualErrors((err) => ({ ...err, grade: undefined })) }} />
+              <p className="text-xs text-subtle">Avaliação da turma: lance só a nota. Ela entra na etapa e no peso definidos no Plano de avaliação e aparece para o aluno depois de publicada.</p>
+            </>
+          ) : manual.mode === 'quick' ? (
             <>
               <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
                 <Input label="Nota (0 a 10)" inputMode="decimal" placeholder="ex.: 8,5" value={manual.grade} error={manualErrors.grade}

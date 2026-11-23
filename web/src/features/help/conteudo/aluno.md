@@ -50,6 +50,18 @@ Quando a escola usa a conexão segura (o endereço começa com `https`), o naveg
 
 <!-- P3 (A5, A19) e P2 (B9) escrevem aqui: prova com os tipos novos, Minhas notas e pedido de revisão. -->
 
+### Minhas notas
+
+No alto de Provas, **Minhas notas** mostra o seu resultado na turma com as notas que o professor já publicou:
+
+- a **média final** (ou a média geral, quando o curso não usa etapas);
+- a **situação**: Cursando (ainda falta nota de alguma etapa), Em recuperação, Aprovado, Reprovado por nota ou Reprovado por falta;
+- a **menção** (MB, B, R, I), se a escola usa conceitos;
+- as **notas por etapa** (1º bimestre, 2º bimestre...), com a recuperação quando houver;
+- a **média mínima para aprovação** do seu curso e quantas faltas você ainda pode ter no período.
+
+Embaixo, as suas provas e avaliações (trabalhos, seminários) ficam agrupadas por disciplina ou por módulo. A nota que ainda não foi publicada aparece em "Notas em revisão" e não entra na média.
+
 ### Como responder cada tipo de questão
 
 - **Uma correta**: toque na alternativa. Para trocar, toque em outra.

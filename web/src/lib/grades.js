@@ -249,26 +249,33 @@ export function previewQuickGrade(payload, defaultTotal = null) {
   return null
 }
 
-// Chave do grupo de tentativas dentro de uma turma (aplicação; sem aplicação, a
-// prova), como attemptGroupKey do servidor.
-export function attemptGroupOf(submission) {
-  return submission?.applicationId ? `application:${submission.applicationId}` : `legacy-exam:${submission?.examKey || ''}`
+// ---- Situação e menção (conta do servidor, contrato C1 do P2) -----------------
+// A situação (Aprovado, Em recuperação...) e a menção chegam prontas do servidor
+// (gradebook.js + gradingRules.js); a tela só escolhe a cor e o texto. O navegador não
+// calcula média (D3 do P2): a média do aluno no portal vem de /api/student/grades-summary
+// e a da turma, do quadro de notas.
+const SITUACAO_TONES = {
+  aprovado: 'success',
+  em_recuperacao: 'warning',
+  reprovado_nota: 'danger',
+  reprovado_falta: 'danger',
+  cursando: 'info',
+  sem_notas: 'neutral',
+}
+export function situacaoTone(situacao) {
+  return SITUACAO_TONES[situacao] || 'neutral'
 }
 
-// Média das provas publicadas como no painel do aluno, no boletim e em Resultados:
-// uma nota por grupo de tentativas (a consolidada pela regra do professor) e a média
-// simples dos grupos. Fazer a média por tentativa contava duas vezes a prova
-// refeita. Devolve 0 a 100, ou null sem nota válida.
-export function consolidatedAverage(submissions) {
-  const groups = new Map()
-  ;(submissions || []).forEach((submission) => {
-    if (submission?.gradePublished !== true) return
-    const score = validScore(submission.consolidatedScore)
-    const key = attemptGroupOf(submission)
-    if (score !== null && !groups.has(key)) groups.set(key, score)
-  })
-  const scores = [...groups.values()]
-  return scores.length ? scores.reduce((sum, value) => sum + value, 0) / scores.length : null
+// Menção para texto: "MB" (ou o vazio pedido sem menção).
+export function fmtMencao(mencao, empty = '') {
+  return mencao && mencao.sigla ? String(mencao.sigla) : empty
+}
+
+// Critério que a tela usa a partir de uma resposta do servidor que o traz ("criterio" do
+// quadro, do plano, dos critérios, do boletim e do resumo do aluno). Sem resposta ainda,
+// o padrão (média mínima 6,0): normalizeCriterio já cai nele.
+export function criterioOf(response) {
+  return normalizeCriterio(response && response.criterio)
 }
 
 // Opções do seletor de boletim (aluno em mais de um curso): o nome do curso, nunca

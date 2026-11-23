@@ -818,3 +818,23 @@ test('[UC-NOTAS-006] auditoria: as ações novas têm rótulo e categoria acadê
             assert.ok(audit.ACTION_LABELS[action], action);
         });
 });
+
+test('[UC-NOTAS-008] as telas recebem o critério do curso: critérios (GET) e ficha acadêmica, com a regra antiga quando desligado', async () => {
+    // Desligado: a tela pinta com o padrão da regra antiga (6,0).
+    const before = await as('prof', 'get', `/api/admin/grading/criteria?courseId=${COURSE}`);
+    assert.equal(before.status, 200, JSON.stringify(before.body));
+    assert.deepEqual(before.body.criterio, { mediaMinima: 6, mencoes: null, regraAntiga: true });
+    const academicBefore = await as('prof', 'get', '/api/admin/student/academic?email=ana@grading.local');
+    assert.equal(academicBefore.status, 200);
+    assert.ok(academicBefore.body.submissions.length > 0);
+    academicBefore.body.submissions.forEach(entry => assert.deepEqual(entry.criterio, { mediaMinima: 6, mencoes: null, regraAntiga: true }));
+
+    // Ligado com média mínima 5: as duas respostas trazem a mínima e as menções do curso.
+    assert.equal((await saveCriteria({ mediaMinima: 5 })).status, 200);
+    const after = await as('prof', 'get', `/api/admin/grading/criteria?courseId=${COURSE}`);
+    assert.equal(after.body.criterio.mediaMinima, 5);
+    assert.equal(after.body.criterio.regraAntiga, false);
+    assert.deepEqual(after.body.criterio.mencoes.map(item => item.sigla), ['MB', 'B', 'R', 'I']);
+    const academicAfter = await as('prof', 'get', '/api/admin/student/academic?email=ana@grading.local');
+    academicAfter.body.submissions.forEach(entry => assert.equal(entry.criterio.mediaMinima, 5));
+});

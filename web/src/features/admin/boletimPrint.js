@@ -1,99 +1,214 @@
 // Boletim do aluno para impressão (o usuário salva como PDF pela caixa de impressão).
-// Mesmo padrão de gradePrint.js: HTML próprio + window.print.
-import { isPassingGrade } from '../../lib/grades'
+// Passa pelo documento impresso único (web/src/lib/printDocument.js, C5 do P4): cabeçalho
+// com os dados da escola e rodapé "Gerado por <nome da instituição> em <data>", sem o
+// rodapé fixo com o nome do IClass de antes.
+//
+// Nota, média, situação e menção vêm prontas do servidor (GET /api/admin/student/report,
+// contrato C1 do P2): o boletim só formata. A nota abaixo da média mínima fica em vermelho
+// pelo critério que vem com o boletim (report.criterio; sem critérios, o padrão 6,0).
+import { fmtGradeValue, fmtMencao, isPassingGrade } from '../../lib/grades'
+import { html, printDocument, printDocumentHtml, trustedHtml } from '../../lib/printDocument'
 
-function escapeHtml(value) {
-  return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]))
+const grade = (value) => fmtGradeValue(value, '—')
+const pct = (value) => (value === null || value === undefined ? '—' : `${value}%`)
+const date = (value) => {
+  if (!value) return '—'
+  // Data do período letivo (AAAA-MM-DD): sem fuso, para não voltar um dia.
+  const ymd = typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value)
+  return ymd ? value.split('-').reverse().join('/') : new Date(value).toLocaleDateString('pt-BR')
+}
+const weight = (value) => (value === null || value === undefined ? '—' : String(value).replace('.', ','))
+
+// Nota em vermelho quando abaixo da média mínima do critério do boletim.
+function gradeCell(value, criterio) {
+  if (value === null || value === undefined) return '—'
+  return isPassingGrade(value, criterio) === false ? html`<b class="nota-baixa">${grade(value)}</b>` : html`<b>${grade(value)}</b>`
 }
 
-const grade = (value) => value == null ? '—' : Number(value).toFixed(1).replace('.', ',')
-const pct = (value) => value == null ? '—' : `${value}%`
-const date = (value) => value ? new Date(value).toLocaleDateString('pt-BR') : '—'
+function examExtra(exam, etapaNome) {
+  const parts = []
+  if (exam.fora) parts.push('não conta na média')
+  else if (exam.recuperacaoDe) parts.push(`recuperação da ${etapaNome.get(exam.recuperacaoDe) || `etapa ${exam.recuperacaoDe}`}`)
+  else if (exam.etapa) parts.push(`${etapaNome.get(exam.etapa) || `Etapa ${exam.etapa}`}${exam.peso !== undefined && exam.peso !== null ? ` · peso ${weight(exam.peso)}` : ''}`)
+  // Com mais de uma etapa, a avaliação sem etapa fica fora da média (o aviso vem embaixo).
+  else if (etapaNome.size > 1 && exam.grade !== null && exam.grade !== undefined) parts.push('sem etapa, fora da média')
+  if (exam.arquivada) parts.push('arquivada, fora da média')
+  return parts.join(' · ')
+}
 
-export function boletimHtml(report) {
+// Opções do documento (printDocument) do boletim. identity: { escola, displayName, fuso }
+// da identidade visual da escola (schoolFromBranding); sem ela, o nome da instituição que
+// vem com o boletim.
+export function boletimDocument(report, identity = {}) {
   const student = report.student || {}
-  const name = (student.nomeSocial && student.nomeSocial.trim()) || student.name || student.email
+  const name = (student.nomeSocial && student.nomeSocial.trim()) || student.name || student.email || 'Aluno'
   const attendance = report.attendance || {}
-  const frequencyClass = attendance.frequency == null ? '' : (attendance.frequency < (attendance.riskThreshold || 75) ? ' class="risk"' : '')
+  const criterio = report.criterio
+  const etapas = Array.isArray(report.etapas) ? report.etapas : []
+  const withCriteria = etapas.length > 0
+  const etapaNome = new Map(etapas.map((etapa) => [etapa.ordem, etapa.nome]))
+  const institution = report.institution || ''
+  const escola = { nome: institution, ...(identity.escola || {}) }
+  if (!escola.nome) escola.nome = institution
 
-  // Nota abaixo da média mínima em vermelho: critério que vem com o boletim (sem
-  // critérios configurados, o padrão de 6,0), pela mesma regra das telas.
-  // Mesma prova em mais de uma linha = mais de uma aplicação (mesma regra da tela Resultados).
-  const examKeys = (report.modules || []).flatMap(module => (module.exams || []).filter(exam => exam.grade != null).map(exam => exam.examKey))
+  const subtitle = [
+    report.course?.name || '',
+    report.className ? `Turma ${report.className}` : '',
+    report.periodoLetivo?.nome || report.period || '',
+  ].filter(Boolean).join(' · ')
+
+  const secoes = []
+  secoes.push({
+    titulo: 'Aluno',
+    pares: [
+      ['Nome', name],
+      ...(student.matricula ? [['Matrícula', student.matricula]] : []),
+      ['E-mail', student.email || '—'],
+      ...(report.periodoLetivo ? [['Período letivo', `${report.periodoLetivo.nome} (${date(report.periodoLetivo.inicio)} a ${date(report.periodoLetivo.fim)})`]] : []),
+      ['Emitido em', date(report.generatedAt)],
+    ],
+  })
+
+  if (report.gradesHidden) {
+    secoes.push({ titulo: 'Notas', texto: 'As notas não aparecem para esta conta.' })
+  } else {
+    // Resultado: média final, situação e menção do servidor.
+    const resultado = [
+      [withCriteria ? 'Média final' : 'Média geral', grade(report.mediaFinal ?? report.overallAverage)],
+    ]
+    if (report.recuperacaoFinal !== null && report.recuperacaoFinal !== undefined) resultado.push(['Recuperação final', grade(report.recuperacaoFinal)])
+    if (report.situacaoRotulo) resultado.push(['Situação', report.situacaoRotulo])
+    if (fmtMencao(report.mencao)) resultado.push(['Menção', `${fmtMencao(report.mencao)}${report.mencao.nome ? ` (${report.mencao.nome})` : ''}`])
+    if (criterio && criterio.mediaMinima !== undefined && criterio.mediaMinima !== null) resultado.push(['Média mínima para aprovação', grade(criterio.mediaMinima)])
+    secoes.push({ titulo: 'Resultado', pares: resultado })
+
+    if (withCriteria) {
+      secoes.push({
+        titulo: 'Notas por etapa',
+        tabela: {
+          colunas: ['Etapa', 'Peso', 'Média', 'Recuperação', 'Nota da etapa'],
+          alinhar: ['', 'direita', 'direita', 'direita', 'direita'],
+          linhas: etapas.map((etapa) => [
+            etapa.nome,
+            weight(etapa.peso),
+            etapa.semNota ? 'sem nota' : grade(etapa.media),
+            grade(etapa.recuperacao),
+            etapa.semNota ? '—' : gradeCell(etapa.final, criterio),
+          ]),
+        },
+      })
+    }
+
+    const porDisciplina = Array.isArray(report.situacaoPorDisciplina) ? report.situacaoPorDisciplina : []
+    if (porDisciplina.length > 0) {
+      secoes.push({
+        titulo: 'Situação por disciplina',
+        tabela: {
+          colunas: ['Disciplina', 'Média final', 'Situação', ...(porDisciplina.some((item) => fmtMencao(item.mencao)) ? ['Menção'] : [])],
+          alinhar: ['', 'direita', ''],
+          linhas: porDisciplina.map((item) => [
+            item.nome,
+            gradeCell(item.mediaFinal, criterio),
+            item.situacaoRotulo || '—',
+            ...(porDisciplina.some((entry) => fmtMencao(entry.mencao)) ? [fmtMencao(item.mencao, '—')] : []),
+          ]),
+        },
+      })
+    }
+
+    // Avaliações por módulo (provas, avaliações da turma e tarefas com nota publicada).
+    const linhas = []
+    ;(report.modules || []).forEach((module) => {
+      linhas.push([html`<b>${module.name}</b>`, '', '', '', html`<b>Média ${grade(module.average)}</b>`])
+      if (!(module.exams || []).length) linhas.push(['Nenhuma avaliação neste módulo.', '', '', '', ''])
+      ;(module.exams || []).forEach((exam) => {
+        linhas.push([
+          exam.title || exam.examKey,
+          examExtra(exam, etapaNome) || '—',
+          `${exam.attempts || 0}${exam.pendingAttempts ? ` (+${exam.pendingAttempts} a publicar)` : ''}`,
+          date(exam.lastAt),
+          gradeCell(exam.grade, criterio),
+        ])
+      })
+    })
+    secoes.push({
+      titulo: 'Avaliações',
+      tabela: {
+        colunas: ['Avaliação', withCriteria ? 'Etapa e peso' : 'Observação', 'Tentativas', 'Última', 'Nota'],
+        alinhar: ['', '', 'direita', 'direita', 'direita'],
+        linhas,
+        vazio: 'Curso sem avaliações.',
+      },
+    })
+  }
+
+  const disciplines = Array.isArray(attendance.disciplines) ? attendance.disciplines : []
+  const withPlanned = disciplines.some((d) => d.aulasPrevistas !== null && d.aulasPrevistas !== undefined)
+  const withHours = disciplines.some((d) => d.cargaHoraria !== null && d.cargaHoraria !== undefined)
+  const withRemaining = disciplines.some((d) => d.faltasPermitidasRestantes !== null && d.faltasPermitidasRestantes !== undefined)
+  secoes.push({
+    titulo: 'Frequência',
+    pares: [
+      ['Frequência geral', pct(attendance.frequency)],
+      ['Faltas (aulas)', String(attendance.faltas ?? 0)],
+      ...(attendance.aulasPrevistas !== null && attendance.aulasPrevistas !== undefined ? [['Aulas previstas no período', String(attendance.aulasPrevistas)]] : []),
+      ...(attendance.frequenciaMinima !== null && attendance.frequenciaMinima !== undefined ? [['Frequência mínima', `${attendance.frequenciaMinima}%`]] : []),
+      ...(attendance.faltasPermitidasRestantes !== null && attendance.faltasPermitidasRestantes !== undefined ? [['Faltas que ainda pode ter', String(attendance.faltasPermitidasRestantes)]] : []),
+      ['Tópicos concluídos', `${report.progress?.completedUnits ?? 0}/${report.progress?.totalUnits ?? 0}`],
+    ],
+  })
+  secoes.push({
+    titulo: 'Frequência por disciplina',
+    tabela: {
+      colunas: ['Disciplina', ...(withHours ? ['Carga horária'] : []), ...(withPlanned ? ['Aulas previstas'] : []), 'Presenças', 'Faltas', 'Frequência', ...(withRemaining ? ['Faltas que ainda pode ter'] : [])],
+      alinhar: ['', ...(withHours ? ['direita'] : []), ...(withPlanned ? ['direita'] : []), 'direita', 'direita', 'direita', 'direita'],
+      linhas: disciplines.map((d) => [
+        d.name,
+        ...(withHours ? [d.cargaHoraria === null || d.cargaHoraria === undefined ? '—' : `${d.cargaHoraria} h`] : []),
+        ...(withPlanned ? [d.aulasPrevistas === null || d.aulasPrevistas === undefined ? '—' : String(d.aulasPrevistas)] : []),
+        String(d.presentes ?? 0),
+        String(d.faltas ?? 0),
+        pct(d.frequencia),
+        ...(withRemaining ? [d.faltasPermitidasRestantes === null || d.faltasPermitidasRestantes === undefined ? '—' : String(d.faltasPermitidasRestantes)] : []),
+      ]),
+      vazio: 'Nenhuma aula lançada.',
+    },
+  })
+
+  const examKeys = (report.modules || []).flatMap((module) => (module.exams || []).filter((exam) => exam.grade !== null && exam.grade !== undefined).map((exam) => exam.examKey))
   const hasRepeatedExam = new Set(examKeys).size < examKeys.length
+  const notes = [
+    'Só notas publicadas entram na média.',
+    hasRepeatedExam ? 'Prova aplicada mais de uma vez aparece em uma linha por aplicação, e cada aplicação entra na média.' : '',
+    'Faltas abonadas não contam.',
+    attendance.days ? `${attendance.days} dia(s) com registro de presença.` : '',
+  ].filter(Boolean).join(' ')
+  const avisos = Array.isArray(report.avisosNotas) ? report.avisosNotas.filter(Boolean) : []
+  secoes.push({
+    paragrafos: avisos,
+    observacao: notes,
+    assinaturas: [report.issuedBy || 'Instrutor', 'Responsável pelo aluno'],
+  })
 
-  const moduleRows = (report.modules || []).map(module => {
-    const exams = module.exams.length
-      ? module.exams.map(exam => `<tr>
-          <td>${escapeHtml(exam.title)}</td>
-          <td class="num">${exam.attempts || 0}${exam.pendingAttempts ? ` <small>(+${exam.pendingAttempts} a publicar)</small>` : ''}</td>
-          <td class="num">${date(exam.lastAt)}</td>
-          <td class="num grade${isPassingGrade(exam.grade, report.criterio) === false ? ' low' : ''}">${grade(exam.grade)}</td>
-        </tr>`).join('')
-      : '<tr><td colspan="4" class="empty">Nenhuma avaliação neste módulo.</td></tr>'
-    return `<tr class="module"><th colspan="3">${escapeHtml(module.name)}</th><th class="num">Média ${grade(module.average)}</th></tr>${exams}`
-  }).join('')
-
-  const disciplineRows = (attendance.disciplines || []).length
-    ? attendance.disciplines.map(d => `<tr><td>${escapeHtml(d.name)}</td><td class="num">${d.presentes}</td><td class="num">${d.faltas}</td><td class="num">${pct(d.frequencia)}</td></tr>`).join('')
-    : '<tr><td colspan="4" class="empty">Nenhuma aula lançada.</td></tr>'
-
-  const title = `Boletim — ${name}`
-  return `<!doctype html><html lang="pt-BR"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>
-    *{box-sizing:border-box} body{font-family:Arial,Helvetica,sans-serif;color:#171a21;margin:0;background:#fff}
-    .wrap{padding:32px 38px;max-width:900px;margin:0 auto}
-    header{display:flex;justify-content:space-between;align-items:flex-start;gap:24px;border-bottom:2px solid #182033;padding-bottom:14px;margin-bottom:18px}
-    header h1{font-size:22px;margin:0 0 4px} header p{margin:0;color:#596273;font-size:13px}
-    .inst{font-size:12px;text-transform:uppercase;letter-spacing:.08em;color:#596273;text-align:right}
-    .kpis{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:0 0 20px}
-    .kpi{border:1px solid #d7dbe3;border-radius:8px;padding:10px 12px}
-    .kpi span{display:block;font-size:11px;color:#596273;text-transform:uppercase;letter-spacing:.04em}
-    .kpi strong{display:block;font-size:22px;margin-top:4px}
-    .kpi strong.risk{color:#cf3943}
-    h2{font-size:14px;text-transform:uppercase;letter-spacing:.06em;color:#182033;margin:22px 0 8px}
-    table{border-collapse:collapse;width:100%;font-size:13px}
-    th,td{border:1px solid #d7dbe3;padding:7px 10px;text-align:left;vertical-align:middle}
-    thead th{background:#182033;color:#fff;font-size:12px;text-transform:uppercase;letter-spacing:.04em}
-    tr.module th{background:#eef1f6;color:#182033;font-size:12px}
-    td.num,th.num{text-align:right;white-space:nowrap}
-    td.grade{font-weight:700} td.low{color:#cf3943}
-    td.empty{color:#8790a0;text-align:center}
-    small{color:#8790a0;font-weight:400}
-    footer{margin-top:26px;display:flex;justify-content:space-between;color:#8790a0;font-size:11px}
-    .sign{margin-top:42px;display:grid;grid-template-columns:1fr 1fr;gap:40px}
-    .sign div{border-top:1px solid #182033;padding-top:6px;text-align:center;font-size:12px;color:#596273}
-    @media print{body{-webkit-print-color-adjust:exact;print-color-adjust:exact}.wrap{padding:0}}
-  </style></head><body><div class="wrap">
-    <header>
-      <div>
-        <h1>${escapeHtml(name)}</h1>
-        <p>${escapeHtml(report.course?.name || '')}${report.className ? ` · Turma ${escapeHtml(report.className)}` : ''}${report.period ? ` · ${escapeHtml(report.period)}` : ''}</p>
-        <p>${student.matricula ? `Matrícula ${escapeHtml(student.matricula)} · ` : ''}${escapeHtml(student.email || '')}</p>
-      </div>
-      <div class="inst">${escapeHtml(report.institution || 'IClass')}<br><span style="text-transform:none;letter-spacing:0">Boletim emitido em ${date(report.generatedAt)}</span></div>
-    </header>
-    <div class="kpis">
-      <div class="kpi"><span>Média geral</span><strong>${grade(report.overallAverage)}</strong></div>
-      <div class="kpi"><span>Frequência</span><strong${frequencyClass}>${pct(attendance.frequency)}</strong></div>
-      <div class="kpi"><span>Faltas (aulas)</span><strong>${attendance.faltas ?? 0}</strong></div>
-      <div class="kpi"><span>Tópicos concluídos</span><strong>${report.progress?.completedUnits ?? 0}/${report.progress?.totalUnits ?? 0}</strong></div>
-    </div>
-    <h2>Avaliações</h2>
-    <table><thead><tr><th>Avaliação</th><th class="num">Tentativas</th><th class="num">Última</th><th class="num">Nota</th></tr></thead><tbody>${moduleRows || '<tr><td colspan="4" class="empty">Curso sem avaliações.</td></tr>'}</tbody></table>
-    <h2>Frequência por disciplina</h2>
-    <table><thead><tr><th>Disciplina</th><th class="num">Presenças</th><th class="num">Faltas</th><th class="num">Frequência</th></tr></thead><tbody>${disciplineRows}</tbody></table>
-    <p style="font-size:11px;color:#8790a0;margin-top:8px">Só notas publicadas entram na média.${hasRepeatedExam ? ' Prova aplicada mais de uma vez aparece em uma linha por aplicação, e cada aplicação entra na média.' : ''} Faltas abonadas não contam. ${attendance.days ? `${attendance.days} dia(s) com registro de presença.` : ''}</p>
-    <div class="sign"><div>${escapeHtml(report.issuedBy || 'Instrutor')}</div><div>Responsável pelo aluno</div></div>
-    <footer><span>${escapeHtml(report.institution || 'IClass')} · ${escapeHtml(report.course?.name || '')}</span><span>Gerado pelo IClass</span></footer>
-  </div></body></html>`
+  return {
+    titulo: `Boletim — ${name}`,
+    subtitulo: subtitle,
+    escola,
+    displayName: identity.displayName || institution,
+    fuso: identity.fuso,
+    rodapeEsquerda: [escola.nome, report.course?.name].filter(Boolean).join(' · '),
+    estilo: trustedHtml('.nota-baixa{color:#cf3943}'),
+    secoes,
+  }
 }
 
-// Abre a janela de impressão com o boletim. Retorna false se o pop-up foi bloqueado.
-export function printBoletim(report) {
-  const win = window.open('', '_blank')
-  if (!win) return false
-  win.document.write(boletimHtml(report))
-  win.document.close()
-  win.onload = () => setTimeout(() => win.print(), 300)
-  return true
+// HTML do boletim (o que vai para a janela de impressão; os testes conferem por aqui).
+export function boletimHtml(report, identity) {
+  return printDocumentHtml(boletimDocument(report, identity))
+}
+
+// Abre a caixa de impressão com o boletim, na janela aberta no clique (openPrintWindow)
+// ou numa nova. Retorna false se o pop-up foi bloqueado.
+export function printBoletim(report, identity, targetWindow) {
+  return printDocument(boletimDocument(report, identity), targetWindow)
 }

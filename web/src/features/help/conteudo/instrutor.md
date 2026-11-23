@@ -97,6 +97,30 @@ Mostra as entregas das provas da turma, aluno por aluno, com as notas. Daqui voc
 
 <!-- P2 escreve aqui: quadro de notas, plano de avaliação, média, etapas, situação e boletim. -->
 
+### Quadro de notas
+
+A aba **Quadro de notas** mostra uma linha por aluno e uma coluna por prova ou avaliação da turma. Com os critérios de avaliação do curso ligados (veja "Cursos e turmas"), as colunas ficam agrupadas por etapa ("1º bimestre · peso 1"), cada etapa tem a **Média da etapa** (com "(rec.)" quando a recuperação mudou a nota) e, no fim, vêm a **Média final**, a **Frequência**, a **Situação** (Aprovado, Em recuperação, Reprovado por nota, Reprovado por falta, Cursando ou Sem notas) e a **Menção**, se o curso usa menções. A cor da nota segue a média mínima do curso. Tudo é calculado pelo IClass com a mesma conta do boletim e da planilha exportada.
+
+No celular, o quadro vira uma lista de alunos: toque no aluno para ver as notas de cada etapa.
+
+### Plano de avaliação
+
+A aba **Plano de avaliação** diz em que etapa e com que peso entra cada avaliação da turma:
+
+- **Etapa** e **Peso**: o peso aceita vírgula (1,5).
+- **Recuperação de**: marque quando a avaliação é a recuperação de uma etapa ou a recuperação final. A regra da recuperação é a dos critérios do curso.
+- **Não conta**: a avaliação fica no quadro e sai da média (um simulado, por exemplo).
+
+Clique em **Salvar plano** para gravar. Se a turma já tem nota publicada, o IClass pede o motivo, que fica na Auditoria. Se uma avaliação ficou sem etapa, o quadro avisa no alto.
+
+**Nova avaliação da turma** cria um trabalho, uma prática, um seminário ou a participação: uma avaliação sem questões, com título, tipo, data, módulo, etapa e peso. Para lançar a nota, use **Lançar nota**: a avaliação aparece na lista com o tipo na frente ("Seminário - Seminário de redes") e você digita só a nota de 0 a 10, sem acertos nem cartão-resposta. A nota aparece para o aluno depois de publicada. **Arquivar** tira a avaliação da média e guarda as notas; **Reativar** devolve.
+
+Com os critérios do curso desligados, a média é a de sempre (a média simples das notas), e etapa, peso e recuperação só passam a valer quando os critérios forem ligados.
+
+### Boletim
+
+O **Boletim (PDF)**, na página do aluno e na ficha dele, sai com o cabeçalho e o nome da escola. Ele mostra a média final, a situação e a menção, as notas por etapa, as avaliações de cada módulo, a frequência por disciplina (com a carga horária e as aulas previstas no período letivo) e os avisos da conta. Salve como PDF pela caixa de impressão do navegador.
+
 ## Correção de provas {#correcao}
 
 <!-- P3 (A9 e A18) escreve aqui: correção manual, anular por cola, revisão pedida pelo aluno e corrigir gabarito. -->
@@ -170,6 +194,17 @@ No celular, o mês aparece como uma lista dos dias que têm evento.
 Lista os cursos da instituição e as turmas de cada um. Daqui você cria turmas e abre ou fecha o autocadastro dos alunos em cada uma.
 
 <!-- P2 (B6, B8, B10) escreve aqui: critérios de avaliação, disciplinas, período letivo e encerrar turma. P4 (A14): exportar e importar curso. -->
+
+**Critérios de avaliação** (botão do curso) define como a média final e a situação do aluno são calculadas em todas as turmas do curso:
+
+1. Ligue **Usar critérios de avaliação neste curso**.
+2. Informe a **média mínima** (de 0 a 10, com vírgula) e a **frequência mínima** (%).
+3. Monte as **etapas** (de 1 a 6, por exemplo dois bimestres), cada uma com o nome e o peso.
+4. Escolha a regra da **recuperação de cada etapa** e da **recuperação final**. Embaixo de cada regra aparece um exemplo.
+5. Se a escola usa conceitos, ligue as **menções** (MB, B, R, I) e ajuste a nota a partir da qual cada uma vale. A mais baixa começa em 0,0.
+6. Clique em **Ver prévia** para saber quantos alunos mudam de média ou de situação, antes de gravar, e em **Salvar critérios**.
+
+Se o curso já tem nota publicada, o IClass pede o motivo, que fica na Auditoria. Desligar os critérios volta à média de sempre e guarda os valores para quando você ligar de novo. Só quem gerencia cursos altera os critérios; o professor e a Coordenação veem os critérios sem alterar. A etapa e o peso de cada avaliação ficam no **Plano de avaliação**, em Resultados.
 
 No formulário da turma, **Turno** é Manhã, Tarde ou Noite, e **Período letivo** liga a turma ao semestre ou ano letivo (veja "Período letivo", abaixo). Cada turma mostra o período dela ou o selo "Sem período letivo".
 

@@ -2221,6 +2221,9 @@ router.get('/api/admin/student/academic', (req, res) => {
                 // P2-S8): o filtro da ficha passa a ser por período; sem período, null e a
                 // tela usa o semestre do calendário, como antes.
                 periodoLetivo: submissionTerm(db.memory, s, schoolDateOf(s.timestamp)),
+                // Critério do curso da entrega (C1 do P2, B9): a cor da nota na ficha de
+                // Alunos segue a média mínima do curso dela (sem critérios, 6,0).
+                criterio: gradeCriterionFor(db.memory, { courseId: String(s.student.courseId || s.courseId || ''), studentClass: String(s.student.studentClass || s.studentClass || '') }),
             }))
             .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
         const progressMap = (db.memory.progress && db.memory.progress[email]) || {};

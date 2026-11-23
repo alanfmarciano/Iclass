@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Archive, BookCopy, BookOpen, Building2, Pencil, Plus, RotateCcw, Search, School, Trash2, UserPlus, Users, Wand2 } from 'lucide-react'
+import { Archive, BookCopy, BookOpen, Building2, ClipboardList, Pencil, Plus, RotateCcw, Search, School, Trash2, UserPlus, Users, Wand2 } from 'lucide-react'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { Card, CardBody } from '../../components/ui/Card'
@@ -15,7 +15,8 @@ import { api } from '../../lib/api'
 import { useAuth } from '../../context/AuthProvider'
 import { useToast } from '../../context/ToastProvider'
 import { DisciplinasModal, GradeEditor } from './TurmaPresencaConfig'
-import { isFullAdmin, isProfessorRoleAccount } from '../../lib/adminPermissions'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission, isFullAdmin, isProfessorRoleAccount } from '../../lib/adminPermissions'
+import { GradingCriteriaDialog } from './GradingCriteriaDialog'
 import { AcademicTermsSection, brDate, termOptionLabel, termOptionsForCourse } from './AcademicTermsSection'
 
 const CLASS_PERIODS = ['Manhã', 'Tarde', 'Noite']
@@ -83,6 +84,9 @@ export default function TurmasPage() {
   // Criar e mudar cursos e turmas, atribuir professor e arquivo: só o administrador pleno
   // (contrato C2 do P4; antes era "não é professor").
   const isAdmin = isFullAdmin(auth)
+  // Critérios de avaliação do curso (B9): quem gerencia cursos altera; quem abre Resultados
+  // (professor, Coordenação) vê sem alterar (o diálogo segue o podeAlterar do servidor).
+  const canSeeCriteria = canAccessAdminPermission(auth, [ADMIN_PERMISSIONS.COURSE_MANAGE, ADMIN_PERMISSIONS.PAGE_RESULTS])
   const coursesApi = useApi('/api/admin/course-summaries?includeDeleted=1')
   const classesApi = useApi('/api/admin/classes')
   const schoolsApi = useApi('/api/admin/schools')
@@ -100,6 +104,7 @@ export default function TurmasPage() {
   const [courseForm, setCourseForm] = useState(null)
   const [classForm, setClassForm] = useState(null)
   const [disciplinasForm, setDisciplinasForm] = useState(null)
+  const [criteriaCourse, setCriteriaCourse] = useState(null)
   const [assignmentForm, setAssignmentForm] = useState(null)
   const [confirm, setConfirm] = useState(null)
   const [saving, setSaving] = useState(false)
@@ -296,7 +301,7 @@ export default function TurmasPage() {
               <Card><CardBody className="space-y-5 pt-5">
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div><div className="flex items-center gap-2"><h2 className="text-xl font-semibold text-text">{selectedCourse.name}</h2>{isDeleted(selectedCourse) && <Badge tone="warning">Excluído</Badge>}</div><p className="mt-1 flex items-center gap-1.5 text-sm text-muted"><Building2 size={15} /> {selectedSchool?.name || 'Sem escola vinculada'}</p></div>
-                  {isAdmin && <div className="flex flex-wrap gap-2">{isDeleted(selectedCourse) ? <Button size="sm" icon={RotateCcw} onClick={() => run(() => api.put(`/api/admin/courses/${encodeURIComponent(selectedCourse.id)}`, { status: 'active', deleted: false, deletedAt: null }), 'Curso restaurado.')}>Restaurar</Button> : <><Button size="sm" variant="secondary" icon={Pencil} onClick={openEditCourse}>Editar</Button><Button size="sm" variant="secondary" icon={BookOpen} onClick={() => setDisciplinasForm(selectedCourse)}>Disciplinas</Button><Button size="sm" variant="secondary" icon={BookCopy} onClick={openCloneCourse}>Duplicar</Button><Button size="sm" variant="secondary" icon={Archive} onClick={() => setConfirm({ type: 'archive', target: selectedCourse })}>Arquivar</Button><Button size="sm" variant="destructive" icon={Trash2} onClick={() => setConfirm({ type: 'course', target: selectedCourse })}>Excluir</Button></>}</div>}
+                  {(isAdmin || canSeeCriteria) && <div className="flex flex-wrap gap-2">{isAdmin && (isDeleted(selectedCourse) ? <Button size="sm" icon={RotateCcw} onClick={() => run(() => api.put(`/api/admin/courses/${encodeURIComponent(selectedCourse.id)}`, { status: 'active', deleted: false, deletedAt: null }), 'Curso restaurado.')}>Restaurar</Button> : <><Button size="sm" variant="secondary" icon={Pencil} onClick={openEditCourse}>Editar</Button><Button size="sm" variant="secondary" icon={BookOpen} onClick={() => setDisciplinasForm(selectedCourse)}>Disciplinas</Button><Button size="sm" variant="secondary" icon={BookCopy} onClick={openCloneCourse}>Duplicar</Button><Button size="sm" variant="secondary" icon={Archive} onClick={() => setConfirm({ type: 'archive', target: selectedCourse })}>Arquivar</Button><Button size="sm" variant="destructive" icon={Trash2} onClick={() => setConfirm({ type: 'course', target: selectedCourse })}>Excluir</Button></>)}{canSeeCriteria && !isDeleted(selectedCourse) && <Button size="sm" variant="secondary" icon={ClipboardList} onClick={() => setCriteriaCourse(selectedCourse)}>Critérios de avaliação</Button>}</div>}
                 </div>
 
                 <div className="border-t border-border pt-4">
@@ -350,6 +355,8 @@ export default function TurmasPage() {
           </div>
         </div>}
       </Modal>
+
+      <GradingCriteriaDialog open={!!criteriaCourse} onClose={() => setCriteriaCourse(null)} course={criteriaCourse} />
 
       <DisciplinasModal open={!!disciplinasForm} onClose={() => setDisciplinasForm(null)} course={disciplinasForm} onSave={saveDisciplinas} saving={saving} />
 
