@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ChamadaPage from './ChamadaPage'
@@ -207,5 +207,72 @@ describe('Chamada da Coordenação (só consulta)', () => {
     render(<ChamadaPage />)
     expect(await screen.findByText('Sua conta é só de consulta. A chamada deste dia ainda não foi salva: as marcações abaixo são o padrão da tela, não um registro.')).toBeInTheDocument()
     expect(mocks.post).not.toHaveBeenCalled()
+  })
+})
+
+describe('Exportar a presença e o conteúdo das aulas (B11, FUN-09)', () => {
+  const diario = {
+    courseId: 'curso1', studentClass: '1DES', date: '2026-11-10', versao: null, encerrada: false,
+    aulas: aulas.map((a) => ({ ...a, disciplinaNome: 'Fundamentos', naGrade: true, conteudo: '', atividade: '', observacao: '' })),
+  }
+  function routes(url) {
+    if (url.startsWith('/api/settings/public')) return { today: '2026-11-10' }
+    if (url.startsWith('/api/admin/attendance/roster')) return rosterWith([aluno('ana@x.local')])
+    if (url.startsWith('/api/admin/attendance/diary')) return { success: true, diario, limites: { conteudoMax: 2000, atividadeMax: 1000 } }
+    if (url.startsWith('/api/admin/attendance/export')) return 'Data;Aluno\n'
+    return {}
+  }
+
+  it('[UC-DIARIO-003] Exportar CSV pede o período (padrão: o mês da data) e manda from, to e courseId', async () => {
+    const user = userEvent.setup()
+    const created = vi.fn(() => 'blob:presenca')
+    const originalCreate = URL.createObjectURL
+    const originalRevoke = URL.revokeObjectURL
+    URL.createObjectURL = created
+    URL.revokeObjectURL = vi.fn()
+    const click = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {})
+    try {
+      mocks.get.mockImplementation(async (url) => routes(url))
+      render(<ChamadaPage />)
+      await screen.findByText('ana')
+      await waitFor(() => expect(screen.getByLabelText('Data')).toHaveValue('2026-11-10'))
+      await user.click(screen.getByRole('button', { name: 'Exportar CSV' }))
+      expect(await screen.findByRole('dialog')).toHaveTextContent('Exportar a presença')
+      expect(screen.getByLabelText('De')).toHaveValue('2026-11-01')
+      expect(screen.getByLabelText('Até')).toHaveValue('2026-11-30')
+      fireEvent.change(screen.getByLabelText('De'), { target: { value: '2026-11-03' } })
+      await user.click(screen.getByRole('button', { name: 'Baixar CSV' }))
+      await waitFor(() => expect(mocks.get).toHaveBeenCalledWith(expect.stringContaining('/api/admin/attendance/export?'), { raw: true }))
+      const url = mocks.get.mock.calls.map(([u]) => u).find((u) => u.startsWith('/api/admin/attendance/export'))
+      const params = new URL(url, 'http://x').searchParams
+      // Antes: só studentClass (todas as datas, e a turma de mesmo nome de outro curso junto).
+      expect(Object.fromEntries(params)).toEqual({ studentClass: '1DES', courseId: 'curso1', from: '2026-11-03', to: '2026-11-30' })
+      expect(created).toHaveBeenCalledTimes(1)
+      await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    } finally {
+      URL.createObjectURL = originalCreate
+      URL.revokeObjectURL = originalRevoke
+      click.mockRestore()
+    }
+  })
+
+  it('[UC-DIARIO-003] período ao contrário: o diálogo avisa e não baixa', async () => {
+    const user = userEvent.setup()
+    mocks.get.mockImplementation(async (url) => routes(url))
+    render(<ChamadaPage />)
+    await screen.findByText('ana')
+    await user.click(screen.getByRole('button', { name: 'Exportar CSV' }))
+    fireEvent.change(await screen.findByLabelText('De'), { target: { value: '2026-12-01' } })
+    await user.click(screen.getByRole('button', { name: 'Baixar CSV' }))
+    expect(await screen.findByText('O início do período é depois do fim.')).toBeInTheDocument()
+    expect(mocks.get).not.toHaveBeenCalledWith(expect.stringContaining('/api/admin/attendance/export'), expect.anything())
+  })
+
+  it('[UC-DIARIO-001] o bloco "Conteúdo das aulas" aparece abaixo da lista, com um cartão por aula', async () => {
+    mocks.get.mockImplementation(async (url) => routes(url))
+    render(<ChamadaPage />)
+    expect(await screen.findByRole('heading', { name: 'Conteúdo das aulas' })).toBeInTheDocument()
+    expect(screen.getAllByLabelText('Conteúdo ministrado')).toHaveLength(2)
+    expect(mocks.get).toHaveBeenCalledWith(expect.stringMatching(/^\/api\/admin\/attendance\/diary\?courseId=curso1&studentClass=1DES&date=/))
   })
 })

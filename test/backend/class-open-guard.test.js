@@ -105,6 +105,8 @@ const ROTAS_QUE_GRAVAM = [
     ['adminGrading.js', 'POST', '/api/admin/grading/manual-items/update'],
     ['adminGrading.js', 'POST', '/api/admin/grading/manual-items/archive'],
     ['adminGrading.js', 'POST', '/api/admin/grading/manual-items/restore'],
+    // Diário de classe (B11 / P4-S7): o conteúdo de cada aula do dia da turma.
+    ['adminDiary.js', 'POST', '/api/admin/attendance/diary'],
 ];
 
 // Rotas que gravam entregas ou presença e não passam pelo portão, com o motivo (revisto no
@@ -147,6 +149,9 @@ const DIRECT_WRITE_MARKERS = [
     /only:\s*\[[^\]]*['"]assignmentSubmissions['"]/,
     // Plano de avaliação da turma e avaliações manuais (B6): gravam classes[].avaliacao.
     /\bsaveClassPlan\(/,
+    // Diário de classe (B11): o documento do dia da turma em classDiary.
+    /\.classDiary\.(?:push|splice)\(/,
+    /only:\s*\[[^\]]*['"]classDiary['"]/,
 ];
 
 const UTILS_DIR = path.join(__dirname, '../../backend/utils');
@@ -384,6 +389,7 @@ const PERCURSO = {
     'adminGrading.js POST /api/admin/grading/manual-items/update': () => ({ url: '/api/admin/grading/manual-items/update', body: { courseId: 'DES', studentClass: '1DES', id: 'man_ativa', titulo: 'Trabalho final (revisto)' } }),
     'adminGrading.js POST /api/admin/grading/manual-items/archive': () => ({ url: '/api/admin/grading/manual-items/archive', body: { courseId: 'DES', studentClass: '1DES', id: 'man_ativa', reason: 'não aconteceu' } }),
     'adminGrading.js POST /api/admin/grading/manual-items/restore': () => ({ url: '/api/admin/grading/manual-items/restore', body: { courseId: 'DES', studentClass: '1DES', id: 'man_arquivada', reason: 'aconteceu sim' } }),
+    'adminDiary.js POST /api/admin/attendance/diary': () => ({ url: '/api/admin/attendance/diary', body: { courseId: 'DES', studentClass: '1DES', date: '2026-11-10', versao: null, aulas: [{ ordem: 1, conteudo: 'Revisão de laços' }] } }),
 };
 
 function seedWalk() {
@@ -400,6 +406,7 @@ function seedWalk() {
     }];
     db.memory.students = [{ id: 'alu_00000000000000a1', name: 'Ana Souza', email: ANA, status: 'Ativo', password: db.hashPassword('123'), classes: [{ name: '1DES', courseId: 'DES' }], studentClass: '1DES' }];
     db.memory.attendance = [];
+    db.memory.classDiary = [];
     db.memory.auditLogs = [];
     db.memory.nonSchoolDays = [{ id: 'nl_turma', inicio: '2026-11-18', fim: '2026-11-18', tipo: 'evento_escolar', nome: 'Feira', escopo: 'turma', courseId: 'DES', studentClass: '1DES', criadoEm: now, criadoPor: ADM }];
     const questions = [{ number: 1, questionText: 'Q1', alternatives: { A: 'a', B: 'b' }, correctAnswer: 'A' }];
@@ -444,6 +451,7 @@ test('[UC-CURSO-003] turma encerrada: toda rota de ROTAS_QUE_GRAVAM responde 409
         avaliacao: db.memory.classes[0].avaliacao,
         nonSchoolDays: db.memory.nonSchoolDays.filter(day => day.escopo !== 'instituicao'),
         assignmentSubmissions: db.memory.assignmentSubmissions,
+        classDiary: db.memory.classDiary || [],
         apps: db.memory.examApplications.map(item => [item.id, item.status, item.globalTimeAdjustment || 0]),
         states: db.memory.studentExamState,
     });

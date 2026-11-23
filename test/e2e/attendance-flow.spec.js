@@ -79,6 +79,50 @@ test('[UC-PRESENCA-002] chamada por aula salva justificativa abonada e a restaur
     await expect(alice.getByRole('radio', { name: 'Justificado' })).toHaveAttribute('aria-checked', 'true');
 });
 
+// Diário de classe na Chamada (B11 / P4-S7, FUN-09): o conteúdo de cada aula salva sozinho
+// e volta ao reabrir a data; Exportar CSV pede o período e manda o curso.
+test('[UC-DIARIO-001] conteúdo das aulas salva sozinho e volta ao reabrir a data; [UC-DIARIO-003] exportar pede o período', async ({ page }) => {
+    test.setTimeout(60000);
+    await loginAdminAndEnterWorkspace(page);
+    await page.getByRole('link', { name: 'Chamada', exact: true }).click();
+    await page.getByLabel('Data').fill('2026-07-13');
+    const bloco = page.getByRole('region', { name: 'Conteúdo das aulas' });
+    await expect(bloco).toBeVisible();
+    await expect(bloco.getByText(/^Aula 1 · 08:00/)).toBeVisible();
+    // O seed não apaga o diário: um texto novo a cada vez para o autosave sempre gravar.
+    const texto = `Hardware: placa-mãe e barramentos (${Date.now()})`;
+    const saved = page.waitForResponse(response => (
+        response.request().method() === 'POST'
+        && new URL(response.url()).pathname === '/api/admin/attendance/diary'
+    ));
+    await bloco.getByLabel('Conteúdo ministrado').first().fill(texto);
+    await bloco.getByLabel('Atividade (opcional)').first().fill('Montagem em dupla');
+    const response = await saved;
+    expect(response.status()).toBe(200);
+    await expect(bloco.getByText(/Salvo às/)).toBeVisible();
+
+    // Outra data e de volta: o texto continua.
+    await page.getByLabel('Data').fill('2026-07-14');
+    await expect(bloco.getByLabel('Conteúdo ministrado').first()).toHaveValue('');
+    await page.getByLabel('Data').fill('2026-07-13');
+    await expect(bloco.getByLabel('Conteúdo ministrado').first()).toHaveValue(texto);
+    await expect(bloco.getByLabel('Atividade (opcional)').first()).toHaveValue('Montagem em dupla');
+
+    await page.getByRole('button', { name: 'Exportar CSV', exact: true }).click();
+    const dialogo = page.getByRole('dialog', { name: 'Exportar a presença' });
+    await expect(dialogo.getByLabel('De')).toHaveValue('2026-07-01');
+    await expect(dialogo.getByLabel('Até')).toHaveValue('2026-07-31');
+    const exported = page.waitForResponse(res => new URL(res.url()).pathname === '/api/admin/attendance/export');
+    await dialogo.getByRole('button', { name: 'Baixar CSV', exact: true }).click();
+    const exportResponse = await exported;
+    expect(exportResponse.status()).toBe(200);
+    const params = new URL(exportResponse.url()).searchParams;
+    expect(params.get('from')).toBe('2026-07-01');
+    expect(params.get('to')).toBe('2026-07-31');
+    expect(params.get('courseId')).toBeTruthy();
+    await expect(dialogo).toBeHidden();
+});
+
 // Dia não letivo pela tela (B7 / P2-S6, FUN-15): o professor cadastra um feriado para
 // hoje no Calendário; o Dashboard deixa de cobrar a chamada e diz que hoje não tem aula, e
 // a Chamada mostra a faixa no lugar da grade. A seed tem grade de segunda a sexta: no fim

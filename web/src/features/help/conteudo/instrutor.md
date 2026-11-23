@@ -234,11 +234,23 @@ Mostra o portal do aluno exatamente como um aluno da turma o vê, sem criar um a
 
 Registra a presença por aula. Escolha a data, marque quem veio e salve. A presença também pode ser marcada sozinha quando o aluno entra no IClass, se a turma estiver configurada assim.
 
-<!-- P4 (B11) escreve aqui: conteúdo das aulas e diário de classe. P5 (B19): avisar o responsável. -->
+**Conteúdo das aulas.** Abaixo da lista de alunos fica o bloco **Conteúdo das aulas**, com um cartão para cada aula do dia (por exemplo, "Aula 1 · 07:30 · Redes"). Escreva o **Conteúdo ministrado** e, se quiser, a **Atividade** passada. Salva sozinho, como a chamada ("Salvo às 10:42"), e vai para o diário de classe da turma (veja Diário de classe). Não escreva dados de alunos ali: o que for de um aluno vai na observação dele, na chamada.
+
+**Exportar CSV.** O botão pede o período (o padrão é o mês da data escolhida) e baixa a planilha só desta turma, deste curso, com uma linha por aula de cada aluno.
+
+<!-- P5 (B19) escreve aqui: avisar o responsável. -->
 
 ## Diário de classe {#diario}
 
-<!-- P4 (B11 e B12) escreve aqui: diário, documento impresso e aulas previstas x dadas. -->
+O diário de classe guarda o que foi dado em cada aula da turma, dia a dia. Ele é preenchido na **Chamada**, no bloco **Conteúdo das aulas**.
+
+- **Quem escreve.** Quem faz a chamada da turma: o professor, o Professor auxiliar, a Secretaria e o administrador. A Coordenação só consulta. Turma encerrada fica só para consulta; para mudar, reabra a turma em Turmas.
+- **Nada se perde.** O diário nunca é apagado pela tela. Se duas abas (ou duas pessoas) mexem no mesmo dia, o IClass não grava por cima: avisa "O conteúdo deste dia foi alterado em outra aba ou por outra pessoa" e deixa escolher entre **Ver a versão salva** e **Gravar o meu texto por cima**. Trocar de data com texto ainda não salvo grava antes de sair.
+- **Auditoria.** A primeira gravação do dia aparece como "Diário da aula registrado". Uma mudança feita por outra pessoa, ou mais de 24 horas depois, aparece como "Diário da aula alterado", com o texto de antes e o de depois. As correções do mesmo professor no mesmo dia não enchem a Auditoria.
+- **Aula que saiu da grade.** Se a grade da turma mudar depois, a aula já escrita continua no diário, marcada "fora da grade deste dia".
+- **Backup.** O diário vai no backup. Restaurar um backup de antes desta versão não apaga o diário de agora.
+
+<!-- P4 (B12) escreve aqui: documento impresso do mês e aulas previstas x dadas. -->
 
 ## Avisos {#avisos}
 

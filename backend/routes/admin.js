@@ -243,6 +243,7 @@ const { createAdminPreviewRouter } = require('./adminPreview.js');
 const { createAdminMessagesRouter } = require('./adminMessages.js');
 const { createAdminAssignmentsRouter } = require('./adminAssignments.js');
 const { createAdminCoursePackageRouter } = require('./adminCoursePackage.js');
+const { createAdminDiaryRouter } = require('./adminDiary.js');
 const { remapCourseKeys } = require('../utils/coursePackage.js');
 const { body, either, int, list, num, shape, str } = require('../utils/inputSchema.js');
 const { normalizeEvaluationQuestions, questionInputSchema } = require('../utils/questionModel.js');
@@ -2748,19 +2749,35 @@ router.post('/api/admin/attendance/bulk', (req, res) => {
 const ATT_ORIGIN_LABEL = { chamada: 'Chamada', manual: 'Manual', login: 'Automática (acesso do aluno)' };
 
 // Exporta presença da turma em CSV (uma linha por aula; respeita período opcional).
+// Turma do curso (FUN-09, B11): com courseId, só os alunos da turma daquele curso e só as
+// linhas daquele curso (registro antigo sem curso continua entrando, como na chamada);
+// sem courseId (tela antiga), a turma precisa ser a única com esse nome, senão 400
+// course_required: antes, a turma homônima de outro curso entrava na planilha. from e to
+// ('AAAA-MM-DD', a tela manda o mês atual por padrão) limitam as datas.
 router.get('/api/admin/attendance/export', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const className = String(req.query.studentClass || '').trim();
         if (!className) return res.status(400).json({ error: 'Turma é obrigatória.' });
-        const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : null;
-        const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : null;
-        const emailsInScope = new Set(filterStudentsForAdmin((db.memory.students || []).filter(s => _studentInClass(s, className)), matchedAdmin).map(s => (s.email || '').toLowerCase()));
+        const from = isValidIsoDate(req.query.from) ? req.query.from : null;
+        const to = isValidIsoDate(req.query.to) ? req.query.to : null;
+        if (from && to && from > to) return res.status(400).json({ error: 'O início do período é depois do fim.', field: 'from' });
+        let courseId = String(req.query.courseId || '').trim();
+        const sameName = (db.memory.classes || []).filter(c => c && c.name === className);
+        if (courseId) {
+            if (!sameName.some(c => String(c.courseId || '') === courseId)) return res.status(404).json({ error: 'Turma não encontrada neste curso.', field: 'courseId' });
+        } else if (sameName.length > 1) {
+            return res.status(400).json({ error: 'Há turmas com este nome em mais de um curso: informe o curso.', field: 'courseId', code: 'course_required' });
+        } else if (sameName.length === 1) {
+            courseId = String(sameName[0].courseId || '');
+        }
+        const emailsInScope = new Set(filterStudentsForAdmin((db.memory.students || []).filter(s => _studentInClass(s, className, courseId)), matchedAdmin).map(s => (s.email || '').toLowerCase()));
         const nameByEmail = {};
         (db.memory.students || []).forEach(s => { if (s.email) nameByEmail[s.email.toLowerCase()] = (s.nomeSocial && s.nomeSocial.trim()) || s.name || ''; });
         // Nome de disciplina por curso.
         const discNome = {};
         (db.memory.courses || []).forEach(c => (c.disciplinas || []).forEach(d => { discNome[`${c.id}::${d.id}`] = d.nome; }));
-        let rows = (db.memory.attendance || []).filter(a => a.studentClass === className && emailsInScope.has(a.studentEmail));
+        let rows = (db.memory.attendance || []).filter(a => a.studentClass === className && emailsInScope.has(a.studentEmail)
+            && (!courseId || !a.courseId || String(a.courseId) === courseId));
         if (from) rows = rows.filter(a => (a.date || '') >= from);
         if (to) rows = rows.filter(a => (a.date || '') <= to);
         rows.sort((a, b) => (a.date || '').localeCompare(b.date || '') || (nameByEmail[a.studentEmail] || '').localeCompare(nameByEmail[b.studentEmail] || '', 'pt-BR'));
@@ -3909,12 +3926,15 @@ router.use(createAdminStudentRecordsRouter());
 router.use(createAdminCoursesRouter());
 // Rotas novas da fase 3 (ordem_no_createApp do plano), depois do router de cursos:
 // calendário acadêmico (P2), correção do professor (P3-S4a), banco de questões (P3-S9a),
-// tarefas com envio de arquivo (P1-b e P1-d), pacote de curso (P4-S14), grupos de alunos
-// (P5-S4), pré-visualização como aluno (P5-S6a) e conversas com os alunos (P5-S7a).
+// tarefas com envio de arquivo (P1-b e P1-d), diário de classe (P4-S7), pacote de curso
+// (P4-S14), grupos de alunos (P5-S4), pré-visualização como aluno (P5-S6a) e conversas
+// com os alunos (P5-S7a).
 router.use(createAdminAcademicRouter());
 router.use(createAdminCorrectionsRouter());
 router.use(createAdminQuestionBankRouter());
 router.use(createAdminAssignmentsRouter());
+// Diário de classe (P4-S7): conteúdo de cada aula do dia, na Chamada.
+router.use(createAdminDiaryRouter());
 // Pacote de curso (P4-S14): exportar e importar entre instalações.
 router.use(createAdminCoursePackageRouter({ uploadErrorMessage, isUploadRequestError }));
 router.use(createAdminGroupsRouter());

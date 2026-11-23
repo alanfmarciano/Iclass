@@ -13,6 +13,8 @@ import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { matchesSearch } from '../../lib/textSearch'
 import { useAuth } from '../../context/AuthProvider'
 import { ADMIN_PERMISSIONS, canWriteAdminPermission } from '../../lib/adminPermissions'
+import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
+import { ChamadaDiario } from './ChamadaDiario'
 
 // ---------------------------------------------------------------------------
 // Status exibido por ALUNO. O backend guarda status por AULA (presente/falta/
@@ -110,6 +112,13 @@ function semAulaDetalhe(semAula) {
   const datas = termo.inicio && termo.fim ? ` (de ${brDate(termo.inicio)} a ${brDate(termo.fim)})` : ''
   return `Fora do período letivo ${termo.nome}${datas}.`
 }
+// Primeiro e último dia do mês de uma data 'AAAA-MM-DD' (o período padrão da exportação).
+function monthRange(value) {
+  const m = /^(\d{4})-(\d{2})-\d{2}$/.exec(value || '')
+  if (!m) return { from: '', to: '' }
+  const last = new Date(Date.UTC(+m[1], +m[2], 0)).getUTCDate()
+  return { from: `${m[1]}-${m[2]}-01`, to: `${m[1]}-${m[2]}-${String(last).padStart(2, '0')}` }
+}
 const freqTone = (f) => (f == null ? 'text-subtle bg-surface-2' : f < 75 ? 'text-danger bg-danger-soft' : f < 85 ? 'text-warning bg-warning-soft' : 'text-success bg-success-soft')
 
 export default function ChamadaPage() {
@@ -139,6 +148,8 @@ export default function ChamadaPage() {
   // chamada já lançada naquela data, o servidor já entra no "mesmo assim" (chamadaNoDia).
   const [semAula, setSemAula] = useState(null)
   const [mesmoAssim, setMesmoAssim] = useState(false)
+  // Exportar a presença (FUN-09): o período (padrão: o mês da data escolhida) e o curso.
+  const [exportRange, setExportRange] = useState(null)
   const toast = useToast()
   const listRef = useRef(null)
   const autosaveRef = useRef(null)
@@ -252,13 +263,19 @@ export default function ChamadaPage() {
     return () => clearTimeout(autosaveRef.current)
   }, [readOnly, dirty, ui, grade.length, roster.length, salvar])
 
-  async function exportCsv() {
-    try {
-      const text = await api.get(`/api/admin/attendance/export?studentClass=${encodeURIComponent(className)}`, { raw: true })
-      const blob = new Blob([text], { type: 'text/csv;charset=utf-8' })
-      const a = document.createElement('a')
-      a.href = URL.createObjectURL(blob); a.download = `presenca_${className}.csv`; a.click(); URL.revokeObjectURL(a.href)
-    } catch (e) { toast.error(e.message) }
+  // Antes a tela mandava só a turma: a planilha trazia todas as datas e também a turma de
+  // mesmo nome de outro curso. Agora vão o período e o curso.
+  async function exportCsv({ from, to }) {
+    if (from && to && from > to) throw new Error('O início do período é depois do fim.')
+    const params = new URLSearchParams({ studentClass: className, courseId: activeCourseId || '' })
+    if (from) params.set('from', from)
+    if (to) params.set('to', to)
+    const text = await api.get(`/api/admin/attendance/export?${params.toString()}`, { raw: true })
+    const blob = new Blob([text], { type: 'text/csv;charset=utf-8' })
+    const a = document.createElement('a')
+    const periodo = from || to ? `_${from || 'inicio'}_a_${to || 'hoje'}` : ''
+    a.href = URL.createObjectURL(blob); a.download = `presenca_${className}${periodo}.csv`; a.click(); URL.revokeObjectURL(a.href)
+    setExportRange(null)
   }
 
   // ---- derivados ----
@@ -291,6 +308,7 @@ export default function ChamadaPage() {
     function onKey(e) {
       if (e.target.matches('input, textarea, select')) return
       if (modal) { if (e.key === 'Escape') setModal(null); return }
+      if (exportRange) return
       const k = e.key.toLowerCase()
       if (k === 'arrowdown') { e.preventDefault(); setFocusIdx((i) => Math.min(visible.length - 1, i + 1)) }
       else if (k === 'arrowup') { e.preventDefault(); setFocusIdx((i) => Math.max(0, i - 1)) }
@@ -309,7 +327,7 @@ export default function ChamadaPage() {
     }
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
-  }, [visible, focusIdx, ui, modal, setStatus, patch])
+  }, [visible, focusIdx, ui, modal, exportRange, setStatus, patch])
 
   useEffect(() => {
     if (focusIdx < 0 || !listRef.current) return
@@ -339,7 +357,7 @@ export default function ChamadaPage() {
       <PageHeader title="Chamada" subtitle={`Presença por aula · ${courseName || activeCourseId} · ${className}`}>
         {className && roster.length > 0 && grade.length > 0 && (
           <div className="flex gap-2">
-            <Button size="sm" variant="secondary" icon={Download} onClick={exportCsv}>Exportar CSV</Button>
+            <Button size="sm" variant="secondary" icon={Download} onClick={() => setExportRange(monthRange(date))}>Exportar CSV</Button>
             {!readOnly && <Button size="sm" icon={ClipboardCheck} loading={saving} onClick={abrirConclusao}>Concluir chamada</Button>}
           </div>
         )}
@@ -605,6 +623,9 @@ export default function ChamadaPage() {
               </div>
               </fieldset>
 
+              {/* Conteúdo das aulas: o diário de classe do dia (B11, FUN-09) */}
+              <ChamadaDiario courseId={activeCourseId} className={className} date={date} readOnly={readOnly} accountEmail={auth?.email || ''} />
+
               {/* Ajuda de teclado */}
               {!readOnly && <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted px-1">
                 <span className="font-semibold text-subtle">Atalhos:</span>
@@ -618,6 +639,28 @@ export default function ChamadaPage() {
           )}
         </PageState>
       )}
+
+      {/* Exportar a presença: período e curso */}
+      <ConfirmDialog
+        open={!!exportRange}
+        onClose={() => setExportRange(null)}
+        onConfirm={() => exportCsv(exportRange || {})}
+        title="Exportar a presença"
+        message={`Planilha da turma ${className}${courseName ? ` (${courseName})` : ''}, uma linha por aula. Escolha o período.`}
+        confirmLabel="Baixar CSV"
+        confirmDisabled={!exportRange?.from || !exportRange?.to}
+      >
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <label className="flex flex-col gap-1.5 text-sm font-medium text-text">De
+            <input type="date" autoFocus value={exportRange?.from || ''} onChange={(e) => setExportRange((cur) => ({ ...(cur || {}), from: e.target.value }))}
+              className="h-[38px] px-3 rounded-md bg-surface border border-border text-text text-sm w-full" />
+          </label>
+          <label className="flex flex-col gap-1.5 text-sm font-medium text-text">Até
+            <input type="date" value={exportRange?.to || ''} onChange={(e) => setExportRange((cur) => ({ ...(cur || {}), to: e.target.value }))}
+              className="h-[38px] px-3 rounded-md bg-surface border border-border text-text text-sm w-full" />
+          </label>
+        </div>
+      </ConfirmDialog>
 
       {/* Desfazer ação em massa */}
       {undoSnap && (
