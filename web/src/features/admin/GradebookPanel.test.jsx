@@ -114,4 +114,24 @@ describe('Quadro de notas com critérios', () => {
     expect(within(table).queryByText('Situação')).not.toBeInTheDocument()
     expect(within(table).queryByText('Média da etapa')).not.toBeInTheDocument()
   })
+
+  it('[UC-CURSO-003] sem nota, a célula diz "aguardando correção" ou "anulada"; turma encerrada mostra a faixa', () => {
+    const data = {
+      columns: [{ id: 'P1', examKey: 'P1', label: 'Prova 1', moduleName: 'Módulo 1' }, { id: 'P2', examKey: 'P2', label: 'Prova 2', moduleName: 'Módulo 1' }],
+      rows: [{ email: 'ana@x.local', name: 'Ana', cells: { P1: { score: null, grade: null, pending: 0, aguardandoCorrecao: true }, P2: { score: null, groups: 0, pending: 0, anulada: true } }, average: null, averageScore: null, gradedCount: 0, pendingCount: 0 }],
+      etapas: [], avisos: [],
+      encerramento: { encerrada: true, situacao: 'encerrada', em: Date.parse('2026-07-10T15:00:00Z'), por: 'adm@x.local' },
+    }
+    render(<GradebookPanel courseId="DES" studentClass="1DES" gradebook={api(data)} />)
+    const table = screen.getByRole('table')
+    expect(within(table).getByText('aguardando correção')).toBeInTheDocument()
+    expect(within(table).getByText('anulada')).toBeInTheDocument()
+    expect(screen.getByText(/Turma encerrada em 10\/07\/2026: as notas não mudam mais/)).toBeInTheDocument()
+  })
+
+  it('[UC-CURSO-003] turma reaberta não mostra a faixa de encerrada', () => {
+    const data = { columns: [], rows: [{ email: 'ana@x.local', name: 'Ana', cells: {}, average: null, averageScore: null, gradedCount: 0, pendingCount: 0 }], etapas: [], avisos: [], encerramento: { encerrada: false, situacao: 'reaberta' } }
+    render(<GradebookPanel courseId="DES" studentClass="1DES" gradebook={api(data)} />)
+    expect(screen.queryByText(/Turma encerrada/)).not.toBeInTheDocument()
+  })
 })

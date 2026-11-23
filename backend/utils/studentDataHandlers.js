@@ -115,7 +115,7 @@ function registerStudentDataHandler(handler) {
 // que restaura sem as rotas e precisa religar as entregas (handler.relink, chamado por
 // ensureStudentIds) na mesma passada da restauração. Carga na hora da consulta (não no
 // topo) porque esses módulos dependem deste e de database.js.
-const HANDLER_MODULES = Object.freeze(['./assignmentLifecycle.js', './classGroups.js', './conversations.js']);
+const HANDLER_MODULES = Object.freeze(['./assignmentLifecycle.js', './classGroups.js', './conversations.js', './enrollmentHistory.js']);
 let handlerModulesLoaded = false;
 function loadHandlerModules() {
     if (handlerModulesLoaded) return;

@@ -273,8 +273,8 @@ test('[UC-NOTAS-005] situação: Aprovado, Reprovado por nota, Reprovado por fal
     assert.equal(encerrada.situacao, 'reprovado_nota');
     assert.match(encerrada.avisos.find(item => item.codigo === 'etapa_sem_nota_zero').texto, /^2º bimestre sem nota: contou como 0/);
     assert.equal(encerrada.avisos.find(item => item.codigo === 'recuperacao_nao_lancada').texto, 'Turma encerrada sem a nota de recuperação: a recuperação contou como não feita.');
-    // Todo rótulo em português.
-    assert.deepEqual(rules.SITUACOES.map(codigo => rules.SITUACAO_ROTULOS[codigo]), ['Sem notas', 'Cursando', 'Em recuperação', 'Reprovado por falta', 'Reprovado por nota', 'Aprovado']);
+    // Todo rótulo em português ("Aguardando correção" entrou no B10: correção pendente).
+    assert.deepEqual(rules.SITUACOES.map(codigo => rules.SITUACAO_ROTULOS[codigo]), ['Sem notas', 'Cursando', 'Aguardando correção', 'Em recuperação', 'Reprovado por falta', 'Reprovado por nota', 'Aprovado']);
 });
 
 test('[UC-NOTAS-005] menção pela nota como aparece (9,0 é MB; 8,99 vira 9,0; 6,95 vira 7,0)', () => {

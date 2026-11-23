@@ -48,7 +48,7 @@
 // - Só em tarefa publicada (rascunho não tem entrega: 409 assignment_not_published;
 //   arquivada: 409 assignment_archived, reative antes). O aluno do pedido (studentEmail)
 //   precisa estar na lista da tarefa (assignmentRoster: matriculado ativo ou com registro).
-// - Turma encerrada (academicCalendar.assertClassOpen, sem efeito até o B10): nota,
+// - Turma encerrada (academicCalendar.assertClassOpen): nota,
 //   devolução, refazer, "devolver todas", entrega em mãos e prorrogação respondem 409
 //   class_closed antes de mudar qualquer coisa (contrato academicCalendar do plano).
 // - Nota digitada de 0 a 10 (parseGradeInput, vírgula ou ponto) e gravada de 0 a 100; o

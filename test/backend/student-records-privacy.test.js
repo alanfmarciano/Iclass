@@ -137,7 +137,10 @@ test('[UC-MATRICULA-001] cadastro com turmas em objeto grava studentClass como n
     assert.equal(created.status, 200, created.body && created.body.error);
     const eva = db.memory.students.find(s => s.email === 'eva@g6.local');
     assert.equal(eva.studentClass, 'TURMA C');
-    assert.deepEqual(eva.classes, [{ name: 'TURMA C', courseId: courseA, period: 'Noite' }]);
+    // B10 (P2-S9): a turma que entra pelo cadastro ganha 'desde' (o dia da matrícula, no
+    // fuso da escola); o resto da entrada fica como veio.
+    assert.match(String(eva.classes[0].desde), /^\d{4}-\d{2}-\d{2}$/);
+    assert.deepEqual(eva.classes, [{ name: 'TURMA C', courseId: courseA, period: 'Noite', desde: eva.classes[0].desde }]);
 });
 
 test('[UC-MATRICULA-001] a carga do banco normaliza studentClass em objeto, sem perder a matrícula, e é idempotente', async () => {

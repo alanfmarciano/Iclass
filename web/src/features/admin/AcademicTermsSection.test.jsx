@@ -1,6 +1,7 @@
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { MemoryRouter } from 'react-router-dom'
 import { AcademicTermsSection, suggestStages, termOptionsForCourse, termOptionLabel } from './AcademicTermsSection'
 
 // Períodos letivos na tela Turmas (B8 / P2-S8, FUN-05). Antes não havia tela: o período
@@ -173,5 +174,30 @@ describe('AcademicTermsSection', () => {
     await user.type(within(dialog).getByLabelText('Motivo para reabrir'), 'Datas mudaram')
     await user.click(confirm)
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/academic/terms/reopen', { id: 'per_0', reason: 'Datas mudaram' }))
+  })
+
+  it('[UC-CURSO-003] assistente: encerrar o período oferece encerrar as turmas ligadas abertas e lembra da matrícula em lote', async () => {
+    const user = userEvent.setup()
+    const onCloseClasses = vi.fn()
+    const closedWithClasses = { ...CLOSED, turmas: [{ courseId: 'DES', courseName: 'Técnico em TI', name: '3DES' }, { courseId: 'DES', courseName: 'Técnico em TI', name: '4DES' }], totalTurmas: 2 }
+    // 4DES já está encerrada (lista de turmas da tela).
+    const classes = [{ courseId: 'DES', name: '1DES', encerrada: false }, { courseId: 'DES', name: '3DES', encerrada: false }, { courseId: 'DES', name: '4DES', encerrada: true }]
+    mocks.post.mockResolvedValueOnce({ success: true, turmas: [{ name: '1DES' }] })
+    render(<MemoryRouter><AcademicTermsSection termsApi={termsApi({ periodos: [OPEN, closedWithClasses], escolas: [], podeCriar: true })} course={null}
+      canCloseClasses classes={classes} onCloseClasses={onCloseClasses} /></MemoryRouter>)
+    await user.click(screen.getByRole('button', { name: 'Encerrar as turmas do período 2026 · 2º semestre' }))
+    expect(onCloseClasses).toHaveBeenLastCalledWith([{ courseId: 'DES', courseName: 'Técnico em TI', name: '3DES' }])
+    expect(screen.getByRole('link', { name: 'Alunos' })).toHaveAttribute('href', '/diretorio')
+
+    await user.click(screen.getByRole('button', { name: 'Encerrar período 2027 · 1º semestre' }))
+    const dialog = screen.getByRole('dialog', { name: 'Encerrar o período 2027 · 1º semestre?' })
+    await user.click(within(dialog).getByRole('button', { name: 'Encerrar período' }))
+    await waitFor(() => expect(onCloseClasses).toHaveBeenLastCalledWith([{ courseId: 'DES', courseName: 'Técnico em TI', name: '1DES' }]))
+  })
+
+  it('[UC-CURSO-003] sem "Gerenciar turmas", o período encerrado não oferece encerrar as turmas', () => {
+    const closedWithClasses = { ...CLOSED, turmas: [{ courseId: 'DES', courseName: 'Técnico em TI', name: '3DES' }], totalTurmas: 1 }
+    render(<AcademicTermsSection termsApi={termsApi({ periodos: [closedWithClasses], escolas: [], podeCriar: false })} course={null} classes={[]} />)
+    expect(screen.queryByRole('button', { name: /Encerrar as turmas|Encerrar a turma/ })).toBeNull()
   })
 })

@@ -276,6 +276,11 @@ function buildStudentGradesSummary(memory, { email, course = null, cls = null, h
         situacaoRotulo: resultado.situacaoRotulo,
         mencao: resultado.mencao,
         situacaoPorDisciplina: resultado.disciplinas.map(item => ({ id: item.id, nome: item.nome, mediaFinal: item.mediaFinal, situacao: item.situacao, situacaoRotulo: item.situacaoRotulo, mencao: item.mencao })),
+        // Avaliação que espera a correção do professor (B10, pendência da J2): a nota dela
+        // ainda não entra e a situação final só sai depois; Minhas notas mostra o aviso. Os
+        // outros avisos do cálculo são para o professor (plano da turma) e não vão ao aluno.
+        aguardandoCorrecao: resultado.aguardandoCorrecao || 0,
+        avisos: (resultado.avisos || []).filter(entry => entry && entry.codigo === 'aguardando_correcao').map(entry => entry.texto),
         frequencia: data.stats.frequenciaGeral,
         frequenciaMinima: allowance.frequenciaMinima,
         aulasPrevistas: allowance.aulasPrevistas,

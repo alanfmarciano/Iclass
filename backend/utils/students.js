@@ -415,6 +415,7 @@ module.exports = {
     recordStudentAudit,
     getClientIp,
     classEntryName,
+    classEntryCourseId,
     studentClassEntries,
     studentClassNameList,
     primaryStudentClassName,

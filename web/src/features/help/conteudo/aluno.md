@@ -73,7 +73,7 @@ Toque na **lupa** no alto da tela (ao lado do sino) para procurar uma palavra na
 No alto de Provas, **Minhas notas** mostra o seu resultado na turma com as notas que o professor já publicou:
 
 - a **média final** (ou a média geral, quando o curso não usa etapas);
-- a **situação**: Cursando (ainda falta nota de alguma etapa), Em recuperação, Aprovado, Reprovado por nota ou Reprovado por falta;
+- a **situação**: Cursando (ainda falta nota de alguma etapa), Aguardando correção (o professor ainda não corrigiu alguma avaliação sua; a situação final sai depois), Em recuperação, Aprovado, Reprovado por nota ou Reprovado por falta;
 - a **menção** (MB, B, R, I), se a escola usa conceitos;
 - as **notas por etapa** (1º bimestre, 2º bimestre...), com a recuperação quando houver. Toque na etapa para ver as avaliações dela e a nota de cada uma;
 - a **média mínima para aprovação** do seu curso e quantas faltas você ainda pode ter no período.

@@ -37,19 +37,31 @@
 // Este arquivo não carrega database.js nem settings.js (o registro de migrações o lê com
 // o servidor parado): a data de hoje vem sempre de quem chama.
 //
-// Portão (assertClassOpen), ainda SEM EFEITO: toda turma está aberta. Ele nasceu antes
-// do resto para as rotas que gravam nota ou presença já o chamarem (teste de guarda
-// test/backend/class-open-guard.test.js) e as rotas novas da fase 3 nascerem chamando. O
-// B10 (P2-S9) liga o efeito: turma com encerramento responde 409 { code: 'class_closed' }
-// nas rotas do teste de guarda, inclusive as da tarefa.
+// Portão (assertClassOpen) das gravações de nota e presença, com efeito desde o B10
+// (P2-S9): turma encerrada responde 409 { code: 'class_closed' } nas rotas do teste de
+// guarda (test/backend/class-open-guard.test.js), inclusive as da tarefa. Ele nasceu sem
+// efeito na fundação C0b para as rotas de hoje já o chamarem antes de gravar, e as rotas
+// novas da fase 3 nasceram chamando. As rotas que ficam fora do portão estão no teste
+// (FORA_DO_PORTAO), cada uma com o motivo, e em docs/API.md ("Turma encerrada").
+//
+// Encerramento da turma (B10 / P2-S9, FUN-05; D18 do P2): classes[].encerramento =
+// { schemaVersion: 1, situacao: 'encerrada' | 'reaberta', em, por, motivo?, criterios:
+// { curso, turma, disciplinas } (cópia de course.avaliacao, de classes[].avaliacao e da
+// ligação das disciplinas aos módulos no momento do encerramento, para a conta da turma
+// encerrada não mudar quando o curso mudar), reabertaEm?, reabertaPor?, motivoReabertura?,
+// historico: [{ acao: 'encerrada' | 'reaberta', em, por, motivo? }] }. A turma está
+// encerrada quando o registro existe, tem 'em' e não foi reaberto (isClassClosed);
+// registro de versão futura ou editado à mão sem 'situacao' vale como encerrado. Nada é
+// copiado por aluno (sem fotografia de notas): recalcular com os dados travados e os
+// critérios congelados dá sempre o mesmo resultado.
 //
 // Uso nas rotas, antes de mudar qualquer coisa:
 //     if (!assertClassOpen(cls, { res })) return;
 // - cls: a turma (registro de memory.classes), uma lista delas (pedido que mexe em
 //   entregas de turmas diferentes) ou null/undefined (registro sem turma conhecida:
-//   passa, como hoje);
+//   passa, como sempre);
 // - com res: devolve true quando pode gravar; quando não pode, já respondeu o 409 e
-//   devolve false;
+//   devolve false (message troca o texto da recusa, como no fluxo do aluno);
 // - sem res: devolve true ou lança ClassClosedError (status 409, code 'class_closed'),
 //   para quem está fora de uma rota (utilitário, teste).
 const { normalizeEmail, studentClassEntries } = require('./students.js');
@@ -57,6 +69,9 @@ const attendanceUtil = require('./attendance.js');
 
 const CLASS_CLOSED_CODE = 'class_closed';
 const CLASS_CLOSED_MESSAGE = 'Esta turma foi encerrada. Para mudar notas ou presença, reabra a turma em Turmas.';
+// Prova (preparar, agendar, abrir, retomar, pausar e tempo a mais) e a tentativa do aluno.
+const CLASS_CLOSED_EXAM_MESSAGE = 'Esta turma foi encerrada: não aplica mais prova. Para aplicar, reabra a turma em Turmas.';
+const CLASS_CLOSED_ATTEMPT_MESSAGE = 'Esta turma foi encerrada: a prova não aceita mais tentativas.';
 
 class ClassClosedError extends Error {
     constructor(cls, message = CLASS_CLOSED_MESSAGE) {
@@ -73,17 +88,58 @@ function classClosedBody(error) {
     return { success: false, error: (error && error.message) || CLASS_CLOSED_MESSAGE, code: CLASS_CLOSED_CODE };
 }
 
-// A turma está encerrada? Sem efeito até o B10: nenhuma turma está.
-function isClassClosed(cls) { // eslint-disable-line no-unused-vars
-    return false;
+const CLOSURE_SITUACOES = Object.freeze(['encerrada', 'reaberta']);
+
+function closureRecord(cls) {
+    if (!cls || typeof cls !== 'object') return null;
+    const record = cls.encerramento;
+    if (!record || typeof record !== 'object' || Array.isArray(record)) return null;
+    return record;
+}
+
+// A turma está encerrada? (ver o começo do arquivo)
+function isClassClosed(cls) {
+    const record = closureRecord(cls);
+    if (!record || record.situacao === 'reaberta') return false;
+    return record.em !== undefined && record.em !== null && record.em !== '' && record.em !== false;
+}
+
+// Critérios congelados no encerramento ({ curso, turma, disciplinas }), ou null com a
+// turma aberta ou sem a cópia (registro antigo ou editado à mão: vale o de agora).
+function frozenGradingCriteria(cls) {
+    if (!isClassClosed(cls)) return null;
+    const criterios = closureRecord(cls).criterios;
+    return criterios && typeof criterios === 'object' && !Array.isArray(criterios) ? criterios : null;
+}
+
+// O encerramento para a tela e as respostas (sem a cópia dos critérios), ou null quando a
+// turma nunca foi encerrada.
+function classClosureView(cls) {
+    const record = closureRecord(cls);
+    if (!record) return null;
+    const historico = (Array.isArray(record.historico) ? record.historico : [])
+        .filter(item => item && typeof item === 'object' && CLOSURE_SITUACOES.includes(item.acao))
+        .map(item => ({ acao: item.acao, em: item.em ?? null, por: text(item.por) || null, motivo: text(item.motivo) || null }));
+    const encerrada = isClassClosed(cls);
+    return {
+        encerrada,
+        situacao: encerrada ? 'encerrada' : 'reaberta',
+        em: record.em ?? null,
+        por: text(record.por) || null,
+        motivo: text(record.motivo) || null,
+        reabertaEm: encerrada ? null : (record.reabertaEm ?? null),
+        reabertaPor: encerrada ? null : (text(record.reabertaPor) || null),
+        motivoReabertura: encerrada ? null : (text(record.motivoReabertura) || null),
+        historico,
+    };
 }
 
 // Recusa a gravação em turma encerrada (ver o começo do arquivo).
-function assertClassOpen(target, { res } = {}) {
+function assertClassOpen(target, { res, message } = {}) {
     const list = Array.isArray(target) ? target : [target];
     const closed = list.find(cls => cls && typeof cls === 'object' && isClassClosed(cls));
     if (!closed) return true;
-    const error = new ClassClosedError(closed);
+    const error = new ClassClosedError(closed, message || CLASS_CLOSED_MESSAGE);
     if (res && typeof res.status === 'function') {
         res.status(error.status).json(classClosedBody(error));
         return false;
@@ -640,9 +696,14 @@ module.exports = {
     syncNonSchoolDayMarks,
     CLASS_CLOSED_CODE,
     CLASS_CLOSED_MESSAGE,
+    CLASS_CLOSED_EXAM_MESSAGE,
+    CLASS_CLOSED_ATTEMPT_MESSAGE,
     ClassClosedError,
     classClosedBody,
+    CLOSURE_SITUACOES,
     isClassClosed,
+    frozenGradingCriteria,
+    classClosureView,
     assertClassOpen,
     classOfSubmission,
     classesOfSubmissions,

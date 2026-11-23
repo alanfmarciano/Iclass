@@ -24,8 +24,10 @@ const BEFORE = require('./fixtures/igualdade-notas-b6.json');
 const REPORT_NEW_FIELDS = ['etapas', 'mediaFinal', 'recuperacaoFinal', 'situacao', 'situacaoRotulo', 'mencao', 'situacaoPorDisciplina', 'avisosNotas', 'identidade', 'fuso'];
 // Campos que o quadro ganhou no B6 (buildClassGradebook com o contexto de notas) e no B9
 // (resumo: média da turma, aprovação e as notas por prova, aplicação e módulo que
-// Resultados mostra sem fazer conta; o resumo é conferido à parte abaixo).
-const GRADEBOOK_NEW_FIELDS = ['etapas', 'mencoes', 'avisos', 'resumo'];
+// Resultados mostra sem fazer conta; o resumo é conferido à parte abaixo) e no B10
+// (encerramento: a situação do encerramento da turma, null na turma que nunca foi
+// encerrada; conferido abaixo).
+const GRADEBOOK_NEW_FIELDS = ['etapas', 'mencoes', 'avisos', 'resumo', 'encerramento'];
 
 let now;
 test.before(() => {
@@ -76,6 +78,7 @@ test('[UC-NOTAS-005] sem critérios: os campos novos do boletim e do quadro vêm
         assert.deepEqual(body.etapas, [], key);
         assert.equal(body.mencoes, null, key);
         assert.deepEqual(body.avisos, [], key);
+        assert.equal(body.encerramento, null, key);
         body.rows.forEach(row => assert.ok(!('situacao' in row) && !('mediaFinal' in row), `${key}: linha com campo de critério`));
     });
     // As médias de antes, conferidas pelo número (o fixture as guarda).

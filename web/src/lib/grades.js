@@ -260,6 +260,8 @@ const SITUACAO_TONES = {
   reprovado_nota: 'danger',
   reprovado_falta: 'danger',
   cursando: 'info',
+  // Avaliação esperando a correção do professor (B10): a situação final sai depois.
+  aguardando_correcao: 'info',
   sem_notas: 'neutral',
 }
 export function situacaoTone(situacao) {

@@ -81,6 +81,19 @@ const DIFERENCAS_ESPERADAS = [
         'memoriaDepoisDeApagar.auditLogs.*.details.removed.conversations',
         'encerradosDepois.*.counts.conversations',
     ].map(caminho => ({ caminho, motivo: 'C13 (P5-S7a): contagem "Conversas com professores" do handler das conversas.' })),
+    // B10 (P2-S9): o histórico de matrícula registra o handler 'historicoMatriculas' com
+    // contagem ("Histórico de matrículas"), nos mesmos lugares (0 aqui: os alunos do gerador
+    // já nascem encerrados, sem histórico gravado). O teste de baixo confere os valores.
+    ...[
+        'encerrados.*.counts.historicoMatriculas',
+        'encerradosRota.body.items.*.counts.historicoMatriculas',
+        'anonimizar.body.kept.historicoMatriculas',
+        'memoriaDepoisDeAnonimizar.auditLogs.*.details.kept.historicoMatriculas',
+        'apagar.body.removed.historicoMatriculas',
+        'memoriaDepoisDeApagar.auditLogs.*.details.kept.historicoMatriculas',
+        'memoriaDepoisDeApagar.auditLogs.*.details.removed.historicoMatriculas',
+        'encerradosDepois.*.counts.historicoMatriculas',
+    ].map(caminho => ({ caminho, motivo: 'B10 (P2-S9): contagem "Histórico de matrículas" do handler do histórico de matrícula.' })),
     // C14 (P5-S7b, revisão): o sino do aluno e o do painel mandam mensagensNovas (conversas
     // com mensagem nova, contadas antes do corte da lista), para o número do menu
     // Mensagens. Campo novo; os itens e o unread continuam os de antes (0 aqui: o gerador
@@ -223,10 +236,31 @@ test('[UC-FUNDACAO-002] C13: a contagem nova das conversas é 0 sem conversa e t
     walk(output, '');
     assert.ok(values.length >= 9, JSON.stringify(values));
     values.forEach(([where, value]) => assert.equal(value, 0, where));
-    assert.deepEqual(output.encerradosRota.body.countLabels, { assignmentSubmissions: 'Trabalhos entregues', classGroups: 'Grupos de alunos', conversations: 'Conversas com professores' });
+    // B10 (P2-S9): o histórico de matrícula também tem contagem (o teste de baixo).
+    assert.deepEqual(output.encerradosRota.body.countLabels, { assignmentSubmissions: 'Trabalhos entregues', classGroups: 'Grupos de alunos', conversations: 'Conversas com professores', historicoMatriculas: 'Histórico de matrículas' });
     // Sem conversa, Meus dados continua o de antes (sem seção nova).
     assert.equal('conversas' in output.meusDadosAluno, false);
     assert.equal('conversas' in output.meusDadosAdmin, false);
+});
+
+test('[UC-MATRICULA-002] B10: a contagem nova do histórico de matrícula é 0 sem histórico e tem o nome "Histórico de matrículas"', () => {
+    const { output } = run();
+    const values = [];
+    const walk = (value, pathText) => {
+        if (!value || typeof value !== 'object') return;
+        Object.keys(value).forEach(key => {
+            const next = pathText ? `${pathText}.${key}` : key;
+            if (key === 'historicoMatriculas' && /\.(counts|kept|removed)\.historicoMatriculas$/.test(next)) values.push([next, value[key]]);
+            else walk(value[key], next);
+        });
+    };
+    walk(output, '');
+    assert.ok(values.length >= 9, JSON.stringify(values));
+    values.forEach(([where, value]) => assert.equal(value, 0, where));
+    assert.equal(output.encerradosRota.body.countLabels.historicoMatriculas, 'Histórico de matrículas');
+    // Sem histórico, Meus dados continua o de antes (sem seção nova).
+    assert.equal('enrollmentHistory' in output.meusDadosAluno, false);
+    assert.equal('enrollmentHistory' in output.meusDadosAdmin, false);
 });
 
 test('o comparador acha diferença de valor, de chave e de ordem (não ficou cego)', () => {

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Archive, BookCopy, BookOpen, Building2, ClipboardList, Pencil, Plus, RotateCcw, Search, School, Trash2, UserPlus, Users, UsersRound, Wand2 } from 'lucide-react'
+import { Archive, BookCopy, BookOpen, Building2, ClipboardList, Lock, LockOpen, Pencil, Plus, RotateCcw, Search, School, Trash2, UserPlus, Users, UsersRound, Wand2 } from 'lucide-react'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { Card, CardBody } from '../../components/ui/Card'
@@ -22,6 +22,7 @@ import { GradingCriteriaDialog } from './GradingCriteriaDialog'
 import { AcademicTermsSection, brDate, termOptionLabel, termOptionsForCourse } from './AcademicTermsSection'
 import { groupsPath } from './grupos/groupsPath'
 import { PreviewButton, canPreviewAsStudent } from './PreviewLauncher'
+import { ClassClosureDialog } from './ClassClosureDialog'
 
 const CLASS_PERIODS = ['Manhã', 'Tarde', 'Noite']
 
@@ -96,6 +97,9 @@ export default function TurmasPage() {
   const canGroups = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_STUDENTS)
   // Ver como aluno (fase 3, C15 / P5-S6b): quem tem o conteúdo das turmas (page.materials).
   const canPreview = canPreviewAsStudent(auth)
+  // Encerrar e reabrir turma (B10 / P2-S9): quem tem "Gerenciar turmas" (classes.manage),
+  // como POST /api/admin/class/close no servidor (o escopo da turma o servidor confere).
+  const canCloseClasses = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.CLASSES_MANAGE)
   const coursesApi = useApi('/api/admin/course-summaries?includeDeleted=1')
   const classesApi = useApi('/api/admin/classes')
   const schoolsApi = useApi('/api/admin/schools')
@@ -116,6 +120,7 @@ export default function TurmasPage() {
   const [criteriaCourse, setCriteriaCourse] = useState(null)
   const [assignmentForm, setAssignmentForm] = useState(null)
   const [confirm, setConfirm] = useState(null)
+  const [closure, setClosure] = useState(null)
   const [saving, setSaving] = useState(false)
 
   const courses = coursesApi.data || []
@@ -335,9 +340,12 @@ export default function TurmasPage() {
                   // turma (há o que ligar); senão é só a informação (D17: nada é ligado sozinho).
                   const canLink = !term && termOptionsForCourse(periodos, selectedCourse).length > 0
                   return <div key={`${cls.courseId}-${cls.name}`} className="rounded-lg border border-border p-4">
-                    <div className="flex flex-wrap items-start justify-between gap-3"><div><h4 className="font-semibold text-text">{cls.name}</h4><p className="text-sm text-muted">{cls.period ? canonicalClassPeriod(cls.period) : 'Sem turno'}</p></div><div className="flex flex-wrap items-center gap-2">{term ? <Badge tone={term.situacao === 'encerrado' ? 'neutral' : 'info'}>{term.situacao === 'encerrado' ? `${term.nome} · encerrado` : term.nome}</Badge> : <Badge tone={canLink ? 'warning' : 'neutral'}>Sem período letivo</Badge>}<Badge tone={cls.registrationEnabled ? 'success' : 'neutral'}>{cls.registrationEnabled ? 'Matrícula aberta' : 'Matrícula fechada'}</Badge><Badge tone="neutral">{cls.studentCount || 0} aluno(s)</Badge><Badge tone={professorTotal ? 'info' : 'warning'}>{professorTotal} professor(es)</Badge></div></div>
+                    <div className="flex flex-wrap items-start justify-between gap-3"><div><h4 className="font-semibold text-text">{cls.name}</h4><p className="text-sm text-muted">{cls.period ? canonicalClassPeriod(cls.period) : 'Sem turno'}</p></div><div className="flex flex-wrap items-center gap-2">{term ? <Badge tone={term.situacao === 'encerrado' ? 'neutral' : 'info'}>{term.situacao === 'encerrado' ? `${term.nome} · encerrado` : term.nome}</Badge> : <Badge tone={canLink ? 'warning' : 'neutral'}>Sem período letivo</Badge>}{cls.encerrada && <Badge tone="warning">Encerrada</Badge>}<Badge tone={cls.registrationEnabled ? 'success' : 'neutral'}>{cls.registrationEnabled ? 'Matrícula aberta' : 'Matrícula fechada'}</Badge><Badge tone="neutral">{cls.studentCount || 0} aluno(s)</Badge><Badge tone={professorTotal ? 'info' : 'warning'}>{professorTotal} professor(es)</Badge></div></div>
                     <div className="mt-3 flex flex-wrap gap-2">{professorTotal === 0 ? <span className="text-xs text-warning">Sem professor</span> : classProfessors.map(professor => <span key={professor.email} className="inline-flex items-center gap-1.5 rounded-full bg-surface-2 px-2.5 py-1 text-xs text-text">{professor.name}<span className="text-subtle">· {teacherSources(professor, selectedCourse, cls.name)[0]}</span></span>)}</div>
-                    {(isAdmin || canGroups || canPreview) && !isDeleted(selectedCourse) && <div className="mt-3 flex flex-wrap gap-2 border-t border-border pt-3">{canGroups && <Button size="sm" variant="secondary" icon={UsersRound} aria-label={`Grupos da turma ${cls.name}`} onClick={() => navigate(groupsPath(selectedCourse.id, cls.name), { state: { voltar: '/turmas' } })}>Grupos</Button>}<PreviewButton courseId={selectedCourse.id} studentClass={cls.name} courseName={selectedCourse.name} />{isAdmin && <><Button size="sm" variant="secondary" className="border-primary/60 bg-primary/10 text-primary hover:bg-primary/20 hover:border-primary" icon={Wand2} aria-label={`Abrir assistente de horários da turma ${cls.name}`} onClick={() => navigate(`/turmas/${encodeURIComponent(selectedCourse.id)}/${encodeURIComponent(cls.name)}/assistente`)}>Assistente de horários</Button><Button size="sm" variant="secondary" icon={Users} aria-label={`Atribuir professor à turma ${cls.name}`} onClick={() => openAssignments()}>Atribuir</Button><Button size="sm" variant="ghost" icon={Pencil} aria-label={`Editar turma ${cls.name}`} onClick={() => setClassForm({ mode: 'edit', name: cls.name, period: canonicalClassPeriod(cls.period), registrationEnabled: cls.registrationEnabled !== false, periodoLetivoId: cls.periodoLetivoId || '', periodoLetivoInicial: cls.periodoLetivoId || '', attendanceConfig: cls.attendanceConfig || { toleranciaMin: 10, limiarRiscoPct: 75, grade: {} } })}>Editar</Button><Button size="sm" variant="ghost" icon={Trash2} aria-label={`Excluir turma ${cls.name}`} onClick={() => setConfirm({ type: 'class', target: cls })}>Excluir</Button></>}</div>}
+                    {cls.encerrada && cls.encerramento?.em && <p className="mt-2 text-xs text-subtle">Encerrada em {new Date(cls.encerramento.em).toLocaleDateString('pt-BR')}{cls.encerramento.por ? ` por ${cls.encerramento.por}` : ''}: notas, chamada, provas e matrícula nova ficam travadas até reabrir.</p>}
+                    {(isAdmin || canGroups || canPreview || canCloseClasses) && !isDeleted(selectedCourse) && <div className="mt-3 flex flex-wrap gap-2 border-t border-border pt-3">{canGroups && <Button size="sm" variant="secondary" icon={UsersRound} aria-label={`Grupos da turma ${cls.name}`} onClick={() => navigate(groupsPath(selectedCourse.id, cls.name), { state: { voltar: '/turmas' } })}>Grupos</Button>}<PreviewButton courseId={selectedCourse.id} studentClass={cls.name} courseName={selectedCourse.name} />{isAdmin && <><Button size="sm" variant="secondary" className="border-primary/60 bg-primary/10 text-primary hover:bg-primary/20 hover:border-primary" icon={Wand2} aria-label={`Abrir assistente de horários da turma ${cls.name}`} onClick={() => navigate(`/turmas/${encodeURIComponent(selectedCourse.id)}/${encodeURIComponent(cls.name)}/assistente`)}>Assistente de horários</Button><Button size="sm" variant="secondary" icon={Users} aria-label={`Atribuir professor à turma ${cls.name}`} onClick={() => openAssignments()}>Atribuir</Button><Button size="sm" variant="ghost" icon={Pencil} aria-label={`Editar turma ${cls.name}`} onClick={() => setClassForm({ mode: 'edit', name: cls.name, period: canonicalClassPeriod(cls.period), registrationEnabled: cls.registrationEnabled !== false, periodoLetivoId: cls.periodoLetivoId || '', periodoLetivoInicial: cls.periodoLetivoId || '', attendanceConfig: cls.attendanceConfig || { toleranciaMin: 10, limiarRiscoPct: 75, grade: {} } })}>Editar</Button><Button size="sm" variant="ghost" icon={Trash2} aria-label={`Excluir turma ${cls.name}`} onClick={() => setConfirm({ type: 'class', target: cls })}>Excluir</Button></>}{canCloseClasses && (cls.encerrada
+                      ? <Button size="sm" variant="secondary" icon={LockOpen} aria-label={`Reabrir turma ${cls.name}`} onClick={() => setClosure({ mode: 'reopen', targets: [{ courseId: selectedCourse.id, courseName: selectedCourse.name, name: cls.name }] })}>Reabrir turma</Button>
+                      : <Button size="sm" variant="ghost" icon={Lock} aria-label={`Encerrar turma ${cls.name}`} onClick={() => setClosure({ mode: 'close', targets: [{ courseId: selectedCourse.id, courseName: selectedCourse.name, name: cls.name }] })}>Encerrar turma</Button>)}</div>}
                   </div>
                 })}</div>}
               </CardBody></Card>
@@ -345,7 +353,8 @@ export default function TurmasPage() {
           )}
         </div>
 
-        <AcademicTermsSection termsApi={termsApi} course={selectedCourse} onChanged={() => Promise.all([coursesApi.refetch(), classesApi.refetch()])} />
+        <AcademicTermsSection termsApi={termsApi} course={selectedCourse} onChanged={() => Promise.all([coursesApi.refetch(), classesApi.refetch()])}
+          canCloseClasses={canCloseClasses} classes={classes} onCloseClasses={targets => setClosure({ mode: 'close', targets })} />
 
         {isAdmin && (archivedApi.data || []).length > 0 && <Card><CardBody className="pt-5"><div className="mb-3 flex items-center gap-2"><Archive size={18} className="text-muted" /><h2 className="font-semibold text-text">Cursos arquivados</h2></div><div className="space-y-2">{archivedApi.data.map(item => <div key={item.folder} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-3"><span><span className="block text-sm font-medium text-text">{item.name}</span><span className="text-xs text-subtle">{item.counts?.turmas || 0} turma(s) · arquivado em {new Date(item.archivedAt).toLocaleDateString('pt-BR')}</span></span><span className="flex gap-2"><Button size="sm" variant="secondary" icon={RotateCcw} onClick={() => run(() => api.post('/api/admin/archived-courses/restore', { folder: item.folder }, { timeoutMs: 0 }), 'Curso restaurado do arquivo.')}>Restaurar</Button><Button size="sm" variant="ghost" icon={Trash2} onClick={() => setConfirm({ type: 'archive-delete', target: item })}>Excluir arquivo</Button></span></div>)}</div></CardBody></Card>}
       </PageState>
@@ -368,6 +377,9 @@ export default function TurmasPage() {
           </div>
         </div>}
       </Modal>
+
+      <ClassClosureDialog open={!!closure} mode={closure?.mode} targets={closure?.targets || []} onClose={() => setClosure(null)}
+        onDone={() => Promise.all([classesApi.refetch(), termsApi.refetch()])} />
 
       <GradingCriteriaDialog open={!!criteriaCourse} onClose={() => setCriteriaCourse(null)} course={criteriaCourse} />
 

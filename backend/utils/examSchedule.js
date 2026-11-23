@@ -387,7 +387,9 @@ function sweepSchedules(memory, { now = Date.now() } = {}) {
             const cls = classOf(memory, application);
             if (!cls) return;
             try {
-                if (now >= Number(agenda.fechaEm)) result.missed.push(markMissed(memory, application, agenda, now));
+                // Turma encerrada (B10) não abre prova: a agenda vira perdida (o encerramento
+                // recusa turma com prova agendada; isto cobre o banco que chegou assim).
+                if (now >= Number(agenda.fechaEm) || academicCalendar.isClassClosed(cls)) result.missed.push(markMissed(memory, application, agenda, now));
                 else result.opened.push(openScheduledApplication(memory, application, agenda, cls, now));
                 result.changed = true;
             } catch (error) {

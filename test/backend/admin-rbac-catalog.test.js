@@ -122,6 +122,7 @@ const PHASE3_ROUTES = [
     ['POST', '/academic/terms/update', 'classes.manage'],
     ['POST', '/academic/terms/close', 'classes.manage'],
     ['POST', '/academic/terms/reopen', 'classes.manage'],
+    ['GET', '/class/close-summary', 'classes.manage'],
     ['POST', '/class/close', 'classes.manage'],
     ['POST', '/class/reopen', 'classes.manage'],
     ['GET', '/calendar/non-school-days', 'page.forum'],

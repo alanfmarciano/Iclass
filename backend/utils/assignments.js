@@ -873,7 +873,7 @@ function latePolicyText(assignment) {
 
 // ------------------------------------------------------------ turma encerrada (P1-c, C5)
 // A turma recebe envio? false quando academicCalendar.assertClassOpen recusa (turma
-// encerrada; sem efeito até o B10 ligar). A lista, o detalhe, o sino e o calendário do
+// encerrada, desde o B10). A lista, o detalhe, o sino e o calendário do
 // aluno usam a mesma resposta que o POST do envio, para não oferecer o envio que ele
 // recusaria com 409 class_closed. Chamada pelo objeto do módulo (o teste troca a função).
 function classAcceptsSubmissions(cls) {

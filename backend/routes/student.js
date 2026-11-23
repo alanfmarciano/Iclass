@@ -43,7 +43,7 @@ const studentFeeds = require('../utils/studentFeeds.js');
 // ao carregar, para o sino abaixo juntar os itens dele.
 require('../utils/gradeChangeNotices.js');
 const attendanceUtil = require('../utils/attendance.js');
-const { lessonsForDate } = require('../utils/academicCalendar.js');
+const { lessonsForDate, assertClassOpen, isClassClosed, CLASS_CLOSED_ATTEMPT_MESSAGE } = require('../utils/academicCalendar.js');
 const { studentCalendarEvents, upcomingNonSchoolDayEvents } = require('../utils/calendarFeed.js');
 const examSchedule = require('../utils/examSchedule.js');
 const settingsUtil = require('../utils/settings.js');
@@ -287,7 +287,8 @@ function ensureDailyLoginAttendance(rawEmail, { req = null, source = 'login' } =
             .map(entry => findClassByNameAndCourse(db.memory.classes || [], entry.name, entry.courseId)
                 || (db.memory.classes || []).find(c => String(c.name || '').toLowerCase() === entry.name.toLowerCase()
                     && (!entry.courseId || !c.courseId || String(c.courseId) === entry.courseId)))
-            .filter(cls => cls && studentBelongsToClass(student, cls));
+            // Turma encerrada (B10) não tem mais aula: o acesso não cria presença nela.
+            .filter(cls => cls && studentBelongsToClass(student, cls) && !isClassClosed(cls));
         // As aulas de hoje pelo calendário (FUN-15): em dia não letivo e fora do período
         // letivo da turma não há aula, e o acesso não cria presença nem falta.
         const classObj = candidates.find(cls => {
@@ -1541,6 +1542,9 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
     if (!cls || !studentBelongsToClass(req.studentAccount, cls)) {
         return res.status(403).json({ error: 'Aplicação não autorizada para este estudante.' });
     }
+    // Turma encerrada (B10): a prova não aceita tentativa (o encerramento recusa turma com
+    // prova aberta; isto cobre a aba antiga e o banco que chegou assim).
+    if (!assertClassOpen(cls, { res, message: CLASS_CLOSED_ATTEMPT_MESSAGE })) return;
     const config = cls.onlineExamConfigs?.[application.examKey];
     const now = Date.now();
     // Uma tentativa vencida nunca ganha prazo novo: vira entrega com as respostas salvas.

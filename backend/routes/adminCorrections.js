@@ -236,7 +236,7 @@ function createAdminCorrectionsRouter() {
             const submission = scopedSubmission(matchedAdmin, req.params.id);
             if (!submission) return res.status(404).json({ error: 'Entrega não encontrada.' });
             const index = submissions.indexOf(submission);
-            // Turma encerrada não recebe correção (sem efeito até o B10).
+            // Turma encerrada não recebe correção.
             if (!assertClassOpen(classOfSubmission(db.memory, submission), { res })) return;
             const context = gradingContext(submission);
             const actor = actorOf(matchedAdmin);

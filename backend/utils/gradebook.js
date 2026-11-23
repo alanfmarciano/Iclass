@@ -8,6 +8,8 @@ const {
     SCORE_MAX,
     attemptGroupKey,
     consolidateSubmissions,
+    integrityDecision,
+    isArchived,
     normalizeScore,
     roundGrade,
 } = require('./submissionAttempts.js');
@@ -141,10 +143,29 @@ function normalizeGradeCriterion(criterio) {
 // Critério que vale para o curso/turma: gradeCriterionFor(memory, { courseId, studentClass }).
 // Os critérios são do curso (course.avaliacao, B6 / P2-S3): sem critérios, ou com eles
 // desligados, o padrão (mínima 6,0, regraAntiga). A tela pinta a nota por ele (C1 do P2).
+// Turma encerrada (B10): os critérios copiados no encerramento (effectiveGradingSources).
 function gradeCriterionFor(memory, context = {}) {
     const course = courseForContext(memory, context);
     if (!course) return { ...DEFAULT_GRADE_CRITERION };
-    return gradingRules.criterioForScreen(course.avaliacao);
+    const name = String(context.studentClass || '').trim();
+    const cls = name ? ((memory && memory.classes) || []).find(item => item && item.name === name && String(item.courseId || '') === String(course.id)) : null;
+    return gradingRules.criterioForScreen(effectiveGradingSources(course, cls).curso);
+}
+
+// De onde vem a conta da turma: { curso (course.avaliacao), turma (classes[].avaliacao),
+// disciplinas (course.disciplinas), congelado }. Turma encerrada com a cópia do
+// encerramento (academicCalendar.frozenGradingCriteria): a cópia, campo a campo (o que não
+// foi copiado vale o de agora); senão, o curso e a turma de agora.
+function effectiveGradingSources(course, cls) {
+    const frozen = cls ? academicCalendar.frozenGradingCriteria(cls) : null;
+    const has = key => !!frozen && Object.prototype.hasOwnProperty.call(frozen, key);
+    const liveDisciplinas = course && Array.isArray(course.disciplinas) ? course.disciplinas : [];
+    return {
+        curso: has('curso') ? frozen.curso : (course ? course.avaliacao : undefined),
+        turma: has('turma') ? frozen.turma : (cls ? cls.avaliacao : undefined),
+        disciplinas: has('disciplinas') && Array.isArray(frozen.disciplinas) ? frozen.disciplinas : liveDisciplinas,
+        congelado: !!frozen,
+    };
 }
 
 // Curso de { courseId } ou, sem curso, o da turma { studentClass } (a primeira com o nome).
@@ -476,18 +497,60 @@ function applicationOrdinal(application, applicationsById) {
     return index >= 0 ? index + 1 : null;
 }
 
-// Rótulo de uma aplicação para quando a mesma prova teve mais de uma.
+// Finalidade da aplicação no rótulo (B10): a recuperação e a segunda chamada dizem o que
+// são, em vez de "2ª aplicação". A regular (e a antiga, sem o campo) fica como sempre.
+const FINALIDADE_LABELS = Object.freeze({ recuperacao: 'recuperação', segunda_chamada: 'segunda chamada' });
+function applicationPurposeLabel(application) {
+    return (application && FINALIDADE_LABELS[application.finalidade]) || null;
+}
+
+// Título da prova com uma aplicação só: a de recuperação ou de segunda chamada diz a
+// finalidade ("Prova 1 (recuperação)"); a regular fica como sempre.
+function withPurpose(title, group, applicationsById) {
+    const first = group && Array.isArray(group.attempts) ? (group.attempts[0] || {}) : {};
+    const application = first.applicationId && applicationsById ? applicationsById.get(String(first.applicationId)) : null;
+    const purpose = applicationPurposeLabel(application);
+    return purpose ? `${title} (${purpose})` : title;
+}
+
+// Quantas aplicações da mesma prova, na mesma turma, têm a finalidade desta.
+function samePurposeCount(application, applicationsById) {
+    if (!application || !applicationsById) return 0;
+    return [...applicationsById.values()].filter(item => item && item.examKey === application.examKey
+        && String(item.studentClass || '') === String(application.studentClass || '')
+        && String(item.courseId || '') === String(application.courseId || '')
+        && item.finalidade === application.finalidade).length;
+}
+
+// Rótulo de uma aplicação para quando a mesma prova teve mais de uma: "2ª aplicação,
+// 10/11/2026"; a de recuperação e a de segunda chamada, "recuperação, 10/11/2026" (com o
+// número da aplicação só quando a turma teve mais de uma com a mesma finalidade).
 function scopeLabel(group, applicationsById) {
     const first = group.attempts[0] || {};
     if (first.applicationId) {
         const application = applicationsById && applicationsById.get(String(first.applicationId));
         const when = formatDateBR(application?.startedAt || application?.createdAt || first.timestamp);
         const ordinal = applicationOrdinal(application, applicationsById);
+        const purpose = applicationPurposeLabel(application);
+        if (purpose) {
+            const parts = [purpose];
+            if (ordinal && samePurposeCount(application, applicationsById) > 1) parts.push(`${ordinal}ª aplicação`);
+            if (when) parts.push(when);
+            return parts.join(', ');
+        }
         if (ordinal) return when ? `${ordinal}ª aplicação, ${when}` : `${ordinal}ª aplicação`;
         return when ? `aplicação de ${when}` : 'aplicação sem data';
     }
     const manual = group.attempts.every(item => ['impressa', 'manual'].includes(String(item.type || '')));
     return manual ? 'lançamento manual' : 'registro sem aplicação';
+}
+
+// O grupo ficou sem nota porque todas as tentativas que contariam foram anuladas com
+// 'desconsiderar' (as arquivadas não contam)?
+function isAnnulledGroup(group) {
+    if (!group || group.score !== null) return false;
+    const live = (group.attempts || []).filter(item => !isArchived(item));
+    return live.length > 0 && live.every(item => integrityDecision(item) === 'desconsiderar');
 }
 
 // Grupos de tentativas (aluno + curso + turma + aplicação) com a nota consolidada
@@ -508,6 +571,9 @@ function buildGradeGroups(submissions) {
             // Alguma tentativa do grupo espera a correção do professor (P3-S4a, contrato
             // C1 do P3): a nota dela ainda não entra na conta.
             aguardandoCorrecao: group.aguardandoCorrecao === true,
+            // Toda tentativa que conta foi anulada por integridade com 'desconsiderar' (A9):
+            // sem nota, e o quadro e a planilha dizem "anulada" em vez de ficar em branco (B10).
+            anulada: isAnnulledGroup(group),
         };
     });
 }
@@ -666,14 +732,18 @@ function classGradingContext(memory, { course = null, cls = null, structure = nu
     const effective = Array.isArray(structure) ? structure : ((course && course.structure) || []);
     const examIndex = structureExamIndex(effective);
     const evaluations = mem.evaluations || {};
-    const criterios = gradingRules.normalizeCriteria(course && course.avaliacao);
-    const plano = gradingRules.normalizePlan(cls && cls.avaliacao);
+    // Turma encerrada (B10 / P2-S9, D18): a conta usa os critérios, o plano e a ligação
+    // das disciplinas copiados no encerramento; mudar o curso depois não muda a média nem
+    // a situação dela. Sem a cópia (registro antigo), vale o de agora.
+    const avaliacao = effectiveGradingSources(course, cls);
+    const criterios = gradingRules.normalizeCriteria(avaliacao.curso);
+    const plano = gradingRules.normalizePlan(avaliacao.turma);
 
     const moduleNames = new Map();
     effective.forEach((module, index) => {
         if (module && typeof module === 'object') moduleNames.set(structureModuleId(module, index), module.name || module.title || module.id || `Módulo ${index + 1}`);
     });
-    const disciplinas = ((course && Array.isArray(course.disciplinas)) ? course.disciplinas : [])
+    const disciplinas = avaliacao.disciplinas
         .filter(item => item && item.id)
         .map(item => ({ id: String(item.id), nome: item.nome || String(item.id), modulos: Array.isArray(item.modulos) ? item.modulos.map(String) : [] }));
     const disciplinaDoModulo = new Map();
@@ -783,8 +853,9 @@ function classGradingContext(memory, { course = null, cls = null, structure = nu
         course,
         cls,
         criterios,
-        criterio: gradingRules.criterioForScreen(course && course.avaliacao),
+        criterio: gradingRules.criterioForScreen(avaliacao.curso),
         ativo: !!criterios,
+        congelado: avaliacao.congelado,
         plano,
         planoEfetivo,
         itens,
@@ -872,8 +943,12 @@ function studentGradeResult(grading, { groups = [], frequencia = null } = {}) {
     const grupos = [];
     const ativo = !!(grading && grading.criterios);
     (groups || []).forEach(group => {
-        if (!group || group.score === null || group.score === undefined) return;
-        if (isArchivedItemGroup(grading, group)) { arquivadas += 1; return; }
+        if (!group) return;
+        // Sem nota: só o grupo que espera correção entra (B10: a conta com critérios não
+        // dá situação final enquanto ele espera; a regra antiga o ignora, como sempre).
+        const semNota = group.score === null || group.score === undefined;
+        if (semNota && !(ativo && group.aguardandoCorrecao === true)) return;
+        if (isArchivedItemGroup(grading, group)) { if (!semNota) arquivadas += 1; return; }
         const item = gradingItemOf(grading, group.examKey);
         // Regra antiga (sem critérios): o plano não entra na conta, mas o item de provedor
         // (tarefa, C2) com "Conta na média" desmarcado (fora, o padrão) também fica fora da
@@ -883,9 +958,10 @@ function studentGradeResult(grading, { groups = [], frequencia = null } = {}) {
         const application = group.applicationId && grading ? grading.applicationsById.get(String(group.applicationId)) : null;
         grupos.push({
             itemId: group.examKey,
-            score: group.score,
+            score: semNota ? null : group.score,
             finalidade: application ? application.finalidade : undefined,
             moduloId: item ? item.moduloId : (meta ? meta.moduleId : null),
+            ...(ativo && group.aguardandoCorrecao === true ? { aguardandoCorrecao: true } : {}),
         });
     });
     const result = gradingRules.computeStudentResult({
@@ -943,6 +1019,7 @@ function resultSummary(result) {
         situacao: result.situacao,
         situacaoRotulo: result.situacaoRotulo,
         mencao: result.mencao,
+        aguardandoCorrecao: result.aguardandoCorrecao || 0,
         frequenciaMinima: result.frequenciaMinima,
         unidadeSituacao: result.unidadeSituacao,
         avisos: result.avisos,
@@ -1046,7 +1123,7 @@ function buildStudentReportModules({ submissions, allSubmissions = submissions, 
         const entry = {
             examKey: group.examKey,
             applicationId: group.applicationId,
-            title: multiple ? `${title} (${scopeLabel(group, applicationsById)})` : title,
+            title: multiple ? `${title} (${scopeLabel(group, applicationsById)})` : withPurpose(title, group, applicationsById),
             attempts: group.attempts.length,
             pendingAttempts: pendingFor(group.examKey, multiple ? group.scopeId : null),
             grade: roundGrade(group.score),
@@ -1103,7 +1180,14 @@ function buildStudentReportModules({ submissions, allSubmissions = submissions, 
 
     const all = [...modules, ...(otherModule.exams.length ? [otherModule] : [])];
     const allScores = counted.map(group => group.score);
-    const result = grading ? studentGradeResult(grading, { groups, frequencia }) : null;
+    // As provas que esperam correção também vão para a conta, só como aviso (sem nota; a
+    // nota publicada, quando há, já está em groups): com os critérios ligados, a situação
+    // não sai final enquanto elas esperam (B10). Contam todas as entregas do aluno
+    // (allSubmissions), porque a que espera correção ainda não foi publicada.
+    const awaitingGroups = buildGradeGroups(allSubmissions || submissions)
+        .filter(group => group.aguardandoCorrecao)
+        .map(group => ({ ...group, score: null }));
+    const result = grading ? studentGradeResult(grading, { groups: [...groups, ...awaitingGroups], frequencia }) : null;
     // Média geral: com critérios, a média final da conta única; sem eles, a média simples
     // de sempre (a mesma que studentGradeResult dá na regra antiga).
     const overall = withCriteria ? result.mediaFinalScore : average(allScores);
@@ -1160,7 +1244,7 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
             id,
             examKey,
             applicationId: sample?.applicationId || null,
-            label: scopeId ? `${title} (${scopeLabel(sample, applicationsById)})` : title,
+            label: scopeId ? `${title} (${scopeLabel(sample, applicationsById)})` : withPurpose(title, sample, applicationsById),
             moduleName: meta ? meta.moduleName : (itemOfOtherOrigin ? (itemOfOtherOrigin.moduloNome || (itemOfOtherOrigin.origem === 'manual' ? MANUAL_MODULE_NAME : 'Outras avaliações')) : 'Outras avaliações'),
             // Nome da prova na estrutura do curso (só no JSON): Resultados monta a estrutura
             // por ele para quem não abre o editor de cursos (Coordenação).
@@ -1238,11 +1322,17 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
         const awaiting = group.aguardandoCorrecao === true;
         if (group.score === null) {
             // Sem nota porque a entrega espera a correção: a célula diz isso (sem nota e
-            // fora da média), em vez de ficar vazia como a da prova não feita.
+            // fora da média), em vez de ficar vazia como a da prova não feita. Com os
+            // critérios ligados, o grupo vai para a conta do aluno, que não dá situação
+            // final enquanto ele espera (B10).
             if (awaiting) {
                 row.cells[id] = existing
                     ? { ...existing, aguardandoCorrecao: true, pending: existing.pending + group.pendingCount }
                     : { score: null, groups: 0, pending: group.pendingCount, aguardandoCorrecao: true };
+                row.groups.push(group);
+            } else if (group.anulada && !existing) {
+                // Entrega anulada com 'desconsiderar' (B10): a célula diz "anulada".
+                row.cells[id] = { score: null, groups: 0, pending: group.pendingCount, anulada: true };
             }
             return;
         }
@@ -1263,7 +1353,13 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
         const avg = average(row.scores);
         const cells = {};
         Object.entries(row.cells).forEach(([id, cell]) => {
-            cells[id] = { score: cell.score, grade: roundGrade(cell.score), pending: cell.pending, ...(cell.aguardandoCorrecao ? { aguardandoCorrecao: true } : {}) };
+            cells[id] = {
+                score: cell.score,
+                grade: roundGrade(cell.score),
+                pending: cell.pending,
+                ...(cell.aguardandoCorrecao ? { aguardandoCorrecao: true } : {}),
+                ...(cell.anulada && cell.score === null ? { anulada: true } : {}),
+            };
         });
         const out = {
             email: row.email,
@@ -1287,6 +1383,7 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
             out.situacao = summary.situacao;
             out.situacaoRotulo = summary.situacaoRotulo;
             out.mencao = summary.mencao;
+            if (summary.aguardandoCorrecao) out.aguardandoCorrecao = summary.aguardandoCorrecao;
             out.frequencia = frequencia ? frequencia.frequenciaGeral : null;
             out.disciplinas = summary.disciplinas;
             out.avisos = summary.avisos.filter(entry => entry.codigo !== 'itens_sem_etapa');
@@ -1385,6 +1482,21 @@ function gradebookSummary(internalRows, rows, { criterio = null, withCriteria = 
 // entram uma coluna por etapa, "Média final", "Frequência (%)", "Situação", "Menção" (só
 // com menções no curso) e "Notas não publicadas". Sem critérios, o cabeçalho e as linhas
 // de sempre, byte a byte (D1 do P2).
+// Valor de uma célula de nota na planilha: a nota (0 a 10), ou, sem nota, o porquê
+// quando há um (B10): "anulada" (entrega anulada com 'desconsiderar') e "aguardando
+// correção"; sem nota nenhuma, vazia. Dado antigo nunca tem esses dois casos (o CSV da
+// regra antiga continua igual).
+const SHEET_ANNULLED = 'anulada';
+const SHEET_AWAITING = 'aguardando correção';
+function sheetCellValue(cell) {
+    if (!cell) return null;
+    const grade = gradeFromScore(cell.score);
+    if (grade !== null) return grade;
+    if (cell.aguardandoCorrecao) return SHEET_AWAITING;
+    if (cell.anulada) return SHEET_ANNULLED;
+    return null;
+}
+
 function gradebookSheet(gradebook) {
     if (Array.isArray(gradebook.etapas) && gradebook.etapas.length) return gradebookSheetWithCriteria(gradebook);
     const cabecalho = ['Aluno', 'E-mail', 'Matrícula', ...gradebook.columns.map(column => column.label), 'Média', 'Notas não publicadas'];
@@ -1393,10 +1505,7 @@ function gradebookSheet(gradebook) {
         row.name,
         row.email,
         row.matricula,
-        ...gradebook.columns.map(column => {
-            const cell = row.cells[column.id];
-            return cell ? gradeFromScore(cell.score) : null;
-        }),
+        ...gradebook.columns.map(column => sheetCellValue(row.cells[column.id])),
         row.averageScore === null ? null : gradeFromScore(row.averageScore),
         row.pendingCount,
     ]);
@@ -1416,10 +1525,7 @@ function gradebookSheetWithCriteria(gradebook) {
             row.name,
             row.email,
             row.matricula,
-            ...gradebook.columns.map(column => {
-                const cell = row.cells[column.id];
-                return cell ? gradeFromScore(cell.score) : null;
-            }),
+            ...gradebook.columns.map(column => sheetCellValue(row.cells[column.id])),
             ...etapas.map(etapa => {
                 const value = porOrdem.get(etapa.ordem);
                 return value && value.final !== null && value.final !== undefined ? value.final : null;
@@ -1437,7 +1543,7 @@ function gradebookSheetWithCriteria(gradebook) {
 function gradebookCsv(gradebook) {
     const { cabecalho, formatos, linhas } = gradebookSheet(gradebook);
     const lines = linhas.map(values => values.map((value, index) => {
-        if (formatos[index] !== 'nota') return value;
+        if (formatos[index] !== 'nota' || typeof value === 'string') return value;
         return value === null ? '' : value.toFixed(1).replace('.', ',');
     }));
     return buildCsv([cabecalho, ...lines]);
@@ -2095,6 +2201,7 @@ module.exports = {
     classAttendanceByEmail,
     classGradingContext,
     courseForContext,
+    effectiveGradingSources,
     gradeItemProviderList,
     isManualItemId,
     newManualItemId,

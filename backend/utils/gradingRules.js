@@ -53,6 +53,12 @@
 //   P2-S9 passa, inclusive na prévia do resumo), a recuperação que não foi lançada conta
 //   como não feita: "Reprovado por nota", com aviso. A situação de uma turma encerrada é
 //   sempre final;
+// - avaliação aguardando correção (grupo com aguardandoCorrecao: a entrega tem questão
+//   que o professor ainda corrige, contrato C1 do P3; B10): a nota dela ainda não entra
+//   na conta, a média final é a de até agora e a situação não é final: "Aguardando
+//   correção" (depois de "Cursando", antes de qualquer situação final, inclusive a falta),
+//   sem menção e com aviso. A etapa que só espera essa correção não conta como 0 no fim do
+//   período. Item fora da média (plano) não espera nada;
 // - unidade da situação (P2-A3, padrão sem o Alan): por disciplina quando os módulos
 //   estão ligados a disciplinas (disciplinas[].modulos, P2-S7); senão, uma situação para a
 //   turma. Por disciplina, a situação geral junta as das disciplinas (Cursando > Em
@@ -83,10 +89,11 @@ const RECUPERACAO_ROTULOS = Object.freeze({
 const UNIDADES_SITUACAO = Object.freeze(['disciplina', 'turma']);
 const FINALIDADES = Object.freeze(['regular', 'segunda_chamada', 'recuperacao']);
 
-const SITUACOES = Object.freeze(['sem_notas', 'cursando', 'em_recuperacao', 'reprovado_falta', 'reprovado_nota', 'aprovado']);
+const SITUACOES = Object.freeze(['sem_notas', 'cursando', 'aguardando_correcao', 'em_recuperacao', 'reprovado_falta', 'reprovado_nota', 'aprovado']);
 const SITUACAO_ROTULOS = Object.freeze({
     sem_notas: 'Sem notas',
     cursando: 'Cursando',
+    aguardando_correcao: 'Aguardando correção',
     em_recuperacao: 'Em recuperação',
     reprovado_falta: 'Reprovado por falta',
     reprovado_nota: 'Reprovado por nota',
@@ -446,11 +453,21 @@ function computeCore(criterios, plan, grupos, { frequencia, aulasPrevistas, term
     const itens = new Map(); // id -> { etapa, peso, regulares: [], segundaChamada: [] }
     const recuperacoes = new Map(); // 'etapa:N' | 'final' -> [score]
     let recuperacaoSemEtapa = 0;
+    const aguardando = new Set(); // ids dos itens que esperam correção
+    const etapasAguardando = new Set();
 
     (grupos || []).forEach(group => {
         const score = normalizeScore(group && group.score);
-        if (score === null) return;
         const id = groupItemId(group);
+        if (group && group.aguardandoCorrecao === true) {
+            const pending = planItemFor(plan, id);
+            if (!pending.fora) {
+                aguardando.add(id);
+                const etapa = pending.recuperacaoDe ? null : resolveEtapa(pending.etapa);
+                if (etapa !== null) etapasAguardando.add(etapa);
+            }
+        }
+        if (score === null) return;
         const item = planItemFor(plan, id);
         if (item.fora) return;
         const finalidade = groupFinalidade(group);
@@ -535,7 +552,8 @@ function computeCore(criterios, plan, grupos, { frequencia, aulasPrevistas, term
     }
 
     const temNota = itensContados > 0 || recuperacaoFinalNotas.length > 0 || etapas.some(etapa => etapa.recuperacaoScore !== null);
-    const etapasSemNota = etapas.filter(etapa => etapa.semNota);
+    // A etapa que só espera a correção de uma avaliação não conta como 0.
+    const etapasSemNota = etapas.filter(etapa => etapa.semNota && !etapasAguardando.has(etapa.ordem));
     if (terminado === true && temNota && etapasSemNota.length) {
         etapasSemNota.forEach(etapa => { etapa.finalScore = 0; etapa.final = 0; etapa.contouComoZero = true; });
         avisos.push(aviso('etapa_sem_nota_zero', `${etapasSemNota.map(etapa => etapa.nome).join(', ')} sem nota: ${etapasSemNota.length === 1 ? 'contou' : 'contaram'} como 0 na média final.`));
@@ -550,13 +568,20 @@ function computeCore(criterios, plan, grupos, { frequencia, aulasPrevistas, term
     const freq = readFrequency(frequencia);
     const restantes = faltasPermitidasRestantes({ aulasPrevistas, frequenciaMinima: criterios.frequenciaMinima, faltas: freq.faltas });
 
-    const pendente = etapas.some(etapa => etapa.finalScore === null);
+    // Etapa sem nota que só espera correção não deixa o aluno "Cursando": ele está
+    // "Aguardando correção".
+    const pendente = etapas.some(etapa => etapa.finalScore === null && !etapasAguardando.has(etapa.ordem));
     const recuperacaoPorLancar = (regraFinal !== 'nenhuma' && recuperacaoFinal === null) || etapas.some(etapa => etapa.pendenteRecuperacao);
     let situacao;
     // Sem nota nenhuma: "Sem notas", salvo com o período terminado e a frequência abaixo
     // da mínima, que reprova por falta mesmo sem nota (a falta não some por faltar a nota).
-    if (!temNota) situacao = terminado === true && freq.pct !== null && freq.pct < criterios.frequenciaMinima ? 'reprovado_falta' : 'sem_notas';
-    else if (terminado === false || pendente) situacao = 'cursando';
+    // Com avaliação aguardando correção, nada é final ainda ("Aguardando correção").
+    if (!temNota) {
+        if (aguardando.size && terminado !== false) situacao = 'aguardando_correcao';
+        else if (aguardando.size) situacao = 'cursando';
+        else situacao = terminado === true && freq.pct !== null && freq.pct < criterios.frequenciaMinima ? 'reprovado_falta' : 'sem_notas';
+    } else if (terminado === false || pendente) situacao = 'cursando';
+    else if (aguardando.size) situacao = 'aguardando_correcao';
     else if (freq.pct !== null && freq.pct < criterios.frequenciaMinima) situacao = 'reprovado_falta';
     else if (belowMinimum(mediaFinalScore, criterios.mediaMinima) === false) situacao = 'aprovado';
     else if (recuperacaoPorLancar && !encerrada) situacao = 'em_recuperacao';
@@ -567,6 +592,10 @@ function computeCore(criterios, plan, grupos, { frequencia, aulasPrevistas, term
         }
     }
 
+    if (aguardando.size) {
+        avisos.push(aviso('aguardando_correcao', `${countLabel(aguardando.size, 'avaliação aguardando correção: a nota dela ainda não entra', 'avaliações aguardando correção: as notas delas ainda não entram')} na média, e a situação final sai depois da correção.`, { itens: [...aguardando].sort() }));
+    }
+
     return {
         etapas,
         mediaFinalScore,
@@ -574,7 +603,9 @@ function computeCore(criterios, plan, grupos, { frequencia, aulasPrevistas, term
         recuperacaoFinalScore: recuperacaoFinal,
         recuperacaoFinal: roundGrade(recuperacaoFinal),
         recuperacaoFinalAplicada: finalResult.aplicada && recuperacaoFinal !== null,
-        mencao: mencaoFor(mediaFinal, criterios.mencoes),
+        // A menção é da média final: com correção pendente, ainda não há.
+        mencao: aguardando.size ? null : mencaoFor(mediaFinal, criterios.mencoes),
+        aguardandoCorrecao: aguardando.size,
         situacao,
         situacaoRotulo: SITUACAO_ROTULOS[situacao],
         notasContadas: itensContados,
@@ -598,7 +629,8 @@ const AVISOS_DAS_DISCIPLINAS = ['etapa_sem_nota_zero'];
 // Situação geral a partir das disciplinas (unidade 'disciplina').
 // A falta de uma disciplina vem antes da recuperação de outra: a recuperação não tira a
 // reprovação por falta (igual à unidade 'turma', em que a falta decide antes da nota).
-const SITUACAO_PRIORIDADE = ['cursando', 'reprovado_falta', 'em_recuperacao', 'reprovado_nota', 'aprovado'];
+// A correção pendente vem antes de qualquer situação final (B10).
+const SITUACAO_PRIORIDADE = ['cursando', 'aguardando_correcao', 'reprovado_falta', 'em_recuperacao', 'reprovado_nota', 'aprovado'];
 function combineSituacoes(situacoes) {
     const comNota = (situacoes || []).filter(situacao => situacao && situacao !== 'sem_notas');
     if (!comNota.length) return 'sem_notas';
@@ -667,8 +699,15 @@ function computeStudentResult({ criterios = null, plano = null, grupos = [], fre
     let foraDeDisciplina = 0;
     let foraSemModulo = 0;
     (grupos || []).forEach(group => {
-        if (normalizeScore(group && group.score) === null) return;
+        const semNota = normalizeScore(group && group.score) === null;
+        // Sem nota, só o grupo que espera correção vai para a disciplina (para a situação
+        // dela não sair final); fora de disciplina, a conta da turma já o conta.
+        if (semNota && !(group && group.aguardandoCorrecao === true)) return;
         const disciplina = moduloDaDisciplina.get(String((group && group.moduloId) || ''));
+        if (semNota) {
+            if (disciplina) porDisciplina.get(disciplina).push(group);
+            return;
+        }
         const item = planItemFor(plan, groupItemId(group));
         const recuperacao = !item.fora && (!!item.recuperacaoDe || groupFinalidade(group) === 'recuperacao');
         if (!disciplina) {
@@ -709,6 +748,9 @@ function computeStudentResult({ criterios = null, plano = null, grupos = [], fre
         return { id, nome: cleanText(item.nome, 80) || id, ...own, frequenciaTurma: !propria && !!frequenciaTurma };
     });
     let situacao = combineSituacoes(result.disciplinas.map(item => item.situacao));
+    // Avaliação aguardando correção fora das disciplinas (módulo sem disciplina, avaliação
+    // sem módulo): a conta da turma a vê, e a situação geral também não é final.
+    if (core.aguardandoCorrecao && situacao !== 'cursando') situacao = 'aguardando_correcao';
     // Todas as notas fora de disciplina (módulo sem disciplina ou avaliação manual sem
     // módulo, B6) e nenhuma disciplina com nota: a situação geral é a da turma (a conta de
     // todas as notas), para não sair "Sem notas" ao lado de uma média.
@@ -726,7 +768,7 @@ function computeStudentResult({ criterios = null, plano = null, grupos = [], fre
     // A frequência mínima vale também para a turma inteira: as faltas lançadas sem
     // disciplina (ou numa disciplina sem módulo) não podem sumir da situação. Sem nota
     // nenhuma, só reprova com o período terminado (igual à disciplina).
-    const decideFrequencia = situacao !== 'cursando' && (situacao !== 'sem_notas' || terminado === true);
+    const decideFrequencia = situacao !== 'cursando' && situacao !== 'aguardando_correcao' && (situacao !== 'sem_notas' || terminado === true);
     if (decideFrequencia && turma.pct !== null && turma.pct < normalized.frequenciaMinima) {
         avisos.push(aviso('frequencia_turma_abaixo', `Frequência da turma (${turma.pct}%, contando as aulas sem disciplina) abaixo da mínima de ${normalized.frequenciaMinima}%.`));
         situacao = 'reprovado_falta';

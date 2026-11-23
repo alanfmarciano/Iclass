@@ -194,8 +194,9 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
     const items = [];
 
     // 1. Chamada de hoje não concluída (só em dia letivo: no feriado, no recesso e fora do
-    // período letivo da turma o painel não cobra a chamada; FUN-15).
-    const grade = cls ? academicCalendar.lessonsForDate(memory, cls, today) : [];
+    // período letivo da turma o painel não cobra a chamada; FUN-15). Turma encerrada (B10)
+    // não recebe mais chamada: o painel não cobra.
+    const grade = cls && !academicCalendar.isClassClosed(cls) ? academicCalendar.lessonsForDate(memory, cls, today) : [];
     if (grade.length && students.length) {
         const status = chamadaStatusHoje(memory, cls, emails, today);
         if (status !== 'concluida') {

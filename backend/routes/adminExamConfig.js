@@ -39,7 +39,7 @@ const {
 } = require('../utils/examDeadline.js');
 const { examFamilyKeys } = require('../utils/examFamily.js');
 const { questionType } = require('../utils/examScoring.js');
-const { assertClassOpen } = require('../utils/academicCalendar.js');
+const { assertClassOpen, CLASS_CLOSED_EXAM_MESSAGE } = require('../utils/academicCalendar.js');
 const { normalizeAnswerKey, normalizeQuestion, questionInputSchema } = require('../utils/questionModel.js');
 const {
     CORRECTABLE_STATUSES,
@@ -88,6 +88,7 @@ const {
     activeExamApplication,
     applicationStateEntries: sharedApplicationStateEntries,
     classExamApplications,
+    controlActionCloses,
     finishSummary: sharedFinishSummary,
     planControlAction,
     recordExamAudit: sharedRecordExamAudit,
@@ -1356,6 +1357,8 @@ function createAdminExamConfigRouter() {
             }
             const cls = findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId);
             if (!cls) return res.status(404).json({ error: 'Turma não encontrada.' });
+            // Turma encerrada (B10) não prepara prova nova.
+            if (!assertClassOpen(cls, { res, message: CLASS_CLOSED_EXAM_MESSAGE })) return;
             if (!isCourseExamKey(cls, examKey)) return res.status(400).json({ error: 'Avaliação não pertence ao curso da turma.' });
             const historyEntry = findOnlineHistoryEntry(cls, examKey, historyId);
             if (!historyEntry) return res.status(400).json({ error: 'Configuração salva não encontrada ou sem questões.' });
@@ -1526,6 +1529,8 @@ function createAdminExamConfigRouter() {
                 await db.save({ only: ['examApplications', 'auditLogs'] });
                 return res.json({ success: true, application: adminApplicationView(application) });
             }
+            // Turma encerrada (B10) não agenda prova (tirar o agendamento, acima, passa).
+            if (!assertClassOpen(cls, { res, message: CLASS_CLOSED_EXAM_MESSAGE })) return;
             const parsed = examSchedule.parseScheduleInput(input, { now });
             if (!parsed.ok) return res.status(400).json({ success: false, error: parsed.error, field: parsed.field });
             if (current && current.perdida !== true && Number(current.abreEm) === parsed.value.abreEm && Number(current.fechaEm) === parsed.value.fechaEm) {
@@ -1555,6 +1560,10 @@ function createAdminExamConfigRouter() {
             if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
             const cls = findClassByNameAndCourse(db.memory.classes || [], application.studentClass, application.courseId);
             if (!cls) return res.status(404).json({ error: 'Turma da aplicação não encontrada.' });
+            // Turma encerrada (B10): encerrar e cancelar passam (entregam o que os alunos já
+            // fizeram; recusar deixaria a prova aberta); abrir, retomar, pausar e mexer na sala
+            // de espera, não.
+            if (!controlActionCloses(application, req.body.action) && !assertClassOpen(cls, { res, message: CLASS_CLOSED_EXAM_MESSAGE })) return;
             let processedFinish = null;
             // A transição é conferida antes de mexer nas tentativas. Encerrar ou cancelar
             // (com qualquer nome de ação) uma aplicação em andamento passa sempre pela
@@ -1613,6 +1622,8 @@ function createAdminExamConfigRouter() {
         validateAdmin(req, res, async () => {
             const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
             if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
+            // Turma encerrada (B10): tempo a mais devolve entrega à prova (mexe em nota).
+            if (!assertClassOpen(findClassByNameAndCourse(db.memory.classes || [], application.studentClass, application.courseId), { res, message: CLASS_CLOSED_EXAM_MESSAGE })) return;
             const adjustmentMinutes = Number(req.body.adjustmentMinutes);
             if (!Number.isFinite(adjustmentMinutes)) return res.status(400).json({ error: 'Ajuste de tempo inválido.' });
             const targetEmail = String(req.body.targetEmail || '').trim().toLowerCase();
@@ -1957,8 +1968,7 @@ function createAdminExamConfigRouter() {
                 if (!adminCanAccessClass(matchedAdmin, application.studentClass, application.courseId)) {
                     return res.status(403).json({ error: 'Aplicação fora do escopo desta conta.' });
                 }
-                // Turma encerrada não tem gabarito corrigido nem nota recorrigida (sem efeito
-                // até o B10).
+                // Turma encerrada não tem gabarito corrigido nem nota recorrigida.
                 if (!assertClassOpen(cls, { res })) return;
                 if (!['waiting', 'running', 'paused'].includes(application.status)) {
                     return res.status(409).json({ error: 'A aplicação precisa estar ativa para corrigir a questão ao vivo.' });
@@ -2201,8 +2211,8 @@ function createAdminExamConfigRouter() {
     // as aplicações dela ainda não começadas recebem o mesmo gabarito (reaplicar a
     // preparação, como na segunda chamada, não traz a letra errada de volta). dryRun: a
     // prévia do impacto, sem gravar.
-    // Repetir a mesma correção não muda nada. assertClassOpen antes de gravar (sem efeito
-    // até o B10). page.results pelo guarda (o professor auxiliar não muda nota).
+    // Repetir a mesma correção não muda nada. assertClassOpen antes de gravar (409
+    // class_closed na turma encerrada). page.results pelo guarda (o professor auxiliar não muda nota).
     router.post('/api/admin/exam-applications/:applicationId/answer-key-correction', (req, res) => {
         validateAdmin(req, res, async (config, matchedAdmin) => {
             try {
@@ -2211,8 +2221,7 @@ function createAdminExamConfigRouter() {
                 if (!canManageApplication(matchedAdmin, application)) {
                     return res.status(403).json({ error: 'Aplicação fora do escopo desta conta.' });
                 }
-                // Turma encerrada não tem gabarito corrigido nem nota recorrigida (sem efeito
-                // até o B10).
+                // Turma encerrada não tem gabarito corrigido nem nota recorrigida.
                 if (!assertClassOpen(cls, { res })) return;
                 if (application.status === 'cancelled') {
                     return res.status(409).json({ error: 'Esta aplicação foi cancelada: não há nota para corrigir.', code: 'application_cancelled' });

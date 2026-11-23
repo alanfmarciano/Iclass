@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react'
+import { Link } from 'react-router-dom'
 import { CalendarRange, Lock, LockOpen, Pencil, Plus, Trash2, Wand2 } from 'lucide-react'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
@@ -18,7 +19,9 @@ import { useToast } from '../../context/ToastProvider'
 // sequência e sem se cruzar, período encerrado sem turma nova e sem mudar de data, reabrir
 // com motivo. A tela só monta o pedido, sugere as datas das etapas e mostra a recusa no
 // campo que o servidor apontou (field). Encerrar o período não encerra turma nem muda
-// nota (o encerramento da turma é do B10).
+// nota: depois de encerrar, o assistente (ClassClosureDialog, B10) oferece encerrar as
+// turmas ligadas que a conta vê, com o resumo de situações de cada uma, e lembra da
+// matrícula em lote na turma nova (tela Alunos).
 
 export const MAX_TERM_STAGES = 6
 
@@ -199,7 +202,7 @@ function TermForm({ open, form, setForm, escolas, saving, error, onClose, onSave
   )
 }
 
-function TermCard({ term, onEdit, onClose, onReopen }) {
+function TermCard({ term, onEdit, onClose, onReopen, openClasses = [], onCloseClasses }) {
   const closed = term.situacao === 'encerrado'
   const hiddenClasses = Math.max(0, Number(term.totalTurmas || 0) - (term.turmas || []).length)
   return (
@@ -217,6 +220,7 @@ function TermCard({ term, onEdit, onClose, onReopen }) {
           {!closed && <Button size="sm" variant="ghost" icon={Lock} aria-label={`Encerrar período ${term.nome}`} onClick={() => onClose(term)}>Encerrar</Button>}
           {closed && <Button size="sm" variant="secondary" icon={LockOpen} aria-label={`Reabrir período ${term.nome}`} onClick={() => onReopen(term)}>Reabrir</Button>}
         </div>}
+        {closed && onCloseClasses && openClasses.length > 0 && <Button size="sm" icon={Lock} aria-label={`Encerrar as turmas do período ${term.nome}`} onClick={() => onCloseClasses(openClasses)}>{openClasses.length === 1 ? 'Encerrar a turma' : `Encerrar as ${openClasses.length} turmas`}</Button>}
       </div>
       {(term.etapas || []).length > 0 && (
         <ul aria-label={`Etapas de ${term.nome}`} className="mt-3 flex flex-wrap gap-2">
@@ -229,6 +233,7 @@ function TermCard({ term, onEdit, onClose, onReopen }) {
           : `Turmas: ${(term.turmas || []).map(cls => `${cls.courseName} · ${cls.name}`).join(', ')}${hiddenClasses ? `${(term.turmas || []).length ? ' e ' : ''}${hiddenClasses} de outros cursos` : ''}`}
       </p>
       {closed && term.encerradoEm && <p className="mt-1 text-xs text-subtle">Encerrado em {fmtMoment(term.encerradoEm)}{term.encerradoPor ? ` por ${term.encerradoPor}` : ''}. Sem turma nova e sem mudar as datas até reabrir.</p>}
+      {closed && onCloseClasses && openClasses.length > 0 && <p className="mt-1 text-xs text-subtle">{openClasses.length === 1 ? 'A turma ligada continua aberta.' : `${openClasses.length} turmas ligadas continuam abertas.`} Encerre-as para travar notas e presença; para matricular os alunos na turma do próximo período, use <Link className="text-primary underline" to="/diretorio">Alunos</Link> e "Matricular em turma".</p>}
       {!closed && term.reabertoEm && <p className="mt-1 text-xs text-subtle">Reaberto em {fmtMoment(term.reabertoEm)}{term.reabertoPor ? ` por ${term.reabertoPor}` : ''}.</p>}
     </li>
   )
@@ -238,7 +243,10 @@ function TermCard({ term, onEdit, onClose, onReopen }) {
 // seletor do formulário da turma). course: o curso selecionado, para a sugestão do número
 // de etapas (os critérios dele, quando ligados). onChanged: recarrega o resto da tela (as
 // turmas mostram o período).
-export function AcademicTermsSection({ termsApi, course, onChanged }) {
+// canCloseClasses, classes e onCloseClasses (B10): o assistente de encerrar as turmas do
+// período encerrado (classes: a lista de GET /api/admin/classes, que diz quais já estão
+// encerradas).
+export function AcademicTermsSection({ termsApi, course, onChanged, canCloseClasses = false, classes = [], onCloseClasses }) {
   const toast = useToast()
   const data = termsApi?.data || null
   const periodos = Array.isArray(data?.periodos) ? data.periodos : []
@@ -253,6 +261,10 @@ export function AcademicTermsSection({ termsApi, course, onChanged }) {
   const criteria = course?.avaliacao && course.avaliacao.ativo !== false && Array.isArray(course.avaliacao.etapas) && course.avaliacao.etapas.length
     ? course.avaliacao.etapas.length : 0
   const suggestedCount = Math.min(MAX_TERM_STAGES, criteria || 2)
+  // Turmas ligadas ao período que a conta vê e que ainda estão abertas.
+  const openClassesOf = term => (term.turmas || [])
+    .filter(item => !(classes || []).some(cls => cls.name === item.name && String(cls.courseId) === String(item.courseId) && cls.encerrada))
+    .map(item => ({ courseId: item.courseId, courseName: item.courseName, name: item.name }))
 
   const refresh = async () => {
     await Promise.all([termsApi?.refetch?.(), onChanged?.()])
@@ -296,8 +308,12 @@ export function AcademicTermsSection({ termsApi, course, onChanged }) {
     const result = await api.post('/api/admin/academic/terms/close', { id: closing.id, ...(reason ? { reason } : {}) })
     const total = Array.isArray(result?.turmas) ? result.turmas.length : 0
     toast.success(total ? `Período encerrado. ${total === 1 ? 'A turma ligada continua aberta' : `As ${total} turmas ligadas continuam abertas`}, com as mesmas notas.` : 'Período encerrado.')
+    const term = closing
     setClosing(null)
     await refresh()
+    // Assistente (B10): oferece encerrar as turmas ligadas logo em seguida.
+    const open = canCloseClasses && onCloseClasses && term ? openClassesOf(term) : []
+    if (open.length) onCloseClasses(open)
   }
 
   async function confirmReopen(reason) {
@@ -320,7 +336,8 @@ export function AcademicTermsSection({ termsApi, course, onChanged }) {
         <PageState loading={termsApi?.loading && !data} error={termsApi?.error} onRetry={() => termsApi?.refetch?.()} skeleton={<Skeleton className="h-24" />}>
           {periodos.length === 0
             ? <EmptyState icon={CalendarRange} title="Nenhum período letivo" description={podeCriar ? 'Crie o período (por exemplo, 2027 · 1º semestre) e ligue as turmas a ele no formulário da turma.' : 'Quem gerencia as turmas cadastra os períodos letivos.'} />
-            : <ul aria-label="Períodos letivos" className="space-y-3">{periodos.map(term => <TermCard key={term.id} term={term} onEdit={openEdit} onClose={setClosing} onReopen={setReopening} />)}</ul>}
+            : <ul aria-label="Períodos letivos" className="space-y-3">{periodos.map(term => <TermCard key={term.id} term={term} onEdit={openEdit} onClose={setClosing} onReopen={setReopening}
+              openClasses={canCloseClasses ? openClassesOf(term) : []} onCloseClasses={canCloseClasses ? onCloseClasses : undefined} />)}</ul>}
         </PageState>
       </CardBody>
 

@@ -46,7 +46,7 @@
 // só nas datas do dia), e a frequência passa a ignorá-los ou a contá-los de novo. Nenhum
 // registro é apagado; a chamada e a marcação individual nunca são marcadas; turma
 // encerrada não muda. As quatro rotas que gravam chamam o portão da turma encerrada
-// (assertClassOpen, sem efeito até o B10): o dia de uma turma passa com a turma dele; o de
+// (assertClassOpen): o dia de uma turma passa com a turma dele; o de
 // curso, escola ou instituição e os feriados nacionais passam sem turma (dayClass dá null:
 // valem para muitas turmas, um feriado não é recusado por uma delas, e a encerrada só
 // fica de fora da marca). A gravação é parcial: nonSchoolDays, auditLogs e, em attendance
@@ -72,7 +72,12 @@ const settingsUtil = require('../utils/settings.js');
 const academicCalendar = require('../utils/academicCalendar.js');
 const { nonSchoolDayCalendarItems } = require('../utils/calendarFeed.js');
 const { buildIcs, icsFileName, calendarEventToIcs } = require('../utils/icsCalendar.js');
-const { registerGradingRoutes } = require('./adminGrading.js');
+const { registerGradingRoutes, classGradebookFor, structureFor } = require('./adminGrading.js');
+const gradingRules = require('../utils/gradingRules.js');
+const { buildGradeGroups } = require('../utils/gradebook.js');
+const { ACTIVE_APPLICATION_STATUSES } = require('../utils/examApplications.js');
+const { applicationAgenda, formatWhen } = require('../utils/examSchedule.js');
+const { gradingQueueSummary } = require('../utils/assignments.js');
 
 const {
     NON_SCHOOL_DAY_TYPES,
@@ -127,6 +132,23 @@ const TERM_SCHEMAS = {
     close: body({ id: str({ ...ID_FIELD, required: true }), reason: str({ max: 500, nullable: true, label: 'motivo' }) }),
     reopen: body({ id: str({ ...ID_FIELD, required: true }), reason: str({ max: 500, nullable: true, label: 'motivo' }) }),
 };
+
+// Encerrar e reabrir a turma (B10 / P2-S9): a turma é curso + nome; encerrar pede a palavra
+// ENCERRAR digitada (confirm) e aceita um motivo; reabrir pede o motivo.
+const CLASS_CLOSURE_SCHEMAS = {
+    close: body({
+        courseId: str({ ...ID_FIELD, required: true, label: 'curso' }),
+        name: str({ max: 120, required: true, label: 'turma' }),
+        confirm: str({ max: 20, nullable: true, label: 'confirmação' }),
+        reason: str({ max: 500, nullable: true, label: 'motivo' }),
+    }),
+    reopen: body({
+        courseId: str({ ...ID_FIELD, required: true, label: 'curso' }),
+        name: str({ max: 120, required: true, label: 'turma' }),
+        reason: str({ max: 500, nullable: true, label: 'motivo' }),
+    }),
+};
+const CLOSE_CONFIRM_WORD = 'ENCERRAR';
 
 const randomHex = () => crypto.randomBytes(3).toString('hex');
 const newTermId = () => `per_${Date.now()}_${randomHex()}`;
@@ -311,7 +333,7 @@ function auditTarget(day) {
 }
 
 // Turma do dia de escopo 'turma', para o portão da turma encerrada (X4 do plano:
-// assertClassOpen, sem efeito até o B10), ou null. O dia de curso, escola ou instituição
+// assertClassOpen), ou null. O dia de curso, escola ou instituição
 // vale para muitas turmas e não passa pelo portão (um feriado não pode ser recusado por
 // uma turma encerrada): a turma encerrada só fica de fora da marca
 // (syncNonSchoolDayMarks olha isClassClosed).
@@ -487,6 +509,97 @@ function resolveClassTermInput(memory, account, course, value, currentId = null)
 // O resto (existe, a conta vê, mesma escola, aberto) é de resolveClassTermInput.
 const CLASS_TERM_SCHEMA = body({ periodoLetivoId: str({ ...ID_FIELD, nullable: true, label: 'período letivo' }) });
 
+// --- encerrar turma (B10 / P2-S9) --------------------------------------------------------
+
+const clone = value => (value === undefined || value === null ? null : JSON.parse(JSON.stringify(value)));
+
+function closureClass(account, courseId, name) {
+    const id = text(courseId);
+    const className = text(name);
+    if (!id || !className) return { status: 400, error: 'Informe o curso e a turma.' };
+    const course = (db.memory.courses || []).find(item => item && String(item.id) === id);
+    if (!course) return { status: 404, error: 'Curso não encontrado.' };
+    const cls = (db.memory.classes || []).find(item => item && item.name === className && String(item.courseId || '') === id);
+    if (!cls) return { status: 404, error: 'Turma não encontrada.' };
+    if (!adminCanAccessClass(account, cls.name, cls.courseId)) return { status: 403, error: outOfScopeMessage(account, 'A turma') };
+    return { course, cls };
+}
+
+function sameClass(cls, studentClass, courseId) {
+    if (!cls || text(studentClass) !== cls.name) return false;
+    return !text(courseId) || !cls.courseId || String(cls.courseId) === text(courseId);
+}
+
+function examTitleOf(examKey) {
+    const evaluation = db.memory.evaluations && db.memory.evaluations[examKey];
+    const title = evaluation && (evaluation.title || evaluation.name);
+    return title ? String(title) : String(examKey || 'Prova').replace(/^Avaliacao_/, '').replace(/_/g, ' ');
+}
+
+const plural = (count, one, many) => (count === 1 ? one : many);
+
+// O que segura o encerramento: prova aberta no Monitor, prova agendada, prova que aguarda
+// correção e entrega de tarefa para corrigir. Cada uma { code, texto }.
+function closurePendencias(cls) {
+    const out = [];
+    const timezone = settingsUtil.getSettings().timezone;
+    const apps = (db.memory.examApplications || []).filter(app => app && sameClass(cls, app.studentClass, app.courseId));
+    apps.filter(app => ACTIVE_APPLICATION_STATUSES.has(app.status)).forEach(app => {
+        out.push({ code: 'exam_in_progress', texto: `A prova "${examTitleOf(app.examKey)}" está aberta no Monitor. Encerre a aplicação antes de encerrar a turma.` });
+    });
+    apps.filter(app => app.status === 'prepared').forEach(app => {
+        const agenda = applicationAgenda(app);
+        if (!agenda || agenda.perdida === true || Number(agenda.abertaEm) > 0) return;
+        out.push({ code: 'schedule_pending', texto: `A prova "${examTitleOf(app.examKey)}" está agendada para ${formatWhen(agenda.abreEm, timezone)}. Cancele o agendamento ou aplique a prova antes de encerrar a turma.` });
+    });
+    const submissions = (db.memory.submissions || []).filter(sub => sub && academicCalendar.classOfSubmission(db.memory, sub) === cls);
+    const awaiting = buildGradeGroups(submissions).filter(group => group.aguardandoCorrecao);
+    if (awaiting.length) {
+        out.push({ code: 'correction_pending', texto: `${awaiting.length} ${plural(awaiting.length, 'prova aguarda', 'provas aguardam')} correção em Correção. Corrija antes de encerrar: depois do encerramento a nota não muda.` });
+    }
+    const tasks = gradingQueueSummary(db.memory, { courseId: cls.courseId, studentClass: cls.name });
+    if (tasks.count) {
+        out.push({ code: 'assignment_grading_pending', texto: `${tasks.count} ${plural(tasks.count, 'entrega de tarefa aguarda', 'entregas de tarefa aguardam')} correção em Tarefas. Corrija antes de encerrar: depois do encerramento a nota não muda.` });
+    }
+    return out;
+}
+
+// Resumo para o diálogo de encerrar: quantos alunos em cada situação (com os critérios que
+// vão ser copiados), o que segura o encerramento e o encerramento de antes.
+function closureSummary(account, course, cls) {
+    const structure = structureFor(course, cls);
+    const gradebook = classGradebookFor(account, course, cls, structure);
+    const rows = Array.isArray(gradebook.rows) ? gradebook.rows : [];
+    const counts = {};
+    rows.forEach(row => {
+        const key = row.situacao || 'regra_antiga';
+        counts[key] = (counts[key] || 0) + 1;
+    });
+    const order = [...gradingRules.SITUACOES, 'regra_antiga'];
+    const situacoes = order.filter(key => counts[key]).map(key => ({
+        situacao: key,
+        rotulo: key === 'regra_antiga' ? 'Sem situação final (regra antiga)' : (gradingRules.SITUACAO_ROTULOS[key] || key),
+        total: counts[key],
+    }));
+    const closed = academicCalendar.isClassClosed(cls);
+    const pendencias = closed ? [] : closurePendencias(cls);
+    const term = text(cls.periodoLetivoId) ? termsList().find(item => item && item.id === text(cls.periodoLetivoId)) : null;
+    const avisos = [];
+    if (counts.cursando) avisos.push(`${counts.cursando} ${plural(counts.cursando, 'aluno ainda está', 'alunos ainda estão')} "Cursando" (falta nota de alguma etapa). Depois do encerramento, a situação deles fica assim até reabrir a turma.`);
+    if (counts.em_recuperacao) avisos.push(`${counts.em_recuperacao} ${plural(counts.em_recuperacao, 'aluno está', 'alunos estão')} em recuperação. Lance a recuperação antes de encerrar, se ela já aconteceu.`);
+    if (counts.regra_antiga) avisos.push('O curso não tem critérios de avaliação ligados: a turma fica com a regra antiga (média 6,0, sem situação final).');
+    return {
+        turma: { courseId: String(cls.courseId || ''), courseName: course.name || String(course.id), name: cls.name, periodoLetivo: term ? text(term.nome) || null : null },
+        encerramento: academicCalendar.classClosureView(cls),
+        alunos: rows.length,
+        situacoes,
+        pendencias,
+        avisos,
+        podeEncerrar: !closed && !pendencias.length,
+        podeReabrir: closed,
+    };
+}
+
 function createAdminAcademicRouter() {
     const router = express.Router();
 
@@ -644,6 +757,110 @@ function createAdminAcademicRouter() {
             });
             saveTerms();
             res.json({ success: true, periodo: termView(account, record) });
+        });
+    });
+
+    // --- encerrar e reabrir a turma (B10 / P2-S9) ----------------------------------------
+
+    router.get('/api/admin/class/close-summary', (req, res) => {
+        validateAdmin(req, res, (config, account) => {
+            const found = closureClass(account, req.query.courseId, req.query.name);
+            if (found.error) return res.status(found.status).json({ error: found.error });
+            res.json(closureSummary(account, found.course, found.cls));
+        });
+    });
+
+    router.post('/api/admin/class/close', CLASS_CLOSURE_SCHEMAS.close, (req, res) => {
+        validateAdmin(req, res, (config, account) => {
+            if (isReadOnlyAccount(account)) return res.status(403).json({ error: 'Sua conta é só de consulta.' });
+            const found = closureClass(account, req.body.courseId, req.body.name);
+            if (found.error) return res.status(found.status).json({ error: found.error });
+            const { course, cls } = found;
+            if (academicCalendar.isClassClosed(cls)) {
+                return res.json({ success: true, semMudanca: true, encerramento: academicCalendar.classClosureView(cls) });
+            }
+            if (text(req.body.confirm).toUpperCase() !== CLOSE_CONFIRM_WORD) {
+                return fieldError(res, `Para encerrar, digite ${CLOSE_CONFIRM_WORD}.`, 'confirm');
+            }
+            const reason = text(req.body.reason);
+            if (reason && reason.length < 3) return fieldError(res, 'O motivo precisa ter de 3 a 500 caracteres (ou fique em branco).', 'reason');
+            const pendencias = closurePendencias(cls);
+            if (pendencias.length) {
+                return res.status(409).json({ success: false, code: pendencias[0].code, error: pendencias[0].texto, pendencias });
+            }
+            const summary = closureSummary(account, course, cls);
+            const now = Date.now();
+            const por = actorEmail(account);
+            const previous = cls.encerramento && typeof cls.encerramento === 'object' && !Array.isArray(cls.encerramento) ? cls.encerramento : null;
+            const historico = [...(previous && Array.isArray(previous.historico) ? previous.historico : []), { acao: 'encerrada', em: now, por, ...(reason ? { motivo: reason } : {}) }];
+            const record = {
+                schemaVersion: 1,
+                situacao: 'encerrada',
+                em: now,
+                por,
+                ...(reason ? { motivo: reason } : {}),
+                criterios: {
+                    curso: clone(course.avaliacao),
+                    turma: clone(cls.avaliacao),
+                    disciplinas: clone(Array.isArray(course.disciplinas) ? course.disciplinas : []),
+                },
+                historico,
+            };
+            cls.encerramento = record;
+            recordAudit(db.memory, {
+                req,
+                actor: account,
+                action: 'class_closed',
+                category: 'academic',
+                reason: reason || undefined,
+                details: {
+                    courseId: String(cls.courseId || ''),
+                    studentClass: cls.name,
+                    alunos: summary.alunos,
+                    situacoes: Object.fromEntries(summary.situacoes.map(item => [item.situacao, item.total])),
+                    criteriosLigados: !!(course.avaliacao && course.avaliacao.ativo !== false),
+                },
+            });
+            db.save({ only: ['classes', 'auditLogs'] });
+            res.json({ success: true, encerramento: academicCalendar.classClosureView(cls), resumo: { ...summary, encerramento: academicCalendar.classClosureView(cls), pendencias: [], podeEncerrar: false, podeReabrir: true } });
+        });
+    });
+
+    router.post('/api/admin/class/reopen', CLASS_CLOSURE_SCHEMAS.reopen, (req, res) => {
+        validateAdmin(req, res, (config, account) => {
+            if (isReadOnlyAccount(account)) return res.status(403).json({ error: 'Sua conta é só de consulta.' });
+            const found = closureClass(account, req.body.courseId, req.body.name);
+            if (found.error) return res.status(found.status).json({ error: found.error });
+            const { cls } = found;
+            if (!academicCalendar.isClassClosed(cls)) {
+                return res.json({ success: true, semMudanca: true, encerramento: academicCalendar.classClosureView(cls) });
+            }
+            const reason = text(req.body.reason);
+            if (reason.length < 3) {
+                return res.status(400).json({ success: false, code: 'reason_required', error: 'Informe o motivo para reabrir a turma (de 3 a 500 caracteres).', field: 'reason' });
+            }
+            const now = Date.now();
+            const por = actorEmail(account);
+            const current = cls.encerramento;
+            cls.encerramento = {
+                ...current,
+                schemaVersion: 1,
+                situacao: 'reaberta',
+                reabertaEm: now,
+                reabertaPor: por,
+                motivoReabertura: reason,
+                historico: [...(Array.isArray(current.historico) ? current.historico : []), { acao: 'reaberta', em: now, por, motivo: reason }],
+            };
+            recordAudit(db.memory, {
+                req,
+                actor: account,
+                action: 'class_reopened',
+                category: 'academic',
+                reason,
+                details: { courseId: String(cls.courseId || ''), studentClass: cls.name, encerradaEm: current.em ?? null },
+            });
+            db.save({ only: ['classes', 'auditLogs'] });
+            res.json({ success: true, encerramento: academicCalendar.classClosureView(cls) });
         });
     });
 

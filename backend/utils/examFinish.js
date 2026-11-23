@@ -256,6 +256,17 @@ function dropUnstartedLeftovers(memory, application) {
     return unstarted.length;
 }
 
+// A ação de controle encerra ou cancela a aplicação? Turma encerrada (B10) deixa passar só
+// estas: entregam o que os alunos já fizeram, e recusar deixaria a prova aberta. Ação
+// impossível dá true (a rota responde o erro da transição, como sempre).
+function controlActionCloses(application, action) {
+    try {
+        return CLOSING_STATUSES.has(checkExamApplicationTransition(application, action).target);
+    } catch (error) {
+        return true;
+    }
+}
+
 // O que uma ação de controle (Monitor ou controle antigo por turma) faz com as
 // tentativas. A transição é conferida ANTES de mexer em qualquer coisa: ação
 // impossível lança o erro e nada muda. Repetir o encerramento de uma aplicação já
@@ -305,6 +316,7 @@ module.exports = {
     activeExamApplication,
     applicationStateEntries,
     classExamApplications,
+    controlActionCloses,
     dropUnstartedLeftovers,
     finishApplication,
     finishSummary,

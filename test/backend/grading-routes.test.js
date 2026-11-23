@@ -911,3 +911,90 @@ test('[UC-NOTAS-008] boletim traz a identidade da escola do curso do boletim e o
     assert.equal(rec.recuperacaoDe, 'etapa:1');
     assert.equal(summary.body.itens.find(item => item.id === 'Av_P1').recuperacaoDe, null);
 });
+
+// ------------------------------------------------------------------ pendências da J2 (B10)
+
+test('[UC-NOTAS-005] com critérios, avaliação aguardando correção: quadro, boletim e grades-summary avisam e não dão situação final', async () => {
+    assert.equal((await saveCriteria()).status, 200);
+    assert.equal((await savePlan(PLAN, { reason: 'Plano do semestre' })).status, 200);
+    // A P3 da Ana (única avaliação do 2º bimestre) espera a correção do professor.
+    const p3 = db.memory.submissions.find(item => item.student.email === 'ana@grading.local' && item.examKey === 'Av_P3');
+    p3.correcao = { situacao: 'pendente', versao: 0 };
+    const gb = await gradebookOf();
+    const ana = rowOf(gb, 'ana@grading.local');
+    assert.equal(ana.situacao, 'aguardando_correcao', JSON.stringify(ana));
+    assert.equal(ana.situacaoRotulo, 'Aguardando correção');
+    assert.equal(ana.aguardandoCorrecao, 1);
+    assert.equal(ana.mencao, null, 'sem menção enquanto espera a correção');
+    assert.equal(ana.etapas[1].media, null, 'a etapa que só espera correção não vira zero');
+    const p3Column = gb.body.columns.find(item => item.examKey === 'Av_P3');
+    assert.equal(ana.cells[p3Column.id].aguardandoCorrecao, true);
+    assert.equal(ana.cells[p3Column.id].score, null);
+    const csv = await gradebookOf('1DES', 'admin', '&format=csv');
+    const anaLine = csv.text.split(/\r?\n/).find(line => line.includes('ana@grading.local'));
+    assert.match(anaLine, /aguardando correção/);
+    assert.match(anaLine, /Aguardando correção/);
+
+    const report = await as('admin', 'get', `/api/admin/student/report?email=ana@grading.local&courseId=${COURSE}&studentClass=1DES`);
+    assert.equal(report.status, 200, JSON.stringify(report.body));
+    assert.equal(report.body.situacao, 'aguardando_correcao');
+    assert.equal(report.body.mencao, null);
+    assert.ok(report.body.avisosNotas.some(aviso => /aguardando correção/.test(aviso)), JSON.stringify(report.body.avisosNotas));
+
+    // O aluno vê o aviso no resumo (a P3 publicada, esperando a correção).
+    const summary = await asStudent('ana@grading.local', `/api/student/grades-summary?courseId=${COURSE}&studentClass=1DES`);
+    assert.equal(summary.status, 200, JSON.stringify(summary.body));
+    assert.equal(summary.body.situacao, 'aguardando_correcao', JSON.stringify(summary.body));
+    assert.equal(summary.body.aguardandoCorrecao, 1);
+    assert.deepEqual(summary.body.avisos, ['1 avaliação aguardando correção: a nota dela ainda não entra na média, e a situação final sai depois da correção.']);
+    assert.equal(summary.body.mencao, null);
+
+    // Corrigida, a situação final volta.
+    p3.correcao = { situacao: 'concluida', versao: 1 };
+    const after = rowOf(await gradebookOf(), 'ana@grading.local');
+    assert.equal(after.situacao, 'aprovado');
+});
+
+test('[UC-NOTAS-005] entrega anulada com "desconsiderar" aparece como "anulada" no quadro e na planilha', async () => {
+    const p2 = db.memory.submissions.find(item => item.student.email === 'bia@grading.local' && item.examKey === 'Av_P2');
+    p2.integrity = { decisao: 'desconsiderar', motivo: 'cola', em: Date.now(), por: 'admin@grading.local' };
+    const gb = await gradebookOf();
+    const bia = rowOf(gb, 'bia@grading.local');
+    const column = gb.body.columns.find(item => item.examKey === 'Av_P2');
+    const cell = bia.cells[column.id] || bia.cells[column.key] || Object.values(bia.cells).find(item => item && item.anulada);
+    assert.ok(cell, JSON.stringify(bia.cells));
+    assert.equal(cell.anulada, true);
+    assert.equal(cell.score, null);
+    const csv = await gradebookOf('1DES', 'admin', '&format=csv');
+    const biaLine = csv.text.split(/\r?\n/).find(line => line.includes('bia@grading.local'));
+    assert.match(biaLine, /;anulada;|;anulada$/);
+    const xlsx = await as('admin', 'get', `/api/admin/gradebook?courseId=${COURSE}&studentClass=1DES&format=xlsx`).buffer(true).parse((res, done) => {
+        const chunks = [];
+        res.on('data', chunk => chunks.push(chunk));
+        res.on('end', () => done(null, Buffer.concat(chunks)));
+    });
+    assert.equal(xlsx.status, 200);
+    const sheet = gradebook.gradebookSheet(gb.body);
+    assert.ok(JSON.stringify(sheet).includes('anulada'));
+});
+
+test('[UC-NOTAS-005] colunas de recuperação e segunda chamada dizem a finalidade no quadro e no CSV', async () => {
+    db.memory.examApplications = [
+        { id: 'app_reg', examKey: 'Av_P3', courseId: COURSE, studentClass: '1DES', finalidade: 'regular', createdAt: '2026-03-01T10:00:00.000Z' },
+        { id: 'app_rec', examKey: 'Av_P3', courseId: COURSE, studentClass: '1DES', finalidade: 'recuperacao', createdAt: '2026-03-20T10:00:00.000Z' },
+        { id: 'app_2ch', examKey: 'Av_P3', courseId: COURSE, studentClass: '1DES', finalidade: 'segunda_chamada', createdAt: '2026-03-25T10:00:00.000Z' },
+    ];
+    db.memory.submissions = db.memory.submissions.filter(item => item.examKey !== 'Av_P3');
+    db.memory.submissions.push(sub('ana@grading.local', 'Av_P3', 70, { applicationId: 'app_reg', timestamp: '2026-03-01T12:00:00.000Z' }));
+    db.memory.submissions.push(sub('bia@grading.local', 'Av_P3', 80, { applicationId: 'app_rec', timestamp: '2026-03-20T12:00:00.000Z' }));
+    db.memory.submissions.push(sub('bia@grading.local', 'Av_P3', 60, { applicationId: 'app_2ch', timestamp: '2026-03-25T12:00:00.000Z' }));
+    const gb = await gradebookOf();
+    const labels = gb.body.columns.filter(item => item.examKey === 'Av_P3').map(item => item.label || item.title);
+    assert.ok(labels.some(label => /recuperação/.test(label)), JSON.stringify(labels));
+    assert.ok(labels.some(label => /segunda chamada/.test(label)), JSON.stringify(labels));
+    assert.ok(!labels.some(label => /2ª aplicação|3ª aplicação/.test(label)), JSON.stringify(labels));
+    const csv = await gradebookOf('1DES', 'admin', '&format=csv');
+    const header = csv.text.replace(/^﻿/, '').split(/\r?\n/)[0];
+    assert.match(header, /recuperação/);
+    assert.match(header, /segunda chamada/);
+});

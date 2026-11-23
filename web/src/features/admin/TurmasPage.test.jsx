@@ -121,6 +121,33 @@ describe('TurmasPage · cursos', () => {
     expect(screen.getAllByText('Sem professor')).toHaveLength(1)
   })
 
+  // Fase 3, B10 (P2-S9, FUN-05): quem gerencia turmas encerra a aberta e reabre a encerrada;
+  // a encerrada mostra a marca e a data; o professor não tem os botões.
+  it('[UC-CURSO-003] turma aberta tem "Encerrar turma" (abre o resumo do servidor); a encerrada mostra a marca e "Reabrir turma"', async () => {
+    const user = userEvent.setup()
+    mocks.apiData['/api/admin/classes'] = [
+      { name: '1DES', courseId: 'DES', period: 'Manhã', encerrada: false, encerramento: null },
+      { name: '2DES', courseId: 'DES', period: 'Tarde', encerrada: true, encerramento: { encerrada: true, situacao: 'encerrada', em: Date.UTC(2026, 6, 10, 15), por: 'admin@teste.local' } },
+    ]
+    mocks.get.mockResolvedValue({ turma: { courseId: 'DES', name: '1DES' }, alunos: 0, situacoes: [], pendencias: [], avisos: [], podeEncerrar: true })
+    renderPage()
+    expect(screen.getAllByText('Encerrada')).toHaveLength(1)
+    expect(screen.getByText(/Encerrada em 10\/07\/2026 por admin@teste.local/)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Encerrar turma 2DES' })).toBeNull()
+    expect(screen.getByRole('button', { name: 'Reabrir turma 2DES' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Encerrar turma 1DES' }))
+    expect(await screen.findByRole('dialog', { name: 'Encerrar a turma 1DES?' })).toBeInTheDocument()
+    expect(mocks.get).toHaveBeenCalledWith('/api/admin/class/close-summary?courseId=DES&name=1DES')
+  })
+
+  it('[UC-CURSO-003] o professor não encerra nem reabre turma', () => {
+    mocks.auth = { role: 'professor', accountRole: 'professor' }
+    mocks.apiData['/api/admin/classes'] = [{ name: '1DES', courseId: 'DES', period: 'Manhã', encerrada: true, encerramento: { encerrada: true, em: Date.now() } }]
+    renderPage()
+    expect(screen.getByText('Encerrada')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Encerrar turma|Reabrir turma/ })).toBeNull()
+  })
+
   // Fase 3, C12 (P5-S4, CRIT-11): "Grupos" na turma para quem tem a tela Alunos, também o
   // professor (que não vê as ações de administração da turma).
   it('[UC-GRUPO-001] o professor vê "Grupos" na turma e abre a tela da turma', async () => {

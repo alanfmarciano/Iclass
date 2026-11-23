@@ -37,7 +37,7 @@
 //   Auditoria manual_assessment_created/updated/archived/restored.
 //
 // O plano e as avaliações manuais passam pelo portão da turma encerrada (assertClassOpen,
-// 409 class_closed, sem efeito até o B10). Gravação parcial: courses ou classes, e
+// 409 class_closed). Gravação parcial: courses ou classes, e
 // auditLogs. Nada é apagado: id do plano que saiu da estrutura fica guardado.
 const db = require('../database.js');
 const {
@@ -935,4 +935,4 @@ function registerGradingRoutes(router) {
     return router;
 }
 
-module.exports = { registerGradingRoutes, criteriaView };
+module.exports = { registerGradingRoutes, criteriaView, classGradebookFor, structureFor };

@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { AlertTriangle, ChevronDown, Download } from 'lucide-react'
+import { AlertTriangle, ChevronDown, Download, Lock } from 'lucide-react'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { PageState } from '../../components/ui/PageState'
@@ -84,11 +84,17 @@ function columnTitle(column) {
 // Nota de uma prova no quadro, com a cor da faixa pela média mínima do curso
 // (gradeTone/gradeBand, a mesma regra do servidor). Coluna fora da média (sem etapa, "Não
 // conta" ou arquivada) fica sem cor.
+// Sem nota, a célula diz por quê (B10, pendências da J2): "aguardando correção" (a entrega
+// espera o professor e ainda não entra na média) ou "anulada" (toda tentativa que contava
+// foi anulada com "desconsiderar"); as mesmas palavras do CSV e do XLSX.
 function Cell({ cell, criterio, muted = false }) {
   const tone = cell && !muted ? gradeTone(cell.score == null ? null : cell.score / 10, criterio) : null
+  const reason = cell && cell.score == null ? (cell.aguardandoCorrecao ? 'aguardando correção' : (cell.anulada ? 'anulada' : null)) : null
   return (
     <>
-      {cell ? <span className={tone ? TONE_TEXT[tone] : undefined}>{fmtGrade(cell.score)}</span> : <span className="text-subtle">—</span>}
+      {reason
+        ? <span className="text-xs italic text-subtle">{reason}</span>
+        : cell ? <span className={tone ? TONE_TEXT[tone] : undefined}>{fmtGrade(cell.score)}</span> : <span className="text-subtle">—</span>}
       {cell?.pending > 0 && <span className="ml-1 text-[10px] text-warning" title="Há tentativa ainda não publicada para o aluno">•</span>}
     </>
   )
@@ -209,6 +215,8 @@ export function GradebookPanel({ courseId, studentClass, refreshKey, onExport, o
   const groups = withCriteria ? gradebookGroups(data) : []
   const comMencao = withCriteria && Array.isArray(data?.mencoes) && data.mencoes.length > 0
   const avisos = Array.isArray(data?.avisos) ? data.avisos : []
+  // Turma encerrada (B10): notas travadas e conta com os critérios copiados no encerramento.
+  const encerramento = data?.encerramento && data.encerramento.encerrada ? data.encerramento : null
 
   return (
     <section className="space-y-3" aria-label="Quadro de notas da turma">
@@ -220,6 +228,12 @@ export function GradebookPanel({ courseId, studentClass, refreshKey, onExport, o
         </p>
         {onExport && <Button size="sm" variant="secondary" icon={Download} onClick={onExport}>Exportar planilha (CSV)</Button>}
       </div>
+      {encerramento && (
+        <p className="flex items-start gap-2 rounded-lg bg-info-soft px-3 py-2 text-sm text-info" role="status">
+          <Lock size={15} className="mt-0.5 shrink-0" />
+          <span>Turma encerrada{encerramento.em ? ` em ${new Date(encerramento.em).toLocaleDateString('pt-BR')}` : ''}: as notas não mudam mais, e a média e a situação seguem os critérios de avaliação do dia do encerramento. Para mudar, reabra a turma em Turmas.</span>
+        </p>
+      )}
       {avisos.map((aviso) => (
         <p key={aviso.codigo || aviso.texto} className="flex items-start gap-2 rounded-lg bg-warning-soft px-3 py-2 text-sm text-warning" role="status">
           <AlertTriangle size={15} className="mt-0.5 shrink-0" /> <span>{aviso.texto} Ajuste no Plano de avaliação.</span>

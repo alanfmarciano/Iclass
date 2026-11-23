@@ -516,6 +516,11 @@ export function MyGradesCard({ summary }) {
         <h2 id="minhas-notas-titulo" className="flex items-center gap-2 font-semibold text-text"><Award size={17} className="text-primary" /> Minhas notas</h2>
         {summary.situacaoRotulo && <Selo tone={situacaoTone(summary.situacao)}>{summary.situacaoRotulo}</Selo>}
       </div>
+      {/* Avaliação esperando a correção do professor (B10): a nota dela ainda não entra e a
+          situação final só sai depois (o texto vem do servidor). */}
+      {(Array.isArray(summary.avisos) ? summary.avisos : []).map((texto) => (
+        <p key={texto} role="status" className="mt-2 rounded-lg bg-info-soft px-3 py-2 text-sm text-info">{texto}</p>
+      ))}
       {semNotas ? (
         <p className="mt-2 text-sm text-muted">Nenhuma nota publicada ainda. Quando o professor publicar, sua média aparece aqui.</p>
       ) : (

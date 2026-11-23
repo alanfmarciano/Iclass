@@ -386,6 +386,7 @@ const ADMIN_API_PERMISSION_RULES = Object.freeze([
     { methods: ['GET', 'POST'], pattern: /^\/grading\/(plan|preview|manual-items(?:\/.*)?)$/, permission: 'page.results' },
     { methods: ['GET'], pattern: /^\/academic\/terms$/, permission: 'page.dashboard' },
     { methods: ['POST'], pattern: /^\/academic\/terms(?:\/.*)?$/, permission: 'classes.manage' },
+    { methods: ['GET'], pattern: /^\/class\/close-summary$/, permission: 'classes.manage' },
     { methods: ['POST'], pattern: /^\/class\/(close|reopen)$/, permission: 'classes.manage' },
     // A mesma permissão do Calendário; quem pode cadastrar dia de toda a escola, do curso
     // ou da turma a rota decide pelo escopo do dia.
