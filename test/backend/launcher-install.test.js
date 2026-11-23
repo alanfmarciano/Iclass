@@ -547,6 +547,156 @@ test('[UC-INSTALACAO-002] --trazer-de com o IClass antigo ligado: desliga pela r
     assert.match(world.text(), /use o ligarIclassV3\.bat daquela pasta/);
 });
 
+// Tabelas do jeito do database.js (key, value JSON): aplicações de prova e turmas.
+function sqliteRun(file, statements, { keepOpen = false } = {}) {
+    return new Promise((resolve, reject) => {
+        const db = new sqlite3.Database(file, err => {
+            if (err) return reject(err);
+            db.serialize(() => {
+                statements.forEach(([sql, params]) => db.run(sql, params || []));
+                db.run('SELECT 1', [], runErr => {
+                    if (runErr) return reject(runErr);
+                    if (keepOpen) return resolve(db);
+                    return db.close(closeErr => (closeErr ? reject(closeErr) : resolve(null)));
+                });
+            });
+            return undefined;
+        });
+    });
+}
+
+function examTables(applications = [], classes = []) {
+    return [
+        ['CREATE TABLE IF NOT EXISTS exam_applications (key TEXT PRIMARY KEY, value TEXT)'],
+        ['CREATE TABLE IF NOT EXISTS classes (key TEXT PRIMARY KEY, value TEXT)'],
+        ...applications.map(item => ['INSERT INTO exam_applications VALUES (?, ?)', [item.id, JSON.stringify(item)]]),
+        ...classes.map(item => ['INSERT INTO classes VALUES (?, ?)', [`${item.courseId}::${item.name}`, JSON.stringify(item)]]),
+    ];
+}
+
+// O 281029f (ligarIclassV3.bat) ligado nesta pasta: só o /api/health, sem a rota de situação.
+function legacyServer(world, dataDir) {
+    runningServer(world, dataDir, { status: null });
+    world.handlers['GET /api/system/control/status'] = () => (world.alive.has(5001) ? { status: 404, body: { error: 'Não encontrado.' } } : refused());
+    world.handlers['GET /api/health'] = () => (world.alive.has(5001) ? { status: 200, body: { status: 'ok', instanceId: 'atual' } } : refused());
+}
+
+test('[UC-INSTALACAO-002] provas em andamento lidas do banco (só leitura, com o servidor ligado em WAL): aplicações e prova ativa antiga da turma', async () => {
+    const dir = fs.mkdtempSync(path.join(tempRoot, 'provas-banco-'));
+    const file = path.join(dir, 'database.db');
+    const writer = await sqliteRun(file, [
+        ['PRAGMA journal_mode = WAL'],
+        ...examTables([
+            { id: 'app_1', status: 'running', title: 'Redes', studentClass: '2DES' },
+            { id: 'app_2', status: 'paused', examKey: 'mod_bd', studentClass: '1DES' },
+            { id: 'app_3', status: 'finished', title: 'Encerrada' },
+            { id: 'app_4', status: 'prepared', title: 'Preparada' },
+        ], [
+            // Turma com a aplicação já no registro: conta uma vez só (pela aplicação).
+            { courseId: 'FUTEC', name: '2DES', onlineExamConfigs: { redes: { applicationId: 'app_1', status: 'running', onlineActive: true } } },
+            // Banco mais antigo: prova ativa só na turma, sem aplicação.
+            { courseId: 'FECOP', name: '3INF', onlineExamConfigs: { mod_x: { onlineActive: true }, mod_y: { status: 'finished', onlineActive: false } } },
+        ]),
+    ], { keepOpen: true });
+    try {
+        const before = fs.readFileSync(file);
+        const provas = await launcherInstall.readDataExams(file);
+        assert.deepEqual(provas, [
+            { titulo: 'Redes', turma: '2DES', situacao: 'running' },
+            { titulo: 'mod_bd', turma: '1DES', situacao: 'paused' },
+            { titulo: 'mod_x', turma: '3INF', situacao: 'running' },
+        ]);
+        assert.ok(before.equals(fs.readFileSync(file)), 'só leitura');
+    } finally {
+        await new Promise(resolve => writer.close(resolve));
+    }
+    // Banco sem as tabelas (bem antigo ou vazio): nenhuma prova.
+    const empty = path.join(dir, 'vazio.db');
+    await createSqlite(empty, 1);
+    assert.deepEqual(await launcherInstall.readDataExams(empty), []);
+    // Arquivo que não é banco: o erro sobe (quem chama trata como "não deu para conferir").
+    fs.writeFileSync(path.join(dir, 'lixo.db'), 'isto não é um banco');
+    await assert.rejects(launcherInstall.readDataExams(path.join(dir, 'lixo.db')));
+});
+
+// Rodada de ajuste 1: o 281029f não tem a rota de situação. O --trazer-de só avisava
+// "Não deu para conferir se há prova em andamento" e desligava o IClass antigo no meio da
+// prova (com --sim sem perguntar; sem --sim, Enter era sim).
+test('[UC-INSTALACAO-002] --trazer-de com o IClass antigo (281029f) ligado no meio da prova: lê as provas do banco e recusa sem desligar nem copiar', async () => {
+    const oldRoot = await makeOldFolder('antigo-281029f-prova-');
+    const oldData = path.join(oldRoot, 'data');
+    await sqliteRun(path.join(oldData, 'database.db'), examTables([
+        { id: 'app_a', status: 'running', title: 'FECOP 2', studentClass: '2DES' },
+        { id: 'app_b', status: 'running', title: 'FUTEC 4', studentClass: '1DES' },
+    ]));
+    const pkg = makePackage('3.1.0');
+    for (const sim of [true, false]) {
+        const world = createWorld({ projectRoot: pkg, answers: ['', '', ''] });
+        legacyServer(world, oldData);
+        const root = newRoot('antigo-281029f-destino-');
+        const before = treeHash(oldRoot);
+        const result = await world.launcher.instalar({ destino: root, trazerDe: oldRoot, sim, semIniciar: true });
+        assert.equal(result.code, 1, world.text());
+        assert.match(world.text(), /Há 2 provas em andamento \(FECOP 2, 2DES; FUTEC 4, 1DES\) no IClass de .*\. Traga os dados depois que elas terminarem\./);
+        assert.match(world.text(), /Nada foi copiado de/);
+        assert.equal(world.requests.filter(item => item.method === 'POST').length, 0, 'não desligou o antigo');
+        assert.ok(world.alive.has(5001));
+        assert.ok(!fs.existsSync(path.join(root, 'dados', 'database.db')));
+        assert.deepEqual(treeHash(oldRoot), before, 'a pasta antiga fica igual');
+    }
+
+    // Sem prova no banco: desliga o antigo e copia (como com a rota de situação).
+    await sqliteRun(path.join(oldData, 'database.db'), [["UPDATE exam_applications SET value = json_set(value, '$.status', 'finished')"]]);
+    const world = createWorld({ projectRoot: pkg });
+    legacyServer(world, oldData);
+    const root = newRoot('antigo-281029f-livre-');
+    const result = await world.launcher.instalar({ destino: root, trazerDe: oldRoot, sim: true, semIniciar: true });
+    assert.equal(result.code, 0, world.text());
+    assert.ok(world.requests.some(item => item.method === 'POST' && item.pathname === '/api/system/control'));
+    assert.ok(fs.existsSync(path.join(root, 'dados', 'database.db')));
+});
+
+test('[UC-INSTALACAO-002] --trazer-de sem como conferir as provas do IClass antigo ligado: com --sim recusa; sem --sim pergunta e Enter é não', async () => {
+    const oldRoot = await makeOldFolder('antigo-sem-conferir-');
+    const oldData = path.join(oldRoot, 'data');
+    const pkg = makePackage('3.1.0');
+    const unreadable = async () => { throw new Error('banco travado'); };
+
+    const withSim = createWorld({ projectRoot: pkg });
+    withSim.options.readDataExams = unreadable;
+    withSim.launcher = launcherCore.createLauncher(withSim.options);
+    legacyServer(withSim, oldData);
+    const rootSim = newRoot('sem-conferir-sim-');
+    const simResult = await withSim.launcher.instalar({ destino: rootSim, trazerDe: oldRoot, sim: true, semIniciar: true });
+    assert.equal(simResult.code, 1, withSim.text());
+    assert.match(withSim.text(), /Não deu para conferir se há prova em andamento no IClass de .* \(o servidor é de uma versão anterior do IClass\)\. Desligar agora encerra a prova para os alunos\./);
+    assert.match(withSim.text(), /Com --sim, o IClass não desliga um servidor sem conferir as provas/);
+    assert.equal(withSim.requests.filter(item => item.method === 'POST').length, 0);
+    assert.ok(!fs.existsSync(path.join(rootSim, 'dados', 'database.db')));
+
+    // Interativo (o instalar.ps1 chama sem --sim): Enter não desliga.
+    const enter = createWorld({ projectRoot: pkg, answers: [''] });
+    enter.options.readDataExams = unreadable;
+    enter.launcher = launcherCore.createLauncher(enter.options);
+    legacyServer(enter, oldData);
+    const rootEnter = newRoot('sem-conferir-enter-');
+    const enterResult = await enter.launcher.instalar({ destino: rootEnter, trazerDe: oldRoot, semIniciar: true });
+    assert.equal(enterResult.code, 1, enter.text());
+    assert.match(enter.asks[0], /Só responda sim se não houver prova em andamento\. \(s\/N\)/);
+    assert.equal(enter.requests.filter(item => item.method === 'POST').length, 0);
+    assert.ok(!fs.existsSync(path.join(rootEnter, 'dados', 'database.db')));
+
+    // "s" digitado: desliga e copia.
+    const yes = createWorld({ projectRoot: pkg, answers: ['s'] });
+    yes.options.readDataExams = unreadable;
+    yes.launcher = launcherCore.createLauncher(yes.options);
+    legacyServer(yes, oldData);
+    const rootYes = newRoot('sem-conferir-s-');
+    const yesResult = await yes.launcher.instalar({ destino: rootYes, trazerDe: oldRoot, semIniciar: true });
+    assert.equal(yesResult.code, 0, yes.text());
+    assert.ok(fs.existsSync(path.join(rootYes, 'dados', 'database.db')));
+});
+
 // ---------------------------------------------------------------- voltar de versão
 
 async function updatedInstallation(prefix, { entry, backupFile = true } = {}) {
@@ -679,6 +829,16 @@ test('[UC-VERSAO-002] atualização que não mudou o formato dos dados (nenhuma 
     assert.equal(unknownResult.mode, 'ponteiro');
     assert.deepEqual(reads, [path.join(unknown.dataDir, 'database.db')]);
 
+    // Banco de verdade sem schema_meta (dados da 281029f trazidos e nunca abertos pela 3.x):
+    // nenhuma das duas versões abriu os dados, então só troca a versão.
+    const fresh = await updatedInstallation('volta-banco-sem-esquema-', { entry: null });
+    await createSqlite(path.join(fresh.dataDir, 'database.db'), 2);
+    const freshWorld = installedWorld(fresh.root, '3.1.1');
+    const freshResult = await freshWorld.launcher.voltarVersao({ sim: true });
+    assert.equal(freshResult.code, 0, freshWorld.text());
+    assert.equal(freshResult.mode, 'ponteiro');
+    assert.match(freshWorld.text(), /a versão 3\.1\.1 ainda não abriu estes dados/);
+
     // Sem o atualizacoes.json, mas o banco diz que a 3.1.1 atualizou com migração: restaura.
     const fromDb = await updatedInstallation('volta-pelo-banco-', { entry: null });
     const dbWorld = installedWorld(fromDb.root, '3.1.1');
@@ -692,6 +852,92 @@ test('[UC-VERSAO-002] atualização que não mudou o formato dos dados (nenhuma 
     const git = createWorld({ projectRoot: fs.mkdtempSync(path.join(tempRoot, 'git-volta-')) });
     assert.equal((await git.launcher.voltarVersao({ sim: true })).code, 1);
     assert.match(git.text(), /só existe na instalação pelo pacote/);
+});
+
+// Rodada de ajuste 1: depois de uma volta de versão, o histórico da atualização desfeita
+// fica no schemaMeta e no atualizacoes.json. Atualizar de novo e voltar sem a versão nova
+// ter aberto os dados (backup de antes que falhou, IClass não ligado) restaurava o backup
+// da primeira atualização e jogava fora o que foi feito na versão anterior desde a volta.
+test('[UC-VERSAO-002] voltar depois de uma volta anterior: não usa o registro da atualização já desfeita', async () => {
+    const T1 = Date.UTC(2026, 10, 23, 12);
+    const T2 = Date.UTC(2026, 10, 23, 13);
+    const T3 = Date.UTC(2026, 10, 23, 14);
+    const firstUpdate = { de: '3.1.0', para: '3.1.1', em: T1, migracoes: ['2026-12-p9-teste'], backup: 'pre-atualizacao_dados_20261123-090000.zip', semBackup: false };
+    const setup = async (prefix, meta) => {
+        const inst = await updatedInstallation(prefix);
+        // A volta de versão de T2 e a nova atualização para a 3.1.1 (o instalar guarda o voltouEm).
+        const infoFile = path.join(inst.root, 'iclass-instalacao.json');
+        fs.writeFileSync(infoFile, JSON.stringify({ ...readJson(infoFile), voltouEm: new Date(T2).toISOString() }));
+        const again = await install('3.1.1', inst.root);
+        assert.equal(again.result.code, 0, again.world.text());
+        assert.equal(readJson(infoFile).voltouEm, new Date(T2).toISOString(), 'atualizar de novo mantém o registro da volta');
+        const world = installedWorld(inst.root, '3.1.1');
+        world.options.readDataSchema = typeof meta === 'function' ? meta : async () => meta;
+        world.launcher = launcherCore.createLauncher(world.options);
+        return { ...inst, world };
+    };
+
+    // A 3.1.1 nunca abriu os dados depois da volta (o banco diz 3.1.0): só troca a versão.
+    const never = await setup('volta-de-novo-nunca-', { versaoApp: '3.1.0', aplicadas: [], atualizacoes: [firstUpdate] });
+    const neverResult = await never.world.launcher.voltarVersao({ sim: true });
+    assert.equal(neverResult.code, 0, never.world.text());
+    assert.equal(neverResult.mode, 'ponteiro');
+    assert.deepEqual(never.world.runs.map(item => item.args[0]), ['criar'], 'nenhuma restauração');
+    assert.match(never.world.text(), /a versão 3\.1\.1 ainda não abriu estes dados/);
+    assert.doesNotMatch(never.world.text(), /pre-atualizacao_dados_20261123-090000/);
+    assert.equal(fs.readFileSync(path.join(never.root, 'programa', 'versao-atual.txt'), 'utf8'), '3.1.0');
+
+    // A 3.1.1 abriu os dados sem o backup de antes (o atualizacoes.json ficou para trás): recusa.
+    const skipped = await setup('volta-de-novo-sem-backup-', { versaoApp: '3.1.1', atualizacoes: [firstUpdate, { de: '3.1.0', para: '3.1.1', em: T3, migracoes: ['2026-12-p9-teste'], backup: null, semBackup: true }] });
+    assert.equal((await skipped.world.launcher.voltarVersao({ sim: true })).refused, true);
+    assert.match(skipped.world.text(), /foi feita sem o backup de antes/);
+    assert.equal(skipped.world.runs.length, 0);
+
+    // A 3.1.1 abriu de novo com o backup novo: restaura esse, não o da primeira atualização.
+    const fresh = await setup('volta-de-novo-certo-', { versaoApp: '3.1.1', atualizacoes: [firstUpdate, { de: '3.1.0', para: '3.1.1', em: T3, migracoes: ['2026-12-p9-teste'], backup: 'pre-atualizacao_dados_20261123-110000.zip' }] });
+    fs.writeFileSync(path.join(fresh.dataDir, 'backups', 'pre-atualizacao_dados_20261123-110000.zip'), 'zip novo');
+    const freshResult = await fresh.world.launcher.voltarVersao({ sim: true });
+    assert.equal(freshResult.code, 0, fresh.world.text());
+    assert.deepEqual(fresh.world.runs.find(item => item.args[0] === 'restaurar').args, ['restaurar', path.join(fresh.dataDir, 'backups', 'pre-atualizacao_dados_20261123-110000.zip'), '--sim']);
+
+    // O banco diz 3.1.1, mas o único registro é de antes da volta: recusa (não adivinha).
+    const stale = await setup('volta-de-novo-velho-', { versaoApp: '3.1.1', atualizacoes: [firstUpdate] });
+    assert.equal((await stale.world.launcher.voltarVersao({ sim: true })).refused, true);
+    assert.match(stale.world.text(), /Não encontrei o registro da atualização para a versão 3\.1\.1/);
+    assert.equal(stale.world.runs.length, 0);
+
+    // Banco ilegível: o atualizacoes.json só tem o registro de antes da volta; recusa.
+    const unreadable = await setup('volta-de-novo-ilegivel-', async () => { throw new Error('ilegível'); });
+    assert.equal((await unreadable.world.launcher.voltarVersao({ sim: true })).refused, true);
+    assert.match(unreadable.world.text(), /Não deu para ler a versão dos dados/);
+    assert.equal(unreadable.world.runs.length, 0);
+    assert.equal(fs.readFileSync(path.join(unreadable.root, 'programa', 'versao-atual.txt'), 'utf8'), '3.1.1');
+});
+
+test('[UC-VERSAO-002] voltar com o IClass desligado mas uma prova em andamento no banco (janela fechada no meio da prova): recusa', async () => {
+    const inst = await updatedInstallation('volta-prova-no-banco-');
+    const world = installedWorld(inst.root, '3.1.1');
+    const files = [];
+    world.options.readDataExams = async file => { files.push(file); return [{ titulo: 'Redes', turma: '2DES', situacao: 'running' }]; };
+    world.launcher = launcherCore.createLauncher(world.options);
+    const result = await world.launcher.voltarVersao({ sim: true });
+    assert.equal(result.refused, true, world.text());
+    assert.deepEqual(files, [path.join(inst.dataDir, 'database.db')]);
+    assert.match(world.text(), /Há 1 prova em andamento \(Redes, 2DES\)\. Volte de versão depois que ela terminar\./);
+    assert.match(world.text(), /ele foi fechado no meio dela\)\. Ligue o IClass, encerre a prova pelo painel/);
+    assert.equal(world.runs.length, 0);
+    assert.equal(fs.readFileSync(path.join(inst.root, 'programa', 'versao-atual.txt'), 'utf8'), '3.1.1');
+
+    // O servidor antigo da instalação sem a contagem na rota: as provas vêm do banco também.
+    const legacyInst = await updatedInstallation('volta-prova-rota-sem-contagem-');
+    fs.writeFileSync(path.join(legacyInst.dataDir, 'database.db'), 'banco');
+    const legacyWorld = installedWorld(legacyInst.root, '3.1.1');
+    legacyWorld.options.readDataExams = async () => [{ titulo: 'Banco', turma: '1DES', situacao: 'paused' }];
+    legacyWorld.launcher = launcherCore.createLauncher(legacyWorld.options);
+    runningServer(legacyWorld, legacyInst.dataDir, { status: statusBody({ provasEmAndamento: null, provas: [] }) });
+    assert.equal((await legacyWorld.launcher.voltarVersao({ sim: true })).refused, true);
+    assert.match(legacyWorld.text(), /Há 1 prova em andamento \(Banco, 1DES\)/);
+    assert.equal(legacyWorld.requests.filter(item => item.method === 'POST').length, 0);
 });
 
 // ---------------------------------------------------------------- ligar com o Windows

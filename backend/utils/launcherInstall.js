@@ -17,14 +17,16 @@
 //   só as duas últimas versões. Com prova em andamento, recusa. A mesma versão de novo não
 //   muda nada. Nunca apaga nem move dados, conteudo ou cursos-arquivados (contrato C2).
 // - trazer de uma pasta antiga (D24, a pasta do git do Alan): desliga o IClass antigo pela
-//   rota de controle (ou recusa), copia data\ (sem runtime\, logs\, .backup-trabalho\,
+//   rota de controle (com prova em andamento, recusa; o 281029f não tem a rota de situação,
+//   então as provas vêm do banco dele, só leitura), copia data\ (sem runtime\, logs\, .backup-trabalho\,
 //   .restauracao\ e quarentena\, mas com tls\ e backups\), content\ e cursos_arquivados\
 //   para uma pasta provisória, confere a quantidade e o tamanho dos arquivos e abre o banco
 //   copiado (quick_check); só então põe nas pastas da instalação. A pasta antiga fica como
 //   estava: voltar é usar o ligarIclassV3.bat antigo.
 // - voltar para a versão anterior (X7 do plano): backup de agora, restaurar o backup
 //   'pre-atualizacao' daquela atualização com a backup-cli da versão anterior, trocar o
-//   ponteiro e ligar. Atualização que não mudou o formato dos dados (nenhuma migração) não
+//   ponteiro e ligar. Atualização que não mudou o formato dos dados (nenhuma migração), ou
+//   versão atual que nunca abriu os dados (schemaMeta.versaoApp do banco é outra), não
 //   precisa restaurar: a versão anterior abre os dados de agora.
 // - ligar junto com o Windows (D13): atalho na pasta Inicializar do usuário para
 //   "IClass.cmd iniciar --minimizado --sem-navegador".
@@ -313,12 +315,52 @@ async function inspectCopiedDatabase(file) {
     }
 }
 
-// schema_meta do banco parado (só leitura), para decidir a volta de versão quando o
-// data\backups\atualizacoes.json não diz nada.
+// schema_meta do banco (só leitura), para decidir a volta de versão: a versão que abriu os
+// dados por último e o histórico das atualizações. Banco sem schema_meta (dados da 281029f
+// que nenhuma versão 3.x abriu ainda): { aplicadas: [], atualizacoes: [] }, sem versaoApp.
+// Linha ilegível: null (não dá para decidir pelo banco).
 async function readDataSchema(file) {
     const schemaMigrations = require('./schemaMigrations.js');
     const stored = await schemaMigrations.readSchemaMetaFile(file);
-    return stored && stored.value ? stored.value : null;
+    if (!stored || stored.unreadable) return null;
+    return stored.value || { aplicadas: [], atualizacoes: [] };
+}
+
+// Provas em andamento lidas direto do banco (só leitura; com o WAL, dá para ler com o
+// servidor ligado): para o servidor de uma versão anterior (281029f), que não tem a rota
+// de situação, e para o banco de um IClass desligado no meio da prova. Aplicações em sala
+// de espera, em andamento ou pausadas (a mesma regra do servidor) e, de bancos mais
+// antigos, a prova ativa guardada na turma sem aplicação correspondente. Devolve a lista
+// no formato do control/status ({ titulo, turma, situacao }); erro de leitura sobe.
+async function readDataExams(file) {
+    const dbFile = require('./dbFile.js');
+    const { ACTIVE_APPLICATION_STATUSES } = require('./examApplications.js');
+    const connection = await dbFile.openDatabaseFile(file, { readOnly: true });
+    try {
+        const tables = new Set(await dbFile.tableNames(connection));
+        const parse = text => { try { return JSON.parse(text); } catch (e) { return null; } };
+        const applications = tables.has('exam_applications')
+            ? (await dbFile.allOn(connection, 'SELECT value FROM exam_applications')).map(row => parse(row.value)).filter(item => item && typeof item === 'object')
+            : [];
+        const known = new Set(applications.map(item => item.id).filter(Boolean));
+        const provas = applications
+            .filter(item => ACTIVE_APPLICATION_STATUSES.has(item.status))
+            .map(item => ({ titulo: String(item.title || item.examKey || 'Prova'), turma: item.studentClass || null, situacao: item.status }));
+        if (tables.has('classes')) {
+            (await dbFile.allOn(connection, 'SELECT value FROM classes')).forEach(row => {
+                const cls = parse(row.value);
+                const configs = cls && cls.onlineExamConfigs && typeof cls.onlineExamConfigs === 'object' ? cls.onlineExamConfigs : {};
+                Object.entries(configs).forEach(([examKey, cfg]) => {
+                    if (!cfg || (cfg.applicationId && known.has(cfg.applicationId))) return;
+                    const status = ACTIVE_APPLICATION_STATUSES.has(cfg.status) ? cfg.status : (cfg.onlineActive === true && !cfg.status ? 'running' : null);
+                    if (status) provas.push({ titulo: String(cfg.title || examKey || 'Prova'), turma: cls.name || null, situacao: status });
+                });
+            });
+        }
+        return provas;
+    } finally {
+        await dbFile.closeDatabaseFile(connection);
+    }
 }
 
 // --- as ações ---------------------------------------------------------------------------
@@ -333,6 +375,7 @@ function createInstallActions(ctx) {
     });
     const inspectDatabase = options.inspectDatabase || inspectCopiedDatabase;
     const readSchema = options.readDataSchema || readDataSchema;
+    const readExams = options.readDataExams || readDataExams;
     const shortcut = options.shortcut || {
         create: params => createWindowsShortcut(params),
         remove: file => { fs.rmSync(file, { force: true }); return true; },
@@ -426,26 +469,50 @@ function createInstallActions(ctx) {
         });
     }
 
-    // O IClass desta pasta de dados está ligado? Com prova em andamento, recusa; sem
-    // como saber das provas, avisa e pergunta; ligado sem prova, pergunta (ou --sim) e
-    // desliga pela rota de controle. Devolve { ok, wasRunning, code }.
-    async function stopForInstall(launcher, { sim, oQue, pergunta, nomeAntigo = null }) {
+    // As provas em andamento de um IClass ligado: pela rota de situação e, quando ela não
+    // diz (servidor de uma versão anterior, como o 281029f do ligarIclassV3.bat, ou rota
+    // sem a contagem), pelo banco, só leitura. { provas, unknown }.
+    async function examsOf(found, dataFile) {
+        if (!launcherCore.examsUnknown(found)) {
+            return { provas: found.status && Array.isArray(found.status.provas) ? found.status.provas : [], unknown: false };
+        }
+        if (dataFile && fs.existsSync(dataFile)) {
+            try {
+                return { provas: await readExams(dataFile), unknown: false, doBanco: true };
+            } catch (err) { /* não deu para ler: fica desconhecido */ }
+        }
+        return { provas: [], unknown: true };
+    }
+
+    // O IClass desta pasta de dados está ligado? Com prova em andamento (pela rota de
+    // controle ou, no servidor antigo, pelo banco), recusa. Sem como saber das provas,
+    // avisa e só desliga se a pessoa disser que sim (o padrão é não; com --sim, recusa).
+    // Ligado sem prova, pergunta (ou --sim) e desliga pela rota de controle.
+    // dataFile: o database.db dessa pasta de dados. Devolve { ok, wasRunning, code }.
+    async function stopForInstall(launcher, { sim, oQue, pergunta, nomeAntigo = null, dataFile = null }) {
         const found = await launcher.locate();
         if (found.state === 'desligado') {
             if (found.portBusy) out(`Atenção: a porta ${found.port} está sendo usada por outro programa.`);
             return { ok: true, wasRunning: false };
         }
-        const provas = found.status && Array.isArray(found.status.provas) ? found.status.provas : [];
+        const { provas, unknown } = await examsOf(found, dataFile);
         if (provas.length) {
             const sentence = launcherCore.examsSentence(provas);
             const where = nomeAntigo ? `${sentence.replace(/\.$/, '')} ${nomeAntigo}.` : sentence;
             out(`${where} ${oQue} depois que ${provas.length === 1 ? 'ela terminar' : 'elas terminarem'}.`);
             return { ok: false, wasRunning: true, code: EXIT.ERROR, refused: true };
         }
-        if (launcherCore.examsUnknown(found)) {
-            out(`Não deu para conferir se há prova em andamento${found.legacy ? ' (o servidor é de uma versão anterior do IClass)' : ''}. Se houver prova, espere ela terminar.`);
-        }
-        if (!sim && !(await confirm(pergunta, { defaultYes: true }))) {
+        if (unknown) {
+            out(`Não deu para conferir se há prova em andamento${nomeAntigo ? ` ${nomeAntigo}` : ''}${found.legacy ? ' (o servidor é de uma versão anterior do IClass)' : ''}. Desligar agora encerra a prova para os alunos.`);
+            if (sim) {
+                out('Com --sim, o IClass não desliga um servidor sem conferir as provas. Desligue ele quando não houver prova (ou rode sem --sim e confirme) e tente de novo. Nada foi feito.');
+                return { ok: false, wasRunning: true, code: EXIT.ERROR, refused: true };
+            }
+            if (!(await confirm(`${pergunta} Só responda sim se não houver prova em andamento.`, { defaultYes: false }))) {
+                out('Nada foi feito.');
+                return { ok: false, wasRunning: true, code: EXIT.ERROR, cancelled: true };
+            }
+        } else if (!sim && !(await confirm(pergunta, { defaultYes: true }))) {
             out('Nada foi feito.');
             return { ok: false, wasRunning: true, code: EXIT.ERROR, cancelled: true };
         }
@@ -489,6 +556,7 @@ function createInstallActions(ctx) {
             sim,
             oQue: 'Traga os dados',
             nomeAntigo: `no IClass de ${oldRoot}`,
+            dataFile: path.join(oldFolders.DATA_DIR, 'database.db'),
             pergunta: `O IClass de ${oldRoot} está ligado. Para trazer os dados, ele precisa ser desligado (os dados dele ficam como estão). Desligar agora?`,
         });
         if (!stopped.ok) {
@@ -667,6 +735,7 @@ function createInstallActions(ctx) {
             const current = launcherFor(programDirOf(root, existing), { folders: runtimeFoldersOf(pastas) });
             const stopped = await stopForInstall(current, {
                 sim,
+                dataFile: path.join(pastas.dados, 'database.db'),
                 oQue: same ? 'Repare a instalação' : 'Atualize',
                 pergunta: same
                     ? `Os arquivos do IClass ${versao} instalado estão incompletos e vão ser copiados de novo. Para isso o IClass fica desligado por alguns instantes. Continuar?`
@@ -720,7 +789,9 @@ function createInstallActions(ctx) {
             pastas,
             ...(oldInfo.trazidoDe ? { trazidoDe: oldInfo.trazidoDe } : {}),
             ...(brought ? { trazidoDe: { pasta: brought.oldRoot, em: isoNow(), arquivos: brought.files, bytes: brought.bytes } } : {}),
-            ...(oldInfo.voltouEm && kind !== 'atualizacao' ? { voltouEm: oldInfo.voltouEm } : {}),
+            // A última volta de versão fica no registro (também depois de atualizar de novo):
+            // o [V] não usa o registro de uma atualização que essa volta já desfez.
+            ...(oldInfo.voltouEm ? { voltouEm: oldInfo.voltouEm } : {}),
         };
         const infoChanged = writeJsonIfChanged(path.join(root, INSTALL_INFO_FILE), info);
         if (removed.length) out(`Versões antigas apagadas (ficam só as duas últimas): ${removed.join(', ')}.`);
@@ -789,23 +860,39 @@ function createInstallActions(ctx) {
         return value && Array.isArray(value.atualizacoes) ? value.atualizacoes.filter(item => item && typeof item === 'object') : null;
     }
 
-    function lastUpdateTo(list, versao) {
-        const matches = (Array.isArray(list) ? list : []).filter(item => item.para === versao);
+    // A atualização mais recente para versao, entre as das listas, feita depois de since (ms).
+    function lastUpdateTo(lists, versao, since = 0) {
+        const matches = lists
+            .flatMap(list => (Array.isArray(list) ? list : []))
+            .filter(item => item && item.para === versao && !(since && Number(item.em) <= since));
         if (!matches.length) return null;
         return matches.reduce((best, item) => (Number(item.em) >= Number(best.em) ? item : best));
     }
 
     // Como voltar: { mode: 'restaurar', entry, file } | { mode: 'ponteiro', entry, motivo }
-    // | { refuse: texto } | { unknown: true } (sem o registro: decidir pelo banco parado).
-    function rollbackPlan({ updates, meta, current, previous, dataDir }) {
-        let entry = lastUpdateTo(updates, current);
-        if (!entry && meta) entry = lastUpdateTo(meta.atualizacoes, current);
-        if (!entry) {
-            if (meta) {
-                // A versão atual nunca atualizou estes dados: a anterior abre como estão.
-                if (meta.versaoApp !== current) return { mode: 'ponteiro', entry: null, motivo: 'nunca-abriu' };
-                return { refuse: `Não encontrei o registro da atualização para a versão ${current} nos dados. Para voltar, restaure um backup pela opção [5] (Restaurar um backup).` };
+    // | { refuse: texto } | { unknown: true } (sem o banco lido: decidir com ele parado).
+    // meta: o schemaMeta do banco (a fonte que vale); updates: o atualizacoes.json (cópia
+    // que o servidor grava depois do boot; pode ter ficado para trás, e o histórico de uma
+    // atualização desfeita fica nos dois depois da volta). since: a última volta de versão
+    // (iclass-instalacao.json voltouEm): registro de antes dela é de atualização desfeita.
+    // Rodada de ajuste 1: antes, a última entrada "para a versão atual" do atualizacoes.json
+    // bastava. Depois de uma volta, de uma nova atualização e de a versão nova nunca abrir
+    // os dados (backup de antes que falhou, IClass não ligado), o [V] restaurava o backup da
+    // primeira atualização e jogava fora o que foi feito na versão anterior desde a volta.
+    function rollbackPlan({ updates, meta, current, previous, dataDir, since = 0 }) {
+        if (meta) {
+            // A versão que abriu estes dados por último é a que vale: se não é a atual, a
+            // atual nunca chegou a abrir estes dados (ou o que ela fez já foi desfeito).
+            if (meta.versaoApp !== current) {
+                if (parseVersion(meta.versaoApp) && compareVersions(meta.versaoApp, previous) > 0) {
+                    return { refuse: `Os dados foram abertos por último pela versão ${meta.versaoApp}, mais nova que a ${previous} guardada. Nada foi feito.` };
+                }
+                return { mode: 'ponteiro', entry: null, motivo: 'nunca-abriu' };
             }
+        }
+        const entry = lastUpdateTo(meta ? [meta.atualizacoes, updates] : [updates], current, since);
+        if (!entry) {
+            if (meta) return { refuse: `Não encontrei o registro da atualização para a versão ${current} nos dados. Para voltar, restaure um backup pela opção [5] (Restaurar um backup).` };
             return { unknown: true };
         }
         if (entry.instalacaoNova) return { refuse: `Os dados foram criados pela versão ${current} (instalação nova): não há dados de uma versão anterior para voltar.` };
@@ -833,6 +920,9 @@ function createInstallActions(ctx) {
                 `O que foi feito depois da atualização para a ${current} (notas, presença, provas) não fica nos dados restaurados: só no backup de agora.`,
             ];
         }
+        if (plan.motivo === 'nunca-abriu') {
+            return [`Voltar para a versão ${previous}: a versão ${current} ainda não abriu estes dados (a atualização não chegou a ligar), então a versão ${previous} abre os dados de agora, sem restaurar nada (antes, o IClass faz um backup de agora).`];
+        }
         return [`Voltar para a versão ${previous}: a versão ${current} não mudou o formato dos dados, então a versão ${previous} abre os dados de agora, sem restaurar nada (antes, o IClass faz um backup de agora).`];
     }
 
@@ -859,13 +949,29 @@ function createInstallActions(ctx) {
         const currentLauncher = launcherFor(programDirOf(root, current), { folders });
         const previousLauncher = launcherFor(previousDir, { folders });
         const dataDir = pastas.dados;
+        const dataFile = path.join(dataDir, 'database.db');
         const updates = readUpdates(dataDir);
-        let plan = rollbackPlan({ updates, meta: null, current, previous, dataDir });
+        const since = Date.parse(info.voltouEm || '') || 0;
+        // O banco (só leitura: dá com o servidor ligado) diz qual versão abriu os dados por
+        // último; sem ele agora, a decisão fica para depois de desligar.
+        const readMeta = async () => { try { return await readSchema(dataFile); } catch (err) { return null; } };
+        let meta = await readMeta();
+        let plan = rollbackPlan({ updates, meta, current, previous, dataDir, since });
 
         const found = await currentLauncher.locate();
-        const provas = found.status && Array.isArray(found.status.provas) ? found.status.provas : [];
-        if (provas.length) {
-            out(`${launcherCore.examsSentence(provas)} Volte de versão depois que ${provas.length === 1 ? 'ela terminar' : 'elas terminarem'}.`);
+        const wasRunning = found.state !== 'desligado';
+        const exams = wasRunning ? await examsOf(found, dataFile) : await (async () => {
+            // Desligado, mas o banco com prova em andamento (a janela fechada no meio da
+            // prova): restaurar jogaria fora as respostas dela.
+            try { return { provas: await readExams(dataFile), unknown: false, doBanco: true }; } catch (err) { return { provas: [], unknown: false }; }
+        })();
+        if (exams.provas.length) {
+            out(`${launcherCore.examsSentence(exams.provas)} Volte de versão depois que ${exams.provas.length === 1 ? 'ela terminar' : 'elas terminarem'}.`);
+            if (!wasRunning) {
+                out(exams.provas.length === 1
+                    ? 'O IClass está desligado, mas a prova ficou em andamento nos dados (ele foi fechado no meio dela). Ligue o IClass, encerre a prova pelo painel e tente de novo.'
+                    : 'O IClass está desligado, mas as provas ficaram em andamento nos dados (ele foi fechado no meio delas). Ligue o IClass, encerre as provas pelo painel e tente de novo.');
+            }
             return { code: EXIT.ERROR, refused: true };
         }
         if (plan.refuse) {
@@ -874,12 +980,17 @@ function createInstallActions(ctx) {
         }
         if (!plan.unknown) describePlan(plan, { current, previous }).forEach(line => out(line));
         else out(`Voltar para a versão ${previous}: o IClass desliga, confere os dados e diz o que precisa fazer antes de mudar qualquer coisa.`);
-        if (launcherCore.examsUnknown(found)) out('Não deu para conferir se há prova em andamento. Se houver prova, espere ela terminar.');
-        if (!sim && !(await confirm('Continuar?'))) {
+        if (exams.unknown) {
+            out('Não deu para conferir se há prova em andamento. Desligar agora encerra a prova para os alunos.');
+            if (sim) {
+                out('Com --sim, o IClass não volta de versão sem conferir as provas. Tente de novo quando não houver prova (ou rode sem --sim e confirme). Nada foi feito.');
+                return { code: EXIT.ERROR, refused: true };
+            }
+        }
+        if (!sim && !(await confirm(exams.unknown ? 'Continuar? Só responda sim se não houver prova em andamento.' : 'Continuar?'))) {
             out('Nada foi feito.');
             return { code: EXIT.ERROR, cancelled: true };
         }
-        const wasRunning = found.state !== 'desligado';
         if (wasRunning) {
             const stopped = await currentLauncher.parar({ sim: true, jaConfirmado: true });
             if (stopped.code !== EXIT.OK) {
@@ -893,15 +1004,24 @@ function createInstallActions(ctx) {
             await currentLauncher.iniciar({ abrirNavegador: false });
         };
         if (plan.unknown) {
-            let meta = null;
-            try { meta = await readSchema(path.join(dataDir, 'database.db')); } catch (err) { meta = null; }
-            plan = meta ? rollbackPlan({ updates: null, meta, current, previous, dataDir }) : { refuse: 'Não deu para ler a versão dos dados. Para voltar, restaure um backup pela opção [5] (Restaurar um backup).' };
+            meta = await readMeta();
+            plan = meta ? rollbackPlan({ updates, meta, current, previous, dataDir, since }) : { refuse: 'Não deu para ler a versão dos dados. Para voltar, restaure um backup pela opção [5] (Restaurar um backup).' };
             if (plan.refuse) {
                 out(plan.refuse);
                 await restartCurrent();
                 return { code: EXIT.ERROR, refused: true };
             }
             describePlan(plan, { current, previous }).forEach(line => out(line));
+        } else if (wasRunning) {
+            // Com o servidor desligado, o banco lido de novo tem que dizer a mesma coisa (o
+            // boot de uma versão que estava ligando pode ter mudado os dados no meio).
+            const freshMeta = (await readMeta()) || meta;
+            const fresh = rollbackPlan({ updates: readUpdates(dataDir), meta: freshMeta, current, previous, dataDir, since });
+            if (fresh.refuse || fresh.mode !== plan.mode || fresh.file !== plan.file) {
+                out(fresh.refuse || 'Os dados mudaram enquanto o IClass desligava. Nada foi trocado: confira e tente de novo.');
+                await restartCurrent();
+                return { code: EXIT.ERROR, refused: true };
+            }
         }
         out('Fazendo o backup de agora (com o que foi feito até aqui)...');
         const backupCode = await run({ nodePath: nodeFor(programDirOf(root, current)), script: path.join(programDirOf(root, current), 'backend', 'scripts', 'backup-cli.js'), args: ['criar'], cwd: programDirOf(root, current), env: envFor(pastas) });
@@ -995,7 +1115,7 @@ function createInstallActions(ctx) {
         const { root } = here;
         const pastas = foldersOfInstallation(root, here);
         const current = launcherFor(projectRoot, { folders: runtimeFoldersOf(pastas) });
-        const stopped = await stopForInstall(current, { sim, oQue: 'Desinstale', pergunta: `Desinstalar o IClass de ${root}? Ele vai ser desligado.` });
+        const stopped = await stopForInstall(current, { sim, dataFile: path.join(pastas.dados, 'database.db'), oQue: 'Desinstale', pergunta: `Desinstalar o IClass de ${root}? Ele vai ser desligado.` });
         if (!stopped.ok) return { code: stopped.code || EXIT.ERROR };
         if (!stopped.wasRunning && !sim && !(await confirm(`Desinstalar o IClass de ${root}?`))) {
             out('Nada foi feito.');
@@ -1072,6 +1192,7 @@ module.exports = {
     inspectCopiedDatabase,
     listTree,
     parseVersion,
+    readDataExams,
     readReleaseManifest,
     skipOldData,
 };

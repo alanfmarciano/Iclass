@@ -15,6 +15,7 @@ const keepAwakeModule = require('../../backend/utils/keepAwake.js');
 const {
     ES_KEEP_AWAKE,
     ES_CONTINUOUS,
+    CONFIRM_TIMEOUT_MS,
     POWERSHELL_SCRIPT,
     RETRY_AFTER_MS,
     RESTART_AFTER_EXIT_MS,
@@ -32,6 +33,9 @@ function fakeChild() {
     child.ended = false;
     child.killed = 0;
     child.stdin = new EventEmitter();
+    child.stdout = new EventEmitter();
+    // O PowerShell de verdade escreve "ok" depois que o Windows aceita o pedido.
+    child.confirm = () => child.stdout.emit('data', Buffer.from('ok\r\n'));
     child.stdin.end = () => { child.ended = true; };
     child.kill = () => { child.killed += 1; };
     return child;
@@ -59,6 +63,10 @@ test('[UC-INSTALACAO-003] o pedido abre só na primeira prova em andamento e fec
 
     assert.equal(w.keep.sync(memoryWith('waiting')), true);
     assert.equal(w.children.length, 1);
+    // Aberto, mas o Windows ainda não aceitou: não promete nada.
+    assert.equal(w.keep.status().ativo, false);
+    assert.equal(w.logs.length, 0);
+    w.children[0].confirm();
     assert.equal(w.keep.status().ativo, true);
     assert.equal(w.keep.status().desde, w.clock);
     assert.match(w.logs.at(-1), /o computador não vai dormir até ela terminar/);
@@ -79,6 +87,7 @@ test('[UC-INSTALACAO-003] o pedido abre só na primeira prova em andamento e fec
     // Nova prova depois: abre de novo.
     assert.equal(w.keep.update(1), true);
     assert.equal(w.children.length, 2);
+    w.children[1].confirm();
     // Desligamento do servidor: fecha na hora, sem esperar a próxima volta do timer.
     assert.equal(w.keep.stop({ immediate: true }), true);
     assert.equal(w.children[1].ended, true);
@@ -139,6 +148,7 @@ test('[UC-INSTALACAO-003] PowerShell que não abre: um aviso só e nova tentativ
 test('[UC-INSTALACAO-003] o processo saiu sozinho com prova em andamento: abre de novo depois de 1 min', () => {
     const w = world();
     w.keep.update(1);
+    w.children[0].confirm();
     w.children[0].emit('exit', 1, null);
     assert.equal(w.keep.status().ativo, false);
     assert.match(w.keep.status().erro, /saiu sozinho/);
@@ -148,6 +158,71 @@ test('[UC-INSTALACAO-003] o processo saiu sozinho com prova em andamento: abre d
     w.clock += RESTART_AFTER_EXIT_MS;
     assert.equal(w.keep.update(1), true);
     assert.equal(w.children.length, 2);
+    w.children[1].confirm();
+    assert.equal(w.keep.status().ativo, true);
+    // O "☕ Prova em andamento" saiu uma vez só nesta prova, não a cada reabertura.
+    assert.equal(w.logs.filter(line => /não vai dormir/.test(line)).length, 1);
+    assert.equal(w.warns.length, 0);
+});
+
+// Rodada de ajuste 1: o PowerShell que abre e sai sem fazer o pedido (Add-Type bloqueado
+// pelo AppLocker ou pelo modo de linguagem restrito, SetThreadExecutionState devolvendo 0)
+// contava como "saiu sozinho": nova tentativa a cada minuto, nenhum aviso e, a cada
+// minuto, "o computador não vai dormir" no console, com o computador podendo dormir.
+test('[UC-INSTALACAO-003] PowerShell que abre e sai sem o "ok": conta como falha (um aviso, nova tentativa em 10 min, nada prometido)', () => {
+    for (const [code, reason] of [[1, /saiu sem fazer o pedido ao Windows, código 1; ele pode estar bloqueado pela política/], [3, /o Windows recusou o pedido/]]) {
+        const w = world();
+        for (let tick = 0; tick <= 60; tick += 1) {
+            w.keep.update(1);
+            const child = w.children.at(-1);
+            if (child && child.exitCode === null && !child.done) {
+                child.done = true;
+                child.exitCode = code;
+                child.emit('exit', code, null);
+            }
+            w.clock += 10_000;
+        }
+        // 10 min de prova com o timer de 10 s: uma tentativa no começo e outra depois de 10 min.
+        assert.equal(w.children.length, 2, `código ${code}`);
+        assert.equal(w.warns.length, 1, `código ${code}: um aviso só`);
+        assert.match(w.warns[0], reason);
+        assert.match(w.warns[0], /Deixe o notebook na tomada/);
+        assert.equal(w.logs.filter(line => /não vai dormir/.test(line)).length, 0, 'nunca promete o que não fez');
+        assert.equal(w.keep.status().ativo, false);
+        assert.match(w.keep.status().erro, reason);
+    }
+});
+
+test('[UC-INSTALACAO-003] PowerShell aberto que não responde em 1 min: encerrado, um aviso e nova tentativa em 10 min', () => {
+    const w = world();
+    w.keep.update(1);
+    w.clock += CONFIRM_TIMEOUT_MS - 1;
+    assert.equal(w.keep.update(1), true);
+    assert.equal(w.children[0].killed, 0);
+    w.clock += 1;
+    assert.equal(w.keep.update(1), false);
+    assert.equal(w.children[0].killed, 1);
+    assert.equal(w.warns.length, 1);
+    assert.match(w.warns[0], /o PowerShell não respondeu/);
+    // O "ok" atrasado do processo encerrado e a saída dele não mudam nada.
+    w.children[0].confirm();
+    w.children[0].emit('exit', null, 'SIGTERM');
+    assert.equal(w.keep.status().ativo, false);
+    w.clock += 10_000;
+    w.keep.update(1);
+    assert.equal(w.children.length, 1);
+    w.clock += RETRY_AFTER_MS;
+    w.keep.update(1);
+    assert.equal(w.children.length, 2);
+    // O "ok" pode chegar em pedaços.
+    w.children[1].stdout.emit('data', 'o');
+    assert.equal(w.keep.status().ativo, false);
+    w.children[1].stdout.emit('data', 'k\n');
+    assert.equal(w.keep.status().ativo, true);
+    assert.equal(w.logs.filter(line => /não vai dormir/.test(line)).length, 1);
+    // Fim da prova: o "já pode dormir" só sai porque o pedido tinha sido feito.
+    w.keep.update(0);
+    assert.match(w.logs.at(-1), /já pode dormir de novo/);
 });
 
 test('[UC-INSTALACAO-003] conta como prova em andamento a sala de espera, em andamento e pausada', () => {
@@ -164,6 +239,9 @@ test('[UC-INSTALACAO-003] o PowerShell: pedido com o número em decimal, fica le
     assert.ok(POWERSHELL_SCRIPT.includes('SetThreadExecutionState([uint32]2147483649)'));
     assert.ok(!/0x8000000/.test(POWERSHELL_SCRIPT));
     assert.ok(POWERSHELL_SCRIPT.includes('[Console]::In.ReadLine()'));
+    // O "ok" vem depois do pedido aceito e antes de ficar esperando a entrada.
+    const okAt = POWERSHELL_SCRIPT.indexOf("[Console]::Out.WriteLine('ok')");
+    assert.ok(okAt > POWERSHELL_SCRIPT.indexOf('exit 3') && okAt < POWERSHELL_SCRIPT.indexOf('[Console]::In.ReadLine()'));
     assert.ok(POWERSHELL_SCRIPT.includes('SetThreadExecutionState([uint32]2147483648)'), 'devolve o estado ao sair');
     assert.equal(powershellPath({ SystemRoot: 'D:\\Win' }), 'D:\\Win\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
     assert.equal(powershellPath({}), 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
@@ -178,7 +256,7 @@ test('[UC-INSTALACAO-003] o PowerShell: pedido com o número em decimal, fica le
     }
     assert.equal(call.file, 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
     assert.equal(call.options.windowsHide, true);
-    assert.deepEqual(call.options.stdio, ['pipe', 'ignore', 'ignore']);
+    assert.deepEqual(call.options.stdio, ['pipe', 'pipe', 'ignore']);
     assert.ok(call.args.includes('-NoProfile') && call.args.includes('-NonInteractive'));
     const encoded = call.args[call.args.indexOf('-EncodedCommand') + 1];
     assert.equal(Buffer.from(encoded, 'base64').toString('utf16le'), POWERSHELL_SCRIPT);
