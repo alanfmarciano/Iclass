@@ -32,7 +32,7 @@ Quando você entra com uma senha temporária, o IClass pede uma senha nova antes
 
 Se aparecer a faixa **Sem conexão com o servidor**, continue respondendo e não feche nem recarregue a página: as respostas são enviadas quando a conexão voltar. Se a faixa disser que o servidor está reiniciando, espere alguns segundos. Se nada mudar, chame o professor.
 
-Faça a prova num aparelho só. Se você entrar com a sua conta em outro aparelho no meio da prova, ela pode travar até o professor liberar, e o primeiro aparelho sai da conta. Se precisar trocar de computador no meio da prova, avise o professor: ele libera a prova no aparelho novo. Trocar de rede no mesmo aparelho (do Wi-Fi para os dados do celular) não trava a prova.
+Faça a prova num aparelho só. Se você entrar com a sua conta em outro aparelho no meio da prova (ou sair da conta e entrar de novo), ela pode travar até o professor liberar, e o primeiro aparelho sai da conta. Se precisar trocar de computador no meio da prova, avise o professor: ele libera a prova no aparelho novo. Trocar de rede no mesmo aparelho (do Wi-Fi para os dados do celular) não trava a prova.
 
 ## Aviso de conexão não segura e certificado {#conexao-segura}
 

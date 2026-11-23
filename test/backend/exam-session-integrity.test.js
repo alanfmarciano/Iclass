@@ -4,8 +4,12 @@
 // - login com a mesma conta e a tentativa em andamento grava session_replaced (IP e
 //   navegador de antes e de agora) e, com a política 'travar' (padrão), trava a tentativa
 //   até o professor liberar; com 'avisar' só grava;
+// - "Sair" com a prova em andamento e entrar de novo (em outro aparelho ou no mesmo) conta
+//   como outro aparelho: o contorno pelo botão Sair não existe mais (ajuste 1 do A10);
 // - sem tentativa em andamento (só nas instruções, entregue) ou sem sessão de verdade antes
-//   (Sair, reinício longo), nada é gravado;
+//   e sem ninguém ter saído (reinício longo), nada é gravado;
+// - a recusa da prova travada (423) e o registro da aplicação dizem que foi outro aparelho;
+//   o ip_changed guarda o navegador do login como o de antes;
 // - troca de IP com a tentativa aberta grava ip_changed uma vez por IP novo, pelas rotas da
 //   prova (sync, autosave-progress, log-activity), e nunca trava;
 // - o Monitor mostra os selos (sessionReplacedAt, ipChangeCount), o motivo da trava e o
@@ -241,7 +245,7 @@ test('[UC-TENTATIVA-005] com "Só avisar" o outro login grava session_replaced s
     assert.equal(row.sessionReplacedCount, 1);
 });
 
-test('[UC-TENTATIVA-005] sem tentativa em andamento, ou sem sessão de verdade antes, o login não grava nada', async () => {
+test('[UC-TENTATIVA-005] sem tentativa em andamento, ou com a sessão caída sem ninguém sair (reinício longo), o login não grava nada', async () => {
     const application = await running();
     // Só nas instruções (a tentativa existe, mas não começou).
     await sync(ALICE, application.id).expect(200);
@@ -258,7 +262,8 @@ test('[UC-TENTATIVA-005] sem tentativa em andamento, ou sem sessão de verdade a
     await loginAgain(BRUNO);
     assert.equal(logsOf('session_replaced', BRUNO).length, 0, 'tentativa entregue');
 
-    // Saiu (ou o servidor ficou fora do ar tempo demais): não há sessão para substituir.
+    // O servidor ficou fora do ar tempo demais (a sessão caiu sem ninguém sair): não há
+    // sessão para substituir nem aparelho que saiu. O "Sair" tem teste próprio abaixo.
     const carla = OTHERS[0];
     await begin(carla, application.id);
     authSessions.revokeStudentSession(db.memory, carla);
@@ -399,4 +404,121 @@ test('[UC-TENTATIVA-005] o navegador do login fica na sessão (120 caracteres) e
     assert.notEqual(legal.MODEL_ID, 'modelo-2026.1', 'o texto do modelo mudou, o identificador muda junto');
     assert.match(legal.PRIVACY_MODEL, /endereço de rede \(IP\) e o aparelho \(navegador\) de cada entrada na conta durante a prova/);
     assert.match(legal.TERMS_MODEL, /outro aparelho com a prova em andamento, a prova pode ficar travada até o professor liberar/);
+});
+
+test('[UC-TENTATIVA-005] "Sair" com a prova em andamento e entrar de outro aparelho grava session_replaced e trava (sem contorno pelo botão Sair)', async () => {
+    const failuresBefore = db.saveVerifyFailures.length;
+    const application = await running();
+    await begin(ALICE, application.id);
+    // A aluna sai pela outra aba do mesmo aparelho (o IP do "Sair" é o do aparelho).
+    const logoutToken = tokens[ALICE];
+    await asStudent(request(app).post('/api/student/logout'), ALICE).send({ email: ALICE }).expect(200);
+    assert.equal(authSessions.studentSessionByEmail(db.memory, ALICE), undefined, 'a sessão acabou');
+    const marked = openState(ALICE, application.id).sessionEndedBy;
+    assert.equal(marked.ip, '127.0.0.1');
+    assert.equal(marked.userAgent, OLD_BROWSER);
+    assert.equal(marked.reason, 'logout');
+    // O aparelho que saiu estava em outra rede (no teste, todos os pedidos vêm de 127.0.0.1).
+    marked.ip = '10.0.0.5';
+    // A tela da aluna não recebe o aparelho que saiu.
+    const loggedOut = await request(app).get('/api/student/sync').set('x-session-token', logoutToken)
+        .query({ email: ALICE, studentClass, courseId, examKey, applicationId: application.id });
+    assert.equal(loggedOut.status, 401);
+    assert.equal(loggedOut.body.reason, 'logout');
+
+    // Entra de novo por outro aparelho.
+    await loginAgain();
+    const [log] = logsOf('session_replaced');
+    assert.ok(log, 'o login depois do Sair grava session_replaced');
+    assert.equal(log.sessionChange.ipAntes, '10.0.0.5');
+    assert.equal(log.sessionChange.ipDepois, '127.0.0.1');
+    assert.equal(log.sessionChange.navegadorAntes, OLD_BROWSER);
+    assert.equal(log.sessionChange.navegadorDepois, NEW_BROWSER.slice(0, 120));
+    assert.equal(log.sessionChange.saiuDaConta, true);
+    assert.equal(log.sessionChange.travou, true);
+    assert.match(log.details, /Saiu da conta com a prova em andamento e entrou de novo.*10\.0\.0\.5 → 127\.0\.0\.1.*travada/);
+    const state = openState(ALICE, application.id);
+    assert.equal(state.focusLocked, true);
+    assert.equal(state.focusLockReason, 'session_replaced');
+    assert.equal(state.sessionEndedBy, undefined, 'o login seguinte leva a marca');
+    const fresh = await sync(ALICE, application.id).expect(200);
+    assert.equal(fresh.body.state.focusLocked, true);
+    assert.equal(fresh.body.state.sessionEndedBy, undefined);
+
+    // Outro login com a sessão de verdade continua contando uma vez só (não repete a marca).
+    await admin(request(app).post('/api/admin/unlock-student-focus')).send({ studentEmail: ALICE, studentClass, courseId, examKey, applicationId: application.id }).expect(200);
+    await loginAgain();
+    assert.equal(logsOf('session_replaced').length, 2);
+    assert.equal(logsOf('session_replaced')[1].sessionChange.saiuDaConta, undefined);
+
+    const row = (await monitorRows(application.id)).find(item => item.email === ALICE);
+    assert.equal(row.sessionReplacedCount, 2);
+    assert.equal(row.lastSessionReplaced.ipAntes, '10.0.0.5');
+    assert.equal(row.lastSessionReplaced.navegadorDepois, NEW_BROWSER.slice(0, 120));
+
+    // "Sair" sem prova em andamento (já entregue, ou só nas instruções) não marca nada.
+    const started = await begin(BRUNO, application.id);
+    await asStudent(request(app).post('/api/student/submit'), BRUNO).send({
+        studentClass, courseId, examKey, applicationId: application.id, attemptId: started.attemptId,
+        answers: {}, questionNumbers: [1, 2], examConfigVersion: started.examConfigVersion,
+    }).expect(200);
+    await asStudent(request(app).post('/api/student/logout'), BRUNO).send({ email: BRUNO }).expect(200);
+    await loginAgain(BRUNO);
+    assert.equal(logsOf('session_replaced', BRUNO).length, 0, 'depois da entrega');
+    const carla = OTHERS[0];
+    await sync(carla, application.id).expect(200);
+    await asStudent(request(app).post('/api/student/logout'), carla).send({ email: carla }).expect(200);
+    await loginAgain(carla);
+    assert.equal(logsOf('session_replaced', carla).length, 0, 'só nas instruções');
+
+    assert.deepEqual(db.saveVerifyFailures.slice(failuresBefore).map(item => `${item.path} ${item.collection}`), []);
+});
+
+test('[UC-TENTATIVA-005] prova travada pelo outro aparelho: o 423 e o registro da aplicação dizem o motivo, com o IP e o navegador', async () => {
+    const application = await running();
+    await begin(ALICE, application.id);
+    // Troca de IP antes do outro login: o navegador de antes é o do login da sessão.
+    openState(ALICE, application.id).sessionIps = ['10.0.0.7'];
+    authSessions.studentSessionByEmail(db.memory, ALICE).ip = '10.0.0.7';
+    await sync(ALICE, application.id).set('User-Agent', 'Navegador do pedido').expect(200);
+    const [change] = logsOf('ip_changed');
+    assert.equal(change.sessionChange.navegadorAntes, OLD_BROWSER, 'o navegador do login, não o deste pedido');
+    assert.equal(change.sessionChange.navegadorDepois, 'Navegador do pedido');
+
+    await loginAgain();
+    openState(ALICE, application.id).focusLockedAt = Date.now() - 60 * 1000;
+    const autosave = await asStudent(request(app).post('/api/student/autosave-progress'), ALICE)
+        .send({ email: ALICE, studentClass, courseId, examKey, applicationId: application.id, answers: {} });
+    assert.equal(autosave.status, 423);
+    assert.equal(autosave.body.focusLockReason, 'session_replaced');
+    assert.match(autosave.body.error, /entrou em outro aparelho/);
+    assert.doesNotMatch(autosave.body.error, /perda de foco/);
+    const state = openState(ALICE, application.id);
+    const submit = await asStudent(request(app).post('/api/student/submit'), ALICE).send({
+        studentClass, courseId, examKey, applicationId: application.id, attemptId: state.attemptId,
+        answers: {}, questionNumbers: [1, 2], examConfigVersion: (await sync(ALICE, application.id)).body.examConfigVersion,
+    });
+    assert.equal(submit.status, 423);
+    assert.match(submit.body.error, /entrou em outro aparelho/);
+    assert.equal(integrity.lockedAttemptMessage({ focusLockReason: 'Saiu da aba' }, 'submit'), 'Sua prova foi bloqueada por perda de foco. Aguarde o professor desbloquear pelo monitor.');
+    assert.match(integrity.lockedAttemptMessage({ focusLockReason: 'session_replaced' }, 'deadline'), /O tempo acabou com a prova pausada porque a sua conta entrou em outro aparelho/);
+
+    // Registro da aplicação: o outro login e a troca de IP, com o IP e o navegador.
+    const audit = await admin(request(app).get(`/api/admin/exam-applications/${application.id}/audit`)).expect(200);
+    const replaced = audit.body.entries.find(entry => entry.title === 'Entrou de outro aparelho · Alice Souza');
+    assert.ok(replaced, JSON.stringify(audit.body.entries.map(entry => entry.title)));
+    assert.equal(replaced.kind, 'exam');
+    assert.match(replaced.detail, /IP: 10\.0\.0\.5 → 127\.0\.0\.1\. Navegador: Mozilla.*Celular antigo da Alice → Mozilla.*Computador do laboratorio/);
+    assert.match(replaced.detail, /A prova travou até o professor liberar\./);
+    const ipRow = audit.body.entries.find(entry => entry.title === 'Mudou de IP · Alice Souza');
+    assert.ok(ipRow);
+    assert.match(ipRow.detail, /IP: 10\.0\.0\.7 → 127\.0\.0\.1/);
+    assert.match(ipRow.detail, /A prova continuou\./);
+    const times = audit.body.entries.map(entry => entry.at);
+    assert.deepEqual(times, [...times].sort((a, b) => Math.floor(a / 1000) - Math.floor(b / 1000) || 0), 'ordem cronológica');
+    assert.equal(audit.body.entries.some(entry => /Bruno/.test(entry.title)), false);
+
+    // As instruções recebem a política da aplicação.
+    const fresh = await sync(BRUNO, application.id).expect(200);
+    assert.equal(fresh.body.onlineExamConfigs[examKey].sessionPolicy, 'travar');
 });

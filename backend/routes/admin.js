@@ -4988,6 +4988,9 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 sessionReplacedCount: sessionEvents.sessionReplacedCount,
                 ipChangedAt: sessionEvents.ipChangedAt,
                 ipChangeCount: sessionEvents.ipChangeCount,
+                // IP e navegador de antes e de agora do mais recente de cada um (selo da linha).
+                lastSessionReplaced: sessionEvents.lastSessionReplaced,
+                lastIpChange: sessionEvents.lastIpChange,
                 status,
                 // Tentativa que a linha mostra ("tentativa N de M") e o limite do aluno (o da
                 // aplicação mais as tentativas extras dele, D16).
@@ -5009,6 +5012,8 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 submissionSource: submission?.submissionSource || null,
                 lateBySeconds: Number(submission?.lateBySeconds || 0),
                 focusLockedAtDeadline: submission?.focusLockedAtDeadline === true,
+                // Motivo da trava no fim do tempo ('session_replaced': outro aparelho, P3-S13).
+                focusLockedAtDeadlineReason: submission?.focusLockedAtDeadline === true ? String(submission.focusLockReason || '') : '',
                 recoveredAfterFinish: submission?.recoveredAfterFinish === true,
                 // Reaberta pelo "+N min" da turma depois da entrega do fim do tempo (tentativa
                 // em andamento ou a entrega que veio dela) e entrega do fim do tempo que voltou

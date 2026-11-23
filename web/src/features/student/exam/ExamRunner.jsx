@@ -187,6 +187,17 @@ function modsOf(e) {
   return [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Meta'].filter(Boolean).join('+')
 }
 
+// O que as instruções dizem do aparelho e da rede (P3-S13, D28): o IP e o aparelho de cada
+// entrada na conta ficam registrados; entrar em outro aparelho trava a prova ('travar', o
+// padrão) ou só avisa o professor ('avisar'); trocar de rede nunca trava.
+export function sessionPolicyNotice(policy) {
+  const base = 'O endereço de rede (IP) e o aparelho de cada entrada na sua conta durante a prova ficam registrados para o professor.'
+  const other = policy === 'avisar'
+    ? 'Se a sua conta entrar em outro aparelho, o professor é avisado.'
+    : 'Se a sua conta entrar em outro aparelho (ou se você sair da conta e entrar de novo), a prova é pausada até a liberação do professor.'
+  return `${base} ${other} Trocar de rede (do Wi-Fi para os dados do celular, por exemplo) só fica registrado e não pausa a prova.`
+}
+
 export default function ExamRunner() {
   const { examKey } = useParams()
   const [searchParams] = useSearchParams()
@@ -1563,6 +1574,7 @@ export default function ExamRunner() {
             ? <li>Este aparelho não permite <strong>tela cheia</strong>: a prova abre sem ela e o professor é avisado. Sair da aba ou da janela é registrado e bloqueia a prova até a liberação do professor.</li>
             : <li>A prova roda em <strong>tela cheia</strong>. Sair da tela cheia, da aba ou da janela é registrado e bloqueia a prova até a liberação do professor.</li>}
           <li data-testid="keystroke-notice">{keystrokeNotice(cfg?.keystrokeMode, proctoringRetentionDays)}</li>
+          <li data-testid="session-notice">{sessionPolicyNotice(cfg?.sessionPolicy)}</li>
           <li>Durante a prova, o menu do portal fica indisponível. Sair da prova (pelo botão Sair ou pelo voltar do navegador) pede confirmação, fica registrado para o professor e bloqueia a prova até a liberação dele.</li>
           <li>Depois de sair, você retorna à mesma tentativa, com as respostas salvas, enquanto houver tempo e a aplicação estiver aberta.</li>
           <li>Revise as respostas antes de confirmar o envio final.</li>

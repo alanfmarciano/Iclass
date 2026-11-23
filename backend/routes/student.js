@@ -72,7 +72,7 @@ const {
 const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, integrityDecision, isAwaitingCorrection, normalizeScore, roundGrade } = require('../utils/submissionAttempts.js');
 const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
 const { createStudentSession, hasSessionCredential, revokeStudentSession, pruneExpiredSessions, studentSessionByEmail } = require('../utils/authSessions.js');
-const { noteAttemptIp, recordSessionReplaced, requestUserAgent } = require('../utils/examSessionIntegrity.js');
+const { applicationSessionPolicy, lockedAttemptMessage, noteAttemptIp, noteSessionEnded, recordSessionReplaced, requestUserAgent } = require('../utils/examSessionIntegrity.js');
 const { attemptPasswordLogin } = require('../utils/passwordLogin.js');
 const { studentSessionProfile } = require('../utils/studentProfile.js');
 const studentIdentity = require('../utils/studentIdentity.js');
@@ -441,6 +441,10 @@ async function endStudentSession(req, res) {
     // O motivo fica guardado: o pedido seguinte do token antigo (outra aba) recebe 401
     // com reason 'logout'. A sessão sai também da tabela auth_sessions (H3a-2): sem a
     // gravação ela voltaria depois de um reinício do servidor.
+    // Com a prova em andamento, a tentativa guarda o aparelho que saiu: o login seguinte
+    // conta como outro aparelho (P3-S13, D28). Sem isso, "Sair" numa segunda aba e entrar
+    // em outro aparelho contornava a trava e o registro do outro login.
+    noteSessionEnded(db.memory, { email: req.studentEmail, session: req.studentSession, reason: 'logout' });
     revokeStudentSession(db.memory, req.studentEmail, { reason: 'logout' });
     await db.save();
     res.json({ success: true });
@@ -748,6 +752,9 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                 && onlineCfg?.applicationId !== application.id) {
                 studentConfigs[examKey] = { ...studentConfigs[examKey], applicationId: application.id, status: application.status, onlineActive: false };
             }
+            // Outro aparelho no meio da prova (P3-S13): as instruções dizem se a prova trava
+            // ou só avisa o professor (aplicação antiga: o padrão).
+            if (application && studentConfigs[examKey]) studentConfigs[examKey].sessionPolicy = applicationSessionPolicy(application);
             // Tentativa vencida vira entrega (com as respostas salvas) antes de qualquer
             // outra decisão: assim ela conta como usada e nunca é recriada vazia. Na
             // pré-visualização (req.preview) o sync só lê: nada de entrega, tentativa,
@@ -814,7 +821,7 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             // Troca de IP com a tentativa aberta (P3-S13, D28): registrada no Monitor uma vez
             // por IP novo, sem travar (utils/examSessionIntegrity.js).
             if (!preview && application && context.state && noteAttemptIp(db.memory, {
-                state: rawState, application, clientIp: req.clientIp, sessionIpChange: req.sessionIpChange, userAgent: requestUserAgent(req),
+                state: rawState, application, clientIp: req.clientIp, sessionIpChange: req.sessionIpChange, userAgent: requestUserAgent(req), sessionUserAgent: req.studentSession && req.studentSession.userAgent,
             })) db.save({ only: SYNC_SAVE_COLLECTIONS });
             // Chave da cópia local cifrada (AVA-11): tentativas iniciadas antes desta
             // versão ganham a chave aqui. Ela só sai no campo próprio, para o dono.
@@ -1890,7 +1897,7 @@ router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submi
         if (finalized) await db.save();
         return res.status(408).json({
             error: finalized
-                ? 'O tempo acabou com a prova bloqueada por perda de foco. As respostas salvas antes do bloqueio foram entregues automaticamente.'
+                ? lockedAttemptMessage(lockedState, 'deadline')
                 : 'O prazo da prova terminou.',
             deadlineExceeded: true,
             focusLocked: true,
@@ -1933,8 +1940,9 @@ router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submi
 
     if (lockedState.focusLocked === true) {
         return res.status(423).json({
-            error: 'Sua prova foi bloqueada por perda de foco. Aguarde o professor desbloquear pelo monitor.',
-            focusLocked: true
+            error: lockedAttemptMessage(lockedState, 'submit'),
+            focusLocked: true,
+            focusLockReason: lockedState.focusLockReason || '',
         });
     }
 

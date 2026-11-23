@@ -4,7 +4,7 @@ const db = require('../database.js');
 const { ensureExamToken, hashExamToken, normalizeExamToken, sealExamToken, unsealExamToken, withoutSealedToken } = require('../utils/examToken.js');
 const { normalizeMaxAttempts, parseMaxAttempts } = require('../utils/examAttempts.js');
 const { keystrokeModeOf, normalizeKeystrokeMode, parseKeystrokeModeOption, withKeystrokeMode } = require('../utils/keystrokePolicy.js');
-const { SESSION_POLICIES, normalizeSessionPolicy } = require('../utils/examSessionIntegrity.js');
+const { SESSION_POLICIES, normalizeSessionPolicy, withSessionTrail } = require('../utils/examSessionIntegrity.js');
 const {
     attemptQuestion,
     freezeSnapshotGrading,
@@ -962,7 +962,14 @@ function createAdminExamConfigRouter() {
                     status: application.status,
                     createdAt: application.createdAt || null,
                 },
-                entries: describeAudienceEntries(buildApplicationAuditTrail(application, db.memory.auditLogs || [], { students: db.memory.students || [] })),
+                // O outro login e a troca de IP (P3-S13) ficam em proctoringLogs, fora da
+                // auditoria, e entram aqui junto com o resto do registro.
+                entries: describeAudienceEntries(withSessionTrail(
+                    buildApplicationAuditTrail(application, db.memory.auditLogs || [], { students: db.memory.students || [] }),
+                    application,
+                    db.memory.proctoringLogs || [],
+                    { students: db.memory.students || [] },
+                )),
             });
         });
     });

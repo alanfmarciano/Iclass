@@ -42,7 +42,9 @@ function localCopyKeyFor(state) {
 // guardada (com a nota ainda não publicada) e o histórico são do professor.
 function stateWithoutSecrets(state) {
     if (!state || typeof state !== 'object') return state;
-    const { localCopyKey, tokenValidated, reopenedBy, reopenedFrom, reopenedDelivery, pageExit, ...safeState } = state;
+    // sessionEndedBy: o aparelho que saiu da conta com a prova em andamento (P3-S13), só
+    // para o registro do login seguinte.
+    const { localCopyKey, tokenValidated, reopenedBy, reopenedFrom, reopenedDelivery, pageExit, sessionEndedBy, ...safeState } = state;
     return safeState;
 }
 

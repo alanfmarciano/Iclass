@@ -76,8 +76,9 @@ export const LOG_INFO = {
   // O IClass foi atualizado com a prova aberta e a página recarregou sozinha (não é saída).
   exam_update_reload: { label: 'Recarregou com a atualização do IClass', icon: '↻', sev: 'info', pauses: false, informative: true, badge: 'não travou a prova' },
   // Outro login com a mesma conta no meio da prova (P3-S13, D28): trava pela política da
-  // aplicação ('travar', o padrão); com 'avisar', fica só o aviso (logInfoFor).
-  session_replaced: { label: 'Entrou de outro aparelho', icon: '⇆', sev: 'high' },
+  // aplicação ('travar', o padrão); com 'avisar', fica só o aviso (logInfoFor). Não é
+  // comando do aluno nem saída de foco: tem contador próprio no painel (counter 'device').
+  session_replaced: { label: 'Entrou de outro aparelho', icon: '⇆', sev: 'high', informative: true, counter: 'device' },
   // Troca de endereço de rede (celular que troca de Wi-Fi para 4G): só aviso, nunca trava.
   ip_changed: { label: 'Mudou de endereço de rede (IP)', icon: '⇄', sev: 'info', pauses: false, informative: true, badge: 'não travou a prova' },
 }
@@ -93,6 +94,27 @@ export function logInfoFor(log) {
   return info
 }
 
+// Saída de foco que conta no painel do aluno: registro de foco que pausou a prova, sem
+// contador próprio (o outro aparelho conta à parte, em deviceChangeCount).
+export function countsAsFocusExit(item) {
+  return !!item && item.kind === 'focus' && item.pauses !== false && !item.counter
+}
+
+// Entrada em outro aparelho no painel do aluno (P3-S13).
+export function isDeviceChangeItem(item) {
+  return !!item && item.counter === 'device'
+}
+
+// IP e navegador de antes e de agora do outro login e da troca de IP (o registro guarda
+// sessionChange), para o painel do aluno: '' nos outros registros.
+export function sessionChangeText(log) {
+  const change = log?.sessionChange
+  if (!change || typeof change !== 'object') return ''
+  if (log.eventType !== 'session_replaced' && log.eventType !== 'ip_changed') return ''
+  const lead = change.saiuDaConta ? 'Saiu da conta e entrou de novo. ' : ''
+  return `${lead}${changePairText(change)}`
+}
+
 // Motivo da trava mostrado na linha do Monitor: o código do servidor vira texto.
 export function lockReasonLabel(reason) {
   if (reason === 'session_replaced') return 'Entrou de outro aparelho'
@@ -105,29 +127,48 @@ function clockTime(ms) {
   return new Date(at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
 }
 
+// IP e navegador de antes e de agora em texto ('' sem dados).
+function changePairText(change) {
+  if (!change || typeof change !== 'object') return ''
+  const pair = (before, after) => {
+    const a = before || 'desconhecido'
+    const b = after || 'desconhecido'
+    return a === b ? a : `${a} → ${b}`
+  }
+  return `IP: ${pair(change.ipAntes, change.ipDepois)} · Navegador: ${pair(change.navegadorAntes, change.navegadorDepois)}`
+}
+
+const TRAIL_HINT = 'Todas as entradas ficam no Registro da aplicação, em Resultados.'
+
 // Selos da linha do Monitor para o outro login e a troca de IP (P3-S13, D28):
-// [{ key, tone, text, title }].
+// [{ key, tone, text, title, detail }]. detail: IP e navegador de antes e de agora do mais
+// recente (lastSessionReplaced / lastIpChange da linha), mostrado embaixo do selo.
 export function sessionRowBadges(row) {
   const badges = []
   if (Number(row?.sessionReplacedCount) > 0) {
     const time = clockTime(row.sessionReplacedAt)
     const times = Number(row.sessionReplacedCount)
+    const detail = changePairText(row.lastSessionReplaced)
+    const lead = row.lastSessionReplaced?.saiuDaConta ? 'Saiu da conta com a prova em andamento e entrou de novo. ' : ''
     badges.push({
       key: 'session_replaced',
       tone: 'danger',
       text: time ? `Entrou de outro aparelho às ${time}` : 'Entrou de outro aparelho',
-      title: times > 1
-        ? `A conta entrou em outro aparelho ${times} vezes durante esta tentativa. Veja os detalhes no histórico do aluno.`
-        : 'A conta entrou em outro aparelho durante esta tentativa. Veja o IP e o navegador no histórico do aluno.',
+      title: `${times > 1
+        ? `A conta entrou em outro aparelho ${times} vezes durante esta tentativa.`
+        : 'A conta entrou em outro aparelho durante esta tentativa.'} ${lead}${detail ? `${times > 1 ? 'Última entrada: ' : ''}${detail}. ` : ''}${TRAIL_HINT}`,
+      detail,
     })
   }
   if (Number(row?.ipChangeCount) > 0) {
     const times = Number(row.ipChangeCount)
+    const detail = changePairText(row.lastIpChange)
     badges.push({
       key: 'ip_changed',
       tone: 'warning',
       text: times > 1 ? `Mudou de IP (${times}×)` : 'Mudou de IP',
-      title: 'O endereço de rede do aparelho mudou durante a prova (por exemplo, o celular trocou de Wi-Fi para 4G). A prova não foi travada.',
+      title: `O endereço de rede do aparelho mudou durante a prova (por exemplo, o celular trocou de Wi-Fi para 4G). A prova não foi travada. ${detail ? `${times > 1 ? 'Última troca: ' : ''}${detail}. ` : ''}${TRAIL_HINT}`,
+      detail,
     })
   }
   return badges

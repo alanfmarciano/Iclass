@@ -27,7 +27,7 @@ import { ApplicationTokenPanel } from './ApplicationTokenPanel'
 import { controlResultMessage } from './applicationControl'
 import { serverOutageNotices, withLiveOutagePauses } from './serverOutage'
 import { StudentAnswersModal } from './StudentAnswersModal'
-import { LOG_INFO, buildAlerts, focusLogLabel, isSuspiciousItem, lockReasonLabel, logInfoFor, logLabel, sameIpLabel, sessionRowBadges, suspiciousCount } from './monitorLogs'
+import { LOG_INFO, buildAlerts, countsAsFocusExit, focusLogLabel, isDeviceChangeItem, isSuspiciousItem, lockReasonLabel, logInfoFor, logLabel, sameIpLabel, sessionChangeText, sessionRowBadges, suspiciousCount } from './monitorLogs'
 import { csvCell } from '../../lib/csv'
 import { keystrokeColumnLabel, keystrokeLiveEmptyText, keystrokeLiveTitle, keystrokeWatchTitle, normalizeKeystrokeMode } from '../../lib/keystrokeModes'
 import { compareText, matchesSearch } from '../../lib/textSearch'
@@ -152,7 +152,11 @@ function buildItems(events, logs) {
   const lg = (logs || []).filter((l) => ALERT_LOG_TYPES.has(l.eventType)).map((l) => {
     const info = logInfoFor(l)
     const label = logLabel(l)
-    return { cat: 'cmd', kind: 'focus', t: Number(l.timestamp) || 0, sig: ['exam_left', 'page_return'].includes(l.eventType) ? `${l.eventType}:${label}` : l.eventType, ...info, label, log: l }
+    // Outro login e troca de IP (P3-S13): cada registro fica separado, com o IP e o
+    // navegador de antes e de agora embaixo do rótulo.
+    const detail = sessionChangeText(l)
+    const sig = ['exam_left', 'page_return'].includes(l.eventType) ? `${l.eventType}:${label}` : (detail ? `${l.eventType}:${l.id || l.timestamp}` : l.eventType)
+    return { cat: 'cmd', kind: 'focus', t: Number(l.timestamp) || 0, sig, ...info, label, detail, log: l }
   })
   return [...ks, ...lg].sort((a, b) => a.t - b.t)
 }
@@ -181,7 +185,7 @@ function groupStream(items) {
 }
 
 function buildCounters(items) {
-  const c = { copy: 0, paste: 0, focus: 0, ia: 0, devtools: 0, menu: 0 }
+  const c = { copy: 0, paste: 0, focus: 0, ia: 0, devtools: 0, menu: 0, device: 0 }
   for (const it of items) {
     if (it.cat !== 'cmd') continue
     if (it.reason === 'copiar_recortar' || it.reason === 'clipboard') c.copy++
@@ -189,7 +193,9 @@ function buildCounters(items) {
     else if (it.reason === 'assistente_ia') c.ia++
     else if (it.reason === 'devtools') c.devtools++
     else if (it.reason === 'contextmenu') c.menu++
-    if (it.kind === 'focus' && it.pauses !== false) c.focus++
+    // O outro aparelho conta à parte: não é saída de foco (P3-S13).
+    if (isDeviceChangeItem(it)) c.device++
+    else if (countsAsFocusExit(it)) c.focus++
   }
   return c
 }
@@ -260,6 +266,7 @@ function KeystrokeViewer({ events, row, loading, logs: liveLogs, emptyText = 'Ne
     { n: counters.paste, l: 'Colagens sinalizadas', ic: '📋', tone: 'warning' },
     { n: counters.menu, l: 'Menu do botão direito', ic: '☰', tone: 'warning' },
     { n: focusExits, l: 'Saídas de foco', ic: '⇄', tone: 'warning' },
+    { n: counters.device, l: 'Entradas em outro aparelho', ic: '⇆', tone: 'danger' },
   ].filter((c) => c.n > 0)
 
   return (
@@ -333,6 +340,7 @@ function KeystrokeViewer({ events, row, loading, logs: liveLogs, emptyText = 'Ne
                             {a.kind === 'focus' && a.pauses === false && a.badge && <span className="text-[10px] font-semibold uppercase rounded-full px-2 py-0.5 bg-surface-2 text-subtle border border-border">{a.badge}</span>}
                           </div>
                           {(a.mods || a.key) && a.kind !== 'focus' && <div className="text-[11px] text-subtle mt-0.5 font-mono">{[a.mods, a.key].filter(Boolean).join('+')}</div>}
+                          {a.detail && <div className="text-[11px] text-muted mt-0.5 break-words" data-testid="session-change-detail">{a.detail}</div>}
                         </div>
                         <div className="font-mono text-[11px] text-subtle whitespace-nowrap">{hhmmss(a.lastT || a.t)}</div>
                       </div>
@@ -390,6 +398,7 @@ function KeystrokeViewer({ events, row, loading, logs: liveLogs, emptyText = 'Ne
                         {seg.count > 1 && <span className="font-mono text-[10px] font-bold rounded-full px-1.5 bg-surface-2 text-danger border border-danger/30">×{seg.count}</span>}
                         {(seg.mods || seg.key) && seg.kind !== 'focus' && <span className="font-mono text-[10px] text-subtle bg-surface border border-border rounded px-1.5">{[seg.mods, seg.key].filter(Boolean).join('+')}</span>}
                       </div>
+                      {seg.detail && <div className="text-[11px] text-muted mt-0.5 break-words">{seg.detail}</div>}
                     </div>
                     <div className="font-mono text-[11px] text-subtle whitespace-nowrap">{hhmmss(seg.t)}</div>
                   </div>

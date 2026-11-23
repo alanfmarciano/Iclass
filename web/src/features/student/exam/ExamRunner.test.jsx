@@ -13,7 +13,7 @@ vi.mock('../../../lib/api', () => ({ api: apiMock, hasActiveSession: sessionMock
 vi.mock('../useStudent', () => ({ useStudent: () => ({ email: 'ana@escola.local', studentClass: '1DES', courseId: 'curso' }) }))
 vi.mock('../../../context/ToastProvider', () => ({ useToast: () => toast }))
 
-import ExamRunner, { KEYSTROKE_BATCH_MAX, KEYSTROKE_KEEPALIVE_MAX_BYTES, keepaliveKeystrokeBatch, keystrokeRetryDelay } from './ExamRunner'
+import ExamRunner, { KEYSTROKE_BATCH_MAX, KEYSTROKE_KEEPALIVE_MAX_BYTES, keepaliveKeystrokeBatch, keystrokeRetryDelay, sessionPolicyNotice } from './ExamRunner'
 import { AppErrorBoundary } from '../../../components/ui/ErrorScreen'
 import { ExamErrorScreen } from './ExamErrorScreen'
 import { clearInterruptedExam, clearRenderError } from '../../../lib/renderErrors'
@@ -47,7 +47,7 @@ function attemptQuestions() {
 // usam 'tudo', porque digitam teclas comuns.
 const syncDefaults = { keystrokeMode: undefined, proctoringRetentionDays: undefined }
 
-function syncResponse({ timerRemaining = 600, answers = {}, attemptOutcome = null, startedAt = Date.now() - 1000, status = 'running', finishOutcome = null, localCopyKey, timeOver = false, reopenedAt = null, keystrokeMode = syncDefaults.keystrokeMode, proctoringRetentionDays = syncDefaults.proctoringRetentionDays } = {}) {
+function syncResponse({ timerRemaining = 600, answers = {}, attemptOutcome = null, startedAt = Date.now() - 1000, status = 'running', finishOutcome = null, localCopyKey, timeOver = false, reopenedAt = null, keystrokeMode = syncDefaults.keystrokeMode, proctoringRetentionDays = syncDefaults.proctoringRetentionDays, sessionPolicy } = {}) {
   return {
     success: true,
     onlineExamConfigs: {
@@ -60,6 +60,7 @@ function syncResponse({ timerRemaining = 600, answers = {}, attemptOutcome = nul
         timerMode: 'per_attempt',
         maxAttempts: 1,
         ...(keystrokeMode !== undefined ? { keystrokeMode } : {}),
+        ...(sessionPolicy !== undefined ? { sessionPolicy } : {}),
       },
     },
     ...(proctoringRetentionDays !== undefined ? { proctoringRetentionDays } : {}),
@@ -2348,5 +2349,30 @@ describe('[UC-TENTATIVA-005] ExamRunner: prova travada pelo outro aparelho', () 
     expect(await screen.findByRole('heading', { name: 'Prova pausada' })).toBeVisible()
     expect(screen.getByText(/saiu da tela cheia, da aba ou da janela/)).toBeVisible()
     expect(screen.queryByText(/aberta em outro aparelho/)).not.toBeInTheDocument()
+  })
+})
+
+// As instruções dizem o que é registrado do aparelho e da rede e o que acontece no outro
+// aparelho, pela política da aplicação (P3-S13; Termos §3).
+describe('[UC-TENTATIVA-005] ExamRunner: instruções falam do IP, do aparelho e da trava', () => {
+  it('padrão (travar): a prova pausa em outro aparelho e a troca de rede só fica registrada', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ startedAt: null, sessionPolicy: 'travar' }))
+    renderRunner()
+    const notice = await screen.findByTestId('session-notice')
+    expect(notice).toHaveTextContent('O endereço de rede (IP) e o aparelho de cada entrada na sua conta durante a prova ficam registrados')
+    expect(notice).toHaveTextContent('a prova é pausada até a liberação do professor')
+    expect(notice).toHaveTextContent('não pausa a prova')
+  })
+
+  it('"Só avisar": o professor é avisado, sem pausa', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ startedAt: null, sessionPolicy: 'avisar' }))
+    renderRunner()
+    const notice = await screen.findByTestId('session-notice')
+    expect(notice).toHaveTextContent('o professor é avisado')
+    expect(notice).not.toHaveTextContent('a prova é pausada até')
+  })
+
+  it('servidor sem o campo (versão anterior): vale o padrão', () => {
+    expect(sessionPolicyNotice(undefined)).toMatch(/a prova é pausada até a liberação do professor/)
   })
 })

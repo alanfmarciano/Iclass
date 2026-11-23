@@ -12,7 +12,13 @@ function sourceLabel(item) {
   const source = item?.submissionSource
   const late = Number(item?.lateBySeconds || 0)
   if (item?.recoveredAfterFinish === true) return 'Recuperada depois do encerramento: entregue com as respostas salvas no fim do tempo'
-  if (item?.focusLockedAtDeadline === true) return 'Tempo esgotado com a prova bloqueada por perda de foco: entregue com as respostas salvas antes do bloqueio'
+  if (item?.focusLockedAtDeadline === true) {
+    // Trava pelo outro aparelho (P3-S13): não foi perda de foco.
+    const reason = item.focusLockedAtDeadlineReason ?? item.focusLockReason
+    return reason === 'session_replaced'
+      ? 'Tempo esgotado com a prova travada pela entrada em outro aparelho: entregue com as respostas salvas antes da trava'
+      : 'Tempo esgotado com a prova bloqueada por perda de foco: entregue com as respostas salvas antes do bloqueio'
+  }
   if (source === 'deadline_server_auto_submit') return 'Tempo esgotado: entregue automaticamente com as respostas salvas'
   if (late > 0) return `Enviada após o prazo (${formatLateness(late)})`
   if (source === 'timer_auto_submit') return 'Enviada automaticamente no fim do tempo'

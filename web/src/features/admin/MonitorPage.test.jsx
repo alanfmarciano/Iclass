@@ -1042,6 +1042,34 @@ describe('[UC-TENTATIVA-005] MonitorPage · outro aparelho, troca de IP e IP rep
     expect(screen.queryByText(/Mesmo IP de/)).toBeNull()
   })
 
+  it('painel do aluno: o outro login mostra o IP e o navegador e conta em "Entradas em outro aparelho", fora de "Saídas de foco" e de "Comandos suspeitos"', async () => {
+    const at = Date.now() - 5000
+    const replacedLog = { id: 'log-1', eventType: 'session_replaced', timestamp: at, sessionChange: { ipAntes: '10.0.0.5', ipDepois: '10.0.0.9', navegadorAntes: 'Celular da Alice', navegadorDepois: 'Computador do laboratório', travou: true } }
+    const ipLog = { id: 'log-2', eventType: 'ip_changed', timestamp: at + 1000, sessionChange: { ipAntes: '10.0.0.9', ipDepois: '10.0.0.10', navegadorAntes: 'Computador do laboratório', navegadorDepois: 'Computador do laboratório', travou: false } }
+    rowsForTest = [{ email: 'alice@x.local', name: 'Alice', ip: '10.0.0.10', status: 'focus_locked', focusLocked: true, focusLockReason: 'session_replaced', attemptInProgress: true, progress: '1/4', keystrokeCount: 0, logs: [replacedLog, ipLog], sessionReplacedCount: 1, sessionReplacedAt: at, lastSessionReplaced: replacedLog.sessionChange, ipChangeCount: 1, ipChangedAt: at + 1000, lastIpChange: ipLog.sessionChange, sameIpAs: [], networkSharedIp: false }]
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications }
+      if (url.startsWith('/api/admin/monitor-status/')) return rowsForTest
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [], totalOpen: 0 }
+      if (url.startsWith('/api/admin/exam-keystrokes/')) return { events: [], total: 0, cursor: null, hasMore: false, logs: [replacedLog, ipLog] }
+      return {}
+    })
+    renderMonitor()
+    const badge = await screen.findByText(/Entrou de outro aparelho às/)
+    expect(badge.closest('[title]').getAttribute('title')).toContain('IP: 10.0.0.5 → 10.0.0.9 · Navegador: Celular da Alice → Computador do laboratório')
+    fireEvent.click(screen.getByTitle(/^Ver (digitação|atalhos) ao vivo$/))
+    const details = await screen.findAllByTestId('session-change-detail')
+    expect(details.map((node) => node.textContent)).toEqual([
+      'IP: 10.0.0.5 → 10.0.0.9 · Navegador: Celular da Alice → Computador do laboratório',
+      'IP: 10.0.0.9 → 10.0.0.10 · Navegador: Computador do laboratório',
+    ])
+    expect(screen.getByText('Entradas em outro aparelho')).toBeTruthy()
+    const focusStat = screen.getAllByText('Saídas de foco')[0].parentElement
+    expect(focusStat.textContent).toContain('0')
+    const suspicious = screen.getByText('Comandos suspeitos').parentElement
+    expect(suspicious.textContent).toContain('0')
+  })
+
   it('Monitor de antes desta versão (linhas sem os campos novos): nada muda', async () => {
     rowsForTest = [{ email: 'ana@x.local', name: 'Ana', ip: '10.0.0.2', status: 'online', attemptInProgress: true, progress: '0/4', logs: [] }]
     renderMonitor()

@@ -16,6 +16,11 @@ describe('[UC-TENTATIVA-001] como a entrega chegou (AVA-03, UXA-01)', () => {
     const locked = { submissionSource: 'deadline_server_auto_submit', focusLockedAtDeadline: true }
     expect(deliveryLabel(locked)).toMatch(/bloqueada por perda de foco/)
     expect(deliveryTone(locked)).toBe('warning')
+    // Travada pela entrada em outro aparelho (P3-S13): o texto não fala em perda de foco.
+    const byDevice = { ...locked, focusLockedAtDeadlineReason: 'session_replaced' }
+    expect(deliveryLabel(byDevice)).toMatch(/travada pela entrada em outro aparelho/)
+    expect(deliveryLabel(byDevice)).not.toMatch(/perda de foco/)
+    expect(deliveryLabel({ ...locked, focusLockReason: 'session_replaced' })).toMatch(/outro aparelho/)
     const recovered = { submissionSource: 'deadline_server_auto_submit', recoveredAfterFinish: true }
     expect(deliveryLabel(recovered)).toMatch(/Recuperada depois do encerramento/)
     expect(deliveryTone(recovered)).toBe('warning')
