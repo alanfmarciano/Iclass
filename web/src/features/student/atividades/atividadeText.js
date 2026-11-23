@@ -35,9 +35,23 @@ const SITUATION_TONES = Object.freeze({
   encerrada_sem_envio: 'neutral',
 })
 
+// Pedido de refazer cujo prazo novo já passou (o envio não abre mais): o aluno tem
+// versões, mas "Refazer até <data que passou>" confunde.
+function redoExpired(row) {
+  return !!row && row.situacao === 'refazer' && row.aceitaEnvio === false && row.situacaoTexto !== 'Turma encerrada'
+}
+
 export function situationTone(row) {
   if (row && row.situacaoTexto === 'Turma encerrada') return 'neutral'
+  if (redoExpired(row)) return 'neutral'
   return SITUATION_TONES[row?.situacao] || 'neutral'
+}
+
+// Texto do selo: o do servidor, menos no refazer com o prazo vencido.
+export const REDO_EXPIRED_TEXT = 'Prazo para refazer encerrado'
+export function situationText(row) {
+  if (redoExpired(row)) return REDO_EXPIRED_TEXT
+  return row?.situacaoTexto || ''
 }
 
 const WAITING_CODES = new Set(['a_fazer', 'atrasada', 'refazer', 'nao_aberta'])
@@ -56,10 +70,13 @@ export const SECTIONS = Object.freeze([
   { id: 'encerradas', title: 'Encerradas sem envio', empty: '' },
 ])
 
+// 'Encerradas sem envio' é só de quem não mandou nada: refazer com o prazo vencido (ou na
+// turma encerrada) já tem versões e fica em 'Enviadas'.
 export function sectionOf(row) {
   if (isToDo(row)) return 'a-fazer'
   if (row?.situacao === 'devolvida') return 'devolvidas'
-  if (row?.situacao === 'enviada' || row?.situacao === 'entregue_em_maos') return 'enviadas'
+  if (row?.situacao === 'enviada' || row?.situacao === 'entregue_em_maos' || row?.situacao === 'refazer') return 'enviadas'
+  if (Number(row?.versoes) > 0) return 'enviadas'
   return 'encerradas'
 }
 
@@ -206,6 +223,26 @@ export function receiptDocument({ assignment, version, student = {}, escola, dis
     geradoEm,
     secoes,
   }
+}
+
+// ------------------------------------------------------------ envio repetido
+// Identificador do envio (cabeçalho x-envio-id, C9 ajuste 1): um por envio, repetido no
+// "Tentar de novo"; o servidor devolve a versão que já chegou com ele em vez de criar
+// outra. 24 caracteres [A-Za-z0-9_-]. crypto.getRandomValues existe também no endereço
+// http da sala (crypto.randomUUID só em https).
+const ENVIO_ALPHABET = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789-_'
+export function newEnvioId() {
+  const bytes = new Uint8Array(24)
+  const cryptoApi = typeof globalThis !== 'undefined' ? globalThis.crypto : null
+  if (cryptoApi && typeof cryptoApi.getRandomValues === 'function') cryptoApi.getRandomValues(bytes)
+  else for (let i = 0; i < bytes.length; i += 1) bytes[i] = Math.floor(Math.random() * 256)
+  return Array.from(bytes, (byte) => ENVIO_ALPHABET[byte % 64]).join('')
+}
+
+// A versão mandada com esse identificador (null se não chegou).
+export function versionWithEnvioId(versions, envioId) {
+  if (!envioId || !Array.isArray(versions)) return null
+  return versions.find((version) => version && version.envioId === envioId) || null
 }
 
 // ------------------------------------------------------------ arquivos escolhidos

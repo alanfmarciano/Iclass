@@ -309,13 +309,14 @@ export async function downloadFile(path, fallbackName = 'arquivo') {
 // onProgress({ loaded, total, percent }): a cada pedaço enviado (percent de 0 a 100; o
 // 100 sai quando o corpo terminou de subir, antes da resposta). signal: cancela (o erro
 // sai como AbortError, sem mensagem de conexão). timeoutMs: prazo (padrão 0 = sem prazo,
-// porque o tempo depende do tamanho do arquivo e da rede da sala).
+// porque o tempo depende do tamanho do arquivo e da rede da sala). headers: cabeçalhos a
+// mais do pedido (o envio da atividade manda o x-envio-id); os de sessão vêm sempre.
 // Devolve o JSON da resposta (ou null sem corpo JSON).
-export function uploadWithProgress(path, formData, { method = 'POST', onProgress, signal, timeoutMs = 0 } = {}) {
+export function uploadWithProgress(path, formData, { method = 'POST', onProgress, signal, timeoutMs = 0, headers: extraHeaders = null } = {}) {
   return new Promise((resolve, reject) => {
     if (signal && signal.aborted) { reject(abortError(signal)); return }
     if (typeof XMLHttpRequest !== 'function') { reject(noteFailure(connectionError('network'))); return }
-    const headers = authHeaders()
+    const headers = { ...(extraHeaders && typeof extraHeaders === 'object' ? extraHeaders : {}), ...authHeaders() }
     const xhr = new XMLHttpRequest()
     let settled = false
     let timedOut = false

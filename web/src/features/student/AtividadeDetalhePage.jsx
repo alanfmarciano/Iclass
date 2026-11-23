@@ -8,9 +8,13 @@
 //   enviar mais rápido" e a opção "Enviar original" quando a original cabe no limite.
 // - Antes de mandar, a tela confere tipo, tamanho, quantidade e link com as frases do
 //   servidor (atividadeText.js); o servidor confere de novo.
-// - Rede caiu no meio: "Tentar de novo" com os mesmos arquivos escolhidos. Se a resposta
-//   se perdeu mas o envio chegou (a versão aparece ao recarregar), a tela mostra o
-//   comprovante dessa versão em vez de pedir para mandar outra.
+// - Rede caiu no meio: "Tentar de novo" com os mesmos arquivos escolhidos. Cada envio leva
+//   um identificador (cabeçalho x-envio-id, newEnvioId), o mesmo em todas as tentativas
+//   enquanto a escolha não muda. Quando a resposta se perdeu, "Tentar de novo" primeiro
+//   pergunta ao servidor se a versão com esse identificador chegou (sem rede, não manda
+//   nada); se chegou, mostra o comprovante dela. Se não chegou, manda de novo com o mesmo
+//   identificador, e o servidor devolve a versão que já existe em vez de criar outra (o
+//   envio que chegou a tempo não vira versão atrasada nem recusa "prazo terminou").
 // - Comprovante: a linha "Recebido às 14:32 de 20/11 — versão 2 — ..." recebe o foco
 //   depois do envio, e "Imprimir comprovante" sai pelo printDocument (cabeçalho da escola).
 // - Hora: prazo, "faltam" e o relógio mostrados são os do computador do professor (o
@@ -27,7 +31,7 @@ import { Input } from '../../components/ui/Input'
 import { HelpLink } from '../../components/ui/HelpLink'
 import { useApi } from '../../hooks/useApi'
 import { useBranding } from '../../context/BrandingProvider'
-import { downloadFile, uploadWithProgress } from '../../lib/api'
+import { api, downloadFile, uploadWithProgress } from '../../lib/api'
 import { markdownToHtml } from '../../lib/contentMarkdown'
 import { openPrintWindow, printDocument, schoolFromBranding } from '../../lib/printDocument'
 import { resizeImage, shouldResizeImage } from '../../lib/imageResize'
@@ -35,8 +39,8 @@ import { useStudent } from './useStudent'
 import { ASSIGNMENTS_POLL_MS } from './AtividadesPage'
 import {
   MB, buildSubmissionForm, closeLine, dateTimeText, deadlineLine, emptySubmissionText, fileProblem, formatBytes,
-  limitsText, linkProblem, receiptDocument, receiptLine, responseKindsText, returnSummary, safeExternalLink,
-  selectionProblem, situationTone, timeText, versionTimingText, withExtension,
+  limitsText, linkProblem, newEnvioId, receiptDocument, receiptLine, responseKindsText, returnSummary, safeExternalLink,
+  selectionProblem, situationText, situationTone, timeText, versionTimingText, versionWithEnvioId, withExtension,
 } from './atividades/atividadeText'
 
 const CLOCK_TICK_MS = 30000
@@ -174,14 +178,16 @@ export default function AtividadeDetalhePage() {
   const [items, setItems] = useState([])
   const [text, setText] = useState('')
   const [link, setLink] = useState('')
-  const [phase, setPhase] = useState('idle') // idle | sending
+  const [phase, setPhase] = useState('idle') // idle | checking | sending
   const [progress, setProgress] = useState(0)
-  const [error, setError] = useState(null) // { message, retry }
+  const [error, setError] = useState(null) // { message, retry, unknown, envioId }
   const [receipt, setReceipt] = useState(null) // { version, recovered }
   const [printError, setPrintError] = useState('')
   const inputRef = useRef(null)
   const receiptRef = useRef(null)
   const mountedRef = useRef(true)
+  // Identificador do envio da escolha atual (null: escolha nova, ganha um no próximo envio).
+  const envioIdRef = useRef(null)
   const now = useServerClock(data?.serverNow)
   const timezone = data?.timezone || ''
 
@@ -203,7 +209,7 @@ export default function AtividadeDetalhePage() {
   const versions = data?.minhaEntrega?.versoes || []
   const devolucao = returnSummary(data?.devolucao)
   const instructionsHtml = useMemo(() => (assignment?.instructions ? markdownToHtml(assignment.instructions) : ''), [assignment?.instructions])
-  const sending = phase === 'sending'
+  const sending = phase === 'sending' || phase === 'checking'
   const preparing = items.some((item) => item.preparing)
   const accepts = !!data?.aceitaEnvio
   const lateNow = accepts && typeof assignment?.dueAt === 'number' ? now > assignment.dueAt : !!data?.atrasoAgora
@@ -218,6 +224,7 @@ export default function AtividadeDetalhePage() {
   async function addFiles(fileList) {
     const picked = Array.from(fileList || []).map(withExtension)
     if (!picked.length) return
+    envioIdRef.current = null
     setError(null)
     const fresh = picked.map((file) => {
       itemSeq += 1
@@ -238,10 +245,12 @@ export default function AtividadeDetalhePage() {
   }
 
   function removeItem(itemId) {
+    envioIdRef.current = null
     setItems((current) => current.filter((item) => item.id !== itemId))
   }
 
   function toggleOriginal(itemId) {
+    envioIdRef.current = null
     setItems((current) => current.map((item) => {
       if (item.id !== itemId || !item.original) return item
       const useOriginal = !item.useOriginal
@@ -249,48 +258,87 @@ export default function AtividadeDetalhePage() {
     }))
   }
 
+  function changeText(value) {
+    envioIdRef.current = null
+    setText(value)
+  }
+
+  function changeLink(value) {
+    envioIdRef.current = null
+    setLink(value)
+  }
+
+  // O envio chegou (pela resposta ou pela conferência depois de uma resposta perdida):
+  // comprovante e escolha limpa (mandar de novo seria outra versão).
+  function showReceipt(version, recovered) {
+    envioIdRef.current = null
+    setItems([])
+    setText('')
+    setLink('')
+    setError(null)
+    setReceipt({ version: version || null, recovered })
+  }
+
   async function submit() {
     if (sending || preparing || !assignment) return
+    const previous = error
     setError(null)
     const hasText = resposta.text && text.trim()
     const hasLink = resposta.link && link.trim()
     if (!files.length && !hasText && !hasLink) { setError({ message: emptySubmissionText(resposta), retry: false }); return }
     const blocking = problems[0] || groupProblem || linkError
     if (blocking) { setError({ message: blocking, retry: false }); return }
-    const versionsBefore = versions.length
+    if (!envioIdRef.current) envioIdRef.current = newEnvioId()
+    const envioId = envioIdRef.current
+    // A resposta da tentativa anterior se perdeu: pergunta ao servidor se ela chegou antes
+    // de mandar os arquivos de novo. Sem rede, não manda nada (o erro continua).
+    if (previous && previous.unknown && previous.envioId === envioId) {
+      setPhase('checking')
+      try {
+        const fresh = await api.get(detailPath(id, courseId, studentClass))
+        if (!mountedRef.current) return
+        if (fresh && fresh.success !== false) detail.setData(fresh)
+        const arrived = versionWithEnvioId(fresh?.minhaEntrega?.versoes, envioId)
+        if (arrived) { showReceipt(arrived, true); setPhase('idle'); return }
+      } catch (err) {
+        if (!mountedRef.current) return
+        setError({ ...previous, message: err?.message || previous.message })
+        setPhase('idle')
+        return
+      }
+    }
     setPhase('sending')
     setProgress(0)
     try {
       const form = buildSubmissionForm({ files, text, link, resposta })
-      const result = await uploadWithProgress(submitPath(assignment.id), form, { onProgress: ({ percent }) => { if (mountedRef.current) setProgress(percent) } })
+      const result = await uploadWithProgress(submitPath(assignment.id), form, {
+        headers: { 'x-envio-id': envioId },
+        onProgress: ({ percent }) => { if (mountedRef.current) setProgress(percent) },
+      })
       if (!mountedRef.current) return
-      setItems([])
-      setText('')
-      setLink('')
-      setReceipt({ version: result?.version || null, recovered: false })
+      // repetido: o servidor já tinha esta versão (a resposta de antes se perdeu).
+      showReceipt(result?.version || null, result?.repetido === true)
       detail.refetch(true)
     } catch (err) {
       if (!mountedRef.current) return
-      // Sem resposta (rede caiu, prazo): o envio pode ter chegado. Confere antes de pedir
-      // para mandar de novo (mandar de novo criaria outra versão).
-      if (err && err.status === 0 && !err.aborted) await detail.refetch(true)
-      setError({ message: err?.message || 'Não foi possível enviar agora. Tente de novo.', retry: err?.status === 0 || err?.retryable === true || err?.data?.retryable === true, versionsBefore })
+      // Sem resposta (rede caiu no meio): o envio pode ter chegado. A consulta abaixo e o
+      // "Tentar de novo" conferem pelo identificador antes de mandar outra vez.
+      const unknown = !!err && err.status === 0 && !err.aborted
+      if (unknown) await detail.refetch(true)
+      if (!mountedRef.current) return
+      setError({ message: err?.message || 'Não foi possível enviar agora. Tente de novo.', retry: err?.status === 0 || err?.retryable === true || err?.data?.retryable === true, unknown, envioId })
     } finally {
       if (mountedRef.current) setPhase('idle')
     }
   }
 
-  // A resposta do envio se perdeu, mas a versão nova apareceu ao recarregar: o envio
-  // chegou. Mostra o comprovante dela e limpa a escolha (mandar de novo duplicaria).
+  // A resposta do envio se perdeu, mas a versão com o identificador deste envio apareceu
+  // ao recarregar (a consulta logo depois do erro ou a atualização a cada 30 s): o envio
+  // chegou. Mostra o comprovante dela.
   useEffect(() => {
-    if (!error || typeof error.versionsBefore !== 'number' || !error.retry) return
-    if (versions.length > error.versionsBefore) {
-      setReceipt({ version: versions[versions.length - 1], recovered: true })
-      setItems([])
-      setText('')
-      setLink('')
-      setError(null)
-    }
+    if (!error || !error.unknown || !error.envioId || error.envioId !== envioIdRef.current) return
+    const arrived = versionWithEnvioId(versions, error.envioId)
+    if (arrived) showReceipt(arrived, true)
   }, [versions, error])
 
   function printReceipt(version) {
@@ -321,8 +369,9 @@ export default function AtividadeDetalhePage() {
           <>
             <div>
               <h1 className="break-words text-2xl font-bold text-text">{assignment.title}</h1>
+              {assignment.unidade && <p className="mt-1 break-words text-sm text-muted">{assignment.unidade}</p>}
               <div className="mt-2 flex flex-wrap items-center gap-2">
-                <Badge tone={situationTone(row)}>{data.situacaoTexto}</Badge>
+                <Badge tone={situationTone(row)}>{situationText(row)}</Badge>
                 {assignment.prazoIndividual && <Badge tone="info">Prazo combinado só para você</Badge>}
               </div>
               <p className="mt-3 text-sm text-text">{deadlineLine(row, now, timezone)}</p>
@@ -350,7 +399,7 @@ export default function AtividadeDetalhePage() {
             {data.refazer && (
               <Card className="space-y-2 border-warning/40 p-5">
                 <h2 className="flex items-center gap-2 font-semibold text-text"><RotateCcw aria-hidden="true" size={18} className="text-warning" /> O professor pediu para refazer</h2>
-                <p className="text-sm text-text">Envie a nova versão até {dateTimeText(data.refazer.ate, timezone, now)}.</p>
+                <p className="text-sm text-text">{accepts ? `Envie a nova versão até ${dateTimeText(data.refazer.ate, timezone, now)}.` : `O prazo para enviar a nova versão terminou em ${dateTimeText(data.refazer.ate, timezone, now)}.`}</p>
                 {data.refazer.comentario && <p className="whitespace-pre-wrap break-words text-sm text-muted">{data.refazer.comentario}</p>}
               </Card>
             )}
@@ -424,23 +473,24 @@ export default function AtividadeDetalhePage() {
                   </div>
                 )}
                 {resposta.text && (
-                  <Textarea label="Resposta em texto" value={text} onChange={(event) => setText(event.target.value)} maxLength={aceita.textMax || undefined} counterFrom={Math.max(0, (aceita.textMax || 0) - 500)} disabled={sending} rows={5} />
+                  <Textarea label="Resposta em texto" value={text} onChange={(event) => changeText(event.target.value)} maxLength={aceita.textMax || undefined} counterFrom={Math.max(0, (aceita.textMax || 0) - 500)} disabled={sending} rows={5} />
                 )}
                 {resposta.link && (
-                  <Input label="Link (endereço que comece com http:// ou https://)" type="url" inputMode="url" autoComplete="off" value={link} onChange={(event) => setLink(event.target.value)} maxLength={aceita.linkMax || undefined} error={link.trim() ? linkError : ''} disabled={sending} placeholder="https://" />
+                  <Input label="Link (endereço que comece com http:// ou https://)" type="url" inputMode="url" autoComplete="off" value={link} onChange={(event) => changeLink(event.target.value)} maxLength={aceita.linkMax || undefined} error={link.trim() ? linkError : ''} disabled={sending} placeholder="https://" />
                 )}
                 {lateNow && (
                   <p className="flex items-start gap-2 rounded-lg bg-warning-soft p-3 text-sm text-warning"><AlertTriangle aria-hidden="true" size={16} className="mt-0.5 shrink-0" /> <span>Você está enviando com atraso. {assignment.regraAtraso}</span></p>
                 )}
                 <div className="atividade-envio-barra space-y-3 rounded-xl border border-border bg-surface p-3 shadow-[var(--shadow-float,0_8px_24px_rgba(0,0,0,.12))]">
-                  {sending && <ProgressBar percent={progress} />}
+                  {phase === 'sending' && <ProgressBar percent={progress} />}
                   <div aria-live="polite" className="text-sm">
-                    {sending && <span className="text-muted">{progress >= 100 ? 'Arquivos enviados. Esperando a confirmação do professor…' : 'Enviando… não feche esta página.'}</span>}
+                    {phase === 'checking' && <span className="text-muted">Conferindo se o envio anterior chegou…</span>}
+                    {phase === 'sending' && <span className="text-muted">{progress >= 100 ? 'Arquivos enviados. Esperando a confirmação do professor…' : 'Enviando… não feche esta página.'}</span>}
                     {error && !sending && <span role="alert" className="text-danger">{error.message}</span>}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Button type="button" size="lg" icon={error?.retry ? RotateCcw : Send} className="h-12 flex-1" onClick={submit} loading={sending} disabled={preparing}>
-                      {sending ? 'Enviando…' : error?.retry ? 'Tentar de novo' : lateNow ? 'Enviar com atraso' : 'Enviar'}
+                      {phase === 'checking' ? 'Conferindo…' : sending ? 'Enviando…' : error?.retry ? 'Tentar de novo' : lateNow ? 'Enviar com atraso' : 'Enviar'}
                     </Button>
                   </div>
                   {preparing && <p className="text-xs text-muted">Preparando a foto para enviar…</p>}

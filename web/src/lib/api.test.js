@@ -505,6 +505,14 @@ describe('uploadWithProgress (envio da atividade com barra de progresso)', () =>
     expect(getConnectionState()).toBe('online')
   })
 
+  it('C9 ajuste 1: cabeçalhos a mais (x-envio-id) vão junto, e a sessão não é trocada por eles', async () => {
+    setAuthProvider(() => ({ role: 'student', sessionToken: 'token-aluno' }))
+    const { promise, xhr } = await start({ headers: { 'x-envio-id': 'abcdefghijklmnopqrstuvwx', 'x-session-token': 'outro' } })
+    expect(xhr.headers).toEqual({ 'x-envio-id': 'abcdefghijklmnopqrstuvwx', 'x-session-token': 'token-aluno' })
+    xhr.respond(200, { success: true, repetido: true, version: { n: 1 } })
+    await expect(promise).resolves.toEqual({ success: true, repetido: true, version: { n: 1 } })
+  })
+
   it('recusa do servidor sai com a mensagem dele, o status e o corpo', async () => {
     setAuthProvider(() => ({ role: 'student', sessionToken: 't' }))
     const { promise, xhr } = await start()

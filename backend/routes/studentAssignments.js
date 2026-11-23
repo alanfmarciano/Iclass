@@ -37,6 +37,14 @@
 // - Nenhuma resposta traz storedRel nem caminho do computador. Download sempre como
 //   anexo (assignmentFiles.downloadHeaders: attachment, lista branca de Content-Type,
 //   nosniff e CSP sandbox).
+// - Envio repetido (C9 ajuste 1): o cabeçalho x-envio-id identifica o envio; o celular o
+//   repete no "Tentar de novo". Se uma versão com esse identificador já existe, a resposta
+//   é 200 com ela (repetido: true), sem criar outra, antes de conferir o prazo e o aceite:
+//   o envio que chegou a tempo não vira versão atrasada nem recusa "prazo terminou" porque
+//   a resposta se perdeu. Conferido antes de receber o corpo e de novo dentro da trava
+//   (dois pedidos com o mesmo identificador ao mesmo tempo viram uma versão só).
+// - Unidade (C9 ajuste 1): a lista e o detalhe mandam o nome do módulo e da unidade da
+//   tarefa ('Módulo 1 · Unidade 2'), lido da estrutura da turma (unidade).
 // - Pré-visualização (P5-S6a): a lista e o detalhe estão em PREVIEW_READ_ROUTES (só leem,
 //   pelo req.studentAccount); o envio e o download recebem 403 preview_read_only.
 // ---------------------------------------------------------------------------
@@ -57,6 +65,7 @@ const { previewToken } = require('../utils/previewAccess.js');
 const { DB_WRITE_ERROR_MESSAGE } = require('../utils/dbWriter.js');
 const { logError } = require('../utils/errorLog.js');
 const { body, str } = require('../utils/inputSchema.js');
+const { effectiveStructure } = require('../utils/classContent.js');
 
 const { LIMITS } = assignments;
 const MB = assignmentFiles.MB;
@@ -152,6 +161,35 @@ function fileTypeLabels(task) {
     return labels;
 }
 
+// Nome do módulo e da unidade da tarefa na estrutura da turma ('Módulo 1 · Unidade 2', só
+// o módulo, ou '' sem vínculo ou quando a estrutura não tem mais o módulo). structure: a
+// estrutura já lida (a lista lê uma vez para todas as tarefas da turma).
+function structureFor(courseId, studentClass) {
+    try {
+        const effective = effectiveStructure(courseId, studentClass);
+        return Array.isArray(effective && effective.structure) ? effective.structure : [];
+    } catch (e) {
+        return [];
+    }
+}
+
+function unitKeysOf(unit) {
+    return [unit.apostilaKey, unit.avaliacaoKey, unit.key].filter(key => typeof key === 'string' && key);
+}
+
+function unitLabel(task, structure) {
+    if (!task.moduleId && !task.unitKey) return '';
+    const modules = (Array.isArray(structure) ? structure : []).filter(module => module && typeof module === 'object');
+    const unitsOf = module => (module.units || module.items || []).filter(unit => unit && typeof unit === 'object');
+    let module = task.moduleId ? modules.find(item => String(item.id) === task.moduleId) : null;
+    if (!module && task.unitKey) module = modules.find(item => unitsOf(item).some(unit => unitKeysOf(unit).includes(task.unitKey))) || null;
+    if (!module) return '';
+    const unit = task.unitKey ? unitsOf(module).find(item => unitKeysOf(item).includes(task.unitKey)) : null;
+    const moduleName = String(module.name || module.title || '').trim();
+    const unitName = unit ? String(unit.name || unit.title || '').trim() : '';
+    return [moduleName, unitName].filter(Boolean).join(' · ');
+}
+
 // O arquivo como o aluno vê: nome, tamanho, tipo e o código do comprovante (nunca o caminho).
 function presentFile(file) {
     return {
@@ -176,6 +214,7 @@ function presentVersion(sub, version) {
         files: version.files.map(presentFile),
         bytes: version.files.reduce((total, file) => total + file.size, 0),
         comprovante: assignments.versionReceiptCode(sub, version),
+        envioId: assignments.normalizeEnvioId(version.envioId),
     };
 }
 
@@ -204,7 +243,7 @@ function presentRedo(sub, window) {
 }
 
 // Uma linha da lista do aluno (contrato C4 do P1: situação e prazo efetivo prontos).
-function listRow(task, rawSub, { now, tz, classOpen = true }) {
+function listRow(task, rawSub, { now, tz, classOpen = true, structure = [] }) {
     const sub = rawSub ? assignments.normalizeSubmission(rawSub) : null;
     const situation = assignments.situationForClass(assignments.studentSituation(task, sub, { now, timezone: tz }), classOpen);
     const last = sub && sub.versions.length ? sub.versions[sub.versions.length - 1] : null;
@@ -214,6 +253,7 @@ function listRow(task, rawSub, { now, tz, classOpen = true }) {
         title: task.title,
         moduleId: task.moduleId,
         unitKey: task.unitKey,
+        unidade: unitLabel(task, structure),
         opensAt: task.opensAt,
         dueAt: situation.dueAt,
         closeAt: situation.closeAt,
@@ -278,6 +318,27 @@ function classClosedBody() {
 
 // Pedido recusado antes de ler o corpo: a resposta sai e o resto do corpo é descartado
 // (sem fechar a conexão, o navegador recebe a mensagem depois de terminar de mandar).
+// A resposta do envio repetido (mesmo x-envio-id de uma versão que já existe): 200 com a
+// versão que chegou, como se fosse a resposta que se perdeu.
+function repeatedSubmissionBody(task, rawSub, version) {
+    const sub = assignments.normalizeSubmission(rawSub);
+    const saved = sub.versions.find(item => item.n === version.n) || version;
+    const now = Date.now();
+    const situation = assignments.studentSituation(task, sub, { now, timezone: timezone() });
+    return {
+        success: true,
+        repetido: true,
+        version: presentVersion(sub, saved),
+        situacao: situation.code,
+        situacaoTexto: situation.label,
+        serverNow: now,
+    };
+}
+
+function requestEnvioId(req) {
+    return assignments.normalizeEnvioId(String(req.get('x-envio-id') || '').trim());
+}
+
 function refuseBeforeBody(req, res, send) {
     req.resume();
     return send();
@@ -387,7 +448,7 @@ function rowsOf(memory) {
 }
 
 // Grava a versão (dentro da trava). Devolve { status, body }.
-async function commitVersion(req, { assignmentId, requestAt, received, text, link }) {
+async function commitVersion(req, { assignmentId, requestAt, received, text, link, envioId = '' }) {
     const raw = assignments.findAssignment(db.memory, assignmentId);
     const task = raw ? assignments.normalizeAssignment(raw) : null;
     const cls = task ? findClassByNameAndCourse(db.memory.classes || [], task.studentClass, task.courseId) : null;
@@ -402,6 +463,10 @@ async function commitVersion(req, { assignmentId, requestAt, received, text, lin
     }
     const email = req.studentEmail;
     const existing = assignments.findSubmission(db.memory, task.id, email);
+    // O mesmo envio já gravado (outro pedido com o mesmo x-envio-id terminou antes, dentro
+    // desta trava): devolve a versão dele, sem conferir o prazo de novo.
+    const repeated = envioId ? assignments.versionByEnvioId(existing, envioId) : null;
+    if (repeated) return { status: 200, body: repeatedSubmissionBody(task, existing, repeated) };
     // O aceite de novo, já com a entrega de agora (outro envio do mesmo aluno pode ter
     // chegado à 20ª versão, o professor pode ter devolvido ou arquivado no meio do upload).
     const acceptance = assignments.submissionAcceptance(task, existing, { now: requestAt });
@@ -458,6 +523,7 @@ async function commitVersion(req, { assignmentId, requestAt, received, text, lin
         ip: String(getClientIp(req) || '').slice(0, 100),
         device: String(req.get('user-agent') || '').slice(0, LIMITS.deviceMax),
     };
+    if (envioId) version.envioId = envioId;
     const studentId = typeof req.studentAccount.id === 'string' && /^alu_[0-9a-f]{16}$/.test(req.studentAccount.id) ? req.studentAccount.id : null;
     const next = {
         ...base,
@@ -532,10 +598,11 @@ function createStudentAssignmentsRouter() {
         const now = Date.now();
         const tz = timezone();
         const classOpen = assignments.classAcceptsSubmissions(cls);
+        const structure = structureFor(cls.courseId, cls.name);
         const rows = assignments.assignmentsForClass(db.memory, { courseId: cls.courseId, studentClass: cls.name, statuses: ['publicada'] })
             .map(raw => assignments.normalizeAssignment(raw))
             .filter(task => assignments.isVisibleToStudent(task, { now }))
-            .map(task => listRow(task, assignments.findSubmission(db.memory, task.id, req.studentEmail), { now, tz, classOpen }))
+            .map(task => listRow(task, assignments.findSubmission(db.memory, task.id, req.studentEmail), { now, tz, classOpen, structure }))
             .sort(compareRows);
         res.set('Cache-Control', 'no-store');
         return res.json({ success: true, assignments: rows, turmaEncerrada: !classOpen, serverNow: now, timezone: tz });
@@ -564,6 +631,7 @@ function createStudentAssignmentsRouter() {
                 studentClass: task.studentClass,
                 moduleId: task.moduleId,
                 unitKey: task.unitKey,
+                unidade: unitLabel(task, structureFor(task.courseId, task.studentClass)),
                 title: task.title,
                 instructions: task.instructions,
                 materiais: supportMaterials(req, task),
@@ -612,6 +680,12 @@ function createStudentAssignmentsRouter() {
         const found = loadVisibleAssignment(req, res, { now: requestAt });
         if (!found) return refuseBeforeBody(req, res, () => undefined);
         const { task, cls } = found;
+        // O mesmo envio já chegou (a resposta se perdeu): devolve a versão dele antes de
+        // conferir turma, prazo e aceite, e sem receber os arquivos de novo.
+        const envioId = requestEnvioId(req);
+        const earlier = assignments.findSubmission(db.memory, task.id, req.studentEmail);
+        const repeated = envioId ? assignments.versionByEnvioId(earlier, envioId) : null;
+        if (repeated) return refuseBeforeBody(req, res, () => res.status(200).json(repeatedSubmissionBody(task, earlier, repeated)));
         // Turma encerrada recusa o envio antes de receber o corpo (e de novo na gravação).
         try {
             academicCalendar.assertClassOpen(cls);
@@ -681,7 +755,7 @@ function createStudentAssignmentsRouter() {
         let outcome;
         try {
             outcome = await withSubmissionLock(submissionLockKey(task.id, req.studentEmail), () => commitVersion(req, {
-                assignmentId: task.id, requestAt, received, text, link,
+                assignmentId: task.id, requestAt, received, text, link, envioId,
             }));
         } catch (err) {
             await discard();

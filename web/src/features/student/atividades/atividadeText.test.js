@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { printDocumentHtml } from '../../../lib/printDocument'
 import {
   MB, buildSubmissionForm, closeLine, dateTimeText, deadlineLine, emptySubmissionText, fileProblem, groupAssignments,
-  isToDo, limitsText, linkProblem, receiptDocument, receiptLine, responseKindsText, returnSummary, sectionOf,
+  isToDo, limitsText, linkProblem, newEnvioId, receiptDocument, receiptLine, responseKindsText, returnSummary, sectionOf, situationText, versionWithEnvioId,
   selectionProblem, situationTone, versionTimingText, withExtension,
 } from './atividadeText'
 
@@ -46,6 +46,32 @@ describe('atividades do aluno: situação e seções', () => {
     expect(situationTone(rows[3])).toBe('success')
     expect(situationTone(rows[7])).toBe('neutral')
     expect(situationTone(null)).toBe('neutral')
+  })
+
+  it('C9 ajuste 1: refazer com o prazo vencido (sem aceitar envio) fica em Enviadas, com o selo "Prazo para refazer encerrado"', () => {
+    const expired = { id: 'r', situacao: 'refazer', aceitaEnvio: false, situacaoTexto: 'Refazer até 21/11 às 23:00', versoes: 1 }
+    expect(sectionOf(expired)).toBe('enviadas')
+    expect(situationText(expired)).toBe('Prazo para refazer encerrado')
+    expect(situationTone(expired)).toBe('neutral')
+    // Refazer na turma encerrada: também tem versões; o selo continua "Turma encerrada".
+    const closedClass = { situacao: 'refazer', aceitaEnvio: false, situacaoTexto: 'Turma encerrada', versoes: 2 }
+    expect(sectionOf(closedClass)).toBe('enviadas')
+    expect(situationText(closedClass)).toBe('Turma encerrada')
+    // Qualquer tarefa com versão enviada nunca cai em "Encerradas sem envio".
+    expect(sectionOf({ situacao: 'a_fazer', aceitaEnvio: false, situacaoTexto: 'Turma encerrada', versoes: 1 })).toBe('enviadas')
+    // Refazer aberto continua em A fazer, com o texto do servidor.
+    expect(situationText({ situacao: 'refazer', aceitaEnvio: true, situacaoTexto: 'Refazer até 25/11 às 18:00' })).toBe('Refazer até 25/11 às 18:00')
+  })
+
+  it('C9 ajuste 1: identificador do envio com 24 caracteres seguros e diferente a cada envio; acha a versão dele', () => {
+    const a = newEnvioId()
+    const b = newEnvioId()
+    expect(a).toMatch(/^[A-Za-z0-9_-]{24}$/)
+    expect(a).not.toBe(b)
+    expect(versionWithEnvioId([{ n: 1, envioId: '' }, { n: 2, envioId: a }], a)).toEqual({ n: 2, envioId: a })
+    expect(versionWithEnvioId([{ n: 1, envioId: '' }], a)).toBeNull()
+    expect(versionWithEnvioId([{ n: 1, envioId: '' }], '')).toBeNull()
+    expect(versionWithEnvioId(null, a)).toBeNull()
   })
 })
 

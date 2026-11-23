@@ -14,6 +14,8 @@ const DUE = Date.UTC(2026, 10, 25, 2, 0) // 24/11 23:00 em São Paulo
 const mocks = vi.hoisted(() => ({
   detail: null,
   refetch: null,
+  setData: null,
+  get: null,
   upload: null,
   download: null,
   resize: null,
@@ -23,10 +25,11 @@ const mocks = vi.hoisted(() => ({
 
 vi.mock('./useStudent', () => ({ useStudent: () => ({ email: 'ana@x.local', name: 'Ana Lima', displayName: 'Ana Lima', studentClass: '1DES', courseId: 'DES', courses: [{ id: 'DES', name: 'Desenvolvimento' }] }) }))
 vi.mock('../../hooks/useApi', () => ({
-  useApi: (url) => ({ data: url && url.includes('/api/student/assignments/') ? mocks.detail : null, loading: false, error: null, refetch: mocks.refetch }),
+  useApi: (url) => ({ data: url && url.includes('/api/student/assignments/') ? mocks.detail : null, loading: false, error: null, refetch: mocks.refetch, setData: mocks.setData }),
 }))
 vi.mock('../../context/BrandingProvider', () => ({ useBranding: () => ({ branding: { displayName: 'Escola Técnica Modelo', schoolName: 'Escola Técnica Modelo' } }) }))
 vi.mock('../../lib/api', () => ({
+  api: { get: (...args) => mocks.get(...args) },
   uploadWithProgress: (...args) => mocks.upload(...args),
   downloadFile: (...args) => mocks.download(...args),
 }))
@@ -116,6 +119,8 @@ function choose(...files) {
 beforeEach(() => {
   mocks.detail = detail()
   mocks.refetch = vi.fn(async () => true)
+  mocks.setData = vi.fn((value) => { mocks.detail = value })
+  mocks.get = vi.fn(async () => mocks.detail)
   mocks.upload = vi.fn()
   mocks.download = vi.fn(async () => 'x')
   mocks.resize = vi.fn(async () => null)
@@ -229,15 +234,74 @@ describe('atividade do aluno: escolher e enviar', () => {
     expect(screen.getByText('relatorio.pdf')).toBeInTheDocument()
     fireEvent.click(screen.getByRole('button', { name: 'Tentar de novo' }))
     await screen.findByText('Envio recebido.')
+    // Antes de mandar de novo, perguntou ao servidor se o envio tinha chegado (não tinha).
+    expect(mocks.get).toHaveBeenCalledWith('/api/student/assignments/asg_1?courseId=DES&studentClass=1DES')
     expect(mocks.upload).toHaveBeenCalledTimes(2)
     expect(mocks.upload.mock.calls[1][1].getAll('files').map((f) => f.name)).toEqual(['relatorio.pdf'])
+    // O mesmo identificador nas duas tentativas (o servidor não cria versão repetida).
+    const first = mocks.upload.mock.calls[0][2].headers['x-envio-id']
+    expect(first).toMatch(/^[A-Za-z0-9_-]{24}$/)
+    expect(mocks.upload.mock.calls[1][2].headers['x-envio-id']).toBe(first)
+  })
+
+  it('C9 ajuste 1: "Tentar de novo" com a rede ainda fora não manda de novo; quando volta, acha a versão que chegou', async () => {
+    const networkError = Object.assign(new Error('Sem conexão com o servidor do IClass. Confira a rede e tente de novo.'), { status: 0, network: true })
+    mocks.upload = vi.fn().mockRejectedValueOnce(networkError)
+    mocks.get = vi.fn().mockRejectedValueOnce(networkError)
+    renderPage()
+    choose(file('relatorio.pdf', 2 * MB, 'application/pdf'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Enviar' }))
+    await screen.findByText('Sem conexão com o servidor do IClass. Confira a rede e tente de novo.')
+    const envioId = mocks.upload.mock.calls[0][2].headers['x-envio-id']
+    // A rede continua fora: a conferência falha e nada é enviado de novo.
+    fireEvent.click(screen.getByRole('button', { name: 'Tentar de novo' }))
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledTimes(1))
+    expect(await screen.findByRole('button', { name: 'Tentar de novo' })).toBeInTheDocument()
+    expect(screen.getByText('Sem conexão com o servidor do IClass. Confira a rede e tente de novo.')).toBeInTheDocument()
+    expect(mocks.upload).toHaveBeenCalledTimes(1)
+    expect(screen.getByText('relatorio.pdf')).toBeInTheDocument()
+    // A rede volta: o envio tinha chegado (a versão com o mesmo identificador).
+    mocks.get = vi.fn(async () => detail({ situacao: 'enviada', situacaoTexto: 'Enviada', minhaEntrega: { status: 'enviada', versoes: [version(1, { envioId })], entregaEmMaos: null } }))
+    fireEvent.click(screen.getByRole('button', { name: 'Tentar de novo' }))
+    const recovered = await screen.findByText('O seu envio chegou ao professor.')
+    expect(mocks.upload).toHaveBeenCalledTimes(1)
+    expect(within(recovered.closest('[role="status"]')).getByText('Recebido às 14:32 de 20/11 — versão 1 — 1 arquivo (2,0 MB) — código CODV1AAA')).toBeInTheDocument()
+    expect(mocks.setData).toHaveBeenCalled()
+    expect(screen.queryByRole('list', { name: 'Arquivos escolhidos' })).not.toBeInTheDocument()
+  })
+
+  it('C9 ajuste 1: o servidor responde "repetido" (o envio tinha chegado): mostra o comprovante dessa versão', async () => {
+    const networkError = Object.assign(new Error('Sem conexão com o servidor do IClass. Confira a rede e tente de novo.'), { status: 0, network: true })
+    mocks.upload = vi.fn().mockRejectedValueOnce(networkError).mockResolvedValueOnce({ success: true, repetido: true, version: version(1) })
+    renderPage()
+    choose(file('relatorio.pdf', 2 * MB, 'application/pdf'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Enviar' }))
+    await screen.findByText('Sem conexão com o servidor do IClass. Confira a rede e tente de novo.')
+    fireEvent.click(screen.getByRole('button', { name: 'Tentar de novo' }))
+    expect(await screen.findByText('O seu envio chegou ao professor.')).toBeInTheDocument()
+    expect(mocks.upload).toHaveBeenCalledTimes(2)
+  })
+
+  it('C9 ajuste 1: mudar a escolha depois do erro é outro envio (identificador novo, sem conferência)', async () => {
+    const networkError = Object.assign(new Error('Sem conexão com o servidor do IClass. Confira a rede e tente de novo.'), { status: 0, network: true })
+    mocks.upload = vi.fn().mockRejectedValueOnce(networkError).mockResolvedValueOnce({ success: true, version: version(1) })
+    renderPage()
+    choose(file('relatorio.pdf', 2 * MB, 'application/pdf'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Enviar' }))
+    await screen.findByText('Sem conexão com o servidor do IClass. Confira a rede e tente de novo.')
+    fireEvent.change(screen.getByLabelText('Resposta em texto'), { target: { value: 'Faltou dizer isto.' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Tentar de novo' }))
+    await screen.findByText('Envio recebido.')
+    expect(mocks.get).not.toHaveBeenCalled()
+    expect(mocks.upload.mock.calls[1][2].headers['x-envio-id']).not.toBe(mocks.upload.mock.calls[0][2].headers['x-envio-id'])
   })
 
   it('a resposta se perdeu mas a versão chegou: mostra o comprovante dela em vez de pedir de novo', async () => {
     const networkError = Object.assign(new Error('Sem conexão com o servidor do IClass. Confira a rede e tente de novo.'), { status: 0, network: true })
     mocks.upload = vi.fn().mockRejectedValueOnce(networkError)
     mocks.refetch = vi.fn(async () => {
-      mocks.detail = detail({ situacao: 'enviada', situacaoTexto: 'Enviada', minhaEntrega: { status: 'enviada', versoes: [version(1)], entregaEmMaos: null } })
+      const envioId = mocks.upload.mock.calls[0][2].headers['x-envio-id']
+      mocks.detail = detail({ situacao: 'enviada', situacaoTexto: 'Enviada', minhaEntrega: { status: 'enviada', versoes: [version(1, { envioId })], entregaEmMaos: null } })
       return true
     })
     renderPage()
@@ -334,5 +398,28 @@ describe('atividade do aluno: versões e devolução', () => {
     expect(screen.getByText('Envie a nova versão até ter., 24/11 às 23:00.')).toBeInTheDocument()
     expect(screen.getByText('Faltou a tabela de medições.')).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Enviar nova versão' })).toBeInTheDocument()
+  })
+
+  it('C9 ajuste 1: refazer com o prazo novo vencido diz que terminou, sem "Refazer até" no selo', () => {
+    mocks.detail = detail({
+      situacao: 'refazer',
+      situacaoTexto: 'Refazer até 21/11 às 23:00',
+      aceitaEnvio: false,
+      motivo: 'O prazo desta tarefa terminou e ela não aceita envio atrasado. Fale com o professor.',
+      minhaEntrega: { status: 'refazer', versoes: [version(1)], entregaEmMaos: null },
+      refazer: { ate: Date.UTC(2026, 10, 22, 2, 0), encerramento: null, comentario: 'Faltou a tabela.', pedidoEm: NOW },
+    })
+    renderPage()
+    expect(screen.getByText('Prazo para refazer encerrado')).toBeInTheDocument()
+    expect(screen.queryByText('Refazer até 21/11 às 23:00')).not.toBeInTheDocument()
+    expect(screen.getByText('O prazo para enviar a nova versão terminou em sáb., 21/11 às 23:00.')).toBeInTheDocument()
+    expect(document.getElementById('atividade-arquivos')).toBeNull()
+  })
+
+  it('C9 ajuste 1: mostra o módulo e a unidade da atividade', () => {
+    mocks.detail = detail()
+    mocks.detail.assignment.unidade = 'Módulo 1 · Redes locais'
+    renderPage()
+    expect(screen.getByText('Módulo 1 · Redes locais')).toBeInTheDocument()
   })
 })

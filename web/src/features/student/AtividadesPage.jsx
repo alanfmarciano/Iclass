@@ -1,5 +1,6 @@
 // Atividades do aluno (fase 3, C9 / P1-g; FUN-01): as tarefas com prazo e envio da turma,
-// em cartões, separadas em "A fazer", "Enviadas" e "Devolvidas". A lista vem de GET
+// em cartões (título, unidade, prazo e situação), separadas em "A fazer", "Enviadas" e
+// "Devolvidas". A lista vem de GET
 // /api/student/assignments (situação e prazo efetivo prontos, contrato C4 do P1) e se
 // atualiza sozinha a cada 30 s (a devolução do professor aparece sem recarregar).
 import { Link } from 'react-router-dom'
@@ -11,7 +12,7 @@ import { PageState } from '../../components/ui/PageState'
 import { HelpLink } from '../../components/ui/HelpLink'
 import { useApi } from '../../hooks/useApi'
 import { useStudent } from './useStudent'
-import { SECTIONS, deadlineLine, groupAssignments, returnSummary, situationTone } from './atividades/atividadeText'
+import { SECTIONS, deadlineLine, groupAssignments, returnSummary, situationText, situationTone } from './atividades/atividadeText'
 
 export const ASSIGNMENTS_POLL_MS = 30000
 
@@ -35,9 +36,10 @@ function AtividadeCard({ row, now, timezone }) {
         <span className="mt-0.5 grid h-10 w-10 shrink-0 place-items-center rounded-lg bg-primary-soft text-primary" aria-hidden="true"><FileUp size={18} /></span>
         <span className="min-w-0 flex-1">
           <span className="block break-words font-semibold text-text">{row.title}</span>
+          {row.unidade && <span className="mt-0.5 block break-words text-xs text-subtle">{row.unidade}</span>}
           <span className="mt-1 block text-sm text-muted">{deadlineLine(row, now, timezone)}</span>
           <span className="mt-2 flex flex-wrap items-center gap-2">
-            <Badge tone={situationTone(row)}>{row.situacaoTexto}</Badge>
+            <Badge tone={situationTone(row)}>{situationText(row)}</Badge>
             {row.versoes > 0 && <span className="text-xs text-subtle">{row.versoes === 1 ? '1 versão enviada' : `${row.versoes} versões enviadas`}</span>}
             {nota && <span className="text-xs font-semibold text-text">Nota {nota.notaFinal}</span>}
           </span>

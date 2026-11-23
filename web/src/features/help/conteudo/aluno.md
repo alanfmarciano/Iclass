@@ -90,7 +90,7 @@ Em **Atividades** ficam os trabalhos que o professor pediu, com o prazo. Elas ap
 
 Foto grande (mais de 3 MB) é reduzida no próprio celular para chegar mais rápido, e aparece o aviso **Foto reduzida para enviar mais rápido**. Se precisar da foto do jeito que saiu da câmera, toque em **Enviar original** (quando ela cabe no limite da atividade).
 
-Se a internet da sala cair no meio, aparece **Tentar de novo**: os arquivos que você escolheu continuam lá. Se o envio tinha chegado, a tela mostra o comprovante em vez de pedir de novo.
+Se a internet da sala cair no meio, aparece **Tentar de novo**: os arquivos que você escolheu continuam lá. Ao tocar, a tela primeiro confere se o envio tinha chegado; se chegou, mostra o comprovante, e o mesmo envio nunca vira duas versões. Se a rede ainda estiver fora, nada é enviado: espere a Wi-Fi voltar e toque de novo.
 
 **Prazo:** vale a hora do computador do professor, mostrada na tela da atividade, e a hora em que o envio **chegou**, não a hora em que terminou de subir. Depois do prazo, a tela avisa **Você está enviando com atraso** e diz a regra da atividade (aceita e marca atrasada, aceita com desconto ou não aceita mais).
 
