@@ -13,7 +13,6 @@ import { isAnonymizedStatus, isClosedStatus } from './studentDeletion'
 import { StudentPasswordResetDialog, TemporaryPasswordNotice } from './StudentPasswordDialogs'
 import { StudentAuditPanel } from './StudentAuditPanel'
 import { AcademicGradeBadge, historyGrade } from './AcademicGradeBadge'
-import { CRITERIO_PADRAO } from '../../lib/grades'
 import { LoginProtectionBadge, UNLOCK_LOGIN_HINT } from './loginProtection'
 import { passwordHint } from '../../lib/passwordPolicy'
 import { OBSERVATION_TEXT_MAX_CHARS, SHORT_TEXT_COUNTER_FROM } from '../../lib/textLimits'
@@ -449,7 +448,7 @@ export default function AlunosPage() {
                         <div key={sb.id} className="flex items-center justify-between gap-2 text-xs rounded-md border border-border p-2">
                           <span className="text-text truncate">{sb.examKey}</span>
                           <span className="text-subtle whitespace-nowrap">{Number.isInteger(sb.correctCount) && Number.isInteger(sb.totalCount) ? `${sb.correctCount}/${sb.totalCount} · ` : ''}{sb.timestamp ? new Date(sb.timestamp).toLocaleDateString('pt-BR') : ''}</span>
-                          <AcademicGradeBadge submission={sb} criterio={sb.criterio || CRITERIO_PADRAO} />
+                          <AcademicGradeBadge submission={sb} criterio={sb.criterio} />
                         </div>
                       ))}
                     </div>

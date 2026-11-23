@@ -1031,7 +1031,9 @@ function buildStudentReportModules({ submissions, allSubmissions = submissions, 
             grade: roundGrade(group.score),
             policy: group.policy,
             lastAt: group.lastAt,
-            aguardandoCorrecao: group.aguardandoCorrecao === true,
+            // Só quando espera a correção (P3-S4a): sem ela, a linha sai como antes (teste
+            // dourado da regra antiga, UC-NOTAS-005).
+            ...(group.aguardandoCorrecao === true ? { aguardandoCorrecao: true } : {}),
             ...itemFields(group.examKey),
         };
         if (isArchivedItemGroup(grading, group)) {
@@ -1053,7 +1055,7 @@ function buildStudentReportModules({ submissions, allSubmissions = submissions, 
         grade: null,
         policy: null,
         lastAt: null,
-        aguardandoCorrecao: awaitingByExam.has(examKey),
+        ...(awaitingByExam.has(examKey) ? { aguardandoCorrecao: true } : {}),
         ...itemFields(examKey),
     });
     examIndex.forEach((meta, examKey) => {
