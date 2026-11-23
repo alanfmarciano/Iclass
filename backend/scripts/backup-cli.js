@@ -356,8 +356,14 @@ function printSummary(file, verified) {
     say(schemaLine(content));
     const kept = keptLine(content.kept);
     if (kept) say(kept);
+    // Os arquivos das entregas de tarefa ficam fora de todo backup (D3 do P1) e a
+    // restauração nunca toca data/entregas (contrato C7 do P1); a proteção deles é o
+    // espelho no destino externo (C11).
+    say(ASSIGNMENT_FILES_LINE);
     (content.warnings || []).forEach(warning => say(`Aviso: ${warning}`));
 }
+
+const ASSIGNMENT_FILES_LINE = 'Arquivos dos trabalhos dos alunos (data/entregas): não fazem parte do backup e a restauração não mexe neles; a cópia deles fica em <destino>/IClass-<computador>/entregas.';
 
 async function newStagingDir(label) {
     await fs.promises.mkdir(CLI_WORK_DIR, { recursive: true });

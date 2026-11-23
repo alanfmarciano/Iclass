@@ -297,6 +297,61 @@ function readArchivedBundles() {
     return out;
 }
 
+// Arquivos que os pacotes de curso excluído ainda guardam (o espelho das entregas, C11:
+// eles ficam em data/entregas/_cursos_arquivados e o registro deles está no curso.json,
+// não no banco). [{ folder, fileId, storedRel, archivedRel, sha256, size }]; o arquivo
+// tirado na anonimização (removedAt) fica de fora. O pacote só é relido quando o
+// curso.json muda (tamanho ou data de modificação): o cartão Armazenamento e a fila
+// perguntam a cada visita, e o pacote de um curso grande pesa.
+const bundleRefsCache = new Map();
+
+function archivedBundleFileRefs() {
+    const out = [];
+    const seen = new Set();
+    let entries = [];
+    try { entries = fs.readdirSync(runtimePaths.ARCHIVE_DIR, { withFileTypes: true }); } catch (e) { entries = []; }
+    entries.forEach(entry => {
+        if (!entry.isDirectory()) return;
+        let folder;
+        try { folder = assertSafeId(entry.name); } catch (e) { return; }
+        const file = path.join(runtimePaths.ARCHIVE_DIR, folder, 'curso.json');
+        let stat;
+        try { stat = fs.statSync(file); } catch (e) { return; }
+        seen.add(file);
+        const stamp = `${stat.size}:${stat.mtimeMs}`;
+        const cached = bundleRefsCache.get(file);
+        if (cached && cached.stamp === stamp) { out.push(...cached.refs); return; }
+        const refs = [];
+        if (bundleMayHaveSubmissions(folder)) {
+            let bundle = null;
+            try { bundle = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (error) {
+                logError(`assignmentLifecycle: pacote de curso excluído ilegível (${folder})`, error);
+            }
+            list(bundle && bundle.assignmentSubmissions).forEach(sub => {
+                list(sub && sub.versions).forEach(version => {
+                    list(version && version.files).forEach(item => {
+                        if (!isObject(item) || item.removedAt || typeof item.storedRel !== 'string') return;
+                        const archivedRel = archivedRelFor(folder, item.storedRel);
+                        if (!archivedRel) return;
+                        refs.push({
+                            folder,
+                            fileId: typeof item.id === 'string' ? item.id : '',
+                            storedRel: item.storedRel,
+                            archivedRel,
+                            sha256: /^[0-9a-f]{64}$/.test(String(item.sha256 || '')) ? item.sha256 : '',
+                            size: Math.max(0, Math.floor(Number(item.size)) || 0),
+                        });
+                    });
+                });
+            });
+        }
+        bundleRefsCache.set(file, { stamp, refs });
+        out.push(...refs);
+    });
+    [...bundleRefsCache.keys()].forEach(file => { if (!seen.has(file)) bundleRefsCache.delete(file); });
+    return out;
+}
+
 // O caminho do arquivo de uma entrega dentro do pacote: 'entregas/<tarefa>/<entrega>/<id>'
 // vira data/entregas/_cursos_arquivados/<pasta>/<tarefa>/<entrega>/<id> (relativo a data,
 // para a lápide: archivedRel; absoluto, para a lixeira: archivedAbsFor).
@@ -826,6 +881,7 @@ module.exports = {
     followCurrentStudentEmails,
     pendingBundleChangesApplied,
     courseAssignmentRecords,
+    archivedBundleFileRefs,
     archiveCourseAssignmentFiles,
     restoreCourseAssignmentFiles,
     trashArchivedCourseAssignmentFiles,

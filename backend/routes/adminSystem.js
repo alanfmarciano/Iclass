@@ -156,6 +156,17 @@ async function diskFreeBytes(dir) {
     }
 }
 
+// Bloco 'entregas' do cartão Armazenamento (C11 / P1-i). Falha na leitura da pasta não
+// derruba o cartão: o bloco vem null e o resto aparece.
+async function assignmentStorageSummary(matchedAdmin) {
+    try {
+        return await require('../utils/assignmentMirror.js').storageSummary(db.memory, { full: isFullAdmin(matchedAdmin) });
+    } catch (error) {
+        require('../utils/errorLog.js').logError('armazenamento: arquivos das entregas', error);
+        return null;
+    }
+}
+
 // --- Sobre o IClass (fase 3, A1 / P6-S2: OPS-02, ENG-10, OPS-21; D22 do P6) -------------
 
 // O build que este servidor serve (web/dist/build-meta.json): id curto, quando foi feito e
@@ -384,6 +395,9 @@ function createAdminSystemRouter({ port = process.env.PORT || 3000 } = {}) {
                 diskFreeBytes: await diskFreeBytes(DATA_DIR),
                 // Compactar é só do administrador (o professor vê o cartão sem o botão).
                 canCompact: isFullAdmin(matchedAdmin),
+                // Arquivos das entregas de tarefa (C11 / P1-i): tamanho, sem registro, os
+                // registrados que faltam aqui e a cópia no destino externo (sem o caminho).
+                entregas: await assignmentStorageSummary(matchedAdmin),
             });
         });
     });

@@ -184,6 +184,8 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
 // mesmo IP, esses dois só para administrador.
 // backup (H4b, OPS-03): { falha, atrasado, externoAtrasado, semDestino } de
 // utils/backup.js backupAlerts, só para administrador com system.manage.
+// entregas (C11 / P1-i): { semCopia, espelhoFalhou, discoBaixo } de
+// utils/assignmentMirror.js queueAlerts, só para administrador.
 // ---------------------------------------------------------------------------
 function computeQueue({ memory, cls, course, students, today, now, canSeeMatriculas, pendingEnrollments }, extras = {}) {
     const emails = emailSet(students);
@@ -325,6 +327,10 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
     // configurado. Só administrador (a rota manda null para os outros).
     backupQueueItems(extras && extras.backup).forEach(item => items.push(item));
 
+    // 9b. Arquivos das entregas de tarefa (C11 / P1-i): sem cópia fora deste computador,
+    // falha da cópia no destino externo e pouco espaço no disco para os envios.
+    assignmentStorageQueueItems(extras && extras.entregas).forEach(item => items.push(item));
+
     // 10. Pendências dos provedores da fase 3 (entregas para corrigir, correção
     // pendente, revisão aberta, chamada não cobrada...), depois das de hoje
     // (utils/studentFeeds.js). Sem provedor, a fila é a de antes. Cada item do provedor
@@ -383,6 +389,51 @@ function backupQueueItems(backup) {
             titulo: 'Backup só neste computador',
             detalhe: 'Escolha um pendrive, HD externo ou pasta de rede para uma cópia fora daqui · Sistema → Backup',
             count: Math.max(1, Number(backup.semDestino.dias) || 1), tone: 'warning', ...common,
+        });
+    }
+    return items;
+}
+
+// Tamanho para o texto da fila: 640 MB, 3,2 GB.
+function sizeText(bytes) {
+    const value = Math.max(0, Number(bytes) || 0);
+    const gb = value / (1024 * 1024 * 1024);
+    if (gb >= 1) return `${gb.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} GB`;
+    return `${Math.max(1, Math.round(value / (1024 * 1024))).toLocaleString('pt-BR')} MB`;
+}
+
+// Itens das entregas de tarefa. A falha da cópia e o disco que já recusa envios não se
+// adiam; "sem cópia" e "pouco espaço" adiam 24 h, como os outros.
+function assignmentStorageQueueItems(entregas) {
+    if (!entregas || typeof entregas !== 'object') return [];
+    const items = [];
+    const common = { href: '/sistema', permissao: 'system.manage' };
+    if (entregas.semCopia) {
+        const arquivos = Math.max(1, Number(entregas.semCopia.arquivos) || 1);
+        items.push({
+            id: 'entregas_sem_copia', tipo: 'entregas_sem_copia',
+            titulo: 'Trabalhos dos alunos sem cópia fora deste computador',
+            detalhe: `${plural(arquivos, 'arquivo', 'arquivos')} (${sizeText(entregas.semCopia.bytes)}) só neste computador; o backup não leva os trabalhos. Escolha um pendrive ou HD externo · Sistema → Backup`,
+            count: arquivos, tone: 'warning', ...common,
+        });
+    }
+    if (entregas.espelhoFalhou) {
+        const message = String(entregas.espelhoFalhou.mensagem || '').trim();
+        items.push({
+            id: 'entregas_espelho_falhou', tipo: 'entregas_espelho_falhou',
+            titulo: 'A cópia dos trabalhos dos alunos no destino externo falhou',
+            detalhe: `${message || 'Veja o motivo no cartão Armazenamento'} · Sistema → Armazenamento`,
+            count: 1, tone: 'danger', adiavel: false, ...common,
+        });
+    }
+    if (entregas.discoBaixo) {
+        const recusando = entregas.discoBaixo.recusando === true;
+        const freeMb = Math.max(0, Math.floor((Number(entregas.discoBaixo.freeBytes) || 0) / (1024 * 1024)));
+        items.push({
+            id: 'entregas_disco_baixo', tipo: 'entregas_disco_baixo',
+            titulo: recusando ? 'Disco cheio: os alunos não conseguem enviar trabalhos' : 'Pouco espaço no disco para os trabalhos dos alunos',
+            detalhe: `${sizeText(entregas.discoBaixo.freeBytes)} livres; abaixo de ${sizeText(entregas.discoBaixo.minFreeBytes)} os envios são recusados. Libere espaço no disco deste computador · Sistema → Armazenamento`,
+            count: freeMb, tone: recusando ? 'danger' : 'warning', ...(recusando ? { adiavel: false } : {}), ...common,
         });
     }
     return items;

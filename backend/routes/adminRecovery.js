@@ -14,6 +14,7 @@ const { recordAudit } = require('../utils/audit.js');
 const backupStore = require('../utils/backupStore.js');
 const settingsUtil = require('../utils/settings.js');
 const { attemptPasswordLogin, waitText } = require('../utils/passwordLogin.js');
+const { body: inputBody } = require('../utils/inputSchema.js');
 
 // uploadErrorMessage e isUploadRequestError vêm de admin.js: o envio recusado (multer,
 // formulário cortado) responde 400 em português; o resto é falha do disco (500 com código).
@@ -211,7 +212,7 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
         validateAdmin(req, res, async (config, matchedAdmin) => {
             let result;
             try {
-                result = await backupUtil.runBackupJob({ origem: 'manual' });
+                result = await backupUtil.runBackupJob({ origem: 'manual', req, actor: matchedAdmin });
             } catch (error) {
                 // Interrompido pelo desligamento do servidor (o .parcial já saiu): não é erro
                 // interno; 503 retryable, para a tela pedir que tente quando o IClass voltar.
@@ -228,6 +229,7 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                 variante: 'dados',
                 ...(result.externo ? { externo: result.externo.name } : {}),
                 ...(result.externoErro ? { externoErro: result.externoErro.slice(0, 300) } : {}),
+                ...(result.espelho && !result.espelho.ok ? { espelhoErro: String(result.espelho.mensagem || '').slice(0, 300) } : {}),
             });
             await db.save();
             // O professor vê que a cópia externa saiu (ou falhou), não onde (o caminho do
@@ -241,7 +243,52 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                 kept: MANUAL_BACKUPS_KEPT,
                 externo: result.externo ? { fileName: result.externo.name, pasta: professor ? '' : result.externo.pasta } : null,
                 externoErro: result.externoErro ? (professor ? withoutDestination(result.externoErro, destino) : result.externoErro) : null,
+                // Cópia dos trabalhos dos alunos (espelho das entregas, C11): o que foi
+                // copiado ou a falha (sem o caminho do destino para o professor).
+                espelho: result.espelho ? {
+                    ok: !!result.espelho.ok,
+                    copiados: Number(result.espelho.copiados) || 0,
+                    removidosPorLapide: Number(result.espelho.removidosPorLapide) || 0,
+                    erro: result.espelho.ok ? null : (professor ? withoutDestination(result.espelho.mensagem, destino) : result.espelho.mensagem),
+                } : null,
             });
+        });
+    });
+
+    // "Trazer arquivos do destino externo" (fase 3, C11 / P1-i; D3 do P1): copia de volta
+    // para data/entregas os arquivos de entregas registradas que faltam aqui, do espelho em
+    // <destino>/IClass-<computador>/entregas, conferindo o SHA-256 do registro. Nunca
+    // substitui arquivo deste computador, nunca traz arquivo com lápide (anonimizado,
+    // apagado) nem arquivo sem registro. Só o administrador (a regra /backup pede
+    // system.manage; o professor com "Executar manutenção" recebe 403). Corpo vazio.
+    // Auditoria 'assignment_files_recovered' (categoria backup) a cada pedido que rodou.
+    const RECOVER_BODY = inputBody({});
+    router.post('/api/admin/backup/entregas/recuperar', (req, res) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            if (!isFullAdmin(matchedAdmin)) {
+                return res.status(403).json({ success: false, error: 'Apenas administradores podem trazer arquivos do destino externo.' });
+            }
+            if (!RECOVER_BODY.check(req, res)) return undefined;
+            let result;
+            try {
+                result = await backupUtil.recoverAssignmentFilesFromDestination();
+            } catch (error) {
+                if (error && error.code === 'ICLASS_BACKUP_ABORTED') {
+                    return res.status(503).json({ success: false, error: 'A cópia foi interrompida porque o servidor está sendo desligado. Tente de novo quando o IClass voltar.', retryable: true });
+                }
+                // Sem destino, destino desligado e disco sem espaço são recusas 409 com a
+                // explicação em português; o resto vira o 500 com o código (crash.log).
+                return sendRouteError(error, req, res, 'Falha ao trazer os arquivos das entregas do destino externo.');
+            }
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'assignment_files_recovered',
+                category: 'backup',
+                details: { copiados: result.copiados, faltando: result.faltando, divergentes: result.divergentes, bytes: result.bytes },
+            });
+            await db.save({ only: ['auditLogs'] });
+            res.json({ success: true, copiados: result.copiados, conferidos: result.conferidos, faltando: result.faltando, divergentes: result.divergentes, bytes: result.bytes });
         });
     });
 

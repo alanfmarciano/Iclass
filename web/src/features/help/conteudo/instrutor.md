@@ -121,6 +121,8 @@ A Coordenação vê as entregas, abre os arquivos e baixa o ZIP, mas não corrig
 
 **Quando o aluno sai da escola.** Em **Cadastros encerrados**, **Anonimizar** guarda as entregas com um código no lugar do nome (a situação, as datas, o atraso e a nota ficam; o texto, o link, o seu comentário e o nome dos arquivos saem) e **Apagar de vez** tira as entregas. Nos dois casos, os arquivos vão para a lixeira de arquivos em **Sistema**, que só o administrador vê; na correção, o arquivo aparece como "tirado da entrega quando o cadastro do aluno foi anonimizado". O seu comentário, a observação da entrega em mãos e o motivo da prorrogação saem também da Auditoria. Ao arquivar um curso em **Turmas**, as tarefas e as entregas vão junto para o pacote do curso e voltam quando ele é restaurado.
 
+**Cópia dos arquivos enviados.** Os arquivos dos alunos não entram no arquivo de backup: o backup de todo dia os copia para a pasta "entregas" do pendrive ou HD externo escolhido em **Sistema**, só o que é novo. O cartão **Armazenamento** mostra quantos ainda não têm cópia e quando foi a última; se o computador for trocado, o administrador usa **Trazer arquivos do destino externo** para trazê-los de volta. Restaurar um backup antigo não apaga os arquivos, mas tira as entregas feitas depois dele (a prévia avisa).
+
 ## Resultados {#resultados}
 
 Mostra as entregas das provas da turma, aluno por aluno, com as notas. Daqui você abre a prova de cada aluno, confere as respostas e libera as notas.

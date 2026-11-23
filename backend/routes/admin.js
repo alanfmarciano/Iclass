@@ -5526,6 +5526,23 @@ function _backupQueueBlock(matchedAdmin, now = Date.now()) {
     }
 }
 
+// Bloco das entregas de tarefa na fila (C11 / P1-i, D3 e D17 do P1): trabalhos dos alunos
+// sem cópia fora deste computador, falha da cópia deles no destino externo e pouco espaço
+// no disco para receber envios. Só para administrador e fora do TEST_MODE, como o do
+// backup. backupAlerts: o bloco do backup (a falha da cópia externa já fala do destino;
+// a do espelho não repete o mesmo aviso).
+async function _assignmentStorageQueueBlock(matchedAdmin, backupAlerts) {
+    if (process.env.TEST_MODE === '1') return null;
+    if (!matchedAdmin || !isFullAdmin(matchedAdmin)) return null;
+    try {
+        const backupFailingExternal = !!(backupAlerts && backupAlerts.falha && backupAlerts.falha.alvo === 'externo');
+        return await require('../utils/assignmentMirror.js').queueAlerts(db.memory, { backupFailingExternal });
+    } catch (error) {
+        logError('fila: arquivos das entregas', error);
+        return null;
+    }
+}
+
 // Bloco de segurança da fila (H5b; SEG-06, decisão 6 do Alan), já no escopo de quem vê:
 // - alunos da lista (os do escopo) que pediram nova senha ou estão com o login em espera
 //   por senhas erradas (utils/loginGuard.js, só na memória);
@@ -5573,11 +5590,13 @@ router.get('/api/admin/dashboard/queue', (req, res) => {
         const pendingEnrollments = canSeeMatriculas && !isFullAdmin(matchedAdmin)
             ? enrollmentRows(scope.courseId, scope.studentClass, matchedAdmin).filter(item => item.status === 'pending').length
             : undefined;
+        const backupBlock = _backupQueueBlock(matchedAdmin, now);
         let items = computeQueue({
             memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
             today: settingsUtil.today(), now, canSeeMatriculas, pendingEnrollments,
         }, {
-            storage: await _storageQueueBlock(matchedAdmin), security: _securityQueueBlock(matchedAdmin, scope.students, { now }), backup: _backupQueueBlock(matchedAdmin, now),
+            storage: await _storageQueueBlock(matchedAdmin), security: _securityQueueBlock(matchedAdmin, scope.students, { now }), backup: backupBlock,
+            entregas: await _assignmentStorageQueueBlock(matchedAdmin, backupBlock),
             // Pendências dos provedores da fase 3: só as que a permissão de quem vê alcança.
             // O item que pede uma ação (somenteQuemAltera) fica fora da conta só de consulta.
             canAccess: (permissao, item) => canAccessAdminPermission(matchedAdmin, permissao)

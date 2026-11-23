@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { BackupCard, DESTINATION_DATA_WARNING, DOWNLOAD_PASSWORD_REASON, backupBand } from './BackupCard'
+import { BackupCard, DESTINATION_DATA_WARNING, DOWNLOAD_PASSWORD_REASON, backupBand, serverBackupMessage } from './BackupCard'
 import { ActionQueue } from '../dashboard/ActionQueue'
 
 const HOUR = 3600000
@@ -201,5 +201,13 @@ describe('ActionQueue: itens do backup', () => {
     render(<ActionQueue items={items} onOpen={() => {}} onSnooze={() => {}} />)
     expect(screen.queryByRole('button', { name: 'Adiar "O backup falhou" por 24 horas' })).not.toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Adiar "Backup só neste computador" por 24 horas' })).toBeInTheDocument()
+  })
+  it('[UC-ARMAZENAMENTO-002] "Fazer backup agora" avisa quando a cópia dos trabalhos dos alunos falhou e conta os copiados', () => {
+    expect(serverBackupMessage({ fileName: 'a.zip', externo: { fileName: 'b.zip' }, espelho: { ok: false, erro: 'Espaço insuficiente no destino externo para a cópia dos trabalhos dos alunos.' } }))
+      .toEqual({ tone: 'warning', text: 'Backup feito neste computador e no destino externo, mas a cópia dos trabalhos dos alunos falhou: Espaço insuficiente no destino externo para a cópia dos trabalhos dos alunos.' })
+    expect(serverBackupMessage({ fileName: 'a.zip', externo: { fileName: 'b.zip' }, espelho: { ok: true, copiados: 12 } }))
+      .toEqual({ tone: 'success', text: 'Backup feito neste computador e no destino externo (b.zip). 12 arquivos novos de trabalhos copiados para lá.' })
+    expect(serverBackupMessage({ fileName: 'a.zip', externo: { fileName: 'b.zip' }, espelho: { ok: true, copiados: 0 } }).text).toBe('Backup feito neste computador e no destino externo (b.zip).')
+    expect(serverBackupMessage({ fileName: 'a.zip', externoErro: 'O destino externo não está acessível.' }).tone).toBe('warning')
   })
 })
