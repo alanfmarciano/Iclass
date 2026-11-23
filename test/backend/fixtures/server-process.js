@@ -178,6 +178,7 @@ module.exports = {
     killAll,
     launch,
     processAlive,
+    processEnv,
     readJson,
     running,
     sleep,

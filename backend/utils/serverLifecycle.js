@@ -32,7 +32,8 @@
 //   markCleanShutdown(reason);
 // - o estado do boot (fase, ready, duração, sessões retomadas) e o modo "com problemas"
 //   depois de uma exceção não tratada, lidos por /api/health (routes/systemHealth.js);
-// - o token da rota de controle (runtime/control.token).
+// - o token da rota de controle (runtime/control.token) e, junto com ele, o
+//   runtime/servidor.json (pid, porta e instância), que o launcher lê (A16).
 // A saída normal (código 0) sem o requestShutdown (os processos de teste que só sobem o
 // prepareServer) continua marcando a parada limpa por um ouvinte de 'exit' daqui.
 const crypto = require('crypto');
@@ -507,6 +508,7 @@ const processState = {
     degraded: null,
     boot: { phase: 'loading', ready: false, startedAt: Date.now(), readyAt: null, bootDurationMs: null, sessionsRestored: null },
     controlToken: null,
+    serverInfo: null,
 };
 
 // Registra um timer do servidor (setInterval) pelo nome: unref() (não segura o processo
@@ -655,11 +657,79 @@ function controlTokenFile() {
     return path.join(runtimeDir(), 'control.token');
 }
 
+function serverInfoFile() {
+    return path.join(runtimeDir(), 'servidor.json');
+}
+
+// runtime/servidor.json (fase 3, A16 / P6-S4): quem é o servidor que está no ar com esta
+// pasta de dados, gravado junto com o token, logo depois de abrir a porta, e apagado junto
+// com ele. É o que o launcher (backend/utils/launcherCore.js) lê para achar a porta certa
+// (nunca uma porta escrita fixa, nem netstat) e para saber se o token é de um processo que
+// ainda existe: { formato: 1, pid, porta, instanceId, versao, iniciadoEm, supervisorPid }.
+// supervisorPid: o processo pai quando o servidor roda sob o supervisor (o launcher encerra
+// a árvore dele se a rota de controle não responder). Sem segredo: não precisa de 0600.
+function writeServerInfo({ port, version = null, now = Date.now() } = {}) {
+    const porta = Number(port);
+    if (!(Number.isInteger(porta) && porta > 0)) return false;
+    const payload = {
+        formato: 1,
+        pid: process.pid,
+        porta,
+        instanceId: SERVER_INSTANCE_ID,
+        versao: version || null,
+        iniciadoEm: new Date(now).toISOString(),
+        supervisorPid: isSupervised() && process.ppid > 0 ? process.ppid : null,
+    };
+    try {
+        fs.mkdirSync(runtimeDir(), { recursive: true });
+        const file = serverInfoFile();
+        const temporary = `${file}.tmp`;
+        fs.writeFileSync(temporary, `${JSON.stringify(payload)}\n`);
+        try {
+            fs.renameSync(temporary, file);
+        } catch (err) {
+            fs.writeFileSync(file, `${JSON.stringify(payload)}\n`);
+            try { fs.rmSync(temporary, { force: true }); } catch (e) { /* fica para o próximo */ }
+        }
+        processState.serverInfo = payload;
+        return true;
+    } catch (err) {
+        try { logError('[CONTROLE] Não foi possível gravar runtime/servidor.json', err); } catch (e) { /* nunca lança */ }
+        processState.serverInfo = null;
+        return false;
+    }
+}
+
+// Lê runtime/servidor.json (de outra pasta de dados, para os testes e o launcher). Devolve o
+// objeto conferido ou null (ausente, ilegível, sem pid ou porta válidos).
+function readServerInfo(file = serverInfoFile()) {
+    try {
+        const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+        if (!parsed || typeof parsed !== 'object') return null;
+        const pid = Number(parsed.pid);
+        const porta = Number(parsed.porta);
+        if (!(Number.isInteger(pid) && pid > 0) || !(Number.isInteger(porta) && porta > 0 && porta < 65536)) return null;
+        return { ...parsed, pid, porta };
+    } catch (e) {
+        return null;
+    }
+}
+
+function removeServerInfo() {
+    if (!processState.serverInfo) return;
+    try {
+        const current = readServerInfo();
+        if (current && current.pid === process.pid) fs.rmSync(serverInfoFile(), { force: true });
+    } catch (e) { /* o próximo boot escreve outro */ }
+    processState.serverInfo = null;
+}
+
 // Token da rota de controle (POST /api/system/control): 32 bytes novos a cada boot em
 // runtime/control.token, só legível pelo usuário (0600). O launcher lê o arquivo e manda o
 // conteúdo no cabeçalho x-iclass-control, do próprio computador. Nunca lança: devolve o
-// token ou null.
-function writeControlToken() {
+// token ou null. Com a porta (startServer), grava também o runtime/servidor.json (A16).
+function writeControlToken({ port = null, version = null } = {}) {
+    if (port) writeServerInfo({ port, version });
     const token = crypto.randomBytes(32).toString('hex');
     try {
         fs.mkdirSync(runtimeDir(), { recursive: true });
@@ -693,8 +763,10 @@ function controlTokenMatches(candidate) {
     return crypto.timingSafeEqual(Buffer.from(given), Buffer.from(expected));
 }
 
-// Apaga o token no desligamento: o arquivo velho não serve para o próximo processo.
+// Apaga o token no desligamento: o arquivo velho não serve para o próximo processo. O
+// runtime/servidor.json sai junto (só se ainda for deste processo).
 function removeControlToken() {
+    removeServerInfo();
     if (!processState.controlToken) return;
     try {
         if (readControlToken() === processState.controlToken) fs.rmSync(controlTokenFile(), { force: true });
@@ -763,10 +835,13 @@ module.exports = {
     markDegraded,
     markReady,
     readControlToken,
+    readServerInfo,
     registerTimer,
     registeredTimers,
     removeControlToken,
+    removeServerInfo,
     removeSupervisorPid,
+    serverInfoFile,
     requestShutdown,
     resetProcessState,
     setBootPhase,
@@ -777,4 +852,5 @@ module.exports = {
     supervisorInfo,
     unregisterTimer,
     writeControlToken,
+    writeServerInfo,
 };

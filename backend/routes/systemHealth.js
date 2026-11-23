@@ -13,7 +13,11 @@
 //   (loopback) e com o cabeçalho x-iclass-control igual ao conteúdo de
 //   runtime/control.token (novo a cada boot). Responde 202 e faz o desligamento ordenado
 //   (serverLifecycle.requestShutdown). É o caminho do launcher para parar ou reiniciar
-//   sem taskkill /f. Qualquer outra situação: 403.
+//   sem taskkill /f. Qualquer outra situação: 403;
+// - GET /api/system/control/status (fase 3, A16 / P6-S4): o mesmo guarda (loopback e o
+//   token). O que o launcher precisa saber antes de desligar, reiniciar, fazer backup ou
+//   restaurar: versão, instância, fase do boot, provas em andamento (com o nome da prova e
+//   a turma), alunos conectados agora e o endereço dos alunos. Não muda nada.
 // O estado do banco vem de db.storageStatus() (fonte única, pelo recorte db.health()) e
 // de db.ping().
 const express = require('express');
@@ -152,6 +156,97 @@ async function adminHealth() {
     };
 }
 
+// Provas em andamento (aplicações em sala de espera, em andamento ou pausadas, a mesma
+// regra do backup e da compactação) com o nome da prova e a turma, para o launcher dizer
+// "Há 1 prova em andamento (Redes, 2DES)".
+function activeExams(memory) {
+    const { ACTIVE_APPLICATION_STATUSES } = require('../utils/examApplications.js');
+    const { examTitle } = require('../utils/gradebook.js');
+    const evaluations = (memory && memory.evaluations) || {};
+    return (Array.isArray(memory && memory.examApplications) ? memory.examApplications : [])
+        .filter(item => item && ACTIVE_APPLICATION_STATUSES.has(item.status))
+        .map(item => ({
+            titulo: String(item.title || examTitle(item.examKey, { evaluations }) || item.examKey || 'Prova'),
+            turma: item.studentClass || null,
+            cursoId: item.courseId || null,
+            situacao: item.status,
+        }));
+}
+
+// Alunos com sessão vista nos últimos 90 s (a mesma presença do painel e do Monitor).
+function connectedStudents(memory) {
+    const { studentSessionByEmail, studentSessionEmails } = require('../utils/authSessions.js');
+    const { isStudentSessionOnline } = require('../utils/studentSessions.js');
+    const now = Date.now();
+    return studentSessionEmails(memory).filter(email => isStudentSessionOnline(studentSessionByEmail(memory, email), now)).length;
+}
+
+function studentAddress(port) {
+    try {
+        const { networkAddresses } = require('../utils/networkAddresses.js');
+        const { studentsHttpsEnabled } = require('../utils/networkPolicy.js');
+        const secureConnection = require('../utils/secureConnection.js');
+        const snapshot = networkAddresses({ port, scheme: studentsHttpsEnabled() ? 'https' : 'http', httpsIps: secureConnection.serverIps() });
+        return snapshot.recommended ? snapshot.recommended.url : null;
+    } catch (e) {
+        return null;
+    }
+}
+
+function listeningPort(req) {
+    const server = req.app && req.app.get && req.app.get('serverInstance');
+    const address = server && typeof server.address === 'function' ? server.address() : null;
+    if (address && typeof address === 'object' && address.port) return address.port;
+    const local = req.socket && req.socket.localPort;
+    return Number(local) || null;
+}
+
+// Corpo do GET /api/system/control/status. Durante o boot (handler de boot do server.js)
+// o banco ainda não foi lido: provas e alunos vêm null ("não se sabe ainda").
+function controlStatusBody(req, { ready = serverLifecycle.bootState().ready } = {}) {
+    const boot = serverLifecycle.bootState();
+    const port = listeningPort(req);
+    const base = {
+        success: true,
+        versao: APP_VERSION,
+        instanceId: SERVER_INSTANCE_ID,
+        pid: process.pid,
+        porta: port,
+        fase: ready ? 'ready' : (boot.phase === 'ready' ? 'checking' : boot.phase),
+        pronto: ready === true,
+        supervisionado: serverLifecycle.isSupervised(),
+        iniciadoEm: startedAtIso(),
+    };
+    if (!ready) return { ...base, provasEmAndamento: null, provas: [], alunosConectados: null, enderecoAlunos: null };
+    const provas = activeExams(db.memory);
+    return {
+        ...base,
+        provasEmAndamento: provas.length,
+        provas,
+        alunosConectados: connectedStudents(db.memory),
+        enderecoAlunos: port ? studentAddress(port) : null,
+        comProblemas: serverLifecycle.degradedState() ? true : false,
+    };
+}
+
+function controlAllowed(req) {
+    return isLoopback(req) && serverLifecycle.controlTokenMatches(req.get(CONTROL_HEADER));
+}
+
+// GET /api/system/control/status: no app e no handler de boot (createBootApp, com
+// ready false). Sem o token ou de outro aparelho: 403, sem dizer o motivo.
+function handleControlStatus(req, res) {
+    res.set('Cache-Control', 'no-store');
+    if (!controlAllowed(req)) return res.status(403).json({ error: 'Acesso negado.' });
+    try {
+        return res.json(controlStatusBody(req));
+    } catch (err) {
+        // A leitura das provas falhou: o servidor está no ar, mas o launcher não sabe das
+        // provas (ele trata null como "não deu para saber").
+        return res.json({ ...controlStatusBody(req, { ready: false }), fase: 'ready', pronto: true, comProblemas: true });
+    }
+}
+
 function isLoopback(req) {
     const address = String((req.socket && req.socket.remoteAddress) || '');
     return LOOPBACK_ADDRESSES.has(address);
@@ -177,6 +272,7 @@ function createSystemHealthRouter() {
         });
     });
 
+    router.get('/api/system/control/status', handleControlStatus);
     router.post('/api/system/control', handleSystemControl);
 
     return router;
@@ -189,7 +285,7 @@ function createSystemHealthRouter() {
 function handleSystemControl(req, res) {
     res.set('Cache-Control', 'no-store');
     // Do próprio computador e com o token do boot; o resto é 403, sem dizer o motivo.
-    if (!isLoopback(req) || !serverLifecycle.controlTokenMatches(req.get(CONTROL_HEADER))) {
+    if (!controlAllowed(req)) {
         return res.status(403).json({ error: 'Acesso negado.' });
     }
     const action = typeof (req.body || {}).action === 'string' ? req.body.action.trim() : '';
@@ -211,7 +307,10 @@ module.exports = {
     DEGRADED_PING_FAILURES,
     DEGRADED_SAVE_FAILURES,
     adminHealth,
+    activeExams,
+    controlStatusBody,
     createSystemHealthRouter,
+    handleControlStatus,
     handleSystemControl,
     lastOutage,
     publicHealth,

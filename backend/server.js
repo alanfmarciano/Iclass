@@ -693,7 +693,7 @@ const BOOT_HTML = `<!doctype html>
 // app; /api/health com a fase do boot; o resto de /api com 503 {starting:true} e
 // Retry-After 3; as páginas com o aviso "iniciando" em HTML que se recarrega sozinho.
 function createBootApp() {
-    const { startingHealthBody, handleSystemControl } = require('./routes/systemHealth.js');
+    const { startingHealthBody, handleControlStatus, handleSystemControl } = require('./routes/systemHealth.js');
     const { errorHandler } = require('./middlewares.js');
     const boot = express();
     boot.disable('x-powered-by');
@@ -704,6 +704,8 @@ function createBootApp() {
     // A rota de controle do launcher vale também durante o boot: parar ou reiniciar um
     // servidor que ainda carrega o banco sem precisar do taskkill.
     boot.post('/api/system/control', express.json({ limit: '1kb' }), handleSystemControl);
+    // E a situação para o launcher (A16): a fase do boot, sem provas nem alunos ainda.
+    boot.get('/api/system/control/status', handleControlStatus);
     boot.get('/api/health', (req, res) => {
         res.set('Cache-Control', 'no-store');
         res.set('Retry-After', '3');
@@ -1189,7 +1191,9 @@ async function startServer({ port = PORT, host = '0.0.0.0' } = {}) {
     }
     serverInstance.on('error', err => logCrash('servidor http/https', err));
     const actualPort = serverInstance.address() && serverInstance.address().port;
-    serverLifecycle.writeControlToken();
+    // O token da rota de controle e o runtime/servidor.json (pid e porta de verdade, que o
+    // launcher lê para achar este servidor, A16).
+    serverLifecycle.writeControlToken({ port: actualPort, version: require('../package.json').version });
     console.log(`⏳ Carregando os dados do IClass (porta ${actualPort} já respondendo "iniciando")...`);
 
     let prepared;

@@ -161,6 +161,78 @@ test('[UC-SAUDE-001] rota de controle: 403 sem o token do boot ou com o errado; 
     }
 });
 
+test('[UC-LAUNCHER-005] GET /api/system/control/status: 403 sem o token, com o errado ou de outro aparelho; 200 com a versão, a instância, as provas em andamento e os alunos conectados', async () => {
+    const { handleControlStatus } = require('../../backend/routes/systemHealth.js');
+    const pkg = require('../../package.json');
+    await request(app).get('/api/system/control/status').expect(403);
+    await request(app).get('/api/system/control/status').set('x-iclass-control', 'errado').expect(403);
+    const token = serverLifecycle.writeControlToken();
+    const application = { id: 'app-launcher', examKey: 'Prova_Launcher', title: 'Redes', studentClass: '2DES', courseId: 'c-launcher', status: 'running' };
+    const finished = { id: 'app-launcher-fim', examKey: 'Prova_Fim', title: 'Encerrada', studentClass: '1DES', courseId: 'c-launcher', status: 'finished' };
+    db.memory.examApplications.push(application, finished);
+    const hadSessions = db.memory.sessions && typeof db.memory.sessions === 'object';
+    if (!hadSessions) db.memory.sessions = {};
+    const email = 'launcher-online@teste.local';
+    try {
+        await request(app).get('/api/system/control/status').set('x-iclass-control', token.slice(0, 63) + 'x').expect(403);
+        // De outro aparelho, mesmo com o token certo: 403.
+        const fakeRes = { headers: {}, statusCode: 200, body: null, set(name, value) { this.headers[name] = value; return this; }, status(code) { this.statusCode = code; return this; }, json(body) { this.body = body; return this; } };
+        handleControlStatus({ socket: { remoteAddress: '192.168.0.20' }, get: name => (name.toLowerCase() === 'x-iclass-control' ? token : undefined), app: null }, fakeRes);
+        assert.equal(fakeRes.statusCode, 403);
+        assert.deepEqual(fakeRes.body, { error: 'Acesso negado.' });
+        // Durante o boot: a fase e nada de provas (ainda não se sabe).
+        serverLifecycle.setBootPhase('migrando');
+        const booting = await request(app).get('/api/system/control/status').set('x-iclass-control', token).expect(200);
+        assert.equal(booting.headers['cache-control'], 'no-store');
+        assert.equal(booting.body.pronto, false);
+        assert.equal(booting.body.fase, 'migrando');
+        assert.equal(booting.body.provasEmAndamento, null);
+        assert.equal(booting.body.alunosConectados, null);
+        serverLifecycle.markReady();
+        const before = await request(app).get('/api/system/control/status').set('x-iclass-control', token).expect(200);
+        db.memory.sessions[email] = { lastSeen: Date.now() };
+        const res = await request(app).get('/api/system/control/status').set('x-iclass-control', token).expect(200);
+        assert.equal(res.body.success, true);
+        assert.equal(res.body.versao, pkg.version);
+        assert.equal(res.body.instanceId, SERVER_INSTANCE_ID);
+        assert.equal(res.body.pid, process.pid);
+        assert.equal(res.body.fase, 'ready');
+        assert.equal(res.body.pronto, true);
+        assert.equal(res.body.supervisionado, false);
+        assert.equal(res.body.provasEmAndamento, 1);
+        assert.deepEqual(res.body.provas, [{ titulo: 'Redes', turma: '2DES', cursoId: 'c-launcher', situacao: 'running' }]);
+        assert.equal(res.body.alunosConectados, before.body.alunosConectados + 1);
+        assert.equal(Number.isInteger(res.body.porta) && res.body.porta > 0, true);
+        assert.equal(res.body.comProblemas, false);
+        // Não vaza nada além do que o launcher usa (sem e-mail de aluno).
+        assert.equal(JSON.stringify(res.body).includes(email), false);
+    } finally {
+        db.memory.examApplications.splice(db.memory.examApplications.indexOf(application), 1);
+        db.memory.examApplications.splice(db.memory.examApplications.indexOf(finished), 1);
+        delete db.memory.sessions[email];
+        if (!hadSessions) delete db.memory.sessions;
+        serverLifecycle.removeControlToken();
+    }
+});
+
+test('[UC-LAUNCHER-005] status de controle no handler do boot: 403 sem o token, 200 com pronto false e a fase', async () => {
+    const boot = createBootApp();
+    await request(boot).get('/api/system/control/status').expect(403);
+    const token = serverLifecycle.writeControlToken();
+    try {
+        serverLifecycle.setBootPhase('checking');
+        const res = await request(boot).get('/api/system/control/status').set('x-iclass-control', token).expect(200);
+        assert.equal(res.body.pronto, false);
+        assert.equal(res.body.fase, 'checking');
+        assert.equal(res.body.instanceId, SERVER_INSTANCE_ID);
+        assert.equal(res.body.provasEmAndamento, null);
+        // O resto da API continua "iniciando".
+        await request(boot).get('/api/ping').expect(503);
+    } finally {
+        serverLifecycle.removeControlToken();
+    }
+});
+
 test('[UC-MANUT-001] Reiniciar chama o desligamento ordenado com admin_restart; sem ele registrado responde 503 e nada acontece', async () => {
     const token = await adminToken(request(app));
     await request(app).post('/api/admin/server/restart').set('x-admin-session', token).send({}).expect(400);
@@ -424,6 +496,21 @@ test('[UC-SAUDE-001] rota de controle do launcher: 403 sem o token, 202 com o to
     await proc.waitForHealth(server.base, { exited: server.exited });
     const token = fs.readFileSync(proc.controlTokenFile(dataDir), 'utf8').trim();
     assert.match(token, /^[0-9a-f]{64}$/);
+    // [UC-LAUNCHER-005] runtime/servidor.json: o pid e a porta de verdade, a mesma instância
+    // do /api/health e do status de controle (o launcher não procura a porta no netstat).
+    const serverInfoFile = path.join(dataDir, 'runtime', 'servidor.json');
+    const info = proc.readJson(serverInfoFile);
+    const health = await proc.call(server.base, '/api/health');
+    assert.equal(info.pid, server.child.pid);
+    assert.equal(info.porta, Number(new URL(server.base).port));
+    assert.equal(info.instanceId, health.body.instanceId);
+    assert.equal(info.versao, require('../../package.json').version);
+    assert.equal((await proc.call(server.base, '/api/system/control/status')).status, 403);
+    const status = await proc.call(server.base, '/api/system/control/status', { headers: { 'x-iclass-control': token } });
+    assert.equal(status.status, 200);
+    assert.equal(status.body.instanceId, info.instanceId);
+    assert.equal(status.body.porta, info.porta);
+    assert.equal(status.body.provasEmAndamento, 0);
     assert.equal((await proc.call(server.base, '/api/system/control', { method: 'POST', body: { action: 'stop' } })).status, 403);
     assert.equal((await proc.call(server.base, '/api/system/control', { method: 'POST', headers: { 'x-iclass-control': 'a'.repeat(64) }, body: { action: 'stop' } })).status, 403);
     const accepted = await proc.call(server.base, '/api/system/control', { method: 'POST', headers: { 'x-iclass-control': token }, body: { action: 'stop' } });
@@ -434,6 +521,7 @@ test('[UC-SAUDE-001] rota de controle do launcher: 403 sem o token, 202 com o to
     assert.equal(heartbeat.clean, true);
     assert.equal(heartbeat.reason, 'stop');
     assert.equal(fs.existsSync(proc.controlTokenFile(dataDir)), false);
+    assert.equal(fs.existsSync(serverInfoFile), false, 'servidor.json apagado na parada');
     assert.match(server.output(), /Dados gravados\. Servidor desligado\./);
 });
 

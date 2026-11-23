@@ -129,6 +129,13 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 - Junto vão a licença de uso do IClass (LICENSE.txt, ainda um modelo), os avisos das bibliotecas de código aberto que ele usa (THIRD_PARTY_NOTICES.txt) e o "Guia de instalação.html", que abre no navegador.
 - Os dados (banco, backups, apostilas e cursos arquivados) ficam numa pasta separada do programa, indicada no arquivo iclass-pastas.json do pacote: trocar a versão nunca mexe neles.
 
+### Launcher novo (menu do IClass)
+- O pacote tem o IClass.cmd: dois cliques abrem o menu do IClass com Ligar, Desligar, Reiniciar, Fazer backup agora, Restaurar um backup, Endereço para os alunos, Redefinir a senha do administrador e Modo demonstração. Na pasta do git, o mesmo menu abre com `node backend/scripts/launcher.js`; o `ligarIclassV3.bat` continua igual.
+- Ligar abre o servidor numa janela própria ("Servidor do IClass (não feche esta janela)"), mostra o que ele está fazendo ("Lendo o banco de dados...", "Conferindo as provas em andamento...") e só abre o navegador quando o IClass está pronto. Se não ligar, diz por quê e o que fazer: porta em uso por outro programa, banco danificado ("use a opção [5] (Restaurar um backup)") ou as últimas linhas do registro do servidor.
+- Desligar grava os dados antes de fechar. Com prova em andamento, o menu avisa qual prova e turma e pergunta antes de desligar ou reiniciar; backup, restaurar e redefinir senha esperam a prova acabar. Se o servidor não desligar, o menu pede para a janela dele fechar e só encerra à força se você confirmar.
+- Fazer backup, restaurar e redefinir a senha pelo menu desligam o IClass, fazem o que foi pedido e ligam de novo.
+- O Modo demonstração liga um IClass separado na porta 3100, com dados de mentira apagados a cada vez, sem tocar no IClass de verdade nem nos dados dele.
+
 ### Minha conta e papéis no painel
 - Novo: Minha conta. O avatar no topo do painel mostra as iniciais do seu nome e abre um menu com Minha conta e Sair. Em Minha conta você corrige o seu nome, troca a senha (com a senha atual) e usa "Sair dos outros aparelhos" para fechar a conta esquecida aberta em outro computador. (UXI-07)
 - O administrador agora redefine a senha de outra conta do painel em Contas: o IClass gera uma senha temporária (mostrada uma vez, com Copiar) ou o administrador digita uma. A pessoa sai dos aparelhos onde estava conectada e escolhe uma senha nova no próximo acesso. (UXI-07)

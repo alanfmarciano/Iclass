@@ -135,6 +135,48 @@ test('[UC-RELEASE-003] o pacote descompactado sobe pelo supervisor com o própri
     assert.equal(exit.code, 0, supervisor.output());
 });
 
+// [UC-LAUNCHER-001] O launcher do pacote (fase 3, A16 / P6-S4): IClass.cmd na raiz, e o
+// launcher.js com o Node do pacote acha as pastas pelo iclass-pastas.json, liga o servidor
+// pelo supervisor, diz o estado e desliga pela rota de controle (parada limpa).
+test('[UC-LAUNCHER-001] o launcher do pacote liga pelo supervisor, diz o estado e desliga gravando os dados', { timeout: 3 * 60 * 1000 }, async () => {
+    assert.ok(zipFile, 'o teste anterior montou o pacote');
+    assert.ok(fs.existsSync(path.join(programDir, 'IClass.cmd')), 'IClass.cmd na raiz do pacote');
+    assert.ok(fs.existsSync(path.join(programDir, 'iclass-pastas.json')), 'o teste anterior gravou o iclass-pastas.json');
+    const node = path.join(programDir, 'node', 'node');
+    const launcher = path.join(programDir, 'backend', 'scripts', 'launcher.js');
+    const port = await proc.freePort();
+    const run = (...args) => spawnSync(node, [launcher, ...args], { cwd: programDir, env: schoolEnv(port), encoding: 'utf8', timeout: 120000 });
+    try {
+        const started = run('iniciar', '--sem-navegador', '--porta', String(port));
+        assert.equal(started.status, 0, `${started.stdout}\n${started.stderr}`);
+        assert.match(started.stdout, /IClass ligado: http:\/\/localhost:\d+/);
+        const info = JSON.parse(fs.readFileSync(path.join(dataDir, 'runtime', 'servidor.json'), 'utf8'));
+        assert.equal(info.porta, port);
+        assert.equal(info.versao, version);
+
+        const status = run('status', '--json');
+        assert.equal(status.status, 0, status.stderr);
+        const body = JSON.parse(status.stdout.trim().split('\n').pop());
+        assert.equal(body.estado, 'ligado');
+        assert.equal(body.porta, port);
+        assert.equal(body.versaoServidor, version);
+        assert.equal(body.provasEmAndamento, 0);
+        assert.equal(body.pastaDeDados, dataDir);
+
+        const stopped = run('parar', '--sim');
+        assert.equal(stopped.status, 0, `${stopped.stdout}\n${stopped.stderr}`);
+        assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, 'runtime', 'heartbeat.json'), 'utf8')).clean, true);
+        assert.equal(fs.existsSync(path.join(dataDir, 'runtime', 'servidor.json')), false);
+        assert.equal(JSON.parse(fs.readFileSync(path.join(dataDir, 'runtime', 'supervisor-saida.json'), 'utf8')).codigo, 0);
+        assert.equal(run('status', '--json').stdout.includes('"estado":"desligado"'), true);
+    } finally {
+        // Se algo falhou no meio, não deixa o supervisor solto.
+        const pidFile = path.join(dataDir, 'runtime', 'supervisor.pid');
+        const pid = fs.existsSync(pidFile) ? Number(String(fs.readFileSync(pidFile, 'utf8')).trim().split(/\s/)[0]) : 0;
+        if (pid > 0 && proc.processAlive(pid)) process.kill(pid, 'SIGTERM');
+    }
+});
+
 test('[UC-RELEASE-003] arquivo da interface alterado no pacote: o servidor sai com 2 e pede para reinstalar', { timeout: 60 * 1000 }, async () => {
     assert.ok(zipFile, 'o teste anterior montou o pacote');
     fs.appendFileSync(path.join(programDir, 'web', 'dist', 'index.html'), '<!-- mexido -->');
