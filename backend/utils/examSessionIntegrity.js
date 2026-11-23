@@ -188,8 +188,14 @@ function recordSessionReplaced(memory, { email, previous, current = {}, now = Da
         const ipAntes = shortIp(before.ip);
         const navegadorAntes = shortUserAgent(before.userAgent);
         const policy = applicationSessionPolicy(application);
-        const travou = policy === 'travar' && state.focusLocked !== true;
+        // Com 'travar', a trava passa a ser a do outro aparelho também quando a tentativa já
+        // estava travada por outro motivo (perda de foco, saída da página): senão o aparelho
+        // novo recebia as questões, gravava rascunho na folga e podia destravar sozinho pela
+        // volta à página (J2, pendência do A10). A hora da trava continua a de antes.
+        const travou = policy === 'travar';
+        const jaTravada = travou && state.focusLocked === true;
         const sessionChange = { ipAntes, ipDepois, navegadorAntes, navegadorDepois, travou, politica: policy };
+        if (jaTravada) sessionChange.jaTravada = true;
         if (saiuDaConta) sessionChange.saiuDaConta = true;
         const entry = pushLog(memory, {
             ...logBase(state, application, now),
@@ -200,7 +206,7 @@ function recordSessionReplaced(memory, { email, previous, current = {}, now = Da
         result.logs += 1;
         if (travou) {
             state.focusLocked = true;
-            state.focusLockedAt = now;
+            if (!jaTravada || !(Number(state.focusLockedAt) > 0)) state.focusLockedAt = now;
             state.focusLockReason = SESSION_REPLACED_LOCK_REASON;
             state.focusLockEventId = entry.id;
             state.focusUnlockedAt = null;

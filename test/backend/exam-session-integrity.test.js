@@ -600,3 +600,58 @@ test('[UC-TENTATIVA-005] a trava pelo outro aparelho só sai pelo professor: sa�
 
     assert.deepEqual(db.saveVerifyFailures.slice(failuresBefore).map(item => `${item.path} ${item.collection}`), []);
 });
+
+test('[UC-TENTATIVA-005] tentativa já travada (saída da página ou perda de foco) quando a conta entra em outro aparelho: a trava passa a ser a do outro aparelho e não sai sozinha', async () => {
+    const failuresBefore = db.saveVerifyFailures.length;
+    for (const kind of ['pageExit', 'tab_blur']) {
+        seed();
+        const application = await running();
+        await begin(ALICE, application.id);
+        const before = openState(ALICE, application.id);
+        const event = kind === 'pageExit'
+            ? { eventType: 'exam_left', details: 'Saiu da página da prova', pageExit: true }
+            : { eventType: 'tab_blur', details: 'Janela perdeu o foco' };
+        await asStudent(request(app).post('/api/student/log-activity'), ALICE).send({
+            email: ALICE, studentClass, courseId, examKey, applicationId: application.id, attemptId: before.attemptId, ...event,
+        }).expect(200);
+        const locked = openState(ALICE, application.id);
+        assert.equal(locked.focusLocked, true, `${kind}: a prova trava pelo motivo de antes`);
+        assert.notEqual(locked.focusLockReason, 'session_replaced');
+        if (kind === 'pageExit') assert.ok(locked.pageExit, 'a saída da página fica marcada antes do login');
+        const lockedAt = locked.focusLockedAt;
+
+        await loginAgain();
+        const [log] = logsOf('session_replaced');
+        assert.ok(log, `${kind}: o login grava session_replaced`);
+        assert.equal(log.sessionChange.travou, true);
+        assert.equal(log.sessionChange.jaTravada, true, 'o registro diz que a prova já estava travada');
+        const state = openState(ALICE, application.id);
+        assert.equal(state.focusLocked, true);
+        assert.equal(state.focusLockReason, 'session_replaced', `${kind}: o motivo passa a ser o outro aparelho`);
+        assert.equal(state.focusLockedAt, lockedAt, 'a hora da trava continua a de antes');
+        assert.equal(state.focusLockEventId, log.id);
+        assert.equal(state.pageExit, undefined, 'a saída da página de antes não destrava mais pela volta');
+
+        // O aparelho novo não recebe as questões nem grava rascunho.
+        const fresh = await sync(ALICE, application.id).expect(200);
+        assert.equal(fresh.body.state.focusLocked, true);
+        assert.equal(fresh.body.state.focusLockReason, 'session_replaced');
+        assert.equal(fresh.body.questions, null);
+        const autosave = await asStudent(request(app).post('/api/student/autosave-progress'), ALICE)
+            .send({ email: ALICE, studentClass, courseId, examKey, applicationId: application.id, attemptId: state.attemptId, answers: { 1: 'A' } });
+        assert.equal(autosave.status, 423, JSON.stringify(autosave.body));
+        assert.equal(autosave.body.focusLockReason, 'session_replaced');
+
+        // Saída e volta à página do aparelho novo não destravam.
+        await asStudent(request(app).post('/api/student/log-activity'), ALICE).send({
+            email: ALICE, studentClass, courseId, examKey, applicationId: application.id, attemptId: state.attemptId,
+            eventType: 'exam_left', details: 'Saiu da página da prova', pageExit: true,
+        }).expect(200);
+        const back = await sync(ALICE, application.id).expect(200);
+        assert.equal(back.body.state.focusLocked, true, `${kind}: a volta à página não destrava`);
+        assert.equal(back.body.state.focusLockReason, 'session_replaced');
+        assert.equal(back.body.questions, null);
+        assert.equal(logsOf('page_return').length, 0);
+    }
+    assert.deepEqual(db.saveVerifyFailures.slice(failuresBefore).map(item => `${item.path} ${item.collection}`), []);
+});
