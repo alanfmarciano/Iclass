@@ -56,6 +56,11 @@ describe('[UC-LGPD-010] Meus dados', () => {
     expect(mocks.get).toHaveBeenCalledTimes(2)
   })
 
+  it('[UC-LGPD-010] explica que a cópia traz os trabalhos enviados nas atividades, com a nota só depois de devolvidos (C10)', () => {
+    renderPage()
+    expect(screen.getByText(/os trabalhos\s+que você enviou nas atividades \(cada versão, com o nome e o tamanho dos arquivos e o comprovante; a nota e o\s+comentário do professor depois de devolvidos\)/)).toBeTruthy()
+  })
+
   it('imprimir primeiro pede com finalidade imprimir e abre a janela antes da resposta', async () => {
     const user = userEvent.setup()
     let resolve

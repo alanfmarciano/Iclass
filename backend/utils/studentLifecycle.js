@@ -474,10 +474,10 @@ function applyCascade(db, { mode, student, ownership, keystrokeRows, actor, reas
     // dela, depois dos blocos de cima (utils/studentDataHandlers.js) e antes da pasta ir
     // para a lixeira. Handler que falha não deixa a memória pela metade: ela volta ao
     // que era antes do passo e o pedido é recusado (nada foi gravado nem movido).
+    let diskEffects = [];
     if (before) {
         try {
-            if (anonymize) studentData.anonymizeStudentData(memory, aluno, pseudonym);
-            else studentData.purgeStudentData(memory, aluno);
+            diskEffects = anonymize ? studentData.anonymizeStudentData(memory, aluno, pseudonym) : studentData.purgeStudentData(memory, aluno);
         } catch (error) {
             restoreMemory(memory, before);
             logError(`studentLifecycle: handler de coleção nova falhou (${mode})`, error);
@@ -493,6 +493,12 @@ function applyCascade(db, { mode, student, ownership, keystrokeRows, actor, reas
     moveStudentFolderToTrash(memory, student, studentFiles, {
         deletedBy: actor,
         asName: anonymize ? fileStore.studentFolderName(memory.students[index]) : undefined,
+    });
+    // O que os handlers deixaram para depois (arquivos das entregas de tarefa para a
+    // lixeira, C10): só agora, com todos os handlers feitos. Falha num arquivo não desfaz
+    // o passo (o registro já está sem dado pessoal e a lápide já foi gravada).
+    diskEffects.forEach(effect => {
+        try { effect({ deletedBy: actor }); } catch (error) { logError(`studentLifecycle: efeito em disco de coleção nova falhou (${mode})`, error); }
     });
 
     // Entrada da auditoria sem dado pessoal: no anonimizar, só o pseudônimo; no apagar,

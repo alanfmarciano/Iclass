@@ -34,6 +34,22 @@ const DIFERENCAS_ESPERADAS = [
         motivo: 'B0b (P4-S1): a Secretaria passou a ver e aprovar matrículas, e o texto '
             + '"visível apenas para administrador" deixou de ser verdade; vale o do sino, "aguardando aprovação".',
     },
+    // C10 (P1-h): as entregas de tarefa registram o handler 'assignmentSubmissions' com
+    // contagem ("Trabalhos entregues"). Cadastros encerrados, a resposta e a auditoria do
+    // anonimizar e do apagar ganham a contagem nova (0 aqui: o gerador não tem tarefa) e a
+    // rota de Cadastros encerrados ganha countLabels com o nome dela. O teste de baixo
+    // confere os valores.
+    ...[
+        'encerrados.*.counts.assignmentSubmissions',
+        'encerradosRota.body.items.*.counts.assignmentSubmissions',
+        'encerradosRota.body.countLabels',
+        'anonimizar.body.kept.assignmentSubmissions',
+        'memoriaDepoisDeAnonimizar.auditLogs.*.details.kept.assignmentSubmissions',
+        'apagar.body.removed.assignmentSubmissions',
+        'memoriaDepoisDeApagar.auditLogs.*.details.kept.assignmentSubmissions',
+        'memoriaDepoisDeApagar.auditLogs.*.details.removed.assignmentSubmissions',
+        'encerradosDepois.*.counts.assignmentSubmissions',
+    ].map(caminho => ({ caminho, motivo: 'C10 (P1-h): contagem "Trabalhos entregues" do handler das entregas de tarefa.' })),
 ];
 
 function run(env = {}) {
@@ -114,6 +130,26 @@ test('[UC-FUNDACAO-002] fila: a única diferença da de antes é o texto do item
     assert.deepEqual(differences(BEFORE.fila, output.fila), ['2.detalhe']);
     assert.equal(expected('fila.1.detalhe'), false);
     assert.equal(expected('fila.2.titulo'), false);
+});
+
+test('[UC-FUNDACAO-002] C10: a contagem nova das entregas de tarefa é 0 sem tarefa e tem o nome "Trabalhos entregues"', () => {
+    const { output } = run();
+    const values = [];
+    const walk = (value, pathText) => {
+        if (!value || typeof value !== 'object') return;
+        Object.keys(value).forEach(key => {
+            const next = pathText ? `${pathText}.${key}` : key;
+            if (key === 'assignmentSubmissions' && /\.(counts|kept|removed)\.assignmentSubmissions$/.test(next)) values.push([next, value[key]]);
+            else walk(value[key], next);
+        });
+    };
+    walk(output, '');
+    assert.ok(values.length >= 9, JSON.stringify(values));
+    values.forEach(([where, value]) => assert.equal(value, 0, where));
+    assert.deepEqual(output.encerradosRota.body.countLabels, { assignmentSubmissions: 'Trabalhos entregues' });
+    // Fora da contagem, Meus dados continua o de antes (sem entrega, sem seção nova).
+    assert.equal('tarefas' in output.meusDadosAluno, false);
+    assert.equal('tarefas' in output.meusDadosAdmin, false);
 });
 
 test('o comparador acha diferença de valor, de chave e de ordem (não ficou cego)', () => {

@@ -1013,3 +1013,8 @@ module.exports = {
     waitingSince,
     gradingQueueSummary,
 };
+
+// O ciclo de vida das entregas (anonimizar, apagar, troca de e-mail, Meus dados...; C10)
+// registra o handler de 'assignmentSubmissions' ao carregar: quem usa as regras das
+// tarefas já tem o handler. Depois do module.exports (o módulo lê estas regras).
+require('./assignmentLifecycle.js');

@@ -31,6 +31,13 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 - Devolvida: nota final em destaque, a nota e o desconto de atraso quando houver e o comentário do professor. "Refazer até ..." mostra o comentário e reabre o envio.
 - No celular, o menu do aluno fecha ao escolher uma tela (antes a tela nova ficava atrás dele até tocar no fundo escurecido).
 
+### Trabalhos entregues: anonimizar, apagar, Meus dados e curso excluído
+- Anonimizar um aluno em Cadastros encerrados agora também cuida das tarefas: ficam a situação, as datas, o atraso e a nota de cada entrega, com o código no lugar do nome; saem o texto e o link que ele escreveu, de onde enviou, o comentário do professor e o nome dos arquivos. Os arquivos vão para a lixeira de arquivos (só o administrador vê), numa pasta sem o nome da pessoa. Antes, as entregas ficavam inteiras e os arquivos continuavam na pasta das entregas.
+- Apagar de vez tira as entregas do aluno e manda os arquivos para a lixeira. Cadastros encerrados mostra "Trabalhos entregues: N" junto das notas, presenças e certificados, e os textos dos dois diálogos dizem o que acontece com eles.
+- Trocar o e-mail do aluno leva as entregas junto (antes ele deixava de ver as próprias entregas).
+- Meus dados (do aluno e na ficha, pelo administrador) traz os trabalhos entregues: cada versão com o nome e o tamanho dos arquivos e o comprovante; a nota e o comentário só depois de devolvidos. A cópia do administrador traz também a correção ainda não devolvida e de onde cada versão foi enviada.
+- Arquivar o curso (Turmas) leva as tarefas e as entregas para o pacote do curso; os arquivos das entregas ficam neste computador, fora dos backups, e voltam quando o curso é restaurado. Excluir o pacote manda esses arquivos para a lixeira de arquivos.
+
 ### Editor de questões do professor
 - Em Provas, "Editar conteúdo" e "Nova prova" têm os seis tipos de questão: Uma correta, Várias corretas, Verdadeiro ou falso, Numérica, Resposta curta e Dissertativa. Cada tipo mostra uma frase de exemplo e só os campos dele: a marca da correta (ou das corretas, com "Pontuação parcial" ou tudo ou nada), Verdadeiro ou Falso, o número certo com tolerância e unidade, as respostas aceitas, e na dissertativa a resposta esperada (só você vê) e a rubrica com os critérios e os pontos.
 - Cada questão tem os seus pontos (de 0,1 a 100, com vírgula) e o topo do editor mostra o total da prova. Na dissertativa, a soma dos critérios da rubrica aparece ao lado e o botão "Usar ... como pontos" acerta a diferença.

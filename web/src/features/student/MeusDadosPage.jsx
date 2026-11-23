@@ -67,9 +67,11 @@ export default function MeusDadosPage() {
         <CardHeader title="Cópia dos seus dados" subtitle="Você pode salvar o arquivo ou imprimir. Até 5 cópias por hora." />
         <CardBody className="space-y-4 text-sm">
           <p className="text-muted">
-            A cópia traz o seu cadastro, as turmas, o aceite dos termos, as notas e entregas já liberadas, a frequência,
-            os certificados, as observações compartilhadas com você, suas dúvidas no fórum, os acessos ao portal e o que
-            foi registrado durante as provas (saídas da tela e o resumo do teclado).
+            A cópia traz o seu cadastro, as turmas, o aceite dos termos, as notas e entregas já liberadas, os trabalhos
+            que você enviou nas atividades (cada versão, com o nome e o tamanho dos arquivos e o comprovante; a nota e o
+            comentário do professor depois de devolvidos), a frequência, os certificados, as observações compartilhadas
+            com você, suas dúvidas no fórum, os acessos ao portal e o que foi registrado durante as provas (saídas da
+            tela e o resumo do teclado).
           </p>
           <p className="text-muted">
             Não entram as questões e o gabarito das provas, os dados de outros alunos nem as anotações internas da equipe.

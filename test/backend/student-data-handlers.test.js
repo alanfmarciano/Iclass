@@ -142,7 +142,8 @@ test('[UC-FUNDACAO-003] anonimizar: o handler recebe o aluno com os e-mails dele
         .send({ email: BIA, confirm: 'ANONIMIZAR', reason: 'Pedido da família' });
     assert.equal(response.status, 200, JSON.stringify(response.body));
     assert.equal(response.body.kept.entregasTeste, 1);
-    assert.deepEqual(Object.keys(response.body.kept), ['submissions', 'attendance', 'certificates', 'entregasTeste']);
+    // C10 (P1-h): o handler de Trabalhos entregues (assignmentSubmissions) agora fica sempre registrado.
+    assert.deepEqual(Object.keys(response.body.kept), ['submissions', 'attendance', 'certificates', 'assignmentSubmissions', 'entregasTeste']);
     assert.equal(calls.length, 1);
     const [, aluno, pseudonimo] = calls[0];
     assert.equal(aluno.email, BIA);
@@ -174,9 +175,10 @@ test('[UC-FUNDACAO-003] apagar de vez: o handler tira os registros do aluno, inc
 test('[UC-FUNDACAO-003] Cadastros encerrados e Meus dados trazem a coleção nova (versão do aluno e do administrador)', async () => {
     registerTestHandler();
     const rows = closedStudentRows(db.memory, { sinceOf: student => student.statusChangedAt || null });
+    // C10 (P1-h): o handler de Trabalhos entregues (assignmentSubmissions) agora fica sempre registrado.
     assert.deepEqual(rows.map(row => [row.email, row.counts]), [
-        [BIA, { submissions: 0, attendance: 0, certificates: 0, entregasTeste: 1 }],
-        [CAIO, { submissions: 0, attendance: 0, certificates: 0, entregasTeste: 1 }],
+        [BIA, { submissions: 0, attendance: 0, certificates: 0, assignmentSubmissions: 0, entregasTeste: 1 }],
+        [CAIO, { submissions: 0, attendance: 0, certificates: 0, assignmentSubmissions: 0, entregasTeste: 1 }],
     ]);
     const route = await request(app).get('/api/admin/students/closed').set(adminHeaders());
     assert.equal(route.body.items[0].counts.entregasTeste, 1);
@@ -207,12 +209,14 @@ test('[UC-FUNDACAO-003] Meus dados leva o nome e as colunas da seção nova (ext
     assert.equal(keys.indexOf('extraSections'), keys.indexOf('entregasTeste') + 1);
     assert.ok(!('extraSections' in forStudent.counts));
     const route = await request(app).get('/api/admin/students/closed').set(adminHeaders());
-    assert.deepEqual(route.body.countLabels, { entregasTeste: 'Entregas de teste' });
-    // Sem handler, nada disso aparece (a saída de hoje).
+    // C10 (P1-h): o handler de Trabalhos entregues (assignmentSubmissions) agora fica sempre registrado.
+    assert.deepEqual(route.body.countLabels, { assignmentSubmissions: 'Trabalhos entregues', entregasTeste: 'Entregas de teste' });
+    // Sem o handler de teste, a seção dele some. O de Trabalhos entregues segue: sem tarefas
+    // na base, não gera seção em Meus dados, mas a contagem dele tem nome em Cadastros encerrados.
     while (cleanups.length) cleanups.pop()();
     assert.ok(!('extraSections' in buildStudentDataExport(db.memory, ANA, { audience: 'aluno', now: NOW })));
     const plain = await request(app).get('/api/admin/students/closed').set(adminHeaders());
-    assert.ok(!('countLabels' in plain.body));
+    assert.deepEqual(plain.body.countLabels, { assignmentSubmissions: 'Trabalhos entregues' });
 });
 
 test('[UC-FUNDACAO-003] contagem com replaceCore substitui a de hoje igual em Cadastros encerrados, no anonimizar e no apagar', async () => {
@@ -226,11 +230,12 @@ test('[UC-FUNDACAO-003] contagem com replaceCore substitui a de hoje igual em Ca
     }));
     const rows = closedStudentRows(db.memory, { sinceOf: student => student.statusChangedAt || null });
     assert.deepEqual(rows.map(row => [row.email, row.counts]), [
-        [BIA, { submissions: 0, attendance: 0, certificates: 1 }],
-        [CAIO, { submissions: 0, attendance: 0, certificates: 1 }],
+        [BIA, { submissions: 0, attendance: 0, certificates: 1, assignmentSubmissions: 0 }],
+        [CAIO, { submissions: 0, attendance: 0, certificates: 1, assignmentSubmissions: 0 }],
     ]);
     const route = await request(app).get('/api/admin/students/closed').set(adminHeaders());
-    assert.ok(!('countLabels' in route.body), 'a contagem de hoje já tem nome na tela');
+    // C10 (P1-h): o handler de Trabalhos entregues (assignmentSubmissions) agora fica sempre registrado.
+    assert.deepEqual(route.body.countLabels, { assignmentSubmissions: 'Trabalhos entregues' }, 'a contagem de hoje (certificados) já tem nome na tela');
     const anonymized = await request(app).post('/api/admin/students/anonymize').set(adminHeaders())
         .send({ email: BIA, confirm: 'ANONIMIZAR', reason: 'Pedido da família' });
     assert.equal(anonymized.status, 200, JSON.stringify(anonymized.body));

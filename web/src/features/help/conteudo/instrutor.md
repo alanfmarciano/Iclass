@@ -119,6 +119,8 @@ Tarefa é um trabalho com prazo que o aluno entrega pelo IClass: um arquivo (PDF
 
 A Coordenação vê as entregas, abre os arquivos e baixa o ZIP, mas não corrige.
 
+**Quando o aluno sai da escola.** Em **Cadastros encerrados**, **Anonimizar** guarda as entregas com um código no lugar do nome (a situação, as datas, o atraso e a nota ficam; o texto, o link, o seu comentário e o nome dos arquivos saem) e **Apagar de vez** tira as entregas. Nos dois casos, os arquivos vão para a lixeira de arquivos em **Sistema**, que só o administrador vê. Ao arquivar um curso em **Turmas**, as tarefas e as entregas vão junto para o pacote do curso e voltam quando ele é restaurado.
+
 ## Resultados {#resultados}
 
 Mostra as entregas das provas da turma, aluno por aluno, com as notas. Daqui você abre a prova de cada aluno, confere as respostas e libera as notas.

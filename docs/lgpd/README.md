@@ -70,10 +70,18 @@ Os dados do cadastro entram como texto literal: toda pontuação leva a barra do
 ## Cópia dos dados do aluno (direito de acesso)
 
 - No portal, "Meus dados" (também pelo cartão em Minha conta) baixa um arquivo JSON com os dados pessoais do aluno ou abre uma versão para imprimir. São até 5 cópias por hora.
-- Entram o cadastro, as turmas, os aceites, as notas publicadas, a frequência, os certificados, as observações compartilhadas com o aluno, as dúvidas do fórum, os acessos ao portal e o que a prova registrou (saídas da tela e teclas). Não entram as questões e o gabarito, os dados de outros alunos, quem escreveu cada observação, a observação de acessibilidade (só o aviso de que existe) nem a nota ainda em revisão.
-- Para atender um pedido do aluno, o administrador gera a cópia completa na ficha do aluno, aba Segurança ("Baixar dados (JSON)" ou "Imprimir"): traz também a nota em revisão, as observações com o autor, a observação de acessibilidade, os e-mails antigos e a auditoria do aluno. O professor não tem esse botão.
+- Entram o cadastro, as turmas, os aceites, as notas publicadas, os trabalhos entregues nas tarefas (cada versão com o texto, o link, o nome e o tamanho dos arquivos e o comprovante; a nota e o comentário do professor só depois de devolvidos), a frequência, os certificados, as observações compartilhadas com o aluno, as dúvidas do fórum, os acessos ao portal e o que a prova registrou (saídas da tela e teclas). Não entram as questões e o gabarito, os dados de outros alunos, quem escreveu cada observação, a observação de acessibilidade (só o aviso de que existe), a nota ainda em revisão nem o IP de onde a tarefa foi enviada. O arquivo enviado em si não entra na cópia (só o nome, o tamanho e o comprovante); o aluno baixa os próprios arquivos em Atividades.
+- Para atender um pedido do aluno, o administrador gera a cópia completa na ficha do aluno, aba Segurança ("Baixar dados (JSON)" ou "Imprimir"): traz também a nota em revisão (inclusive a correção de tarefa ainda não devolvida), as observações com o autor, a observação de acessibilidade, o IP e o aparelho de cada envio de tarefa, os e-mails antigos e a auditoria do aluno. O professor não tem esse botão.
 - Toda cópia, do aluno ou do administrador, fica na Auditoria ("Dados pessoais exportados") com quem gerou e se foi para baixar ou imprimir.
 - O registro dos pedidos do titular (correção, exclusão, revogação, com prazo e resposta) ainda não existe no IClass: anote fora dele por enquanto.
+
+## Trabalhos entregues nas tarefas (anonimizar, apagar e curso excluído)
+
+- Anonimizar o aluno (Cadastros encerrados) guarda as entregas das tarefas com o código no lugar do nome: ficam a situação, as datas, o atraso, o tamanho dos arquivos e a nota. Saem o texto e o link que ele escreveu, o IP e o aparelho do envio, o comentário do professor, a observação da entrega em mãos, o motivo da prorrogação e o nome dos arquivos (fica "arquivo-1.pdf"). Os arquivos vão para a lixeira de arquivos (Sistema, cartão Lixeira, só o administrador vê), numa pasta com o código da entrega, sem o nome da pessoa.
+- Apagar de vez tira as entregas e manda os arquivos para a lixeira do mesmo jeito.
+- Cada arquivo que sai deixa uma "lápide" no banco. Quando a cópia dos trabalhos no destino externo (pendrive ou HD) estiver ligada, ela usa as lápides para apagar lá também; nada mais é apagado do destino. Para tirar os arquivos de vez deste computador, apague o item na lixeira (ou espere o prazo da lixeira).
+- Excluir o curso de vez (Turmas → Arquivar) leva as tarefas e as entregas para o pacote do curso; os arquivos ficam neste computador, em `data/entregas/_cursos_arquivados`, fora dos backups, e voltam quando o curso é restaurado. Excluir o pacote do curso manda esses arquivos para a lixeira, com lápide.
+- Os backups feitos antes continuam com os registros das entregas (sem os arquivos, que nunca vão no backup).
 
 ## Relatório de impacto (RIPD)
 

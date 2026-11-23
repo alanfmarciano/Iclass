@@ -12,7 +12,10 @@
 //   pseudonimo) e purge(memory, aluno). Rodam depois dos blocos de hoje e antes da pasta
 //   do aluno ir para a lixeira; se um handler lança erro, a memória volta inteira ao que
 //   era antes do passo (nada fica pela metade) e o pedido é recusado. Por isso o handler
-//   mexe só na memória; arquivo em disco ele move por último, já sem chance de falhar;
+//   mexe só na memória. O que é em disco (arquivo de entrega para a lixeira, C10) o
+//   handler devolve como função (ou lista de funções): ela só roda depois que TODOS os
+//   handlers do passo deram certo, junto com a pasta do aluno indo para a lixeira; erro
+//   numa delas fica no crash.log e não desfaz o resto (a memória já está certa);
 // - contagens (tela Cadastros encerrados, resposta e auditoria do anonimizar e do apagar,
 //   studentLifecycle.recordCounts e closedStudentRows): count(memory, aluno) => número.
 //   Com replaceCore, a contagem do handler substitui a de hoje com a mesma chave nos três
@@ -142,12 +145,25 @@ function renameStudentData(memory, oldEmail, newEmail) {
     withFunction('rename').forEach(handler => handler.rename(memory, de, para));
 }
 
+// O que o handler devolveu para rodar depois (efeitos em disco): uma função ou uma
+// lista delas; o resto é ignorado (o handler que não devolve nada continua valendo).
+function deferredEffects(result) {
+    const items = Array.isArray(result) ? result : [result];
+    return items.filter(item => typeof item === 'function');
+}
+
+// Anonimizar e apagar de vez devolvem as funções que os handlers deixaram para depois
+// (applyCascade roda todas quando o passo inteiro deu certo; ver o começo do arquivo).
 function anonymizeStudentData(memory, aluno, pseudonimo) {
-    withFunction('anonymize').forEach(handler => handler.anonymize(memory, aluno, pseudonimo));
+    const effects = [];
+    withFunction('anonymize').forEach(handler => effects.push(...deferredEffects(handler.anonymize(memory, aluno, pseudonimo))));
+    return effects;
 }
 
 function purgeStudentData(memory, aluno) {
-    withFunction('purge').forEach(handler => handler.purge(memory, aluno));
+    const effects = [];
+    withFunction('purge').forEach(handler => effects.push(...deferredEffects(handler.purge(memory, aluno))));
+    return effects;
 }
 
 function mergeStudentData(memory, fica, sai) {
