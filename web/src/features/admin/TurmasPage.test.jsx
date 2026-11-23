@@ -116,4 +116,22 @@ describe('TurmasPage · cursos', () => {
     await userEvent.click(screen.getByRole('button', { name: 'Grupos da turma 1DES' }))
     expect(screen.getByTestId('where')).toHaveTextContent('/turmas/DES/1DES/grupos')
   })
+
+  // Fase 3, C15 (P5-S6b, CRIT-08): "Ver como aluno" na turma para quem tem o conteúdo das
+  // turmas; a Coordenação (só consulta) e quem não vê conteúdo não têm o botão.
+  it('[UC-PREVIA-004] "Ver como aluno" na turma abre o diálogo da pré-visualização', async () => {
+    mocks.auth = { role: 'admin', accountRole: 'professor', effectivePermissions: ['page.classes', 'page.materials', 'page.students'] }
+    mocks.get.mockResolvedValue({ success: true, grupos: [] })
+    renderPage()
+    await userEvent.click(screen.getByRole('button', { name: 'Ver como aluno da turma 1DES' }))
+    expect(screen.getByRole('dialog', { name: 'Ver o portal como um aluno de 1DES' })).toHaveTextContent('Nada do que você fizer na pré-visualização é gravado. A prova não começa.')
+    cleanup()
+    mocks.auth = { role: 'admin', accountRole: 'coordenacao', readOnly: true, effectivePermissions: ['page.classes', 'page.materials', 'page.students'] }
+    renderPage()
+    expect(screen.queryByRole('button', { name: /Ver como aluno/ })).toBeNull()
+    cleanup()
+    mocks.auth = { role: 'admin', accountRole: 'secretaria', effectivePermissions: ['page.classes', 'page.students'] }
+    renderPage()
+    expect(screen.queryByRole('button', { name: /Ver como aluno/ })).toBeNull()
+  })
 })

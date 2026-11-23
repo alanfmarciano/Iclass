@@ -4,6 +4,8 @@ import { Card, CardHeader, CardBody } from '../../components/ui/Card'
 import { Button } from '../../components/ui/Button'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { useAuth } from '../../context/AuthProvider'
+import { PREVIEW_DISABLED_TEXT } from '../../lib/previewSession'
+import { PreviewDisabledNote } from './PreviewBanner'
 import { api } from '../../lib/api'
 import { downloadDataExport, openPrintWindow, printDataExport } from '../../lib/dataExportPrint'
 
@@ -23,6 +25,9 @@ export default function MeusDadosPage() {
   const [error, setError] = useState('')
   const [notice, setNotice] = useState('')
   const cache = useRef({})
+  // Pré-visualização como aluno (C15 / P5-S6b): o aluno virtual não tem dados guardados, e
+  // a cópia (que fica na auditoria) não sai.
+  const preview = auth.preview || null
 
   const fetchData = async (purpose) => {
     const cached = cache.current[purpose]
@@ -34,7 +39,7 @@ export default function MeusDadosPage() {
   }
 
   const run = async (purpose) => {
-    if (busy) return
+    if (busy || preview) return
     setError('')
     setNotice('')
     // A janela de impressão abre no clique: depois da espera o navegador a bloquearia.
@@ -79,9 +84,10 @@ export default function MeusDadosPage() {
             Para pedir correção, explicação ou exclusão de algum dado, fale com o professor ou com o encarregado de dados da escola.
           </p>
           <div className="flex flex-wrap gap-3">
-            <Button icon={Download} loading={busy === 'baixar'} disabled={!!busy && busy !== 'baixar'} onClick={() => run('baixar')}>Baixar meus dados (arquivo JSON)</Button>
-            <Button variant="secondary" icon={Printer} loading={busy === 'imprimir'} disabled={!!busy && busy !== 'imprimir'} onClick={() => run('imprimir')}>Ver para imprimir</Button>
+            <Button icon={Download} loading={busy === 'baixar'} disabled={(!!busy && busy !== 'baixar') || !!preview} title={preview ? PREVIEW_DISABLED_TEXT : undefined} onClick={() => run('baixar')}>Baixar meus dados (arquivo JSON)</Button>
+            <Button variant="secondary" icon={Printer} loading={busy === 'imprimir'} disabled={(!!busy && busy !== 'imprimir') || !!preview} title={preview ? PREVIEW_DISABLED_TEXT : undefined} onClick={() => run('imprimir')}>Ver para imprimir</Button>
           </div>
+          <PreviewDisabledNote />
           {error ? <p role="alert" className="rounded-lg border border-danger/40 bg-danger/10 px-3 py-2 text-danger">{error}</p> : null}
           {notice ? <p role="status" className="text-success">{notice}</p> : null}
         </CardBody>

@@ -3,6 +3,7 @@ import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
 import { Home, BookOpen, ClipboardList, FileUp, NotebookPen, MessagesSquare, Megaphone, FolderOpen, GraduationCap, Menu, LogOut, CalendarDays, Sparkles, UserRound, ShieldCheck, CircleHelp, Mail } from 'lucide-react'
 import { ThemeToggle } from '../../components/ui/ThemeToggle'
 import { useAuth } from '../../context/AuthProvider'
+import { usePreview } from '../../hooks/usePreview'
 import { cn } from '../../lib/cn'
 import { api } from '../../lib/api'
 import { StudentCourseGate } from './StudentCourseGate'
@@ -16,6 +17,8 @@ import { useStudentHeartbeat } from './useStudentHeartbeat'
 import { PageLoading } from '../../components/ui/PageLoading'
 import { AppErrorBoundary, STUDENT_ERROR_DESCRIPTION } from '../../components/ui/ErrorScreen'
 import { navBadgeLabel, setMessageCount, studentMessageCount, useMessageCount, useMessageCountScope } from '../../lib/messageCounter'
+import { PREVIEW_DISABLED_TEXT } from '../../lib/previewSession'
+import { PreviewBanner } from './PreviewBanner'
 const NAV = [
   { to: '/aluno', icon: Home, text: 'Início', end: true },
   { to: '/aluno/modulos', icon: BookOpen, text: 'Módulos' },
@@ -50,16 +53,22 @@ export function prefetchExamScreen() {
   import('./exam/ExamRunner').catch(() => { examScreenPrefetched = false })
   import('./StudentExamShell').catch(() => { examScreenPrefetched = false })
 }
-function usePrefetchExamScreen() {
+// Na pré-visualização a prova não abre (C15 / P5-S6b): o arquivo dela não é buscado.
+function usePrefetchExamScreen(enabled = true) {
   useEffect(() => {
+    if (!enabled) return undefined
     const timer = setTimeout(prefetchExamScreen, EXAM_PREFETCH_DELAY_MS)
     return () => clearTimeout(timer)
-  }, [])
+  }, [enabled])
 }
 
 export function StudentShell() {
   const [open, setOpen] = useState(() => typeof window !== 'undefined' && window.matchMedia('(min-width: 768px)').matches)
-  const { auth, logout, setActiveClass } = useAuth()
+  const { auth, logout, setActiveClass, endPreview } = useAuth()
+  // Pré-visualização como aluno (C15 / P5-S6b, D21 do P5): faixa no topo, sem presença,
+  // sem pré-carregar a prova, sem "Marcar como lidas" e sem marcar aviso como lido; o Sair
+  // do portal fecha a prévia e volta para a tela do painel de onde ela saiu.
+  const preview = usePreview()
   const { branding, interfacePreset } = useBranding()
   const { pathname } = useLocation()
   const nav = useNavigate()
@@ -85,7 +94,7 @@ export function StudentShell() {
   // Abrir um aviso pelo sino já conta como lido (UXA-X3).
   const openNotification = async (item) => {
     let markedRead = false
-    if (item.type === 'aviso' && String(item.id || '').startsWith('aviso:')) {
+    if (!preview && item.type === 'aviso' && String(item.id || '').startsWith('aviso:')) {
       try { await api.post('/api/student/announcements/read', { id: item.id.slice('aviso:'.length) }); markedRead = true } catch { /* segue para a tela */ }
     }
     if (item.href) nav(item.href)
@@ -105,10 +114,14 @@ export function StudentShell() {
   useMessageCountScope(`${studentEmail}::${notificationsContext}`)
   const newMessages = useMessageCount()
   const navItems = NAV.map((item) => (item.to === '/aluno/mensagens' ? { ...item, badge: newMessages, badgeTone: 'primary' } : item))
-  const notifications = <NotificationBell endpoint={passwordChangePending ? null : notificationsEndpoint} seenEndpoint={notificationsSeenEndpoint} onOpenItem={openNotification} onData={onNotifications} />
+  const notifications = <NotificationBell endpoint={passwordChangePending ? null : notificationsEndpoint} seenEndpoint={preview ? null : notificationsSeenEndpoint} seenDisabledText={preview ? PREVIEW_DISABLED_TEXT : ''} onOpenItem={openNotification} onData={onNotifications} />
   const examAvailability = passwordChangePending ? null : <StudentExamAvailability />
-  useStudentHeartbeat({ onPresence })
-  usePrefetchExamScreen()
+  useStudentHeartbeat({ onPresence, enabled: !preview })
+  usePrefetchExamScreen(!preview)
+  const leavePortal = () => {
+    if (preview) { nav(endPreview() || '/'); return }
+    logout(); nav('/login')
+  }
 
   if (interfacePreset === 'lumen') {
     const studentName = ((s.nomeSocial && s.nomeSocial.trim()) || s.name) || auth.email || 'Aluno'
@@ -129,8 +142,10 @@ export function StudentShell() {
             title: 'Trocar curso ou turma',
             onClick: () => { setActiveClass(null); nav('/aluno') },
           } : null}
-          onLogout={() => { logout(); nav('/login') }}
+          onLogout={leavePortal}
+          logoutLabel={preview ? 'Sair da pré-visualização' : undefined}
           notifications={notifications}
+          banner={preview ? <PreviewBanner className="mb-3 shrink-0 rounded-xl border" /> : null}
         >
           <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><AppErrorBoundary area="aluno" description={STUDENT_ERROR_DESCRIPTION}><Suspense fallback={<PageLoading />}><StudentPasswordChangeGate><StudentPrivacyGate><StudentCourseGate><Outlet /></StudentCourseGate></StudentPrivacyGate></StudentPasswordChangeGate></Suspense></AppErrorBoundary></div>
         </LumenShell>
@@ -179,12 +194,13 @@ export function StudentShell() {
           ))}
         </nav>
         <div className="flex items-center justify-between border-t border-border p-3">
-          <button onClick={() => { logout(); nav('/login') }} className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted transition-all duration-300 hover:bg-danger-soft hover:text-danger"><LogOut size={16} /> Sair</button>
+          <button onClick={leavePortal} className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm text-muted transition-all duration-300 hover:bg-danger-soft hover:text-danger"><LogOut size={16} /> {preview ? 'Sair da pré-visualização' : 'Sair'}</button>
           <ThemeToggle />
         </div>
       </aside>
       {open && <button type="button" aria-label="Fechar menu" className="fixed inset-0 z-[75] bg-black/55 backdrop-blur-sm md:hidden" onClick={() => setOpen(false)} />}
       <div className="flex-1 flex flex-col min-w-0">
+        {preview && <PreviewBanner />}
         <header className="glass-panel z-20 flex h-[72px] items-center gap-2 border-x-0 border-t-0 px-4 md:px-7">
           <button onClick={() => setOpen((o) => !o)} className="grid h-10 w-10 place-items-center rounded-lg text-muted hover:bg-surface-2 md:hidden" aria-label="Menu"><Menu size={21} /></button>
           <div className="flex items-center gap-2 text-[13px]"><Sparkles size={14} className="text-primary" /><span className="text-subtle">Portal do Aluno</span><span className="text-subtle">/</span><strong className="font-semibold text-text">{pageTitle}</strong></div>

@@ -4,6 +4,7 @@
 import { BUILD_HEADER, noteServerBuild } from './buildVersion'
 import { AUTOSAVE_TIMEOUT_MS, INSTRUCTOR_TIMEOUT_MS, KEYSTROKE_TIMEOUT_MS, POLL_TIMEOUT_MS } from './requestTimeouts'
 import { reportFailure, reportResponse, setConnectionProbe } from './connection'
+import { PREVIEW_HEADER, currentPreviewToken, isPreviewPortalRequest, notifyPreviewEnded } from './previewSession'
 let authProvider = () => ({})
 export function setAuthProvider(fn) { authProvider = fn } // injetado pelo AuthProvider
 // Há sessão aberta neste navegador? O logout limpa o provedor na hora (antes de o portal
@@ -31,6 +32,14 @@ function notePasswordChangeRequired(status, data) {
   if (status !== 403 || !data || data.passwordChangeRequired !== true || !passwordChangeRequiredHandler) return
   try { passwordChangeRequiredHandler(data) } catch {}
 }
+// Pré-visualização como aluno que o servidor encerrou (401 { code: 'preview_ended' }: 60 min,
+// Sair do painel, senha trocada, turma fora do escopo, servidor reiniciado): o AuthProvider
+// fecha a prévia e volta ao painel com o motivo (lib/previewSession.js), em vez de tratar
+// como sessão de aluno vencida (o que levaria o instrutor ao login).
+function notePreviewEnded(status, data, headers) {
+  if (status !== 401 || !data || data.code !== 'preview_ended' || !headers[PREVIEW_HEADER]) return
+  notifyPreviewEnded(data)
+}
 const AUTH_STORAGE_KEY = 'iclass-v3-auth'
 
 function getStoredAuth() {
@@ -38,8 +47,18 @@ function getStoredAuth() {
   try { return JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY)) || {} } catch { return {} }
 }
 
-function authHeaders() {
+// path: o pedido. Com a pré-visualização aberta nesta aba (lib/previewSession.js, C15 /
+// P5-S6b, D21 do P5), os pedidos do portal levam só o x-preview-session (nunca o
+// x-admin-session: o portal na prévia é o do aluno virtual, e uma rota que aceitasse a
+// sessão do painel mostraria outra coisa); /api/admin/* e o Sair do instrutor continuam
+// com a sessão do painel.
+function authHeaders(path) {
   const headers = {}
+  const previewToken = currentPreviewToken()
+  if (previewToken && isPreviewPortalRequest(path)) {
+    headers[PREVIEW_HEADER] = previewToken
+    return headers
+  }
   const providedAuth = authProvider() || {}
   const a = (providedAuth.adminSession || providedAuth.sessionToken) ? providedAuth : getStoredAuth()
   // Instrutor: só o token da sessão. A senha passa uma vez, no POST /api/session/admin-login;
@@ -147,9 +166,11 @@ function abortError(signal) {
 // erro sai como AbortError, sem mensagem de conexão).
 // body: objeto (vai como JSON) ou FormData (envio de arquivo: vai como está, e o
 // navegador põe o Content-Type multipart com o separador).
-async function request(path, { method = 'GET', body, auth = true, raw, keepalive = false, timeoutMs, background = false, signal } = {}) {
+// headers: cabeçalhos a mais (o fim da pré-visualização manda o x-preview-session junto
+// com a sessão do painel); os de sessão vêm depois e valem mais.
+async function request(path, { method = 'GET', body, auth = true, raw, keepalive = false, timeoutMs, background = false, signal, headers: extraHeaders = null } = {}) {
   const fileUpload = isFormData(body)
-  const headers = { ...(fileUpload ? {} : { 'Content-Type': 'application/json' }), ...(auth ? authHeaders() : {}) }
+  const headers = { ...(fileUpload ? {} : { 'Content-Type': 'application/json' }), ...(extraHeaders && typeof extraHeaders === 'object' ? extraHeaders : {}), ...(auth ? authHeaders(path) : {}) }
   if (background) headers[BACKGROUND_HEADER] = '1'
   const limit = keepalive ? 0 : (timeoutMs === undefined || timeoutMs === null ? defaultTimeoutMs(path, headers, fileUpload) : Math.max(0, Number(timeoutMs) || 0))
   const canAbort = typeof AbortController === 'function'
@@ -205,6 +226,7 @@ async function request(path, { method = 'GET', body, auth = true, raw, keepalive
   if (!res.ok) {
     noteAdminAccessDenied(res.status, data)
     notePasswordChangeRequired(res.status, data)
+    notePreviewEnded(res.status, data, headers)
     throw responseError(res.status, data)
   }
   return data
@@ -254,7 +276,7 @@ export function dispositionFileName(disposition, fallbackName = 'arquivo') {
 // pode ser grande); sem rede, a mesma mensagem de conexão dos outros pedidos; recusa do
 // servidor com a mensagem dele. signal: cancela (a prévia que saiu da tela).
 export async function fetchBlob(path, { fallbackName = 'arquivo', signal } = {}) {
-  const headers = authHeaders()
+  const headers = authHeaders(path)
   let res
   try {
     res = await fetch(path, signal ? { headers, signal } : { headers })
@@ -268,6 +290,7 @@ export async function fetchBlob(path, { fallbackName = 'arquivo', signal } = {})
     reportResponse(res.status, data)
     noteAdminAccessDenied(res.status, data)
     notePasswordChangeRequired(res.status, data)
+    notePreviewEnded(res.status, data, headers)
     throw responseError(res.status, data)
   }
   reportResponse(res.status, null)
@@ -321,7 +344,7 @@ export function uploadWithProgress(path, formData, { method = 'POST', onProgress
   return new Promise((resolve, reject) => {
     if (signal && signal.aborted) { reject(abortError(signal)); return }
     if (typeof XMLHttpRequest !== 'function') { reject(noteFailure(connectionError('network'))); return }
-    const headers = { ...(extraHeaders && typeof extraHeaders === 'object' ? extraHeaders : {}), ...authHeaders() }
+    const headers = { ...(extraHeaders && typeof extraHeaders === 'object' ? extraHeaders : {}), ...authHeaders(path) }
     const xhr = new XMLHttpRequest()
     let settled = false
     let timedOut = false
@@ -387,6 +410,7 @@ export function uploadWithProgress(path, formData, { method = 'POST', onProgress
       if (status < 200 || status >= 300) {
         noteAdminAccessDenied(status, data)
         notePasswordChangeRequired(status, data)
+        notePreviewEnded(status, data, headers)
         reject(responseError(status, data))
         return
       }

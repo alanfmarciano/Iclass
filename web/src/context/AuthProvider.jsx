@@ -1,5 +1,6 @@
-import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
+import { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { api, setAdminAccessDeniedHandler, setAuthProvider, setPasswordChangeRequiredHandler } from '../lib/api'
+import { PREVIEW_ENDED_FALLBACK, PREVIEW_EXPIRED_TEXT, PREVIEW_HEADER, clearStoredPreview, previewFromResponse, readStoredPreview, setPreviewEndedHandler, storePreview } from '../lib/previewSession'
 import { revokedLogoutFromError } from '../lib/sessionRevoked'
 import { isStudentExamPath, shouldExpireForIdle } from '../lib/sessionActivity'
 import { clearAllExamDrafts } from '../lib/examDrafts'
@@ -26,6 +27,22 @@ export function AuthProvider({ children }) {
   })
   const [authReady, setAuthReady] = useState(false)
   const [maintenance, setMaintenance] = useState({ enabled: false, message: '' })
+  // Pré-visualização como aluno (C15 / P5-S6b, D21 do P5): só desta aba (sessionStorage),
+  // só da conta do painel que a abriu e dentro do prazo. A sessão do instrutor (auth) não
+  // muda: o portal na prévia vê o aluno virtual pelo PreviewStudentScope.
+  const [preview, setPreview] = useState(() => {
+    let stored = {}
+    try { stored = JSON.parse(localStorage.getItem(LS)) || {} } catch { stored = {} }
+    const found = stored.role === 'admin' && stored.adminSession ? readStoredPreview({ adminEmail: stored.email || '' }) : null
+    if (!found) clearStoredPreview()
+    return found
+  })
+  // Motivo do fim da prévia pelo servidor ou pelo prazo (a tela do painel mostra num aviso)
+  // e a tela do painel para onde o portal volta.
+  const [previewNotice, setPreviewNotice] = useState(null)
+  const [previewReturn, setPreviewReturn] = useState('/')
+  const previewRef = useRef(preview)
+  useEffect(() => { previewRef.current = preview }, [preview])
   const lastActivityRef = useRef(Date.now())
   const idleMsRef = useRef(IDLE_MS)
   const absMsRef = useRef(ABSOLUTE_MS)
@@ -60,6 +77,11 @@ export function AuthProvider({ children }) {
       else sessionStorage.removeItem('iclass-logout-message')
     } catch {}
     try { sessionStorage.removeItem('iclass-workspace-switch') } catch {}
+    // A prévia é da sessão do painel: o Sair do instrutor também a encerra no servidor.
+    clearStoredPreview()
+    previewRef.current = null
+    setPreview(null)
+    setPreviewNotice(null)
     clearAllExamDrafts() // cópia local das respostas da prova não fica para o próximo usuário
     try {
       const cur = JSON.parse(localStorage.getItem(LS)) || {}
@@ -389,16 +411,107 @@ export function AuthProvider({ children }) {
     setAuth((current) => ({ ...current, activeWorkspace: null, activeCourse: null }))
   }, [])
 
+  // --- Pré-visualização como aluno (C15 / P5-S6b) --------------------------------------
+  // startPreview(resposta do POST /api/admin/preview-sessions, { origem }): grava a prévia
+  // nesta aba antes de mudar o estado (o lib/api.js lê o token de lá no pedido seguinte)
+  // e devolve a prévia. Quem chama leva para /aluno.
+  const startPreview = useCallback((response, { origem = '/' } = {}) => {
+    const next = previewFromResponse(response, { origem, adminEmail: authRef.current?.email || '' })
+    if (!next) throw new Error('O servidor não abriu a pré-visualização. Tente de novo.')
+    storePreview(next)
+    previewRef.current = next
+    setPreviewNotice(null)
+    setPreview(next)
+    return next
+  }, [])
+
+  // endPreview({ message, notifyServer }): fecha a prévia desta aba e devolve a tela do
+  // painel de onde ela veio (quem chama navega para lá). Avisa o servidor (best-effort,
+  // keepalive) com o cabeçalho da prévia e a sessão do painel; message (opcional) aparece
+  // como aviso no painel (fim pelo servidor ou pelo prazo).
+  const endPreview = useCallback(({ message = '', notifyServer = true } = {}) => {
+    const current = previewRef.current
+    clearStoredPreview()
+    previewRef.current = null
+    setPreview(null)
+    const origem = current?.origem || '/'
+    setPreviewReturn(origem)
+    if (message) setPreviewNotice({ message: String(message), at: Date.now() })
+    if (current && notifyServer) {
+      api.post('/api/admin/preview-sessions/end', {}, { keepalive: true, headers: { [PREVIEW_HEADER]: current.token } }).catch(() => {})
+    }
+    return origem
+  }, [])
+
+  const clearPreviewNotice = useCallback(() => setPreviewNotice(null), [])
+
+  // O servidor encerrou a prévia (401 preview_ended): volta ao painel com o motivo dele.
+  useEffect(() => {
+    setPreviewEndedHandler((data) => {
+      if (!previewRef.current) return
+      endPreview({ message: data?.error || PREVIEW_ENDED_FALLBACK, notifyServer: false })
+    })
+    return () => setPreviewEndedHandler(null)
+  }, [endPreview])
+
+  // Prazo da prévia (60 min): o relógio da aba fecha sem esperar o próximo pedido.
+  useEffect(() => {
+    if (!preview) return undefined
+    const wait = Math.max(0, Number(preview.expiraEm) - Date.now())
+    const timer = setTimeout(() => endPreview({ message: PREVIEW_EXPIRED_TEXT, notifyServer: false }), Math.min(wait, 2147483000))
+    return () => clearTimeout(timer)
+  }, [preview, endPreview])
+
   // logout(reason?, message?): reason só como texto (um onClick={logout} passaria o evento).
   const logout = useCallback((reason, message) => {
     doLogout(typeof reason === 'string' ? reason : undefined, typeof message === 'string' ? message : undefined)
   }, [doLogout])
 
   return (
-    <AuthCtx.Provider value={{ auth, authReady, maintenance, loginAdmin, loginAdminSetup, loginLocalQuick, loginStudent, logout, endSessionFromError, setAuth, setActiveClass, setActiveCourse, setActiveWorkspace, clearActiveWorkspace, syncPasswordChange }}>
+    <AuthCtx.Provider value={{ auth, authReady, maintenance, loginAdmin, loginAdminSetup, loginLocalQuick, loginStudent, logout, endSessionFromError, setAuth, setActiveClass, setActiveCourse, setActiveWorkspace, clearActiveWorkspace, syncPasswordChange, preview, startPreview, endPreview, previewNotice, clearPreviewNotice, previewReturn }}>
       {children}
     </AuthCtx.Provider>
   )
 }
 
 export const useAuth = () => useContext(AuthCtx)
+
+// Portal do aluno na pré-visualização (C15 / P5-S6b, D21 do P5): as telas do aluno (dentro
+// do RequireRole('student')) leem useAuth() e veem o aluno virtual da prévia, com
+// auth.preview. A sessão do painel continua no AuthProvider, intocada:
+// - logout (o Sair do portal) e endSessionFromError (sessão recusada) fecham a prévia em
+//   vez de encerrar a sessão do instrutor;
+// - setAuth, setActiveClass e syncPasswordChange não fazem nada (a prévia tem uma turma só
+//   e não troca senha).
+export function PreviewStudentScope({ children }) {
+  const parent = useContext(AuthCtx)
+  const preview = parent?.preview || null
+  const value = useMemo(() => {
+    if (!parent || !preview) return parent
+    const aluno = preview.aluno || {}
+    const noop = () => {}
+    return {
+      ...parent,
+      auth: {
+        role: 'student',
+        email: aluno.email || '',
+        student: aluno,
+        activeClass: (aluno.classes || [])[0] || null,
+        serverInstanceId: parent.auth?.serverInstanceId || null,
+        loginAt: preview.iniciadaEm || Date.now(),
+        mustChangePassword: false,
+        passwordChangeReason: null,
+        preview,
+      },
+      logout: () => { parent.endPreview() },
+      endSessionFromError: async (err) => {
+        const data = err && err.data
+        parent.endPreview({ message: (data && data.code === 'preview_ended' && data.error) || PREVIEW_ENDED_FALLBACK, notifyServer: !(data && data.code === 'preview_ended') })
+      },
+      setAuth: noop,
+      setActiveClass: noop,
+      syncPasswordChange: noop,
+    }
+  }, [parent, preview])
+  return <AuthCtx.Provider value={value}>{children}</AuthCtx.Provider>
+}

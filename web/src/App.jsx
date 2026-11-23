@@ -1,6 +1,7 @@
 import { Suspense } from 'react'
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './context/AuthProvider'
+import { PreviewNotice, RequireRole, SessionLoading } from './components/RouteGuards'
 import { canAccessAdminPath, isFullAdmin } from './lib/adminPermissions'
 import { lazyPage } from './lib/lazyPage'
 import { PasswordChangeForm } from './components/PasswordChangeForm'
@@ -83,15 +84,6 @@ const BibliotecaStudentPage = lazyPage(() => import('./features/student/Bibliote
 const ContaStudentPage = lazyPage(() => import('./features/student/ContaPage'))
 const MeusDadosStudentPage = lazyPage(() => import('./features/student/MeusDadosPage'))
 
-function RequireRole({ role, children }) {
-  const { auth, authReady } = useAuth()
-  const loc = useLocation()
-  if (!authReady) return <SessionLoading />
-  if (!auth.role) return <Navigate to="/login" state={{ from: loc }} replace />
-  if (role && auth.role !== role) return <Navigate to={auth.role === 'admin' ? '/' : '/aluno'} replace />
-  return children
-}
-
 function RequireAdminPath({ path, children }) {
   const { auth } = useAuth()
   if (!canAccessAdminPath(auth, path)) {
@@ -105,14 +97,6 @@ function RequireAdminPath({ path, children }) {
 function RequireAdministrator({ children }) {
   const { auth } = useAuth()
   return isFullAdmin(auth) ? children : <Navigate to="/" replace />
-}
-
-function SessionLoading() {
-  return (
-    <div className="min-h-screen grid place-items-center bg-bg text-text">
-      <div className="text-sm text-muted">Validando sessão...</div>
-    </div>
-  )
 }
 
 function LayoutLoading() {
@@ -133,6 +117,7 @@ export default function App() {
   // "Carregando..." (PageLoading), com o menu à vista.
   return (
     <Suspense fallback={<SessionLoading />}>
+      <PreviewNotice />
       <Routes>
       <Route path="/login" element={auth.role ? <Navigate to={auth.role === 'admin' ? '/' : '/aluno'} replace /> : <LoginPage />} />
 

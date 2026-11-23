@@ -32,6 +32,9 @@ import { api } from '../../lib/api'
 import { cn } from '../../lib/cn'
 import { requestNotificationsRefresh, useMessageCount } from '../../lib/messageCounter'
 import { useStudent } from './useStudent'
+import { usePreview } from '../../hooks/usePreview'
+import { PREVIEW_DISABLED_TEXT } from '../../lib/previewSession'
+import { PreviewDisabledNote } from './PreviewBanner'
 import { useConversationThread } from '../mensagens/useConversationThread'
 import { MessageComposer, MessageList } from '../mensagens/MessageThread'
 import {
@@ -100,6 +103,8 @@ function NewConversation({ courseId, studentClass, emProva, onCreated, onCancel,
   const [errors, setErrors] = useState({})
   const textMax = Number(limits?.texto) || TEXT_MAX
   const subjectMax = Number(limits?.assunto) || SUBJECT_MAX
+  // Pré-visualização como aluno (C15 / P5-S6b): a lista de professores aparece, o Enviar não.
+  const preview = usePreview()
 
   // Um professor só: já vem escolhido.
   useEffect(() => {
@@ -109,6 +114,7 @@ function NewConversation({ courseId, studentClass, emProva, onCreated, onCancel,
 
   async function submit(event) {
     event.preventDefault()
+    if (preview) return
     const texto = text.trim()
     const nextErrors = {}
     if (!to) nextErrors.destinatario = 'Escolha o professor.'
@@ -160,8 +166,9 @@ function NewConversation({ courseId, studentClass, emProva, onCreated, onCancel,
                 className="text-base sm:text-sm"
               />
               <p className="text-xs text-muted">As mensagens ficam guardadas e não podem ser apagadas.</p>
+              <PreviewDisabledNote />
               <div className="flex flex-wrap gap-2">
-                <Button type="submit" icon={MessageSquarePlus} loading={sending} className="h-11 w-full sm:h-[38px] sm:w-auto">Enviar</Button>
+                <Button type="submit" icon={MessageSquarePlus} loading={sending} disabled={!!preview} title={preview ? PREVIEW_DISABLED_TEXT : undefined} className="h-11 w-full sm:h-[38px] sm:w-auto">Enviar</Button>
                 <Button type="button" variant="ghost" onClick={onCancel} disabled={sending} className="h-11 w-full sm:h-[38px] sm:w-auto">Cancelar</Button>
               </div>
             </form>

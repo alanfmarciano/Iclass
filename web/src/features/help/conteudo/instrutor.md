@@ -165,7 +165,15 @@ Grupo é uma parte da turma: uma equipe de trabalho ou uma subturma (a metade qu
 
 ## Ver como aluno {#ver-como-aluno}
 
-<!-- P5 (C2 e C15) escreve aqui. -->
+Mostra o portal do aluno exatamente como um aluno da turma o vê, sem criar um aluno de teste e sem sair do painel. Toque em **Ver como aluno**: na linha da turma em **Turmas**, no topo de **Materiais** (com a turma escolhida) ou no cartão da turma ao escolher a turma no **Dashboard**.
+
+**Escolher o grupo.** O diálogo "Ver o portal como um aluno de 1DES" deixa escolher, se quiser, um grupo ativo da turma (**Ver como membro de um grupo**): a prévia mostra então o que um membro desse grupo vê, como o cartão **Meus grupos**. Sem grupo, você vê só o que a turma inteira vê. Não existe "ver como um aluno específico": liberações individuais e avisos particulares de um aluno não aparecem.
+
+**Nada é gravado.** O portal abre na mesma aba com a faixa "Pré-visualização como aluno de 1DES · nada é gravado". Você lê apostilas, biblioteca, avisos, calendário, fórum e provas abertas, mas os botões que gravam (Concluir unidade, Salvar o caderno, anotações, Postar no fórum, Enviar dúvida, entregar tarefa, Nova mensagem, Alterar senha, Baixar meus dados) ficam desativados com o texto "Desativado na pré-visualização". Abrir a apostila não conta como acesso do aluno, abrir um aviso não o marca como lido e a presença não é registrada. **A prova não começa**: para ver as questões, use **Provas > Visualizar**.
+
+**Sair.** **Sair da pré-visualização** (na faixa ou no Sair do menu do portal) fecha a prévia e volta para a tela do painel de onde você veio; o seu login no painel continua. A prévia dura 60 minutos e também termina quando você sai do painel, troca a senha ou perde o acesso à turma; nesses casos o IClass volta ao painel e avisa o motivo. Abrir uma tela do painel (pelo voltar do navegador, por exemplo) também fecha a prévia.
+
+**Quem pode.** Quem cuida do conteúdo das turmas (Professor e Administrador) nas turmas dele. A Coordenação, que só consulta, não tem o botão.
 
 ## Chamada {#chamada}
 

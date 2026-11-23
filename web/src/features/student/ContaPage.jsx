@@ -6,6 +6,8 @@ import { Button } from '../../components/ui/Button'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { PasswordChangeForm } from '../../components/PasswordChangeForm'
 import { useAuth } from '../../context/AuthProvider'
+import { PREVIEW_DISABLED_TEXT } from '../../lib/previewSession'
+import { PreviewDisabledNote } from './PreviewBanner'
 import { useToast } from '../../context/ToastProvider'
 import { useApi } from '../../hooks/useApi'
 import { displayEmail } from '../../lib/studentProfile'
@@ -16,6 +18,9 @@ import { displayEmail } from '../../lib/studentProfile'
 // navegador com a sessão (H5b, SEG-16). O cartão do fim leva a "Meus dados" (H8c, SEG-14).
 export default function ContaPage() {
   const { auth } = useAuth()
+  // Pré-visualização como aluno (C15 / P5-S6b): o aluno virtual não tem e-mail para mostrar
+  // (o endereço interno .invalid nunca aparece) e "Alterar senha" fica desativado.
+  const preview = auth.preview || null
   const account = useApi(auth.email ? '/api/student/account' : null, [auth.email])
   const matricula = account.data && typeof account.data.matricula === 'string' ? account.data.matricula : ''
   const toast = useToast()
@@ -30,7 +35,7 @@ export default function ContaPage() {
   }
   const rows = [
     ['Nome', name],
-    ['E-mail', displayEmail(student.email || auth.email || '')],
+    ['E-mail', preview ? '' : displayEmail(student.email || auth.email || '')],
     ...(matricula ? [['Matrícula', matricula]] : []),
     ...(classes.length ? [[classes.length > 1 ? 'Turmas' : 'Turma', classes.map(classLabel).join(', ')]] : []),
   ]
@@ -66,7 +71,10 @@ export default function ContaPage() {
               }}
             />
           ) : (
-            <Button variant="secondary" icon={KeyRound} onClick={() => setChanging(true)}>Alterar senha</Button>
+            <>
+              <Button variant="secondary" icon={KeyRound} disabled={!!preview} title={preview ? PREVIEW_DISABLED_TEXT : undefined} onClick={() => setChanging(true)}>Alterar senha</Button>
+              <PreviewDisabledNote className="mt-2" />
+            </>
           )}
         </CardBody>
       </Card>

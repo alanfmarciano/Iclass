@@ -54,7 +54,9 @@ const NO_NOTIFICATIONS = { endpoint: null, items: [], unread: 0 }
 
 // onData(resposta): chamado a cada consulta que deu certo (o portal do aluno lê dela a
 // versão publicada dos documentos).
-export function NotificationBell({ endpoint, seenEndpoint, pollMs = 30000, className, buttonClassName, onOpenItem, onData }) {
+// `seenDisabledText` (opcional): no lugar de "Marcar como lidas", só o texto (a
+// pré-visualização como aluno não grava, C15).
+export function NotificationBell({ endpoint, seenEndpoint, seenDisabledText = '', pollMs = 30000, className, buttonClassName, onOpenItem, onData }) {
   // A lista guarda de qual endpoint veio: depois de trocar de turma ou curso, a da turma
   // anterior não aparece nem é marcada como lida (o sino fica vazio até a nova chegar).
   const [stored, setData] = useState(NO_NOTIFICATIONS)
@@ -124,7 +126,7 @@ export function NotificationBell({ endpoint, seenEndpoint, pollMs = 30000, class
     // `key` vem do servidor (curso + turma + item); `ids` deixa o aluno marcar os avisos.
     const keys = data.items.map((item) => item.key || `${item.id}:${item.count || 0}`)
     const ids = data.items.map((item) => item.id)
-    if (!ids.length) return
+    if (!ids.length || !seenEndpoint) return
     setData((current) => (current.endpoint === endpoint
       ? { ...current, unread: 0, items: current.items.map((item) => ({ ...item, unread: false })) }
       : current))
@@ -172,7 +174,8 @@ export function NotificationBell({ endpoint, seenEndpoint, pollMs = 30000, class
         <div role="dialog" aria-label="Notificações" style={{ right: -shift }} className="absolute top-12 z-50 w-[min(360px,calc(100vw-32px))] overflow-hidden rounded-xl border border-border bg-surface shadow-[var(--shadow-float)]">
           <div className="flex items-center justify-between border-b border-border px-4 py-3">
             <p className="text-sm font-semibold text-text">Notificações</p>
-            {data.items.length > 0 && (
+            {data.items.length > 0 && seenDisabledText && <span className="text-xs text-muted">{seenDisabledText}</span>}
+            {data.items.length > 0 && !seenDisabledText && seenEndpoint && (
               <button type="button" onClick={markAllSeen} disabled={unread === 0} className="inline-flex items-center gap-1 text-xs font-medium text-muted hover:text-text disabled:opacity-50">
                 <CheckCheck size={14} /> Marcar como lidas
               </button>

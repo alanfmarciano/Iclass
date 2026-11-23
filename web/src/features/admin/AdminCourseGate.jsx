@@ -10,6 +10,7 @@ import { compareText, matchesSearch } from '../../lib/textSearch'
 import { useAuth } from '../../context/AuthProvider'
 import { usePreferences } from '../../context/PreferencesProvider'
 import { isFullAdmin } from '../../lib/adminPermissions'
+import { PreviewButton } from './PreviewLauncher'
 
 // Telas do ambiente da instituição: abrem sem curso escolhido. Toda tela nova do grupo
 // Instituição ou Gestão acadêmica da Sidebar entra aqui também (senão o item do menu cai
@@ -77,6 +78,8 @@ function WorkspaceCard({ item, favorite, onFavorite, onOpen, onManage, isProfess
             >
               Entrar na turma
             </Button>
+            {/* Ver como aluno (fase 3, C15 / P5-S6b): o portal desta turma, sem entrar nela. */}
+            <PreviewButton courseId={course.id} studentClass={cls.name} courseName={course.name} variant="ghost" className="pointer-events-auto relative z-20 -mt-2 w-full" stopPropagation />
           </>
         ) : (
           <>

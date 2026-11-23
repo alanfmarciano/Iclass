@@ -42,6 +42,9 @@ import { markdownToHtml, shiftHeadingLevels } from '../../lib/contentMarkdown'
 import { openPrintWindow, printDocument, schoolFromBranding } from '../../lib/printDocument'
 import { resizeImage, shouldResizeImage } from '../../lib/imageResize'
 import { useStudent } from './useStudent'
+import { usePreview } from '../../hooks/usePreview'
+import { PREVIEW_DISABLED_TEXT } from '../../lib/previewSession'
+import { PreviewDisabledNote } from './PreviewBanner'
 import { ASSIGNMENTS_POLL_MS } from './AtividadesPage'
 import {
   MB, buildSubmissionForm, closeLine, dateTimeText, deadlineLine, emptySubmissionText, fileProblem, formatBytes,
@@ -186,6 +189,9 @@ function VersionCard({ version, assignmentId, timezone, onPrint, highlight }) {
 export default function AtividadeDetalhePage() {
   const { id = '' } = useParams()
   const { courseId, studentClass, displayName, name, email, courses } = useStudent()
+  // Pré-visualização como aluno (C15 / P5-S6b): a tarefa aparece como para a turma, e o
+  // Enviar fica desativado (o servidor também recusa: a prévia não envia nem baixa arquivo).
+  const preview = usePreview()
   const { branding } = useBranding()
   const detail = useApi(detailPath(id, courseId, studentClass), [id, courseId, studentClass], { pollMs: ASSIGNMENTS_POLL_MS })
   const data = detail.data || null
@@ -307,7 +313,7 @@ export default function AtividadeDetalhePage() {
   }
 
   async function submit() {
-    if (sending || preparing || !assignment) return
+    if (sending || preparing || !assignment || preview) return
     const previous = error
     setError(null)
     const hasText = resposta.text && text.trim()
@@ -537,7 +543,7 @@ export default function AtividadeDetalhePage() {
                     {error && !sending && <span role="alert" className="text-danger">{error.message}</span>}
                   </div>
                   <div className="flex flex-wrap gap-2">
-                    <Button type="button" size="lg" icon={error?.retry ? RotateCcw : Send} className="h-12 flex-1" onClick={submit} loading={sending} disabled={preparing}>
+                    <Button type="button" size="lg" icon={error?.retry ? RotateCcw : Send} className="h-12 flex-1" onClick={submit} loading={sending} disabled={preparing || !!preview} title={preview ? PREVIEW_DISABLED_TEXT : undefined}>
                       {phase === 'checking' ? 'Conferindo…' : sending ? 'Enviando…' : error?.retry ? 'Tentar de novo' : lateNow ? 'Enviar com atraso' : 'Enviar'}
                     </Button>
                     {phase === 'sending' && (
@@ -545,6 +551,7 @@ export default function AtividadeDetalhePage() {
                     )}
                   </div>
                   {preparing && <p className="text-xs text-muted">Preparando a foto para enviar…</p>}
+                  <PreviewDisabledNote />
                 </div>
               </Card>
             ) : (

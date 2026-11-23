@@ -5,11 +5,13 @@ import { EmptyState } from '../../components/ui/EmptyState'
 import { PageState } from '../../components/ui/PageState'
 import { api } from '../../lib/api'
 import { useStudent } from './useStudent'
+import { usePreview } from '../../hooks/usePreview'
 
 function when(ts) { try { return new Date(ts).toLocaleString('pt-BR') } catch { return '' } }
 
 export default function AvisosPage() {
   const { email, courseId, studentClass } = useStudent()
+  const preview = usePreview()
   const [list, setList] = useState([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
@@ -26,7 +28,8 @@ export default function AvisosPage() {
 
   function openAnnouncement(announcement) {
     setOpened((current) => current === announcement.id ? null : announcement.id)
-    if (!announcement.read) {
+    // Na pré-visualização como aluno (C15) abrir o aviso não o marca como lido.
+    if (!announcement.read && !preview) {
       setList((current) => current.map((item) => item.id === announcement.id ? { ...item, read: true } : item))
       api.post('/api/student/announcements/read', { email, id: announcement.id }).catch(() => {})
     }

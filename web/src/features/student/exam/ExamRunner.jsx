@@ -14,6 +14,8 @@ import { onBeforeUpdateReload, updateReloadPending, UPDATE_RELOAD_EVENT } from '
 import { clearInterruptedExam, markInterruptedExam, recentRenderError } from '../../../lib/renderErrors'
 import { useStudent } from '../useStudent'
 import { useToast } from '../../../context/ToastProvider'
+import { usePreview } from '../../../hooks/usePreview'
+import { PreviewExamNotice } from './PreviewExamNotice'
 import { normQuestion, fmtTime, fullscreenElement, fullscreenSupported, blankQuestionPositions, formatQuestionPoints, joinPositions } from './examUtils'
 import QuestionMarkdown from '../../exam/QuestionMarkdown'
 import QuestionAnswer from './QuestionAnswer'
@@ -187,7 +189,16 @@ function modsOf(e) {
   return [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Meta'].filter(Boolean).join('+')
 }
 
+// Na pré-visualização como aluno (C15 / P5-S6b) a prova não começa: nem o estado da
+// prova é pedido (o StudentExamShell já mostra o aviso; aqui é a segunda trava, para a
+// tela montada em outro lugar).
 export default function ExamRunner() {
+  const preview = usePreview()
+  if (preview) return <PreviewExamNotice />
+  return <ExamRunnerScreen />
+}
+
+function ExamRunnerScreen() {
   const { examKey } = useParams()
   const [searchParams] = useSearchParams()
   const applicationId = searchParams.get('applicationId') || ''

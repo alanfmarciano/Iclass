@@ -44,6 +44,10 @@ export function LumenShell({
   accountMenu = null,
   pathname,
   onLogout,
+  // Texto do botão de sair (a pré-visualização como aluno usa 'Sair da pré-visualização').
+  logoutLabel = 'Sair',
+  // Faixa acima do cabeçalho, no fluxo da página (pré-visualização como aluno, C15).
+  banner = null,
   children,
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
@@ -99,6 +103,7 @@ export function LumenShell({
     <div className="lumen-shell app-canvas h-full text-text">
       <a className="lumen-skip-link" href="#lumen-main" aria-hidden={menuOpen ? 'true' : undefined} tabIndex={menuOpen ? -1 : undefined}>Ir para o conteúdo</a>
 
+      {banner}
       <header className="lumen-topbar" aria-hidden={menuOpen ? 'true' : undefined} inert={menuOpen ? '' : undefined}>
         <div className="lumen-brand">
           {logo ? (
@@ -154,7 +159,7 @@ export function LumenShell({
               <span className="lumen-profile-copy"><strong>{userName || 'Usuário'}</strong><span>{userDetail}</span></span>
             </div>
           )}
-          <button type="button" className="lumen-icon-button lumen-logout" onClick={onLogout} aria-label="Sair"><LogOut size={18} /></button>
+          <button type="button" className="lumen-icon-button lumen-logout" onClick={onLogout} aria-label={logoutLabel}><LogOut size={18} /></button>
           <button
             type="button"
             className={cn('lumen-icon-button lumen-menu-trigger', menuOpen && 'is-active')}
@@ -199,7 +204,7 @@ export function LumenShell({
             </nav>
             <div className="lumen-menu-footer">
               <ConnectionStatus variant="lumen" />
-              <button type="button" onClick={onLogout}><LogOut size={15} /> Sair</button>
+              <button type="button" onClick={onLogout}><LogOut size={15} /> {logoutLabel}</button>
             </div>
           </aside>
         </div>

@@ -16,6 +16,7 @@ vi.mock('react-router-dom', async () => {
 })
 vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post } }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
+vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: { role: 'admin', accountRole: 'professor', effectivePermissions: ['page.materials', 'page.classes'] }, startPreview: vi.fn() }) }))
 vi.mock('../../hooks/useAdminWorkspace', () => ({
   useAdminWorkspace: () => ({ courseId: 'DES', courseName: 'Técnico em TI', className: '1DES' }),
 }))
@@ -50,6 +51,13 @@ describe('MateriaisPage', () => {
     ]
     expect(batchReleaseKeys(items, true)).toEqual(['Apostila_U1'])
     expect(batchReleaseKeys(items, false)).toEqual(['Apostila_U1', 'Gabarito_Avaliacao_U1'])
+  })
+
+  // Fase 3, C15 (P5-S6b, CRIT-08): o portal da turma com a liberação de agora.
+  it('[UC-PREVIA-004] "Ver como aluno" no topo da tela, para a turma escolhida', async () => {
+    mockServer()
+    render(<MateriaisPage />)
+    expect(await screen.findByRole('button', { name: 'Ver como aluno da turma 1DES' })).toBeInTheDocument()
   })
 
   it('[UC-APLICACAO-001] "Liberar todas as apostilas" não envia prova nem gabarito ao servidor', async () => {

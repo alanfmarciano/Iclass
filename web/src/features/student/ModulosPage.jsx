@@ -12,6 +12,9 @@ import { markdownToHtml } from '../../lib/contentMarkdown'
 import { useApi } from '../../hooks/useApi'
 import { useToast } from '../../context/ToastProvider'
 import { useStudent } from './useStudent'
+import { usePreview } from '../../hooks/usePreview'
+import { PREVIEW_DISABLED_TEXT } from '../../lib/previewSession'
+import { PreviewDisabledNote } from './PreviewBanner'
 import { ANNOTATION_NOTE_MAX_CHARS, FORUM_TEXT_MAX_CHARS, NOTE_COUNTER_FROM, NOTE_MAX_CHARS, SHORT_TEXT_COUNTER_FROM } from '../../lib/textLimits'
 
 function parseDataJs(source) {
@@ -47,6 +50,9 @@ function moduleProgress(mod, completed) {
 export default function ModulosPage() {
   const { email, name, studentClass, courseId } = useStudent()
   const toast = useToast()
+  // Pré-visualização como aluno (C15 / P5-S6b): lê tudo e não grava nada (sem registro de
+  // acesso; caderno, conclusão, anotação e fórum desativados).
+  const preview = usePreview()
   const articleRef = useRef(null)
   const status = useApi(`/api/status?studentClass=${encodeURIComponent(studentClass)}&courseId=${encodeURIComponent(courseId)}&email=${encodeURIComponent(email)}`, [], { pollMs: 5000 })
   const progress = useApi(`/api/student/progress?email=${encodeURIComponent(email)}`, [email])
@@ -94,7 +100,7 @@ export default function ModulosPage() {
       if (text) setCourseData((current) => ({ ...current, [unit.key]: text }))
     }
     setHtml(markdownToHtml(text || ''))
-    api.post('/api/student/track-access', { email, key: unit.key, moduleKey: unit.moduleKey || '', courseId }).catch(() => {})
+    if (!preview) api.post('/api/student/track-access', { email, key: unit.key, moduleKey: unit.moduleKey || '', courseId }).catch(() => {})
     await Promise.all([loadNote(unit.key), loadComments(unit.key), loadAnnotations(unit.key)])
   }
 
@@ -103,14 +109,14 @@ export default function ModulosPage() {
   }
 
   async function saveNote() {
-    if (!openUnit) return
+    if (!openUnit || preview) return
     setSaving(true)
     try { await api.post('/api/student/notes/save', { email, moduleKey: openUnit.key, note }); toast.success('Caderno salvo') }
     catch (e) { toast.error(e.message) } finally { setSaving(false) }
   }
 
   async function markDone(done) {
-    if (!openUnit) return
+    if (!openUnit || preview) return
     const next = { ...completed, [openUnit.key]: done }
     try {
       await api.post('/api/student/progress', { email, completedUnits: next })
@@ -146,7 +152,7 @@ export default function ModulosPage() {
   }
 
   async function saveAnnotation() {
-    if (!openUnit || !annotation) return
+    if (!openUnit || !annotation || preview) return
     try {
       await api.post('/api/student/annotation', { email, key: openUnit.key, ...annotation })
       setAnnotation(null)
@@ -158,7 +164,7 @@ export default function ModulosPage() {
   }
 
   async function deleteAnnotation() {
-    if (!openUnit || !annotation) return
+    if (!openUnit || !annotation || preview) return
     try {
       await api.post('/api/student/annotation', { email, key: openUnit.key, paragraphId: annotation.paragraphId, highlightedText: null, note: null })
       setAnnotation(null)
@@ -173,7 +179,7 @@ export default function ModulosPage() {
   }
 
   async function postComment() {
-    if (!openUnit || !commentText.trim()) return
+    if (!openUnit || !commentText.trim() || preview) return
     try {
       await api.post('/api/forum/comment', { key: openUnit.key, studentName: name, studentEmail: email, courseId, studentClass, text: commentText })
       setCommentText('')
@@ -185,7 +191,7 @@ export default function ModulosPage() {
 
   async function postReply(commentId) {
     const text = replyDrafts[commentId]
-    if (!text?.trim()) return
+    if (!text?.trim() || preview) return
     try {
       await api.post('/api/forum/reply', { commentId, courseId, studentClass, authorName: name, authorRole: 'Aluno', authorEmail: email, text })
       setReplyDrafts((d) => ({ ...d, [commentId]: '' }))
@@ -212,7 +218,8 @@ export default function ModulosPage() {
       <div className="flex flex-wrap items-center gap-2">
         <Button variant="ghost" icon={ArrowLeft} onClick={() => setOpenUnit(null)}>Voltar aos módulos</Button>
         <Badge tone={completed[openUnit.key] ? 'success' : 'neutral'}>{completed[openUnit.key] ? 'Concluída' : 'Em estudo'}</Badge>
-        <Button size="sm" variant="secondary" icon={CheckCircle2} onClick={() => markDone(!completed[openUnit.key])}>{completed[openUnit.key] ? 'Desmarcar' : 'Concluir unidade'}</Button>
+        <Button size="sm" variant="secondary" icon={CheckCircle2} disabled={!!preview} title={preview ? PREVIEW_DISABLED_TEXT : undefined} onClick={() => markDone(!completed[openUnit.key])}>{completed[openUnit.key] ? 'Desmarcar' : 'Concluir unidade'}</Button>
+        <PreviewDisabledNote />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] gap-4">
@@ -230,7 +237,7 @@ export default function ModulosPage() {
               <div className="h-full bg-primary transition-all" style={{ width: `${openModulePct}%` }} />
             </div>
             <div className="mt-4 flex justify-end">
-              <Button icon={CheckCircle2} onClick={() => markDone(!completed[openUnit.key])}>
+              <Button icon={CheckCircle2} disabled={!!preview} title={preview ? PREVIEW_DISABLED_TEXT : undefined} onClick={() => markDone(!completed[openUnit.key])}>
                 {completed[openUnit.key] ? 'Desmarcar tópico' : 'Marcar tópico como concluído'}
               </Button>
             </div>
@@ -240,14 +247,15 @@ export default function ModulosPage() {
 
         <div className="space-y-4">
           <Card>
-            <CardHeader title="Caderno desta unidade" action={<Button size="sm" icon={Save} loading={saving} onClick={saveNote}>Salvar</Button>} />
-            <CardBody><Textarea id="unit-note" value={note} onChange={(e) => setNote(e.target.value)} maxLength={NOTE_MAX_CHARS} counterFrom={NOTE_COUNTER_FROM} className="min-h-[180px]" placeholder="Suas anotações..." /></CardBody>
+            <CardHeader title="Caderno desta unidade" action={<Button size="sm" icon={Save} loading={saving} disabled={!!preview} title={preview ? PREVIEW_DISABLED_TEXT : undefined} onClick={saveNote}>Salvar</Button>} />
+            <CardBody><Textarea id="unit-note" value={note} onChange={(e) => setNote(e.target.value)} maxLength={NOTE_MAX_CHARS} counterFrom={NOTE_COUNTER_FROM} className="min-h-[180px]" placeholder="Suas anotações..." /><PreviewDisabledNote className="mt-2" /></CardBody>
           </Card>
           <Card>
             <CardHeader title="Fórum da unidade" />
             <CardBody className="space-y-3">
               <Textarea id="unit-comment" value={commentText} onChange={(e) => setCommentText(e.target.value)} maxLength={FORUM_TEXT_MAX_CHARS} counterFrom={SHORT_TEXT_COUNTER_FROM} placeholder="Escreva sua dúvida..." />
-              <Button size="sm" icon={MessageSquare} onClick={postComment}>Postar</Button>
+              <Button size="sm" icon={MessageSquare} disabled={!!preview} title={preview ? PREVIEW_DISABLED_TEXT : undefined} onClick={postComment}>Postar</Button>
+              <PreviewDisabledNote />
               {comments.map((c) => (
                 <div key={c.id} className="rounded-md border border-border p-3 text-sm">
                   <div className="flex items-center justify-between gap-2">
@@ -265,7 +273,7 @@ export default function ModulosPage() {
                   ))}
                   <div className="mt-2 flex gap-2">
                     <input value={replyDrafts[c.id] || ''} onChange={(e) => setReplyDrafts((d) => ({ ...d, [c.id]: e.target.value }))} maxLength={FORUM_TEXT_MAX_CHARS} placeholder="Responder..." className="min-w-0 flex-1 h-8 px-2 rounded-md bg-surface border border-border text-text text-xs" />
-                    <Button size="sm" variant="secondary" icon={Reply} onClick={() => postReply(c.id)}>Responder</Button>
+                    <Button size="sm" variant="secondary" icon={Reply} disabled={!!preview} title={preview ? PREVIEW_DISABLED_TEXT : undefined} onClick={() => postReply(c.id)}>Responder</Button>
                   </div>
                 </div>
               ))}
@@ -276,9 +284,10 @@ export default function ModulosPage() {
 
       <Modal open={!!annotation} onClose={() => setAnnotation(null)} title="Anotação do parágrafo" description={annotation?.highlightedText?.slice(0, 120)}>
         <Textarea id="ann" value={annotation?.note || ''} onChange={(e) => setAnnotation((a) => ({ ...a, note: e.target.value }))} maxLength={ANNOTATION_NOTE_MAX_CHARS} counterFrom={SHORT_TEXT_COUNTER_FROM} className="min-h-[140px]" />
-        <div className="mt-3 flex justify-end gap-2">
-          <Button variant="destructive" icon={Trash2} onClick={deleteAnnotation}>Excluir</Button>
-          <Button icon={NotebookPen} onClick={saveAnnotation}>Salvar</Button>
+        <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+          <PreviewDisabledNote className="mr-auto" />
+          <Button variant="destructive" icon={Trash2} disabled={!!preview} onClick={deleteAnnotation}>Excluir</Button>
+          <Button icon={NotebookPen} disabled={!!preview} onClick={saveAnnotation}>Salvar</Button>
         </div>
       </Modal>
       <ConfirmDialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={removeForumItem} danger title="Excluir mensagem?" description="A mensagem será removida do fórum desta unidade." confirmLabel="Excluir" />

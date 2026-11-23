@@ -1,5 +1,6 @@
 import { Marked, marked } from 'marked'
 import DOMPurify from 'dompurify'
+import { currentPreviewToken } from './previewSession'
 
 const SAFE_URL_RE = /^(https?:|mailto:|tel:|#|\/)/i
 const SAFE_IMAGE_DATA_RE = /^data:image\/(png|jpe?g|gif|webp);base64,/i
@@ -15,12 +16,14 @@ export function stripFileAccess(value) {
   return `${match[1]}${kept.length ? `?${kept.join('&')}` : ''}${match[3] || ''}`
 }
 
+// Na pré-visualização como aluno (C15 / P5-S6b), a figura da apostila abre com o token da
+// prévia: o servidor serve o que o aluno virtual da turma abriria, não o que o painel abre.
 function withFileAccess(value) {
   const url = stripFileAccess(value)
   if (!/^\/(uploads|imagens)\//.test(url) || typeof localStorage === 'undefined') return url
   try {
     const auth = JSON.parse(localStorage.getItem('iclass-v3-auth')) || {}
-    const access = auth.adminSession || auth.sessionToken
+    const access = currentPreviewToken() || auth.adminSession || auth.sessionToken
     if (!access) return url
     const separator = url.includes('?') ? '&' : '?'
     return `${url}${separator}access=${encodeURIComponent(access)}`
