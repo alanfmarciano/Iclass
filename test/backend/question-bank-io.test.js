@@ -942,6 +942,16 @@ test('[UC-BANCO-002] limites: 2 MB, 2.000 questões, arquivo que não é GIFT ne
     const pdf = await preview(asFile('csv', Buffer.from('%PDF-1.4 ...'), 'banco.pdf'));
     assert.equal(pdf.status, 400);
     assert.equal(pdf.body.code, 'unsupported_format');
+    // Texto que começa com "PK" não é ZIP: só a assinatura inteira recusa (J2, A13).
+    const pki = await preview(asFile('gift', Buffer.from('PKI é a sigla de infraestrutura de chaves públicas? {T}\n'), 'banco.txt'));
+    assert.equal(pki.status, 200, JSON.stringify(pki.body));
+    assert.equal(pki.body.validas, 1);
+    const pkCsv = await preview(asFile('csv', Buffer.from('Enunciado;Alternativa A;Alternativa B;Correta\r\nPK é chave primária?;Sim;Não;A\r\n'), 'banco.csv'));
+    assert.equal(pkCsv.status, 200, JSON.stringify(pkCsv.body));
+    for (const signature of [[0x50, 0x4B, 0x05, 0x06], [0x50, 0x4B, 0x07, 0x08]]) {
+        const zipLike = await preview(asFile('gift', Buffer.concat([Buffer.from(signature), Buffer.alloc(40)]), 'banco.zip'));
+        assert.equal(zipLike.body.code, 'unsupported_format', signature.join(' '));
+    }
     assert.equal((await preview({ formato: 'xml', conteudo: 'x' })).status, 400);
     const empty = await preview({ formato: 'gift', conteudo: '   \n' });
     assert.equal(empty.status, 400);

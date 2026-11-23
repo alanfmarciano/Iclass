@@ -765,7 +765,10 @@ function importBuffer({ conteudo, arquivo } = {}) {
 
 function looksBinary(buffer) {
     const head = buffer.subarray(0, 8);
-    if (head.length >= 4 && head[0] === 0x50 && head[1] === 0x4B) return true; // ZIP (XLSX, DOCX)
+    // ZIP (XLSX, DOCX): a assinatura inteira (PK 03 04, 05 06 do ZIP vazio, 07 08 do
+    // dividido); só 'PK' recusava o texto GIFT que começa com "PKI..." (J2, pendência do A13).
+    if (head.length >= 4 && head[0] === 0x50 && head[1] === 0x4B
+        && ((head[2] === 0x03 && head[3] === 0x04) || (head[2] === 0x05 && head[3] === 0x06) || (head[2] === 0x07 && head[3] === 0x08))) return true;
     if (head.length >= 8 && head.readUInt32BE(0) === 0xD0CF11E0) return true; // .xls, .doc
     if (head.toString('latin1', 0, 5) === '%PDF-') return true;
     return false;
