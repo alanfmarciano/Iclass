@@ -214,6 +214,8 @@ const { nonSchoolDayCalendarItems } = require('../utils/calendarFeed.js');
 const { createAdminQuestionBankRouter } = require('./adminQuestionBank.js');
 const { createAdminPreviewRouter } = require('./adminPreview.js');
 const { createAdminAssignmentsRouter } = require('./adminAssignments.js');
+const { createAdminCoursePackageRouter } = require('./adminCoursePackage.js');
+const { remapCourseKeys } = require('../utils/coursePackage.js');
 const { body, either, list, num, shape, str } = require('../utils/inputSchema.js');
 const { normalizeEvaluationQuestions, questionInputSchema } = require('../utils/questionModel.js');
 
@@ -3806,11 +3808,14 @@ router.use(createAdminStudentRecordsRouter());
 router.use(createAdminCoursesRouter());
 // Rotas novas da fase 3 (ordem_no_createApp do plano), depois do router de cursos:
 // calendário acadêmico (P2), correção do professor (P3-S4a), banco de questões (P3-S9a),
-// tarefas com envio de arquivo (P1-b e P1-d) e pré-visualização como aluno (P5-S6a).
+// tarefas com envio de arquivo (P1-b e P1-d), pacote de curso (P4-S14) e
+// pré-visualização como aluno (P5-S6a).
 router.use(createAdminAcademicRouter());
 router.use(createAdminCorrectionsRouter());
 router.use(createAdminQuestionBankRouter());
 router.use(createAdminAssignmentsRouter());
+// Pacote de curso (P4-S14): exportar e importar entre instalações.
+router.use(createAdminCoursePackageRouter({ uploadErrorMessage, isUploadRequestError }));
 router.use(createAdminPreviewRouter());
 
 
@@ -5906,22 +5911,17 @@ router.post('/api/admin/courses/:id/clone', (req, res) => {
         }
         if (!db.memory.evaluations) db.memory.evaluations = {};
 
-        const materialKeyMap = new Map();
-        const evaluationKeyMap = new Map();
-
-        const cloneMaterialKey = (oldKey) => {
-            if (!oldKey) return oldKey;
-            if (materialKeyMap.has(oldKey)) return materialKeyMap.get(oldKey);
-            const newKey = `${oldKey}_${newId}`;
-            copyContentFile(oldKey, newKey);
-            materialKeyMap.set(oldKey, newKey);
-            return newKey;
-        };
-
-        const cloneEvaluationKey = (oldKey) => {
-            if (!oldKey) return oldKey;
-            if (evaluationKeyMap.has(oldKey)) return evaluationKeyMap.get(oldKey);
-            const newKey = `${oldKey}_${newId}`;
+        // Chaves novas '<chave>_<código>' pelo mesmo remapeamento do pacote de curso
+        // (remapCourseKeys, utils/coursePackage.js, P4-S14); aqui se copiam os arquivos e
+        // as avaliações de cada chave remapeada.
+        const remapped = remapCourseKeys({
+            course: src,
+            classes: (db.memory.classes || []).filter(cls => String(cls.courseId) === String(src.id)),
+            newCourseId: newId,
+            mapKey: oldKey => `${oldKey}_${newId}`,
+        });
+        remapped.materialKeys.forEach((newKey, oldKey) => copyContentFile(oldKey, newKey));
+        remapped.evaluationKeys.forEach((newKey, oldKey) => {
             copyContentFile(oldKey, newKey);
             if (db.memory.evaluations[oldKey]) {
                 const evaluation = JSON.parse(JSON.stringify(db.memory.evaluations[oldKey]));
@@ -5929,81 +5929,20 @@ router.post('/api/admin/courses/:id/clone', (req, res) => {
                 evaluation.sourceEvaluationKey = evaluation.sourceEvaluationKey ? `${evaluation.sourceEvaluationKey}_${newId}` : undefined;
                 db.memory.evaluations[newKey] = evaluation;
             }
-            evaluationKeyMap.set(oldKey, newKey);
-            return newKey;
-        };
-
-        const cloneModule = (mod) => {
-            const m = JSON.parse(JSON.stringify(mod));
-            const units = m.units || m.items || [];
-            units.forEach((u) => {
-                if (u.apostilaKey) u.apostilaKey = cloneMaterialKey(u.apostilaKey);
-                if (u.avaliacaoKey) u.avaliacaoKey = cloneEvaluationKey(u.avaliacaoKey);
-            });
-            return m;
-        };
+        });
 
         const newCourse = {
-            ...JSON.parse(JSON.stringify(src)),
+            ...remapped.course,
             id: newId,
             name: newName,
             schoolId,
-            structure: (src.structure || []).map(cloneModule),
             status: 'active',
             deleted: false,
             deletedAt: null,
             clonedFrom: src.id,
         };
         db.memory.courses.push(newCourse);
-        const clonedClasses = (db.memory.classes || []).filter(cls => String(cls.courseId) === String(src.id)).map(sourceClass => {
-            const cloned = JSON.parse(JSON.stringify(sourceClass));
-            cloned.courseId = newId;
-            const sourceOverrides = ensureOverrides(sourceClass);
-            const materialOverrides = {};
-            Object.entries(sourceOverrides.materials).forEach(([baseKey, entry]) => {
-                const variantKey = entry?.key || entry;
-                materialOverrides[cloneMaterialKey(baseKey)] = { ...(typeof entry === 'object' ? entry : {}), key: cloneMaterialKey(variantKey) };
-            });
-            const evaluationOverrides = {};
-            Object.entries(sourceOverrides.evaluations).forEach(([baseKey, entry]) => {
-                const variantKey = entry?.key || entry;
-                evaluationOverrides[cloneEvaluationKey(baseKey)] = { ...(typeof entry === 'object' ? entry : {}), key: cloneEvaluationKey(variantKey) };
-            });
-            const unitNames = {};
-            Object.entries(sourceOverrides.unitNames || {}).forEach(([key, value]) => {
-                unitNames[evaluationKeyMap.get(key) || materialKeyMap.get(key) || key] = value;
-            });
-            cloned.contentOverrides = {
-                materials: materialOverrides,
-                evaluations: evaluationOverrides,
-                unitNames,
-                structure: Array.isArray(sourceOverrides.structure) ? sourceOverrides.structure.map(cloneModule) : null,
-                extraUnits: (sourceOverrides.extraUnits || []).map(extra => ({
-                    ...JSON.parse(JSON.stringify(extra)),
-                    unit: {
-                        ...JSON.parse(JSON.stringify(extra.unit || {})),
-                        apostilaKey: extra.unit?.apostilaKey ? cloneMaterialKey(extra.unit.apostilaKey) : undefined,
-                        avaliacaoKey: extra.unit?.avaliacaoKey ? cloneEvaluationKey(extra.unit.avaliacaoKey) : undefined,
-                    },
-                })),
-            };
-            cloned.releasedItems = Object.fromEntries(Object.entries(sourceClass.releasedItems || {}).map(([key, value]) => {
-                if (key.startsWith('Gabarito_')) return [`Gabarito_${cloneEvaluationKey(key.slice('Gabarito_'.length))}`, value];
-                return [materialKeyMap.get(key) || evaluationKeyMap.get(key) || key, value];
-            }));
-            // Liberação agendada (P3-S12, D27): as chaves seguem as do curso clonado, como
-            // releasedItems (antes a turma do clone ficava com a chave antiga e a varredura
-            // ligava um item que não existe no curso novo). O adiamento era da aplicação do
-            // curso de origem e não vem junto.
-            if (sourceClass.releaseSchedule && typeof sourceClass.releaseSchedule === 'object' && !Array.isArray(sourceClass.releaseSchedule)) {
-                cloned.releaseSchedule = Object.fromEntries(Object.entries(sourceClass.releaseSchedule).map(([key, entry]) => {
-                    const { adiadoEm, ...rest } = entry && typeof entry === 'object' ? entry : {};
-                    const clonedKey = key.startsWith('Gabarito_')
-                        ? `Gabarito_${cloneEvaluationKey(key.slice('Gabarito_'.length))}`
-                        : (materialKeyMap.get(key) || evaluationKeyMap.get(key) || key);
-                    return [clonedKey, JSON.parse(JSON.stringify(rest))];
-                }));
-            }
+        const clonedClasses = remapped.classes.map(cloned => {
             cloned.onlineExamConfigs = {};
             cloned.activeExamKey = null;
             cloned.activeApplicationId = null;

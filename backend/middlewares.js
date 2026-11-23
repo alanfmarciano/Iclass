@@ -947,9 +947,10 @@ function validateProfessorRequestScope(req, account) {
     }
 
     const courseIds = [body.courseId, query.courseId].filter(Boolean).map(value => String(value).trim());
-    // Curso pelo caminho: estrutura, alterar e excluir (/courses/:id) e duplicar (a
-    // origem do /clone também precisa estar no escopo; SEG-12).
-    const pathCourse = rawPath.match(/^\/courses\/([^/]+)(?:\/(?:structure|clone))?$/i);
+    // Curso pelo caminho: estrutura, alterar e excluir (/courses/:id), duplicar (a
+    // origem do /clone também precisa estar no escopo; SEG-12) e exportar o pacote do
+    // curso (/package, P4-S14).
+    const pathCourse = rawPath.match(/^\/courses\/([^/]+)(?:\/(?:structure|clone|package))?$/i);
     if (pathCourse) courseIds.push(safeDecode(pathCourse[1]));
     const forbiddenCourse = courseIds.filter(Boolean).find(courseId => !adminCanAccessCourse(account, courseId));
     if (forbiddenCourse) return outOfScopeMessage(account, 'O curso solicitado');

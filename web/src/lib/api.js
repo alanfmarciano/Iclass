@@ -95,7 +95,8 @@ const LONG_ADMIN_OPERATIONS = [
   /^\/api\/admin\/storage\/compact$/,
   /^\/api\/admin\/flush-exam-state$/,
   /^\/api\/admin\/reset$/,
-  /^\/api\/admin\/courses\/[^/]+\/(clone|purge)$/,
+  /^\/api\/admin\/courses\/[^/]+\/(clone|purge|package)$/,
+  /^\/api\/admin\/course-packages\/(preview|import)$/, // pacote de curso (P4-S14)
   /^\/api\/admin\/archived-courses\//,
   /^\/api\/admin\/assignments\/[^/]+\/export$/, // ZIP com as entregas de uma tarefa
 ]

@@ -184,7 +184,13 @@ Registra a presença por aula. Escolha a data, marque quem veio e salve. A prese
 
 Lista os cursos da instituição e as turmas de cada um. Daqui você cria turmas e abre ou fecha o autocadastro dos alunos em cada uma.
 
-<!-- P2 (B6, B8, B10) escreve aqui: critérios de avaliação, disciplinas, período letivo e encerrar turma. P4 (A14): exportar e importar curso. -->
+<!-- P2 (B6, B8, B10) escreve aqui: critérios de avaliação, disciplinas, período letivo e encerrar turma. -->
+
+**Levar um curso para outro IClass.** Escolha o curso e clique em **Exportar curso**. O IClass baixa um arquivo `.iclass-curso.zip` com a estrutura (módulos e unidades), as apostilas com as imagens, as avaliações, os arquivos anexados às unidades, os itens da Biblioteca do curso, as questões do banco usadas nas provas, as disciplinas, as grades de horário e o nome das turmas como modelo. O pacote não leva alunos, notas nem presença. O arquivo tem as provas e os gabaritos: guarde como guardaria a prova impressa (não mande por grupo de mensagens nem deixe num computador da sala).
+
+**Trazer um curso de outro IClass.** Clique em **Importar curso** e escolha o arquivo `.iclass-curso.zip`. Antes de gravar, o IClass confere o arquivo e mostra o que vai entrar: quantos módulos, apostilas, avaliações, arquivos e questões. Se já existe um curso com o mesmo código, a tela avisa ("Já existe um curso FUTEC: será importado como FUTEC2") e você pode trocar o código e o nome. Escolha também a escola. Apostilas, avaliações e arquivos com o nome de um que já existe aqui ganham o código do curso no fim, para não misturar com os daqui, e as apostilas são ajustadas para continuar mostrando as imagens. Marque **Criar as turmas modelo** para já ter as turmas, vazias, com os horários do curso de origem; os alunos se cadastram depois.
+
+A importação é tudo ou nada: se o arquivo estiver corrompido, for alterado depois da prévia ou tiver algo que não é de um curso (um programa, um backup do IClass, um caminho para fora das pastas do pacote), nada é gravado e a tela diz o motivo. Pacote feito por uma versão mais nova do IClass só entra depois de atualizar este. Exportar e importar ficam na Auditoria.
 
 ## Período letivo {#periodo-letivo}
 
