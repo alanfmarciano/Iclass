@@ -976,6 +976,14 @@ test('[UC-NOTAS-005] entrega anulada com "desconsiderar" aparece como "anulada" 
     assert.equal(xlsx.status, 200);
     const sheet = gradebook.gradebookSheet(gb.body);
     assert.ok(JSON.stringify(sheet).includes('anulada'));
+    // O boletim também diz (B10, rodada de ajuste 1): a linha da prova sem nota leva anulada.
+    const report = await as('admin', 'get', `/api/admin/student/report?email=bia@grading.local&courseId=${COURSE}&studentClass=1DES`);
+    assert.equal(report.status, 200, JSON.stringify(report.body));
+    const exams = report.body.modules.flatMap(module => module.exams);
+    const line = exams.find(exam => exam.examKey === 'Av_P2');
+    assert.equal(line.grade, null);
+    assert.equal(line.anulada, true, JSON.stringify(line));
+    assert.equal(exams.filter(exam => exam.anulada).length, 1);
 });
 
 test('[UC-NOTAS-005] colunas de recuperação e segunda chamada dizem a finalidade no quadro e no CSV', async () => {

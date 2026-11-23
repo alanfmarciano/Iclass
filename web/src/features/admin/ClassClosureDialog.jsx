@@ -97,7 +97,10 @@ export function ClassClosureDialog({ open, mode = 'close', targets = [], onClose
 
   const closable = list.filter(target => entries[keyOf(target)]?.summary?.podeEncerrar === true)
   const loading = list.some(target => !entries[keyOf(target)] || entries[keyOf(target)].loading)
-  const wordOk = word.trim().toUpperCase() === CLOSE_WORD
+  // A palavra como está, em maiúsculas (o servidor confere igual); digitada em minúsculas,
+  // o campo diz o que falta.
+  const wordOk = word.trim() === CLOSE_WORD
+  const wordCase = !wordOk && word.trim().toUpperCase() === CLOSE_WORD
 
   async function confirmClose(reason) {
     const done = []
@@ -148,7 +151,8 @@ export function ClassClosureDialog({ open, mode = 'close', targets = [], onClose
       </ul>
       {!loading && !closable.length && <p className="text-sm text-muted">Nenhuma turma pode ser encerrada agora: resolva o que está acima e abra de novo.</p>}
       {!loading && closable.length > 0 && closable.length < list.length && <p className="text-sm text-muted">Só {closable.length === 1 ? 'a turma sem pendência é encerrada' : `as ${closable.length} turmas sem pendência são encerradas`}.</p>}
-      <Input id={wordId} label={`Digite ${CLOSE_WORD} para confirmar`} value={word} onChange={event => setWord(event.target.value)} autoComplete="off" />
+      <Input id={wordId} label={`Digite ${CLOSE_WORD} para confirmar`} value={word} onChange={event => setWord(event.target.value)} autoComplete="off" autoCapitalize="characters" spellCheck={false}
+        error={wordCase ? `Digite em letras maiúsculas: ${CLOSE_WORD}.` : undefined} />
     </ConfirmDialog>
   )
 }

@@ -384,7 +384,8 @@ function structureModuleIds(...structures) {
 // Aulas previstas e faltas que o aluno ainda pode ter (C8 do P2), na turma inteira e por
 // disciplina, para o boletim (e, no B6, o resumo do aluno). Aulas previstas só com período
 // letivo na turma (academicCalendar.plannedLessons no período inteiro, sem os dias não
-// letivos); a frequência mínima é a dos critérios do curso (course.avaliacao): sem
+// letivos); a frequência mínima é a dos critérios do curso (course.avaliacao; na turma
+// encerrada, a cópia do encerramento, effectiveGradingSources): sem
 // critérios (regra antiga) não há mínima, e faltasPermitidasRestantes fica null, como no
 // motor de critérios (gradingRules).
 // records: as presenças do aluno na turma (dedupeByDate). As faltas que gastam a cota são
@@ -396,7 +397,8 @@ function structureModuleIds(...structures) {
 function attendanceAllowanceFor(memory, { course = null, cls = null, records = null, stats = null } = {}) {
     const term = cls ? academicCalendar.termForClass(memory, cls) : null;
     const planned = term ? academicCalendar.plannedLessons(memory, cls) : null;
-    const criterios = gradingRules.normalizeCriteria(course && course.avaliacao);
+    // Turma encerrada (B10): a frequência mínima dos critérios copiados no encerramento.
+    const criterios = gradingRules.normalizeCriteria(effectiveGradingSources(course, cls).curso);
     const frequenciaMinima = criterios ? criterios.frequenciaMinima : null;
     const aulasPrevistas = planned ? planned.total : null;
     const noPeriodo = Array.isArray(records)
@@ -1108,9 +1110,13 @@ function buildStudentReportModules({ submissions, allSubmissions = submissions, 
     };
 
     // Prova da estrutura sem nota porque a entrega espera a correção do professor.
-    const awaitingByExam = new Set(buildGradeGroups(submissions)
+    const allGroups = buildGradeGroups(submissions);
+    const awaitingByExam = new Set(allGroups
         .filter(group => group.score === null && group.aguardandoCorrecao)
         .map(group => group.examKey));
+    // Prova sem nota porque a entrega foi anulada com 'desconsiderar' (B10): o boletim diz
+    // "anulada", como o quadro.
+    const annulledByExam = new Set(allGroups.filter(group => group.anulada === true).map(group => group.examKey));
     const pendingFor = (examKey, scopeId = null) => (allSubmissions || []).filter(item => item.examKey === examKey
         && item.gradePublished !== true
         && (!scopeId || (item.applicationId ? `application:${item.applicationId}` : 'legacy') === scopeId)).length;
@@ -1156,6 +1162,7 @@ function buildStudentReportModules({ submissions, allSubmissions = submissions, 
         policy: null,
         lastAt: null,
         ...(awaitingByExam.has(examKey) ? { aguardandoCorrecao: true } : {}),
+        ...(!awaitingByExam.has(examKey) && annulledByExam.has(examKey) ? { anulada: true } : {}),
         ...itemFields(examKey),
     });
     examIndex.forEach((meta, examKey) => {

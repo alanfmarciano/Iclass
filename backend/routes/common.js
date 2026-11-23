@@ -45,6 +45,7 @@ function panelCanReadContent(requester) {
 const { logError, oneLine } = require('../utils/errorLog.js');
 const { rateLimit } = require('../utils/rateLimit.js');
 const { body, oneOf, str } = require('../utils/inputSchema.js');
+const { isClassClosed } = require('../utils/academicCalendar.js');
 
 // Status leve do servidor (SEM auth): identidade da instancia + relogio.
 // O cliente compara o instanceId; se mudou (servidor reiniciado), forca novo login.
@@ -375,7 +376,7 @@ function isCourseDeleted(course) {
 router.get('/api/courses', (req, res) => {
     const hasAdminCredentials = !!req.get('x-admin-session');
     if (!hasAdminCredentials) {
-        const openCourseIds = new Set((db.memory.classes || []).filter(cls => cls.registrationEnabled).map(cls => cls.courseId));
+        const openCourseIds = new Set((db.memory.classes || []).filter(cls => cls.registrationEnabled && !isClassClosed(cls)).map(cls => cls.courseId));
         return res.json((db.memory.courses || [])
             .filter(course => !isCourseDeleted(course) && openCourseIds.has(course.id))
             .map(course => ({ id: course.id, name: course.name || '' })));

@@ -779,8 +779,10 @@ function createAdminAcademicRouter() {
             if (academicCalendar.isClassClosed(cls)) {
                 return res.json({ success: true, semMudanca: true, encerramento: academicCalendar.classClosureView(cls) });
             }
-            if (text(req.body.confirm).toUpperCase() !== CLOSE_CONFIRM_WORD) {
-                return fieldError(res, `Para encerrar, digite ${CLOSE_CONFIRM_WORD}.`, 'confirm');
+            // A palavra digitada como está, em maiúsculas (o desenho pede ENCERRAR): a
+            // confirmação é de propósito, e a tela mostra o mesmo campo.
+            if (text(req.body.confirm) !== CLOSE_CONFIRM_WORD) {
+                return fieldError(res, `Para encerrar, digite ${CLOSE_CONFIRM_WORD} (em letras maiúsculas).`, 'confirm');
             }
             const reason = text(req.body.reason);
             if (reason && reason.length < 3) return fieldError(res, 'O motivo precisa ter de 3 a 500 caracteres (ou fique em branco).', 'reason');
@@ -797,6 +799,9 @@ function createAdminAcademicRouter() {
                 schemaVersion: 1,
                 situacao: 'encerrada',
                 em: now,
+                // Data civil do encerramento (fuso da escola): o 'até' da matrícula dos
+                // alunos da turma no histórico de matrícula (enrollmentHistory.js).
+                data: settingsUtil.today(),
                 por,
                 ...(reason ? { motivo: reason } : {}),
                 criterios: {

@@ -61,6 +61,7 @@ const {
     buildClassGradebook,
     buildGradeGroups,
     classGradingContext,
+    effectiveGradingSources,
     gradeItemProviderList,
     planItemView,
     planWarnings,
@@ -441,7 +442,9 @@ function planView(account, { course, cls, structure }) {
             notasPublicadas: count.publicadas,
         };
     });
-    const etapas = criteriaView(course.avaliacao).etapas;
+    // Etapas dos critérios que valem para a turma (encerrada: os copiados no encerramento,
+    // B10), como o resto do plano.
+    const etapas = criteriaView(effectiveGradingSources(course, cls).curso).etapas;
     return {
         courseId: grading.courseId,
         studentClass: grading.studentClass,

@@ -112,6 +112,24 @@ function frozenGradingCriteria(cls) {
     return criterios && typeof criterios === 'object' && !Array.isArray(criterios) ? criterios : null;
 }
 
+// Data civil 'AAAA-MM-DD' (fuso da escola) do encerramento em vigor, ou null com a turma
+// aberta: é o 'até' da matrícula na turma encerrada (histórico de matrícula, B10). O
+// encerramento grava 'data'; registro sem ela (gravado antes, ou à mão) usa o instante 'em'
+// no fuso da escola (schoolTime, carregado só aqui, porque este arquivo não lê settings.js
+// no carregamento).
+function classClosureDate(cls) {
+    if (!isClassClosed(cls)) return null;
+    const record = closureRecord(cls);
+    if (isValidDate(record.data)) return record.data;
+    const ms = typeof record.em === 'number' ? record.em : Date.parse(record.em);
+    if (!Number.isFinite(ms)) return null;
+    try {
+        return require('./schoolTime.js').schoolDateOf(ms);
+    } catch (error) {
+        return new Date(ms).toISOString().slice(0, 10);
+    }
+}
+
 // O encerramento para a tela e as respostas (sem a cópia dos critérios), ou null quando a
 // turma nunca foi encerrada.
 function classClosureView(cls) {
@@ -125,6 +143,7 @@ function classClosureView(cls) {
         encerrada,
         situacao: encerrada ? 'encerrada' : 'reaberta',
         em: record.em ?? null,
+        data: encerrada ? classClosureDate(cls) : null,
         por: text(record.por) || null,
         motivo: text(record.motivo) || null,
         reabertaEm: encerrada ? null : (record.reabertaEm ?? null),
@@ -702,6 +721,7 @@ module.exports = {
     classClosedBody,
     CLOSURE_SITUACOES,
     isClassClosed,
+    classClosureDate,
     frozenGradingCriteria,
     classClosureView,
     assertClassOpen,

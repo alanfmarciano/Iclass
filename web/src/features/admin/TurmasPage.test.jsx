@@ -135,6 +135,9 @@ describe('TurmasPage · cursos', () => {
     expect(screen.getByText(/Encerrada em 10\/07\/2026 por admin@teste.local/)).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Encerrar turma 2DES' })).toBeNull()
     expect(screen.getByRole('button', { name: 'Reabrir turma 2DES' })).toBeInTheDocument()
+    // A encerrada não tem "Excluir" (o servidor recusa com 409: reabra antes).
+    expect(screen.getByRole('button', { name: 'Excluir turma 1DES' })).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Excluir turma 2DES' })).toBeNull()
     await user.click(screen.getByRole('button', { name: 'Encerrar turma 1DES' }))
     expect(await screen.findByRole('dialog', { name: 'Encerrar a turma 1DES?' })).toBeInTheDocument()
     expect(mocks.get).toHaveBeenCalledWith('/api/admin/class/close-summary?courseId=DES&name=1DES')

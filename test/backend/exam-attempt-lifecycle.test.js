@@ -1701,3 +1701,35 @@ test('[UC-TENTATIVA-001] "+N min" de um aluno vale só para a tentativa em andam
     assert.ok(remaining <= DURATION_MIN * 60 && remaining >= DURATION_MIN * 60 - 3, `a tentativa 2 nasce com a duração normal: ${remaining}`);
     await control(application.id, 'finish', { inProgressPolicy: 'discard' });
 });
+
+// Turma encerrada (B10, rodada de ajuste 1): o envio automático atrasado não troca a entrega
+// do servidor (a nota mudaria numa turma encerrada); o aluno recebe a confirmação de sempre.
+// Falhava antes: canReplaceServerFinalization não olhava o portão da turma.
+test('[UC-TENTATIVA-001] turma encerrada: o envio atrasado não substitui a entrega do servidor', async () => {
+    const { carla } = students;
+    const application = await createApplication({ timerMode: 'per_attempt' });
+    const started = await startAttempt(carla, application.id);
+    await autosave(carla, application.id, started.attemptId, { 1: 'B' }).expect(200);
+    expireAttempt(started.attemptId, 2 * MIN);
+    await request(app)
+        .get(`/api/admin/monitor-status/${encodeURIComponent(studentClass)}/${encodeURIComponent(examKey)}`)
+        .set('x-admin-session', adminToken)
+        .query({ courseId, applicationId: application.id })
+        .expect(200);
+    const [server] = submissionsOf(carla, application.id);
+    assert.equal(server.submissionSource, 'deadline_server_auto_submit');
+    const cls = db.memory.classes.find(item => item.name === studentClass);
+    cls.encerramento = { schemaVersion: 1, situacao: 'encerrada', em: Date.now(), por: adminEmail, criterios: {} };
+    try {
+        const late = await submit(carla, application.id, started, { 1: 'A', 2: 'B' }).expect(200);
+        assert.equal(late.body.replacedServerFinalization, undefined);
+        assert.equal(late.body.duplicate, true);
+        const [kept] = submissionsOf(carla, application.id);
+        assert.equal(kept.submissionSource, 'deadline_server_auto_submit');
+        assert.equal(kept.correctCount, 0);
+        assert.equal(kept.submittedAfterDeadline, undefined);
+    } finally {
+        delete cls.encerramento;
+    }
+    await control(application.id, 'finish');
+});

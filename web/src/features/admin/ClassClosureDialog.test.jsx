@@ -54,7 +54,15 @@ describe('Encerrar turma', () => {
     expect(confirm).toBeDisabled()
     // O primeiro passo é digitar a palavra: o foco começa nela, não no motivo.
     await waitFor(() => expect(within(dialog).getByLabelText('Digite ENCERRAR para confirmar')).toHaveFocus())
-    await user.type(within(dialog).getByLabelText('Digite ENCERRAR para confirmar'), 'encerrar')
+    // Em minúsculas não vale (o servidor também recusa): o campo diz o que falta.
+    const word = within(dialog).getByLabelText('Digite ENCERRAR para confirmar')
+    await user.type(word, 'encerrar')
+    expect(confirm).toBeDisabled()
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Digite em letras maiúsculas: ENCERRAR.')
+    expect(word).toHaveAttribute('autocapitalize', 'characters')
+    await user.clear(word)
+    await user.type(word, 'ENCERRAR')
+    expect(within(dialog).queryByText('Digite em letras maiúsculas: ENCERRAR.')).not.toBeInTheDocument()
     await user.type(within(dialog).getByLabelText('Motivo (opcional)'), 'fim do semestre')
     expect(confirm).toBeEnabled()
     await user.click(confirm)

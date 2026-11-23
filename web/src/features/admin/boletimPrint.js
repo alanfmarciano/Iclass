@@ -25,6 +25,16 @@ function gradeCell(value, criterio) {
   return isPassingGrade(value, criterio) === false ? html`<b class="nota-baixa">${grade(value)}</b>` : html`<b>${grade(value)}</b>`
 }
 
+// Nota da avaliação: sem nota, diz por quê quando o servidor diz (B10): a entrega foi
+// anulada (integridade, 'desconsiderar') ou espera a correção do professor.
+function examGradeCell(exam, criterio) {
+  if (exam.grade === null || exam.grade === undefined) {
+    if (exam.aguardandoCorrecao) return 'aguardando correção'
+    if (exam.anulada) return 'anulada'
+  }
+  return gradeCell(exam.grade, criterio)
+}
+
 // "Recuperação de" do plano, como o servidor manda (normalizeRecoveryTarget em
 // gradingRules.js): 'final' ou 'etapa:N', com N a ordem da etapa.
 export function recoveryLabel(target, etapaNome = new Map()) {
@@ -142,7 +152,7 @@ export function boletimDocument(report, identity = {}) {
           examExtra(exam, etapaNome) || '—',
           `${exam.attempts || 0}${exam.pendingAttempts ? ` (+${exam.pendingAttempts} a publicar)` : ''}`,
           date(exam.lastAt),
-          gradeCell(exam.grade, criterio),
+          examGradeCell(exam, criterio),
         ])
       })
     })

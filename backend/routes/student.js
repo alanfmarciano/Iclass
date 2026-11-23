@@ -72,7 +72,6 @@ const {
 } = require('../utils/examAttempts.js');
 const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, integrityDecision, isAwaitingCorrection, normalizeScore, roundGrade } = require('../utils/submissionAttempts.js');
 const { scopeSubmissionsToContext, manualAssessmentTitle, manualItemOfClass, structureModuleId } = require('../utils/gradebook.js');
-const { normalizeCriteria } = require('../utils/gradingRules.js');
 const { buildStudentGradesSummary } = require('../utils/studentReport.js');
 const { createStudentSession, hasSessionCredential, revokeStudentSession, pruneExpiredSessions, studentSessionByEmail } = require('../utils/authSessions.js');
 const { applicationSessionPolicy, lockedAttemptMessage, noteAttemptIp, noteSessionEnded, recordSessionReplaced, requestUserAgent } = require('../utils/examSessionIntegrity.js');
@@ -479,7 +478,8 @@ router.get('/api/classes', (req, res) => {
     const classes = readJSON(DB_CLASSES_FILE);
     const courses = db.memory.courses || [];
     const isCourseDeleted = (course) => course && (course.deleted === true || course.status === 'deleted' || course.status === 'inactive' || !!course.deletedAt);
-    const activeClasses = classes.filter(c => c.registrationEnabled).map(c => {
+    // Turma encerrada (B10) não recebe matrícula nova: some da lista do cadastro.
+    const activeClasses = classes.filter(c => c.registrationEnabled && !isClassClosed(c)).map(c => {
         const course = courses.find(course => course.id === c.courseId);
         if (!course || isCourseDeleted(course)) return null;
         return {
@@ -1014,7 +1014,7 @@ router.post('/api/student/register', STUDENT_SCHEMAS.register, async (req, res) 
     if (!policy.ok) return res.status(400).json(passwordPolicyRefusal(policy));
 
     const classes = readJSON(DB_CLASSES_FILE);
-    const matchedClass = classes.find(c => c.name === studentClass && c.courseId === courseId && c.registrationEnabled);
+    const matchedClass = classes.find(c => c.name === studentClass && c.courseId === courseId && c.registrationEnabled && !isClassClosed(c));
     if (!matchedClass) {
         return res.status(400).json({ success: false, error: 'A turma selecionada não existe ou não está liberada para cadastro.', field: 'studentClass' });
     }
@@ -1162,7 +1162,7 @@ router.get('/api/student/enrollments', validateStudentSession, (req, res) => {
 router.post('/api/student/enrollments/request', validateStudentSession, STUDENT_SCHEMAS.enrollmentRequest, async (req, res) => {
     const courseId = String(req.body.courseId || '').trim();
     const studentClass = String(req.body.studentClass || '').trim();
-    const matchedClass = (db.memory.classes || []).find(item => item.courseId === courseId && item.name === studentClass && item.registrationEnabled);
+    const matchedClass = (db.memory.classes || []).find(item => item.courseId === courseId && item.name === studentClass && item.registrationEnabled && !isClassClosed(item));
     if (!matchedClass) return res.status(400).json({ error: 'A turma não está disponível para matrícula.' });
     const student = req.studentAccount;
     const memberships = Array.isArray(student.classes) ? student.classes : [];
@@ -1832,7 +1832,9 @@ router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submi
         // O servidor já tinha entregue no fim do tempo com as respostas salvas; o envio
         // automático do navegador (respostas congeladas no zero) ainda vale dentro da
         // janela de tolerância e fica marcado com o atraso.
-        if (application && canReplaceServerFinalization(previousSameAttempt, { auto: auto === true, answers, now: nowTs })) {
+        // Turma encerrada (B10): a entrega do servidor fica como está (o envio atrasado não
+        // troca nota numa turma encerrada) e o aluno recebe a confirmação de sempre.
+        if (application && !isClassClosed(cls) && canReplaceServerFinalization(previousSameAttempt, { auto: auto === true, answers, now: nowTs })) {
             replaceServerFinalization(previousSameAttempt, {
                 application,
                 onlineConfig,
@@ -2367,7 +2369,9 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
     // avaliação manual arquivada fica guardada e sai da média, como no boletim.
     const gradesCls = (db.memory.classes || []).find(item => item.name === cls.name && String(item.courseId || '') === String(cls.courseId || '')) || cls;
     const gradesSummary = buildStudentGradesSummary(db.memory, { email, course, cls: gradesCls, hoje: settingsUtil.today() });
-    const withCriteria = !!(course && normalizeCriteria(course.avaliacao));
+    // Critérios ligados pela mesma conta do resumo (turma encerrada: os copiados no
+    // encerramento, B10), não pelo curso de agora.
+    const withCriteria = !!course && gradesSummary.regraAntiga === false;
     const isArchivedManual = examKey => !!(manualItemOfClass(gradesCls, examKey) || {}).arquivadoEm;
 
     const modules = structure.map((module, moduleIndex) => {

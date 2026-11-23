@@ -96,6 +96,16 @@ describe('boletim impresso', () => {
     expect(recoveryLabel('qualquer', new Map())).toBe('recuperação')
   })
 
+  // B10, rodada de ajuste 1: a prova sem nota diz por quê, como o quadro (antes saía "—").
+  it('[UC-NOTAS-008] prova anulada ou aguardando correção diz isso no lugar da nota', () => {
+    const rep = report([null, null, 7])
+    rep.modules[0].exams[0] = { ...rep.modules[0].exams[0], anulada: true }
+    rep.modules[0].exams[1] = { ...rep.modules[0].exams[1], aguardandoCorrecao: true }
+    const html = boletimHtml(rep)
+    expect(html).toMatch(/<td[^>]*>anulada<\/td>/)
+    expect(html).toMatch(/<td[^>]*>aguardando correção<\/td>/)
+  })
+
   it('[UC-NOTAS-008] cabeçalho, rodapé e fuso da escola do curso do boletim, não do curso aberto no painel', () => {
     const rep = report([8], null, {
       institution: 'Escola do Boletim',

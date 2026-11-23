@@ -205,6 +205,8 @@ const enrollmentHistory = require('../utils/enrollmentHistory.js');
 // Datas da matrícula (B10 / P2-S9): o que muda as turmas do aluno passa por aqui, para a
 // matrícula nova ganhar 'desde' e a que saiu ir para o histórico (utils/enrollmentHistory.js).
 const CLOSED_CLASS_ENROLL_REFUSAL = 'Esta turma foi encerrada e não recebe matrícula nova. Para matricular, reabra a turma em Turmas.';
+const CLOSED_CLASS_SETTINGS_REFUSAL = 'Esta turma foi encerrada: a grade da semana, a tolerância, o limiar de risco e o período letivo ficam como estavam. Para mudar, reabra a turma em Turmas.';
+const CLOSED_CLASS_DELETE_REFUSAL = 'Esta turma foi encerrada e não pode ser excluída. Para excluir, reabra a turma em Turmas (com o motivo).';
 function enrollmentChange(student, nextEntries) {
     return enrollmentHistory.applyClassMembershipChange(db.memory, student, nextEntries, { today: settingsUtil.today(), isClosed: isClassClosed });
 }
@@ -3286,18 +3288,26 @@ router.post('/api/admin/class/update', (req, res) => {
         // período encerrado, só se já era o dela).
         const term = resolveClassTermInput(db.memory, matchedAdmin, course, req.body.periodoLetivoId, cls.periodoLetivoId);
         if (!term.ok) return res.status(term.status).json({ success: false, error: term.error, field: term.field, ...(term.code ? { code: term.code } : {}) });
+        let nextAttendanceConfig = null;
+        if (req.body.attendanceConfig !== undefined) {
+            const disciplinaIds = new Set(((course && course.disciplinas) || []).map(d => d.id));
+            nextAttendanceConfig = attendanceUtil.sanitizeAttendanceConfig(req.body.attendanceConfig, disciplinaIds);
+            if (!nextAttendanceConfig) return res.status(400).json({ error: 'Configuração de presença inválida.' });
+        }
+        // Turma encerrada (B10): a grade da semana, a tolerância, o limiar de risco e o
+        // período letivo mudam as aulas previstas, as faltas permitidas e a situação; ficam
+        // como estavam até reabrir. Turno e cadastro aberto não mexem em nota nem presença.
+        const changesAttendance = nextAttendanceConfig
+            && JSON.stringify(nextAttendanceConfig) !== JSON.stringify(attendanceUtil.sanitizeAttendanceConfig(attendanceUtil.effectiveAttendanceConfig(cls), new Set(((course && course.disciplinas) || []).map(d => d.id))));
+        const changesTerm = term.change && (term.value || null) !== (cls.periodoLetivoId || null);
+        if ((changesAttendance || changesTerm) && !assertClassOpen(cls, { res, message: CLOSED_CLASS_SETTINGS_REFUSAL })) return;
         if (req.body.period !== undefined) {
             const period = normalizeClassPeriod(req.body.period);
             if (!period) return res.status(400).json({ error: 'Período inválido. Selecione Manhã, Tarde ou Noite.' });
             cls.period = period;
         }
         if (req.body.registrationEnabled !== undefined) cls.registrationEnabled = !!req.body.registrationEnabled;
-        if (req.body.attendanceConfig !== undefined) {
-            const disciplinaIds = new Set(((course && course.disciplinas) || []).map(d => d.id));
-            const cfg = attendanceUtil.sanitizeAttendanceConfig(req.body.attendanceConfig, disciplinaIds);
-            if (!cfg) return res.status(400).json({ error: 'Configuração de presença inválida.' });
-            cls.attendanceConfig = cfg;
-        }
+        if (nextAttendanceConfig) cls.attendanceConfig = nextAttendanceConfig;
         if (term.change) {
             if (term.value) cls.periodoLetivoId = term.value;
             else delete cls.periodoLetivoId;
@@ -3394,6 +3404,10 @@ router.post('/api/admin/class/delete', (req, res) => {
         const classes = readJSON(DB_CLASSES_FILE);
         const removed = classes.find(c => c.name === name && c.courseId === courseId);
         if (!removed) return res.status(404).json({ error: 'Turma não encontrada.' });
+        // Turma encerrada (B10) não é excluída: excluir e criar de novo com o mesmo nome
+        // soltaria as notas dela do portão e perderia a cópia dos critérios sem o motivo
+        // que a reabertura pede. Para excluir, reabra (com o motivo) antes.
+        if (!assertClassOpen(removed, { res, message: CLOSED_CLASS_DELETE_REFUSAL })) return;
         const filtered = classes.filter(c => !(c.name === name && c.courseId === courseId));
         recordAcademicAudit(req, matchedAdmin, 'class_deleted', { courseId, className: name }, removed, null);
         writeJSON(DB_CLASSES_FILE, filtered);

@@ -321,13 +321,14 @@ No formulário da turma, **Turno** é Manhã, Tarde ou Noite, e **Período letiv
 - o **professor responsável** (só informativo: não muda quem acessa a turma);
 - os **módulos do curso** que são dela. Cada módulo fica em uma disciplina só: o módulo que já está em outra aparece travado, com o nome dela. Assim o boletim liga a frequência, que é por disciplina, às notas, que são por módulo.
 
-**Encerrar a turma.** No fim do semestre ou do curso, clique em **Encerrar turma** na turma. O IClass mostra quantos alunos estão em cada situação (Aprovado, Em recuperação, Reprovado, Cursando) e o que ainda impede encerrar: prova aberta no Monitor, prova agendada, prova ou tarefa esperando correção. Resolva isso primeiro. Depois digite **ENCERRAR**, escreva o motivo se quiser e confirme. Encerrada, a turma:
+**Encerrar a turma.** No fim do semestre ou do curso, clique em **Encerrar turma** na turma. O IClass mostra quantos alunos estão em cada situação (Aprovado, Em recuperação, Reprovado, Cursando) e o que ainda impede encerrar: prova aberta no Monitor, prova agendada, prova ou tarefa esperando correção. Resolva isso primeiro. Depois digite **ENCERRAR** (em letras maiúsculas), escreva o motivo se quiser e confirme. Encerrada, a turma:
 
-- não recebe nota, chamada, prova nem matrícula nova (quem tentar recebe "Esta turma foi encerrada...");
+- não recebe nota, chamada, prova nem matrícula nova (quem tentar recebe "Esta turma foi encerrada...") e não aparece no cadastro do aluno;
+- não pode ser excluída nem mudar a grade da semana, a tolerância ou o período letivo;
 - guarda os critérios de avaliação de agora: mudar os critérios do curso depois não muda a média dela;
 - continua com os alunos, as notas e a presença, que aparecem em Resultados com a faixa "Turma encerrada" e saem no boletim como estavam.
 
-Nada é apagado. Para corrigir alguma coisa, clique em **Reabrir turma** e escreva o motivo, que fica na Auditoria; a turma volta a usar os critérios de agora do curso. Ao encerrar um período letivo, o IClass oferece encerrar de uma vez as turmas dele que ainda estão abertas (só as que não têm pendência). Para levar os alunos ao semestre seguinte, use a matrícula em lote em **Alunos**: a ficha do aluno guarda desde quando ele está em cada turma, e as turmas de onde saiu ficam no histórico (aparece em Meus dados).
+Nada é apagado. Para corrigir alguma coisa, clique em **Reabrir turma** e escreva o motivo, que fica na Auditoria; a turma volta a usar os critérios de agora do curso. Ao encerrar um período letivo, o IClass oferece encerrar de uma vez as turmas dele que ainda estão abertas (só as que não têm pendência). Para levar os alunos ao semestre seguinte, use a matrícula em lote em **Alunos**: a ficha do aluno guarda desde quando ele está em cada turma, e as turmas de onde saiu, e a turma encerrada (com a data do encerramento), ficam no histórico (aparece em Meus dados).
 
 **Nota esperando correção.** Com os critérios ligados, o aluno com prova que você ainda não corrigiu fica "Aguardando correção" no quadro, no boletim e em Minhas notas, sem situação final, até a correção. A tentativa anulada por cola com "desconsiderar" aparece como "anulada" no quadro e na planilha, e a aplicação de recuperação ou de segunda chamada aparece com esse nome na coluna.
 

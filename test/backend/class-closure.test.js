@@ -137,7 +137,12 @@ test('[UC-CURSO-003] encerrar pede ENCERRAR digitado, copia os critérios, audit
     db.save = options => { saves.push(options); return originalSave.call(db, options); };
     let res;
     try {
-        res = await as('admin', 'post', '/api/admin/class/close').send({ courseId: COURSE, name: '1DES', confirm: 'encerrar', reason: 'fim do semestre' });
+        // A palavra em minúsculas não vale (o desenho pede ENCERRAR digitado).
+        const lower = await as('admin', 'post', '/api/admin/class/close').send({ courseId: COURSE, name: '1DES', confirm: 'encerrar', reason: 'fim do semestre' });
+        assert.equal(lower.status, 400, JSON.stringify(lower.body));
+        assert.equal(lower.body.field, 'confirm');
+        assert.match(lower.body.error, /maiúsculas/);
+        res = await as('admin', 'post', '/api/admin/class/close').send({ courseId: COURSE, name: '1DES', confirm: ' ENCERRAR ', reason: 'fim do semestre' });
     } finally {
         db.save = originalSave;
     }
@@ -289,4 +294,102 @@ test('[UC-CURSO-003] turma encerrada não ganha presença do login nem cobrança
     await request(app).get('/api/ping?email=ana@close.local').set('x-session-token', login.body.sessionToken).expect(200);
     assert.equal(db.memory.attendance.length, 1);
     assert.equal(db.memory.attendance[0].origin, 'login');
+});
+
+// Rodada de ajuste 1 do B10: as brechas da turma encerrada (cada teste falhava no código de
+// antes da rodada).
+const STUDENT_TOKEN = email => require('../../backend/utils/authSessions.js').createStudentSession(db.memory, email);
+
+test('[UC-CURSO-003] turma encerrada não é excluída (nem recriada para soltar as notas); reaberta, sim', async () => {
+    assert.equal((await as('admin', 'post', '/api/admin/class/close').send({ courseId: COURSE, name: '1DES', confirm: 'ENCERRAR' })).status, 200);
+    const del = await as('admin', 'post', '/api/admin/class/delete').send({ courseId: COURSE, name: '1DES' });
+    assert.equal(del.status, 409, JSON.stringify(del.body));
+    assert.equal(del.body.code, 'class_closed');
+    assert.match(del.body.error, /não pode ser excluída/);
+    assert.ok(cls1(), 'a turma continua');
+    assert.equal(audits('class_deleted').length, 0);
+    // A nota da turma encerrada continua travada (classOfSubmission acha a turma).
+    const publish = await as('admin', 'post', '/api/admin/submissions/publish').send({ ids: [db.memory.submissions[0].id], published: false });
+    assert.equal(publish.status, 409, JSON.stringify(publish.body));
+    // Recriar com o mesmo nome continua recusado (a turma existe).
+    assert.equal((await as('admin', 'post', '/api/admin/class/create').send({ name: '1DES', courseId: COURSE, period: 'Manhã' })).status, 400);
+
+    assert.equal((await as('admin', 'post', '/api/admin/class/reopen').send({ courseId: COURSE, name: '1DES', reason: 'turma criada errada' })).status, 200);
+    assert.equal((await as('admin', 'post', '/api/admin/class/delete').send({ courseId: COURSE, name: '1DES' })).status, 200);
+    assert.equal(cls1(), undefined);
+});
+
+test('[UC-CURSO-003] turma encerrada: grade, tolerância, limiar e período letivo ficam; turno e o mesmo formulário passam', async () => {
+    cls1().attendanceConfig = { toleranciaMin: 10, limiarRiscoPct: 75, grade: { 1: [{ ordem: 1, inicio: '08:00', disciplinaId: '' }] } };
+    db.memory.academicTerms = [{ id: 'per_1', nome: '2026 · 1º semestre', inicio: '2026-02-01', fim: '2026-07-15', schoolId: null, etapas: [], situacao: 'aberto' }];
+    assert.equal((await as('admin', 'post', '/api/admin/class/close').send({ courseId: COURSE, name: '1DES', confirm: 'ENCERRAR' })).status, 200);
+    const before = JSON.stringify(cls1().attendanceConfig);
+    const grade = await as('admin', 'post', '/api/admin/class/update').send({ name: '1DES', courseId: COURSE, attendanceConfig: { toleranciaMin: 10, limiarRiscoPct: 75, grade: { 1: [{ ordem: 1, inicio: '08:00' }, { ordem: 2, inicio: '09:00' }] } } });
+    assert.equal(grade.status, 409, JSON.stringify(grade.body));
+    assert.equal(grade.body.code, 'class_closed');
+    assert.match(grade.body.error, /grade da semana/);
+    const tolerance = await as('admin', 'post', '/api/admin/class/update').send({ name: '1DES', courseId: COURSE, attendanceConfig: { toleranciaMin: 30, limiarRiscoPct: 75, grade: { 1: [{ ordem: 1, inicio: '08:00' }] } } });
+    assert.equal(tolerance.status, 409);
+    const term = await as('admin', 'post', '/api/admin/class/update').send({ name: '1DES', courseId: COURSE, periodoLetivoId: 'per_1' });
+    assert.equal(term.status, 409, JSON.stringify(term.body));
+    assert.equal(JSON.stringify(cls1().attendanceConfig), before);
+    assert.equal(cls1().periodoLetivoId, undefined);
+    // O formulário inteiro de volta, sem mudar a grade, só o turno: passa.
+    const same = await as('admin', 'post', '/api/admin/class/update').send({ name: '1DES', courseId: COURSE, period: 'Tarde', periodoLetivoId: null, attendanceConfig: { toleranciaMin: 10, limiarRiscoPct: 75, grade: { 1: [{ ordem: 1, inicio: '08:00', disciplinaId: '' }] } } });
+    assert.equal(same.status, 200, JSON.stringify(same.body));
+    assert.equal(cls1().period, 'Tarde');
+});
+
+test('[UC-CURSO-003] turma encerrada some do autocadastro e do pedido de matrícula', async () => {
+    cls1().registrationEnabled = true;
+    db.memory.classes.find(item => item.name === '2DES').registrationEnabled = true;
+    assert.equal((await as('admin', 'post', '/api/admin/class/close').send({ courseId: COURSE, name: '1DES', confirm: 'ENCERRAR' })).status, 200);
+    const list = await request(app).get('/api/classes');
+    assert.deepEqual(list.body.map(item => item.name), ['2DES']);
+    const register = await request(app).post('/api/student/register').send({ name: 'Gil Souza', email: 'gil@close.local', password: 'Senha-boa-123', studentClass: '1DES', courseId: COURSE });
+    assert.equal(register.status, 400, JSON.stringify(register.body));
+    assert.equal(register.body.field, 'studentClass');
+    assert.equal(db.memory.students.some(item => item.email === 'gil@close.local'), false);
+    db.memory.students.push({ name: 'Hel', email: 'hel@close.local', status: 'Ativo', password: db.hashPassword('123'), classes: [] });
+    const ask = await request(app).post('/api/student/enrollments/request').set('x-session-token', STUDENT_TOKEN('hel@close.local')).send({ courseId: COURSE, studentClass: '1DES' });
+    assert.equal(ask.status, 400, JSON.stringify(ask.body));
+    // Com só a turma encerrada aberta para cadastro, o curso some da lista pública.
+    db.memory.classes.find(item => item.name === '2DES').registrationEnabled = false;
+    assert.deepEqual((await request(app).get('/api/courses')).body, []);
+});
+
+test('[UC-CURSO-003] turma encerrada: Início do aluno, frequência mínima e etapas do plano seguem os critérios congelados', async () => {
+    db.memory.courses[0].avaliacao = { ...CRITERIA, frequenciaMinima: 75 };
+    db.memory.academicTerms = [{ id: 'per_1', nome: '2026 · 1º semestre', inicio: '2026-02-02', fim: '2026-02-27', schoolId: null, etapas: [], situacao: 'aberto' }];
+    cls1().periodoLetivoId = 'per_1';
+    cls1().attendanceConfig = { toleranciaMin: 10, limiarRiscoPct: 75, grade: { 1: [{ ordem: 1, inicio: '08:00', disciplinaId: '' }] } };
+    assert.equal((await as('admin', 'post', '/api/admin/class/close').send({ courseId: COURSE, name: '1DES', confirm: 'ENCERRAR' })).status, 200);
+    // Depois do encerramento, o curso desliga os critérios e muda as etapas.
+    db.memory.courses[0].avaliacao = { ...CRITERIA, ativo: false, frequenciaMinima: 50, etapas: [{ ordem: 1, nome: 'Único', peso: 1 }] };
+
+    const token = STUDENT_TOKEN('ana@close.local');
+    const dash = await request(app).get(`/api/student/dashboard?courseId=${COURSE}&studentClass=1DES`).set('x-session-token', token);
+    assert.equal(dash.status, 200, JSON.stringify(dash.body));
+    assert.equal(dash.body.situacao, 'aprovado', 'o Início do aluno mantém a situação da turma encerrada');
+    const summary = await request(app).get(`/api/student/grades-summary?courseId=${COURSE}&studentClass=1DES`).set('x-session-token', token);
+    assert.equal(summary.body.situacao, 'aprovado');
+    assert.equal(summary.body.frequenciaMinima, 75, 'frequência mínima congelada');
+    assert.equal(summary.body.aulasPrevistas, 4);
+    assert.equal(summary.body.faltasPermitidasRestantes, 1);
+    const report = await as('admin', 'get', `/api/admin/student/report?email=ana@close.local&courseId=${COURSE}&studentClass=1DES`);
+    assert.equal(report.status, 200, JSON.stringify(report.body));
+    const boletim = report.body.report || report.body;
+    assert.equal(boletim.attendance.frequenciaMinima, 75);
+    const plan = await as('admin', 'get', `/api/admin/grading/plan?courseId=${COURSE}&studentClass=1DES`);
+    assert.equal(plan.status, 200, JSON.stringify(plan.body));
+    assert.equal(plan.body.ativo, true);
+    assert.deepEqual(plan.body.etapas.map(etapa => etapa.nome), ['1º bimestre'], 'as etapas do plano são as copiadas no encerramento');
+    assert.equal(plan.body.podeAlterar, false);
+
+    // Reaberta, tudo volta à regra de agora.
+    assert.equal((await as('admin', 'post', '/api/admin/class/reopen').send({ courseId: COURSE, name: '1DES', reason: 'revisão' })).status, 200);
+    const dashOpen = await request(app).get(`/api/student/dashboard?courseId=${COURSE}&studentClass=1DES`).set('x-session-token', token);
+    assert.equal(dashOpen.body.situacao, undefined);
+    const planOpen = await as('admin', 'get', `/api/admin/grading/plan?courseId=${COURSE}&studentClass=1DES`);
+    assert.deepEqual(planOpen.body.etapas.map(etapa => etapa.nome), ['Único']);
 });

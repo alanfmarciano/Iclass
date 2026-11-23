@@ -62,17 +62,17 @@ test.after(async () => {
 });
 
 test('[UC-MATRICULA-002] applyClassMembershipChange: continua com o desde, a nova ganha hoje, a que saiu vai para o histórico com o motivo', () => {
-    const memory = { classes: [{ name: '1DES', courseId: 'TI', period: 'Manhã', periodoLetivoId: 'per_1' }, { name: '2DES', courseId: 'TI' }, { name: '1ADM', courseId: 'ADM' }, { name: '9X', courseId: 'TI', encerramento: { em: 1 } }] };
+    const memory = { classes: [{ name: '1DES', courseId: 'TI', period: 'Manhã', periodoLetivoId: 'per_1' }, { name: '2DES', courseId: 'TI' }, { name: '1ADM', courseId: 'ADM' }, { name: '9X', courseId: 'TI', encerramento: { em: 1, data: '2026-06-20' } }] };
     const before = { courseId: 'TI', classes: [{ name: '1DES', courseId: 'TI', period: 'Manhã', desde: '2026-02-01' }, '1ADM', { name: '9X', courseId: 'TI' }] };
     const isClosed = cls => !!(cls && cls.encerramento);
     // Sai da 1DES e entra na 2DES (mesmo curso): mudou de turma. 1ADM (texto antigo) continua.
-    // 9X encerrada sai: a matrícula terminou com o encerramento.
+    // 9X encerrada sai: a matrícula terminou com o encerramento (ate = a data dele).
     const change = enrollmentHistory.applyClassMembershipChange(memory, before, ['1ADM', { name: '2DES', courseId: 'TI' }], { today: '2026-06-30', isClosed });
     assert.deepEqual(change.classes, ['1ADM', { name: '2DES', courseId: 'TI', desde: '2026-06-30' }]);
     assert.deepEqual(change.added, [{ name: '2DES', courseId: 'TI' }]);
     assert.deepEqual(change.historicoMatriculas, [
         { schemaVersion: 1, courseId: 'TI', name: '1DES', ate: '2026-06-30', motivo: 'mudou_de_turma', period: 'Manhã', periodoLetivoId: 'per_1', desde: '2026-02-01', paraTurma: '2DES' },
-        { schemaVersion: 1, courseId: 'TI', name: '9X', ate: '2026-06-30', motivo: 'turma_encerrada' },
+        { schemaVersion: 1, courseId: 'TI', name: '9X', ate: '2026-06-20', motivo: 'turma_encerrada' },
     ]);
     // Nada mudou: o histórico não ganha campo vazio.
     const same = enrollmentHistory.applyClassMembershipChange(memory, { classes: ['1ADM'] }, ['1ADM'], { today: '2026-06-30' });
@@ -84,7 +84,7 @@ test('[UC-MATRICULA-002] applyClassMembershipChange: continua com o desde, a nov
     // Leitura para a tela: atuais com desde e encerradas da mais nova para a mais antiga.
     const view = enrollmentHistory.enrollmentHistoryView({ courses: [{ id: 'TI', name: 'Informática' }] }, { classes: change.classes, historicoMatriculas: change.historicoMatriculas });
     assert.deepEqual(view.atuais.map(item => [item.turma, item.desde]), [['1ADM', null], ['2DES', '2026-06-30']]);
-    assert.deepEqual(view.encerradas.map(item => [item.turma, item.motivoRotulo]), [['9X', 'Turma encerrada'], ['1DES', 'Mudou de turma']]);
+    assert.deepEqual(view.encerradas.map(item => [item.turma, item.motivoRotulo]), [['1DES', 'Mudou de turma'], ['9X', 'Turma encerrada']], 'da que terminou por último para a primeira');
     assert.equal(view.encerradas[1].curso, 'Informática');
 });
 
@@ -185,4 +185,70 @@ test('[UC-MATRICULA-002] Meus dados (aluno e administrador) traz o histórico; a
         { schemaVersion: 1, courseId: COURSE, name: '1DES', ate: today, motivo: 'transferido', period: 'Manhã', desde: '2026-02-01' },
     ]);
     assert.equal(JSON.stringify(record.historicoMatriculas).includes('Bia'), false);
+});
+
+// Rodada de ajuste 1 do B10 (FUN-05): encerrar a turma termina a matrícula nela. O aluno
+// continua na lista de turmas (lê as notas, e reabrir devolve tudo), mas a ficha, Meus dados
+// e a contagem mostram a matrícula como terminada na data do encerramento, com o motivo
+// 'Turma encerrada'; o fluxo "encerrar e rematricular" (matrícula em lote na turma nova)
+// deixa o histórico completo. Falhava antes: a matrícula na turma encerrada ficava "atual"
+// para sempre e Meus dados vinha sem a seção.
+async function closeClass(name, reason = 'fim do semestre') {
+    const res = await admin('post', '/api/admin/class/close').send({ courseId: COURSE, name, confirm: 'ENCERRAR', reason });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    return res.body;
+}
+
+test('[UC-MATRICULA-002] encerrar a turma termina a matrícula: Meus dados e a contagem mostram ate = data do encerramento; reabrir devolve', async () => {
+    const today = settingsUtil.today();
+    const closed = await closeClass('1DES');
+    assert.equal(closed.encerramento.data, today, 'o encerramento guarda a data civil');
+    assert.equal(db.memory.classes.find(item => item.name === '1DES').encerramento.data, today);
+
+    // Encerrar e rematricular: a Ana vai para a 2DES pela matrícula em lote.
+    const bulk = await admin('post', '/api/admin/student/bulk-enroll').send({ emails: ['ana@hist.local'], className: '2DES', courseId: COURSE });
+    assert.equal(bulk.status, 200, JSON.stringify(bulk.body));
+    const ana = student('ana@hist.local');
+    assert.deepEqual(ana.classes.map(item => item.name), ['1DES', '2DES'], 'continua na turma encerrada (lê as notas dela)');
+    const view = enrollmentHistory.enrollmentHistoryView(db.memory, ana);
+    assert.deepEqual(view.atuais.map(item => [item.turma, item.desde]), [['2DES', today]]);
+    assert.deepEqual(view.encerradas.map(item => [item.turma, item.ate, item.motivo]), [['1DES', today, 'turma_encerrada']]);
+
+    const token = createStudentSession(db.memory, 'ana@hist.local');
+    const mine = await request(app).get('/api/student/my-data').set('x-session-token', token);
+    assert.equal(mine.status, 200, JSON.stringify(mine.body));
+    const own = mine.body.data || mine.body;
+    assert.deepEqual(own.enrollmentHistory, [{ curso: 'Informática', turma: '1DES', periodoLetivo: null, desde: null, ate: today, motivo: 'Turma encerrada', paraTurma: null }]);
+    const adminExport = await admin('get', '/api/admin/lgpd/students/export?email=bia@hist.local&finalidade=baixar');
+    assert.deepEqual((adminExport.body.data || adminExport.body).enrollmentHistory.map(item => [item.turma, item.desde, item.ate, item.motivo]), [['1DES', '2026-02-01', today, 'Turma encerrada']]);
+    const { countStudentData } = require('../../backend/utils/studentDataHandlers.js');
+    assert.equal(countStudentData(db.memory, { student: student('bia@hist.local') }).historicoMatriculas, 1, 'Cadastros encerrados conta a matrícula encerrada');
+
+    // Reaberta, a matrícula volta a ser atual (nada foi gravado no cadastro).
+    const reopened = await admin('post', '/api/admin/class/reopen').send({ courseId: COURSE, name: '1DES', reason: 'nota lançada errada' });
+    assert.equal(reopened.status, 200, JSON.stringify(reopened.body));
+    assert.equal(student('bia@hist.local').historicoMatriculas, undefined);
+    const after = enrollmentHistory.enrollmentHistoryView(db.memory, student('bia@hist.local'));
+    assert.deepEqual(after.atuais.map(item => item.turma), ['1DES']);
+    assert.deepEqual(after.encerradas, []);
+});
+
+test('[UC-MATRICULA-002] sair da turma encerrada ou ser desligado depois do encerramento grava ate = data do encerramento e motivo turma_encerrada', async () => {
+    const today = settingsUtil.today();
+    await closeClass('1DES');
+    // A data do encerramento é a que fica (encerrada "ontem", tirada hoje).
+    db.memory.classes.find(item => item.name === '1DES').encerramento.data = '2026-06-30';
+    await admin('post', '/api/admin/student/update').send({
+        originalEmail: 'bia@hist.local', name: 'Bia Lima', email: 'bia@hist.local', status: 'Ativo', classes: [{ name: '2DES', courseId: COURSE, period: 'Noite' }],
+    }).expect(200);
+    assert.deepEqual(student('bia@hist.local').historicoMatriculas.map(item => [item.name, item.ate, item.motivo, item.desde]), [['1DES', '2026-06-30', 'turma_encerrada', '2026-02-01']]);
+    assert.equal(student('bia@hist.local').classes[0].desde, today);
+
+    // Desligada depois do encerramento: a turma encerrada termina no encerramento; a aberta, hoje.
+    db.memory.students.find(item => item.email === 'ana@hist.local').classes.push({ name: '2DES', courseId: COURSE, period: 'Noite', desde: '2026-05-01' });
+    await admin('post', '/api/admin/student/bulk-status').send({ emails: ['ana@hist.local'], status: 'Transferido', reason: 'outra escola' }).expect(200);
+    const ana = student('ana@hist.local');
+    assert.deepEqual(ana.historicoMatriculas.map(item => [item.name, item.ate, item.motivo]), [['1DES', '2026-06-30', 'turma_encerrada'], ['2DES', today, 'transferido']]);
+    // Desligada, a leitura não repete a turma encerrada.
+    assert.deepEqual(enrollmentHistory.enrollmentHistoryView(db.memory, ana).encerradas.map(item => item.turma).sort(), ['1DES', '2DES']);
 });

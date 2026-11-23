@@ -11,13 +11,22 @@
 //   update, bulk_*), que continua sendo o registro completo.
 //
 // Motivos: 'removido' (tirado da turma), 'mudou_de_turma' (saiu de uma turma e entrou em
-// outra do mesmo curso na mesma alteração; paraTurma diz qual), 'turma_encerrada' (tirado
-// de uma turma já encerrada: a matrícula acabou com o encerramento) e, pelo desligamento
+// outra do mesmo curso na mesma alteração; paraTurma diz qual), 'turma_encerrada' (a
+// matrícula acabou com o encerramento da turma; 'ate' é a data do encerramento) e, pelo desligamento
 // (situação que encerra o vínculo, students.CLOSED_STUDENT_STATUSES), 'concluido',
 // 'transferido', 'evadido' e 'desligado' (Inativo). O desligamento não tira o aluno da
 // turma (a chamada de datas antigas e as notas continuam com ele, H7b): a matrícula entra
 // no histórico com a data e a turma continua na lista; reativar começa uma matrícula nova
 // (desde = hoje) nas turmas que ele tem.
+//
+// Turma encerrada (B10, D18 do P2): encerrar não tira ninguém da turma (o aluno continua
+// lendo as notas dela, e reabrir devolve tudo como estava), então a matrícula numa turma
+// encerrada não é gravada de novo em cada cadastro: a leitura (enrollmentHistoryView, Meus
+// dados, a contagem) já a mostra como terminada, com ate = a data do encerramento
+// (academicCalendar.classClosureDate) e o motivo 'turma_encerrada'; reabrir a turma a
+// devolve às matrículas atuais. Só vira linha gravada quando o aluno sai da turma
+// encerrada (ficha, matrícula em lote) ou é desligado depois do encerramento, sempre com
+// a data do encerramento.
 //
 // Uma função só para todos os caminhos que mudam turmas (applyClassMembershipChange):
 // ficha do aluno (student/update), cadastro (student/create), matrícula em lote
@@ -31,6 +40,7 @@
 // contar e Meus dados ('Histórico de matrículas', versões aluno e administrador).
 const { registerStudentDataHandler } = require('./studentDataHandlers.js');
 const { classEntryName, classEntryCourseId, isClosedStudentStatus, isAnonymizedStudent } = require('./students.js');
+const academicCalendar = require('./academicCalendar.js');
 
 const HISTORY_FIELD = 'historicoMatriculas';
 const MOTIVOS = Object.freeze(['removido', 'mudou_de_turma', 'turma_encerrada', 'concluido', 'transferido', 'evadido', 'desligado']);
@@ -113,6 +123,22 @@ function historyEntry(memory, entry, { ate, motivo, paraTurma = null }) {
     return out;
 }
 
+// Data do encerramento da turma da entrada (null quando a turma está aberta ou não existe).
+function closedClassDate(memory, entry) {
+    const cls = findClass(memory, entry);
+    return cls ? validDate(academicCalendar.classClosureDate(cls)) : null;
+}
+
+// Matrículas atuais do cadastro numa turma encerrada: terminaram no encerramento (ver o
+// começo do arquivo). Aluno desligado não tem: o desligamento já gravou as dele.
+function closedCurrentEntries(memory, student) {
+    if (!student || isClosedStudentStatus(student.status || 'Ativo')) return [];
+    const fallback = text(student.courseId);
+    return rawEntries(student).map(entry => entryView(entry, fallback)).filter(entry => entry.name)
+        .map(entry => ({ entry, ate: closedClassDate(memory, entry) }))
+        .filter(item => item.ate);
+}
+
 function withHistory(history, added) {
     const list = [...history, ...added];
     return list.length > HISTORY_MAX ? list.slice(list.length - HISTORY_MAX) : list;
@@ -123,12 +149,12 @@ function withHistory(history, added) {
 // guarda o 'desde' que tinha; a nova ganha desde = hoje; a que saiu vai para o histórico
 // com ate = hoje e o motivo ('removido', 'mudou_de_turma' quando outra turma do mesmo curso
 // entrou na mesma alteração, 'turma_encerrada' quando a turma já estava encerrada).
-// isClosed(cls): a turma está encerrada (academicCalendar.isClassClosed; recebido para este
-// módulo não depender do calendário).
+// isClosed(cls) e closedOn(cls): a turma está encerrada e a data do encerramento
+// (academicCalendar.isClassClosed e classClosureDate, o padrão; o teste troca).
 // Devolve { classes, historicoMatriculas, added: [{ name, courseId }], removed: [...] };
 // historicoMatriculas é undefined quando o cadastro não tinha e nada saiu (o registro não
 // ganha campo vazio).
-function applyClassMembershipChange(memory, student, nextEntries, { today, isClosed = () => false } = {}) {
+function applyClassMembershipChange(memory, student, nextEntries, { today, isClosed = academicCalendar.isClassClosed, closedOn = academicCalendar.classClosureDate } = {}) {
     const date = validDate(today);
     const fallback = student ? text(student.courseId) : '';
     const before = rawEntries(student).map(entry => entryView(entry, fallback)).filter(entry => entry.name);
@@ -156,7 +182,7 @@ function applyClassMembershipChange(memory, student, nextEntries, { today, isClo
     }
     const fresh = removedEntries.map(entry => {
         const cls = findClass(memory, entry);
-        if (cls && isClosed(cls)) return historyEntry(memory, entry, { ate: date, motivo: 'turma_encerrada' });
+        if (cls && isClosed(cls)) return historyEntry(memory, entry, { ate: validDate(closedOn(cls)) || date, motivo: 'turma_encerrada' });
         const courseId = entry.courseId || (cls ? text(cls.courseId) : '');
         const destino = added.find(item => item.name !== entry.name && (!courseId || !item.courseId || item.courseId === courseId));
         if (destino && courseId) return historyEntry(memory, entry, { ate: date, motivo: 'mudou_de_turma', paraTurma: destino.name });
@@ -182,8 +208,14 @@ function applyEnrollmentStatusChange(memory, before, after, { today } = {}) {
     if (isClosedNow) {
         const motivo = STATUS_MOTIVOS[foldStatus(after.status)] || 'desligado';
         const fallback = text(after.courseId);
+        // Turma já encerrada: a matrícula nela terminou no encerramento, não agora.
         const fresh = entries.map(entry => entryView(entry, fallback)).filter(entry => entry.name)
-            .map(entry => historyEntry(memory, entry, { ate: date, motivo }));
+            .map(entry => {
+                const closedOn = closedClassDate(memory, entry);
+                return closedOn
+                    ? historyEntry(memory, entry, { ate: closedOn, motivo: 'turma_encerrada' })
+                    : historyEntry(memory, entry, { ate: date, motivo });
+            });
         if (!fresh.length) return after;
         return { ...after, [HISTORY_FIELD]: withHistory(Array.isArray(after[HISTORY_FIELD]) ? after[HISTORY_FIELD] : [], fresh) };
     }
@@ -211,16 +243,35 @@ function termName(memory, id) {
 
 // Linhas do histórico para a tela e o arquivo: as matrículas atuais (com 'desde') e as
 // que terminaram, da mais nova para a mais antiga.
+// A matrícula numa turma encerrada sai das atuais e entra nas encerradas, com a data do
+// encerramento e o motivo 'turma_encerrada' (porTurmaEncerrada: true, só na leitura).
 function enrollmentHistoryView(memory, student) {
     if (!student) return { atuais: [], encerradas: [] };
     const fallback = text(student.courseId);
-    const atuais = rawEntries(student).map(entry => entryView(entry, fallback)).filter(entry => entry.name).map(entry => ({
+    const closedNow = closedCurrentEntries(memory, student);
+    const isClosedEntry = entry => closedNow.some(item => item.entry.name === entry.name && item.entry.courseId === entry.courseId);
+    const atuais = rawEntries(student).map(entry => entryView(entry, fallback)).filter(entry => entry.name && !isClosedEntry(entry)).map(entry => ({
         curso: courseName(memory, entry.courseId),
         courseId: entry.courseId,
         turma: entry.name,
         desde: entry.desde,
     }));
-    const encerradas = readHistory(student).map(item => ({
+    const porEncerramento = closedNow.map(({ entry, ate }) => {
+        const cls = findClass(memory, entry);
+        return {
+            curso: courseName(memory, entry.courseId || (cls ? text(cls.courseId) : '')),
+            courseId: entry.courseId || (cls ? text(cls.courseId) : ''),
+            turma: entry.name,
+            periodoLetivo: termName(memory, cls ? text(cls.periodoLetivoId) : ''),
+            desde: entry.desde,
+            ate,
+            motivo: 'turma_encerrada',
+            motivoRotulo: MOTIVO_ROTULOS.turma_encerrada,
+            paraTurma: null,
+            porTurmaEncerrada: true,
+        };
+    });
+    const gravadas = readHistory(student).map(item => ({
         curso: courseName(memory, item.courseId),
         courseId: text(item.courseId),
         turma: text(item.name),
@@ -230,7 +281,12 @@ function enrollmentHistoryView(memory, student) {
         motivo: MOTIVOS.includes(item.motivo) ? item.motivo : 'removido',
         motivoRotulo: MOTIVO_ROTULOS[item.motivo] || MOTIVO_ROTULOS.removido,
         paraTurma: text(item.paraTurma) || null,
-    })).reverse();
+    }));
+    // Da mais nova para a mais antiga (pela data de fim; empate: a gravada depois primeiro).
+    const encerradas = [...gravadas, ...porEncerramento]
+        .map((item, index) => ({ item, index }))
+        .sort((a, b) => (a.item.ate === b.item.ate ? b.index - a.index : (a.item.ate < b.item.ate ? 1 : -1)))
+        .map(({ item }) => item);
     return { atuais, encerradas };
 }
 
@@ -278,12 +334,13 @@ registerStudentDataHandler({
         target[HISTORY_FIELD] = withHistory(storedHistory(target[HISTORY_FIELD]), extra);
     },
     count(memory, aluno) {
-        return readHistory(aluno && aluno.student).length;
+        const student = aluno && aluno.student;
+        return readHistory(student).length + closedCurrentEntries(memory, student).length;
     },
     exportKey: 'enrollmentHistory',
     exportSection(memory, aluno) {
-        const history = readHistory(aluno && aluno.student);
-        if (!history.length) return undefined;
+        const student = aluno && aluno.student;
+        if (!readHistory(student).length && !closedCurrentEntries(memory, student).length) return undefined;
         return enrollmentHistoryView(memory, aluno.student).encerradas.map(item => ({
             curso: item.curso,
             turma: item.turma,
