@@ -15,10 +15,17 @@ import { useStudent } from './useStudent'
 // data.js guardado bate com ela (unidade liberada depois do download, ou bloqueada) e
 // baixa de novo uma vez se não bater.
 //
+// O conteúdo guardado também envelhece: a tela que abre depois de CONTENT_MAX_AGE_MS do
+// último download pede o data.js de novo, sem esconder o que já está na tela enquanto ele
+// chega. Assim a correção que o professor faz no texto da apostila chega ao aluno quando
+// ele volta para Módulos ou para a Busca, sem recarregar a página; se o texto veio igual,
+// nada muda na tela (nem o índice da Busca é montado de novo).
+//
 // A memória é por aluno, prévia, curso e turma, e guarda só as do aluno que está na aba
 // (no máximo MAX_ENTRIES turmas): outro aluno no mesmo aparelho não reaproveita nada.
 
 const MAX_ENTRIES = 3
+export const CONTENT_MAX_AGE_MS = 60 * 1000
 const META_KEYS = new Set(['courses', 'courseStructure', 'branding'])
 const cache = new Map()
 
@@ -121,7 +128,7 @@ function getEntry(key) {
     // Outro aluno (ou outra prévia) na mesma aba: o que era dele sai da memória.
     const owner = ownerOf(key)
     for (const other of [...cache.keys()]) if (ownerOf(other) !== owner) cache.delete(other)
-    entry = { data: null, error: null, promise: null, signature: null, listeners: new Set() }
+    entry = { data: null, raw: null, loadedAt: 0, error: null, promise: null, signature: null, listeners: new Set() }
     cache.set(key, entry)
     while (cache.size > MAX_ENTRIES) cache.delete(cache.keys().next().value)
   }
@@ -136,7 +143,12 @@ function load(entry, url) {
   if (entry.promise) return entry.promise
   entry.error = null
   entry.promise = api.get(url, { raw: true })
-    .then((text) => { entry.data = parseDataJs(text) })
+    .then((text) => {
+      // Igual ao guardado: mantém o mesmo objeto (a tela e o índice da Busca não refazem nada).
+      if (!entry.data || text !== entry.raw) entry.data = parseDataJs(text)
+      entry.raw = text
+      entry.loadedAt = Date.now()
+    })
     .catch((error) => { entry.error = error })
     .finally(() => { entry.promise = null; notify(entry) })
   notify(entry)
@@ -157,7 +169,8 @@ export function useCourseContent({ releasedItems } = {}) {
     const listener = () => setVersion((value) => value + 1)
     entry.listeners.add(listener)
     // Sem conteúdo (primeira vez, ou a última tentativa falhou): baixa ao abrir a tela.
-    if (!entry.data && !entry.promise) load(entry, url)
+    // Conteúdo velho: baixa de novo, mostrando o guardado enquanto isso.
+    if (!entry.promise && (!entry.data || Date.now() - entry.loadedAt >= CONTENT_MAX_AGE_MS)) load(entry, url)
     return () => { entry.listeners.delete(listener) }
   }, [key, url])
 
@@ -193,6 +206,8 @@ export function useCourseContent({ releasedItems } = {}) {
     if (!key || !unitKey || typeof text !== 'string' || META_KEYS.has(unitKey)) return
     const current = getEntry(key)
     current.data = { ...(current.data || {}), [unitKey]: text }
+    // O guardado já não é o texto baixado: o próximo download vale, mesmo se vier igual.
+    current.raw = null
     notify(current)
   }, [key])
 

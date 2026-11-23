@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { findTermRanges, foldWithMap, highlightParts, makeSnippet } from './searchHighlight'
+import { findTermRanges, firstTermRange, foldWithMap, highlightParts, makeSnippet } from './searchHighlight'
 
 describe('[UC-BUSCA-003] searchHighlight: onde o termo está no texto original', () => {
   it('acha a palavra sem acento e devolve o trecho do texto com acento', () => {
@@ -39,5 +39,19 @@ describe('[UC-BUSCA-003] searchHighlight: onde o termo está no texto original',
     expect(joined.endsWith(' …')).toBe(true)
     expect(joined.length).toBeLessThan(220)
     expect(snippet.parts.filter((part) => part.mark).map((part) => part.text)).toEqual(['TCP'])
+  })
+
+  it('seção grande: acha a primeira palavra sem dobrar o texto todo, também perto do corte e com acento', () => {
+    const far = `${'abc '.repeat(5000)}a Configuração do servidor ${'xyz '.repeat(2000)}`
+    expect(firstTermRange(far, ['configuracao'])).toEqual([20002, 20014])
+    const snippet = makeSnippet(far, 'configuracao servidor')
+    expect(snippet.found).toBe(true)
+    expect(snippet.parts.filter((part) => part.mark).map((part) => part.text)).toEqual(['Configuração', 'servidor'])
+    // Palavra que começa antes do corte do primeiro pedaço e termina depois dele.
+    const edge = `${'a'.repeat(1020)} paralelepipedo e tcp`
+    expect(firstTermRange(edge, ['tcp', 'paralelepipedo'])).toEqual([1021, 1035])
+    // A mais cedo das palavras, não a primeira digitada.
+    expect(firstTermRange('rede antes de tcp', ['tcp', 'rede'])).toEqual([0, 4])
+    expect(firstTermRange('nada aqui', ['tcp'])).toBeNull()
   })
 })

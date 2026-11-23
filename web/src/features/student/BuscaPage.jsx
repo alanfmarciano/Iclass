@@ -8,7 +8,7 @@ import { PageState } from '../../components/ui/PageState'
 import { useApi } from '../../hooks/useApi'
 import { useStudent } from './useStudent'
 import { useCourseContent } from './useCourseContent'
-import { SEARCH_MIN_CHARS, SEARCH_RESULT_LIMIT, announcementEntries, apostilaEntries, libraryEntries, runSearch } from './busca/searchIndex'
+import { SEARCH_MIN_CHARS, SEARCH_RESULT_LIMIT, announcementEntries, buildApostilaIndex, libraryEntries, peekApostilaIndex, runSearch } from './busca/searchIndex'
 
 // Busca do portal do aluno (fase 3, C16 / P5-S2; CRIT-07, D24 do P5): nas apostilas
 // liberadas para a turma (por seção), na Biblioteca e nos avisos, sem acento e no próprio
@@ -18,6 +18,44 @@ import { SEARCH_MIN_CHARS, SEARCH_RESULT_LIMIT, announcementEntries, apostilaEnt
 
 // Espera entre as teclas antes de buscar (celular antigo com apostila grande).
 export const SEARCH_DEBOUNCE_MS = 250
+// Liberação de agora, de tempos em tempos (a mesma consulta do leitor): unidade que o
+// professor bloqueia com a Busca aberta sai dos resultados sem recarregar a página.
+export const STATUS_POLL_MS = 5000
+const NO_ENTRIES = []
+
+// Liberação como objeto estável: a consulta periódica devolve um objeto novo a cada vez, e
+// só a lista de unidades liberadas importa para a busca.
+function useStableRelease(releasedItems) {
+  const key = releasedItems && typeof releasedItems === 'object'
+    ? Object.keys(releasedItems).filter((item) => releasedItems[item] === true).sort().join('\u0001')
+    : null
+  return useMemo(() => {
+    if (key === null) return null
+    const map = {}
+    if (key) key.split('\u0001').forEach((item) => { map[item] = true })
+    return map
+  }, [key])
+}
+
+// Índice das apostilas do data.js da turma: montado aos poucos assim que a tela abre (sem
+// travar o celular) e guardado com o data.js, então abrir a Busca de novo, apagar o termo
+// ou trocar de termo não monta outra vez.
+// Enquanto o índice de um data.js novo monta (a liberação mudou), a busca segue com o
+// anterior; a liberação de agora (runSearch, released) já tira dele a unidade bloqueada.
+function useApostilaIndex(courseData, enabled) {
+  const [, setBuilt] = useState(0)
+  const lastRef = useRef(null)
+  const built = enabled ? peekApostilaIndex(courseData) : null
+  if (built) lastRef.current = built
+  const entries = built || (enabled ? lastRef.current : null)
+  useEffect(() => {
+    if (!enabled || peekApostilaIndex(courseData)) return undefined
+    let alive = true
+    buildApostilaIndex(courseData).then(() => { if (alive) setBuilt((value) => value + 1) })
+    return () => { alive = false }
+  }, [courseData, enabled])
+  return { entries: entries || NO_ENTRIES, ready: !!entries }
+}
 
 function Highlighted({ parts }) {
   return (parts || []).map((part, index) => (part.mark
@@ -33,8 +71,8 @@ function ResultGroup({ title, icon: Icon, items }) {
       <Card className="divide-y divide-border overflow-hidden">
         {items.map((item) => (
           <Link key={`${item.kind}:${item.id}`} to={item.href} className="block min-h-[44px] px-4 py-3 transition hover:bg-surface-2/50 focus:outline-none focus-visible:bg-surface-2/60">
-            <span className="block break-words text-sm font-semibold text-text">{item.title}</span>
-            {item.context && <span className="mt-0.5 block break-words text-xs text-muted">{item.context}</span>}
+            <span className="block break-words text-sm font-semibold text-text">{item.titleParts ? <Highlighted parts={item.titleParts} /> : item.title}</span>
+            {item.context && <span className="mt-0.5 block break-words text-xs text-muted">{item.contextParts ? <Highlighted parts={item.contextParts} /> : item.context}</span>}
             {item.snippet?.length > 0 && <span className="mt-1.5 block break-words text-sm text-muted"><Highlighted parts={item.snippet} /></span>}
           </Link>
         ))}
@@ -54,8 +92,8 @@ export default function BuscaPage() {
   const context = `courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(studentClass)}`
   // Liberação de agora (a mesma do leitor): unidade bloqueada depois do download do
   // data.js não aparece, e a liberação nova faz o data.js vir de novo.
-  const status = useApi(ready ? `/api/status?studentClass=${encodeURIComponent(studentClass)}&courseId=${encodeURIComponent(courseId)}&email=${encodeURIComponent(email)}` : null, [email, courseId, studentClass])
-  const released = status.data && status.data.releasedItems && typeof status.data.releasedItems === 'object' ? status.data.releasedItems : null
+  const status = useApi(ready ? `/api/status?studentClass=${encodeURIComponent(studentClass)}&courseId=${encodeURIComponent(courseId)}&email=${encodeURIComponent(email)}` : null, [email, courseId, studentClass], { pollMs: STATUS_POLL_MS })
+  const released = useStableRelease(status.data ? status.data.releasedItems : null)
   const content = useCourseContent({ releasedItems: released })
   const library = useApi(ready ? `/api/student/library?${context}` : null, [email, courseId, studentClass])
   const announcements = useApi(ready ? `/api/student/announcements?${context}` : null, [email, courseId, studentClass])
@@ -75,14 +113,18 @@ export default function BuscaPage() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [input])
 
-  // Índice das apostilas montado uma vez por conteúdo (e por liberação), não a cada tecla.
-  // Só monta quando há o que buscar: abrir a tela não trava o celular antigo.
   const trimmed = term.trim()
-  const wantIndex = content.loaded && trimmed.replace(/\s+/g, '').length >= SEARCH_MIN_CHARS
-  const apostilas = useMemo(() => (wantIndex ? apostilaEntries(content.data, released) : []), [wantIndex, content.data, released])
+  const index = useApostilaIndex(content.data, content.loaded)
   const biblioteca = useMemo(() => libraryEntries(library.data), [library.data])
   const avisos = useMemo(() => announcementEntries(announcements.data), [announcements.data])
-  const results = useMemo(() => runSearch({ apostilas, biblioteca, avisos }, term), [apostilas, biblioteca, avisos, term])
+  const results = useMemo(
+    () => runSearch({ apostilas: index.entries, biblioteca, avisos }, term, { released }),
+    [index.entries, biblioteca, avisos, term, released],
+  )
+  const searching = trimmed.replace(/\s+/g, '').length >= SEARCH_MIN_CHARS
+  // Termo pronto, mas o índice ainda montando (data.js acabou de chegar): espera, em vez
+  // de dizer "nenhum resultado".
+  const preparing = searching && !content.error && (!content.loaded || !index.ready)
 
   const tooShort = trimmed.length > 0 && trimmed.replace(/\s+/g, '').length < SEARCH_MIN_CHARS
   const sideErrors = [library.error && 'na Biblioteca', announcements.error && 'nos avisos'].filter(Boolean)
@@ -114,7 +156,7 @@ export default function BuscaPage() {
           />
         </div>
       </form>
-      <PageState loading={content.loading && !!trimmed} error={content.error} onRetry={() => { content.reload(); status.refetch() }}>
+      <PageState loading={preparing} skeleton={<p role="status" className="px-1 text-sm text-muted">Preparando a busca nas apostilas…</p>} error={content.error} onRetry={() => { content.reload(); status.refetch() }}>
         {!trimmed ? (
           <Card><EmptyState icon={Search} title="O que você procura?" description="Digite uma palavra, por exemplo um assunto da aula. Não precisa digitar acento nem letra maiúscula." /></Card>
         ) : tooShort ? (

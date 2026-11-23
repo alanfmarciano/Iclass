@@ -20,6 +20,14 @@ export function foldWithMap(value) {
   for (const ch of text) {
     const from = index
     index += ch.length
+    // Letra comum (ASCII, quase todo o texto da apostila): sem normalize, que é a parte cara
+    // num celular antigo com 50 resultados de seções grandes.
+    const code = ch.charCodeAt(0)
+    if (code < 128 && code !== 32 && (code < 9 || code > 13)) {
+      folded += code >= 65 && code <= 90 ? String.fromCharCode(code + 32) : ch
+      start.push(from); end.push(index)
+      continue
+    }
     if (SPACE.test(ch)) {
       if (folded.endsWith(' ')) { end[end.length - 1] = index; continue }
       folded += ' '
@@ -75,13 +83,37 @@ export function highlightParts(value, ranges) {
   return parts.filter((part) => part.text)
 }
 
+// Primeiro trecho [início, fim) de alguma palavra no texto, dobrando só o começo do texto
+// (e mais, se ainda não achou): a seção grande (dezenas de KB) não é dobrada inteira para
+// mostrar 180 letras. null: nenhuma palavra no texto.
+export function firstTermRange(text, words) {
+  if (!words.length) return null
+  const longest = Math.max(...words.map((word) => word.length))
+  for (let size = 1024; ; size *= 4) {
+    const part = size >= text.length ? text : text.slice(0, size)
+    const { folded, start, end } = foldWithMap(part)
+    let best = -1
+    let bestLength = 0
+    words.forEach((word) => {
+      if (!word) return
+      const at = folded.indexOf(word)
+      if (at !== -1 && (best === -1 || at < best)) { best = at; bestLength = word.length }
+    })
+    const complete = part.length === text.length
+    // Achado longe do corte (uma palavra mais longa que começasse antes não pode estar
+    // cortada no fim do pedaço): vale.
+    if (best !== -1 && (complete || end[best + bestLength - 1] + longest * 4 < part.length)) return [start[best], end[best + bestLength - 1]]
+    if (complete) return null
+  }
+}
+
 // Trecho curto em volta da primeira palavra achada (com "…" nas pontas cortadas) e as
 // partes já marcadas. Sem palavra no texto (achada só no título), o começo do texto.
 export function makeSnippet(value, term, { before = 60, size = 180 } = {}) {
   const text = (typeof value === 'string' ? value : String(value ?? '')).replace(/\s+/g, ' ').trim()
   if (!text) return { parts: [], found: false }
-  const ranges = findTermRanges(text, term)
-  const first = ranges[0]
+  const words = Array.isArray(term) ? term : searchTerms(term)
+  const first = firstTermRange(text, words)
   let from = first ? Math.max(0, first[0] - before) : 0
   // Começa numa palavra inteira.
   if (from > 0) {
@@ -95,10 +127,7 @@ export function makeSnippet(value, term, { before = 60, size = 180 } = {}) {
     if (space > (first ? first[1] : from)) to = space
   }
   const slice = text.slice(from, to)
-  const local = ranges
-    .filter(([a, b]) => b > from && a < to)
-    .map(([a, b]) => [Math.max(a, from) - from, Math.min(b, to) - from])
-  const parts = highlightParts(slice, local)
+  const parts = highlightParts(slice, findTermRanges(slice, words))
   if (from > 0) parts.unshift({ text: '… ', mark: false })
   if (to < text.length) parts.push({ text: ' …', mark: false })
   return { parts, found: !!first }

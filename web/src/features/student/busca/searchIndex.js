@@ -2,9 +2,9 @@
 // aparelho: o índice sai do que o aluno já recebe (data.js com as apostilas liberadas,
 // Biblioteca e avisos da turma); nenhuma rota nova, nada de apostila não liberada.
 import { markdownToHtml } from '../../../lib/contentMarkdown'
-import { matchesSearch, searchTerms } from '../../../lib/textSearch'
-import { makeSnippet } from '../../../lib/searchHighlight'
-import { courseUnits } from '../useCourseContent'
+import { matchesSearch, normalizeSearch, searchTerms } from '../../../lib/textSearch'
+import { findTermRanges, highlightParts, makeSnippet } from '../../../lib/searchHighlight'
+import { courseModules, courseUnits } from '../useCourseContent'
 import { htmlRoot, splitSections } from './contentText'
 import { unitHref } from '../unitLinks'
 
@@ -19,57 +19,135 @@ export function apostilaSections(markdown, unitTitle = '') {
   return splitSections(htmlRoot(markdownToHtml(markdown || '')), { firstTitle: unitTitle })
 }
 
-// Entradas das apostilas: uma por seção, na ordem do curso. released (opcional): só as
-// unidades liberadas (o data.js já vem filtrado; isto cobre o bloqueio feito depois do
-// download, até o data.js novo chegar).
+// Unidades que o índice cobre: as da estrutura; curso sem estrutura (legado), as apostilas
+// que vieram no data.js (o servidor já filtrou pela liberação). Não depende da liberação
+// de agora: ela é aplicada na hora de buscar (runSearch, opção released), para que o índice
+// valha enquanto o data.js for o mesmo.
+function indexUnits(courseData) {
+  if (courseModules(courseData).length > 0) return courseUnits(courseData, null)
+  const present = {}
+  Object.keys(courseData || {}).forEach((key) => {
+    if (key.startsWith('Apostila_') && typeof courseData[key] === 'string') present[key] = true
+  })
+  return courseUnits(courseData, present)
+}
+
+// Entradas de uma unidade: uma por seção, com o texto já normalizado (hay: título e texto
+// da seção; titleHay: títulos da unidade e do módulo) para a busca não normalizar de novo
+// centenas de KB a cada termo.
+function unitEntries(courseData, unit, unitIndex) {
+  const text = courseData[unit.key]
+  if (typeof text !== 'string') return []
+  const titleHay = normalizeSearch([unit.title, unit.moduleTitle])
+  return apostilaSections(text, unit.title).map((section) => {
+    const sectionTitle = section.secao > 0 ? section.title : ''
+    return {
+      kind: 'apostila',
+      id: `${unit.key}#${section.secao}`,
+      unitKey: unit.key,
+      unitIndex,
+      unitTitle: unit.title,
+      moduleTitle: unit.moduleTitle,
+      secao: section.secao,
+      sectionTitle,
+      text: section.text,
+      hay: normalizeSearch([sectionTitle, section.text]),
+      titleHay,
+    }
+  })
+}
+
+// Entradas das apostilas: uma por seção, na ordem do curso (de uma vez só; a tela usa
+// buildApostilaIndex, que monta aos poucos e guarda). released (opcional): só as unidades
+// liberadas.
 export function apostilaEntries(courseData, released = null) {
   const entries = []
-  courseUnits(courseData, released).forEach((unit) => {
-    const text = courseData[unit.key]
-    if (typeof text !== 'string') return
+  indexUnits(courseData).forEach((unit, unitIndex) => {
     if (released && released[unit.key] !== true) return
-    apostilaSections(text, unit.title).forEach((section) => {
-      entries.push({
-        kind: 'apostila',
-        id: `${unit.key}#${section.secao}`,
-        unitKey: unit.key,
-        unitTitle: unit.title,
-        moduleTitle: unit.moduleTitle,
-        secao: section.secao,
-        sectionTitle: section.secao > 0 ? section.title : '',
-        text: section.text,
-      })
-    })
+    entries.push(...unitEntries(courseData, unit, unitIndex))
   })
   return entries
 }
 
+// Índice guardado por data.js (o objeto que useCourseContent guarda para a turma): abrir a
+// Busca de novo, apagar o termo e digitar outro não monta nada outra vez. O data.js novo
+// (liberação mudou, apostila corrigida) é outro objeto e ganha índice novo.
+const builtIndexes = new WeakMap()
+// Tempo máximo de cada pedaço da montagem: entre um pedaço e outro a página responde
+// (celular antigo com centenas de KB de apostila não trava enquanto o aluno digita).
+export const INDEX_SLICE_MS = 12
+
+function now() {
+  return typeof performance !== 'undefined' && performance.now ? performance.now() : Date.now()
+}
+
+export function peekApostilaIndex(courseData) {
+  const built = courseData && typeof courseData === 'object' ? builtIndexes.get(courseData) : null
+  return built && built.entries ? built.entries : null
+}
+
+// Monta o índice das apostilas aos poucos (uma unidade depois da outra, pedaços de até
+// INDEX_SLICE_MS) e guarda. Devolve uma promessa com as entradas; chamadas repetidas para
+// o mesmo data.js recebem a mesma promessa.
+export function buildApostilaIndex(courseData, { sliceMs = INDEX_SLICE_MS } = {}) {
+  if (!courseData || typeof courseData !== 'object') return Promise.resolve([])
+  const existing = builtIndexes.get(courseData)
+  if (existing) return existing.promise
+  const record = { entries: null, promise: null }
+  record.promise = new Promise((resolve) => {
+    const units = indexUnits(courseData)
+    const entries = []
+    let next = 0
+    const step = () => {
+      const started = now()
+      while (next < units.length) {
+        const unitIndex = next
+        next += 1
+        try {
+          entries.push(...unitEntries(courseData, units[unitIndex], unitIndex))
+        } catch {
+          // Apostila que não se deixa ler fica fora da busca; o resto continua.
+        }
+        if (now() - started >= sliceMs) break
+      }
+      if (next < units.length) { setTimeout(step, 0); return }
+      record.entries = entries
+      resolve(entries)
+    }
+    setTimeout(step, 0)
+  })
+  builtIndexes.set(courseData, record)
+  return record.promise
+}
+
 export function libraryEntries(list) {
-  return (Array.isArray(list) ? list : []).filter((item) => item && item.id).map((item) => ({
-    kind: 'biblioteca',
-    id: String(item.id),
-    title: String(item.name || 'Material'),
-    materia: String(item.materia || ''),
-    tags: Array.isArray(item.tags) ? item.tags.map(String) : [],
-    text: String(item.description || ''),
-  }))
+  return (Array.isArray(list) ? list : []).filter((item) => item && item.id).map((item) => {
+    const entry = {
+      kind: 'biblioteca',
+      id: String(item.id),
+      title: String(item.name || 'Material'),
+      materia: String(item.materia || ''),
+      tags: Array.isArray(item.tags) ? item.tags.map(String) : [],
+      text: String(item.description || ''),
+    }
+    entry.hay = normalizeSearch([entry.title, entry.materia, entry.tags, entry.text])
+    return entry
+  })
 }
 
 export function announcementEntries(list) {
-  return (Array.isArray(list) ? list : []).filter((item) => item && item.id).map((item) => ({
-    kind: 'aviso',
-    id: String(item.id),
-    title: String(item.title || 'Aviso'),
-    text: String(item.message || ''),
-    authorName: String(item.authorName || ''),
-    createdAt: item.createdAt,
-  }))
-}
-
-function entryValues(entry) {
-  if (entry.kind === 'apostila') return [entry.unitTitle, entry.moduleTitle, entry.sectionTitle, entry.text]
-  if (entry.kind === 'biblioteca') return [entry.title, entry.materia, entry.tags, entry.text]
-  return [entry.title, entry.text]
+  return (Array.isArray(list) ? list : []).filter((item) => item && item.id).map((item) => {
+    const entry = {
+      kind: 'aviso',
+      id: String(item.id),
+      title: String(item.title || 'Aviso'),
+      text: String(item.message || ''),
+      authorName: String(item.authorName || ''),
+      createdAt: item.createdAt,
+    }
+    entry.hay = normalizeSearch([entry.title, entry.text])
+    return entry
+  })
 }
 
 function snippetSource(entry, term) {
@@ -82,31 +160,84 @@ function matchesAny(text, term) {
   return searchTerms(term).some((word) => matchesSearch([text], word))
 }
 
+// Título e linha de contexto com a palavra marcada também (achada no nome da unidade, do
+// módulo ou da parte da apostila, o trecho do texto pode não ter a palavra).
+function marked(text, term) {
+  return highlightParts(text, findTermRanges(text, term))
+}
+
+function withMarks(result, term) {
+  return { ...result, titleParts: marked(result.title, term), contextParts: marked(result.context || '', term) }
+}
+
 function toResult(entry, term) {
   const snippet = makeSnippet(snippetSource(entry, term), term)
   if (entry.kind === 'apostila') {
-    return {
+    return withMarks({
       ...entry,
-      href: unitHref(entry.unitKey, { busca: term, secao: entry.secao }),
+      // Achada só pelo título da unidade ou do módulo: abre a unidade do começo.
+      href: unitHref(entry.unitKey, { busca: term, secao: entry.titleOnly ? 0 : entry.secao }),
       title: entry.unitTitle,
-      context: [entry.moduleTitle, entry.sectionTitle].filter(Boolean).join(' · '),
+      context: [entry.moduleTitle, entry.titleOnly ? '' : entry.sectionTitle].filter(Boolean).join(' · '),
       snippet: snippet.parts,
-    }
+    }, term)
   }
   if (entry.kind === 'biblioteca') {
-    return { ...entry, href: `/aluno/biblioteca?material=${encodeURIComponent(entry.id)}`, context: entry.materia, snippet: snippet.parts }
+    return withMarks({ ...entry, href: `/aluno/biblioteca?material=${encodeURIComponent(entry.id)}`, context: entry.materia, snippet: snippet.parts }, term)
   }
-  return { ...entry, href: `/aluno/avisos?aviso=${encodeURIComponent(entry.id)}`, context: entry.authorName, snippet: snippet.parts }
+  // O autor do aviso não entra na busca: não marca o nome dele.
+  return { ...withMarks({ ...entry, href: `/aluno/avisos?aviso=${encodeURIComponent(entry.id)}`, context: entry.authorName, snippet: snippet.parts }, term), contextParts: null }
+}
+
+function hayOf(entry) {
+  if (typeof entry.hay === 'string') return entry.hay
+  // Entrada montada fora daqui (testes): normaliza na hora.
+  return normalizeSearch(entry.kind === 'biblioteca' ? [entry.title, entry.materia, entry.tags, entry.text] : [entry.title, entry.text])
+}
+
+// Apostilas que casam, da mais certeira para a menos:
+// 1. seções com todas as palavras no título ou no texto da própria seção;
+// 2. seções com parte das palavras no texto e o resto no título da unidade ou do módulo;
+// 3. unidades achadas só pelo título (dela ou do módulo): UM resultado por unidade, e só
+//    quando nenhuma seção dela entrou acima. Antes, cada seção de uma unidade com a palavra
+//    no título virava um resultado sem a palavra no trecho e empurrava para fora dos 50 as
+//    seções que falam do assunto.
+// Dentro de cada grupo, na ordem do curso. released (opcional): só as unidades liberadas.
+function pickApostilas(entries, words, released) {
+  const full = []
+  const partial = []
+  const byTitle = new Map()
+  const represented = new Set()
+  ;(entries || []).forEach((entry) => {
+    if (released && released[entry.unitKey] !== true) return
+    const hay = typeof entry.hay === 'string' ? entry.hay : normalizeSearch([entry.sectionTitle, entry.text])
+    const titleHay = typeof entry.titleHay === 'string' ? entry.titleHay : normalizeSearch([entry.unitTitle, entry.moduleTitle])
+    let inSection = 0
+    for (const word of words) {
+      if (hay.includes(word)) inSection += 1
+      else if (!titleHay.includes(word)) return
+    }
+    if (inSection === words.length) { full.push(entry); represented.add(entry.unitKey) }
+    else if (inSection > 0) { partial.push(entry); represented.add(entry.unitKey) }
+    else if (!byTitle.has(entry.unitKey)) byTitle.set(entry.unitKey, { ...entry, titleOnly: true })
+  })
+  const titleOnly = [...byTitle.values()].filter((entry) => !represented.has(entry.unitKey))
+  return [...full, ...partial, ...titleOnly]
 }
 
 // Busca no índice: { apostilas, biblioteca, avisos, total, shown }. Todas as palavras do
-// termo precisam aparecer (cada uma em qualquer campo da entrada), sem acento.
-export function runSearch(index, term, { limit = SEARCH_RESULT_LIMIT } = {}) {
+// termo precisam aparecer (cada uma em qualquer campo da entrada), sem acento. released
+// (opcional): liberação de agora; unidade bloqueada depois do download do data.js some na
+// hora, sem esperar o data.js novo.
+export function runSearch(index, term, { limit = SEARCH_RESULT_LIMIT, released = null } = {}) {
   const empty = { apostilas: [], biblioteca: [], avisos: [], total: 0, shown: 0 }
   const words = searchTerms(term)
   if (!words.length || words.join('').length < SEARCH_MIN_CHARS) return empty
-  const pick = (list) => (list || []).filter((entry) => matchesSearch(entryValues(entry), term))
-  const apostilas = pick(index.apostilas)
+  const pick = (list) => (list || []).filter((entry) => {
+    const hay = hayOf(entry)
+    return words.every((word) => hay.includes(word))
+  })
+  const apostilas = pickApostilas(index.apostilas, words, released)
   const biblioteca = pick(index.biblioteca)
   const avisos = pick(index.avisos)
   const total = apostilas.length + biblioteca.length + avisos.length
