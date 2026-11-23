@@ -302,6 +302,23 @@ describe('Resultados · motivo ao mudar nota publicada', () => {
     expect(mocks.toast.success).toHaveBeenCalledWith('Notas ocultadas')
   })
 
+  it('[UC-NOTAS-004] publicar avisa quando o servidor deixa de fora entrega que aguarda correção', async () => {
+    const saved = mocks.stable.submissions
+    mocks.stable.submissions = [{ ...saved[0], id: 'pend', score: 70, scoreInvalid: false, gradePublished: false }]
+    mocks.post.mockResolvedValueOnce({ success: true, updated: 0, published: true, skippedInvalid: 0, skippedPendingCorrection: 1 })
+    try {
+      const user = userEvent.setup()
+      renderPage()
+      await user.click(screen.getByRole('button', { name: 'Publicar notas' }))
+      const dialog = await screen.findByRole('dialog', { name: 'Publicar 1 nota(s) para os alunos?' })
+      await user.click(within(dialog).getByRole('button', { name: 'Publicar' }))
+      await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/submissions/publish', { ids: ['pend'], published: true }))
+      await waitFor(() => expect(mocks.toast.error).toHaveBeenCalledWith('1 entrega aguarda correção e não foi publicada. Conclua a correção e publique de novo.'))
+    } finally {
+      mocks.stable.submissions = saved
+    }
+  })
+
   it('[UC-AUDITORIA-004] excluir: recusa que não é do motivo aparece no diálogo, que fica aberto para tentar de novo', async () => {
     const notFound = Object.assign(new Error('Tentativa não encontrada.'), { status: 404, data: { error: 'Tentativa não encontrada.' } })
     mocks.post.mockRejectedValueOnce(notFound).mockResolvedValueOnce({ success: true, removed: 1 })

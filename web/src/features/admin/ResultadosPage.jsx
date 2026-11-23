@@ -776,6 +776,9 @@ export default function ResultadosPage() {
         setReasonAsk(null)
         toast.success(published ? 'Notas publicadas' : 'Notas ocultadas')
         if (result?.skippedInvalid) toast.error(`${result.skippedInvalid} nota(s) inválida(s) não foram publicadas. Exclua e lance de novo.`)
+        // O servidor deixa de fora a entrega que ainda aguarda a correção do professor (D7).
+        const skippedPending = Number(result?.skippedPendingCorrection || 0)
+        if (published && skippedPending) toast.error(skippedPending === 1 ? '1 entrega aguarda correção e não foi publicada. Conclua a correção e publique de novo.' : `${skippedPending} entregas aguardam correção e não foram publicadas. Conclua a correção e publique de novo.`)
         if (submissionId) navigate(selectedStudentPath)
         else {
           setDetail(null)
