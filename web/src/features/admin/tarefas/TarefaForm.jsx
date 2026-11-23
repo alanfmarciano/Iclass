@@ -112,7 +112,14 @@ export default function TarefaForm() {
   // mãos ou nota, a mesma regra do /update); resposta sem o campo cai nas contagens.
   const serverRule = typeof assignment?.deadlineReasonRequired === 'boolean' ? assignment.deadlineReasonRequired : (assignment?.counts?.enviadas || 0) > 0
   const hasDeliveries = serverRule || serverAskedReason
-  const needsReason = editing && !!form && !!initial && hasDeliveries && deadlineChanged(initial, form)
+  const needsDeadlineReason = editing && !!form && !!initial && hasDeliveries && deadlineChanged(initial, form)
+  // C18, rodada 1: com nota devolvida (averageReasonRequired do servidor), tirar a tarefa da
+  // média ou pôr de volta muda a média que o aluno já viu e pede motivo, como o plano de
+  // avaliação em Resultados.
+  const averageRule = assignment?.averageReasonRequired === true || serverAskedReason
+  const needsAverageReason = editing && !!form && !!initial && averageRule && form.countsInAverage !== initial.countsInAverage
+  const needsReason = needsDeadlineReason || needsAverageReason
+  const reasonLabel = needsDeadlineReason && needsAverageReason ? 'Motivo da mudança de prazo e da média' : 'Motivo da mudança de prazo'
   const modules = useMemo(() => (Array.isArray(options?.modules) ? options.modules : []), [options])
   const units = useMemo(() => modules.find((module) => module.id === form?.moduleId)?.units || [], [modules, form?.moduleId])
   const library = Array.isArray(options?.library) ? options.library : []
@@ -148,7 +155,7 @@ export default function TarefaForm() {
   async function save(publish) {
     if (!form || locked) return
     const willPublish = publish || published
-    const problem = validateForm(form, options, { publish: willPublish, needsReason })
+    const problem = validateForm(form, options, { publish: willPublish, needsReason, averageReason: needsAverageReason && !needsDeadlineReason })
     if (problem) return showError(problem.field, problem.error)
     setBusy(true)
     setSummary('')
@@ -333,8 +340,8 @@ export default function TarefaForm() {
                     </div>
                   )}
                 </fieldset>
-                {needsReason && (
-                  <Textarea id={FIELD_IDS.reason} label="Motivo da mudança de prazo" value={form.reason} maxLength={limits.reasonMax}
+                {needsDeadlineReason && (
+                  <Textarea id={FIELD_IDS.reason} label={reasonLabel} value={form.reason} maxLength={limits.reasonMax}
                     onChange={(event) => change({ reason: event.target.value })} error={errors.reason}
                     placeholder="Esta tarefa já tem entrega ou nota de aluno. O motivo fica na Auditoria." className="min-h-[70px]" />
                 )}
@@ -370,6 +377,11 @@ export default function TarefaForm() {
                       : 'A nota devolvida aparece no quadro de notas, mas não entra na média.'}
                   </p>
                 </div>
+                {needsAverageReason && !needsDeadlineReason && (
+                  <Textarea id={FIELD_IDS.reason} label="Motivo da mudança na média" value={form.reason} maxLength={limits.reasonMax}
+                    onChange={(event) => change({ reason: event.target.value })} error={errors.reason}
+                    placeholder="Os alunos já viram a nota desta tarefa. O motivo fica na Auditoria." className="min-h-[70px]" />
+                )}
               </Card>
             </fieldset>
 

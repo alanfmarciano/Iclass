@@ -67,6 +67,25 @@ describe('Início do aluno · notas', () => {
     expect(screen.getByText('FUTEC_1')).toBeInTheDocument()
     expect(screen.queryByText(/man_1795397447192/)).not.toBeInTheDocument()
   })
+
+  it('[UC-TAREFAS-003] tarefa com "Conta na média" desmarcado aparece no desempenho marcada "fora da média"', () => {
+    // C18, rodada 1: antes a barra da tarefa fora da média era igual às que contam.
+    mocks.dashboard = {
+      courseName: 'Desenvolvimento',
+      overallNote: 8,
+      modules: [],
+      performance: [
+        { id: 'tarefa:asg_1', examKey: 'asg_1', title: 'Tarefa: Relatório', note: 9.5 },
+        { id: 'tarefa:asg_2', examKey: 'asg_2', title: 'Tarefa: Exercício extra', note: 3, foraDaMedia: true },
+      ],
+      announcements: [],
+      calendar: [],
+    }
+    render(<MemoryRouter><InicioPage /></MemoryRouter>)
+    expect(screen.getAllByText('fora da média')).toHaveLength(1)
+    expect(screen.getByText('Tarefa: Exercício extra')).toHaveAttribute('title', 'Tarefa: Exercício extra · fora da média')
+    expect(screen.getByText('Tarefa: Relatório')).toHaveAttribute('title', 'Tarefa: Relatório')
+  })
 })
 
 describe('Início do aluno · dias sem aula', () => {

@@ -299,10 +299,10 @@ test('notas de tarefa para o quadro (contrato C1, K1): só devolvidas, das publi
     const memory = {};
     const { t, archived } = seedClass(memory);
     assert.deepEqual(assignments.assignmentGradeEntries(memory, { courseId: 'DES', studentClass: '1DES' }), [{
-        email: 'ana@escola.local', studentId: null, columnId: `tarefa:${t.id}`, assignmentId: t.id, title: 'Relatório da visita', moduleId: '', score: 90, countsInAverage: true, returnedAt: due + DAY,
+        email: 'ana@escola.local', studentId: null, columnId: `tarefa:${t.id}`, assignmentId: t.id, title: 'Relatório da visita', moduleId: '', score: 90, countsInAverage: true, returnedAt: due + DAY, returned: true,
     }]);
     const all = assignments.assignmentGradeEntries(memory, { courseId: 'DES', studentClass: '1DES', published: false });
-    assert.deepEqual(all.map(entry => [entry.email, entry.score]), [['ana@escola.local', 90], ['bruno@escola.local', 70]], 'professor vê também a correção salva');
+    assert.deepEqual(all.map(entry => [entry.email, entry.score, entry.returned]), [['ana@escola.local', 90, true], ['bruno@escola.local', 70, false]], 'professor vê também a correção salva (returned diz qual foi devolvida)');
     assert.deepEqual(assignments.assignmentGradeEntries(memory, { courseId: 'DES', studentClass: '1DES', includeArchived: true }).map(entry => entry.assignmentId), [t.id, archived.id]);
     assert.deepEqual(assignments.assignmentGradeEntries(memory, { courseId: 'DES', studentClass: '1DES', students: ['bruno@escola.local'] }), []);
     assert.deepEqual(assignments.assignmentGradeEntries({}, { courseId: 'DES', studentClass: '1DES' }), [], 'banco sem tarefas: nada');

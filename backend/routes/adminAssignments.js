@@ -48,6 +48,12 @@
 //   (effectiveCountsInAverage: com a linha da tarefa no plano, a linha manda). Mudá-lo no
 //   /update passa pelo portão da turma encerrada (409 class_closed) e, com a linha no
 //   plano, muda também a linha (fora), gravando 'classes' junto.
+// - Rodada 1 do C18: a tarefa arquivada sai da média (como a avaliação manual arquivada).
+//   Arquivar a publicada, reativá-la (voltando publicada) e publicar de novo o rascunho que
+//   já foi publicado passam pelo mesmo portão. Com nota devolvida que conta na média,
+//   esses três e mudar "Conta na média" pedem motivo (reason, 3 a 500 caracteres; 400
+//   reason_required), que vai para a auditoria; a resposta traz averageReasonRequired
+//   (alguma nota devolvida) para a tela pedir o motivo antes.
 //
 // Correção (C6 / P1-d):
 // - Só em tarefa publicada (rascunho não tem entrega: 409 assignment_not_published;
@@ -132,6 +138,11 @@ const MESSAGES = Object.freeze({
     archivedPublish: 'Esta tarefa está arquivada. Reative a tarefa antes de publicar.',
     otherClass: 'A turma de uma tarefa não muda. Para usar a tarefa em outra turma, use "Copiar para outra turma".',
     reason: `Esta tarefa já tem entrega ou nota de aluno. Para mudar a abertura, o prazo ou o encerramento, informe o motivo (de ${LIMITS.reasonMin} a ${LIMITS.reasonMax} caracteres).`,
+    // "Conta na média", arquivar e reativar com nota devolvida (C18, rodada 1): mudam a média
+    // que o aluno já viu, como o plano de avaliação em Resultados (D10 do P1).
+    countsReason: `Esta tarefa já tem nota devolvida ao aluno. Para tirar a tarefa da média ou pôr de volta, informe o motivo (de ${LIMITS.reasonMin} a ${LIMITS.reasonMax} caracteres).`,
+    archiveReason: `Informe o motivo (de ${LIMITS.reasonMin} a ${LIMITS.reasonMax} caracteres): a tarefa tem nota devolvida, que sai da média do aluno enquanto ela estiver arquivada.`,
+    unarchiveReason: `Informe o motivo (de ${LIMITS.reasonMin} a ${LIMITS.reasonMax} caracteres): a tarefa tem nota devolvida, que volta para a média do aluno.`,
     confirm: 'Digite EXCLUIR para confirmar.',
     hasSubmissions: 'Esta tarefa já tem entregas ou registros de alunos e não pode ser excluída. Arquive a tarefa para ela sumir para os alunos.',
     penaltyPerDay: 'Com desconto por atraso, informe o desconto por dia (de 1% a 100%).',
@@ -220,6 +231,8 @@ const SCHEMAS = {
         ...FIELDS_SCHEMA,
     }),
     empty: body({}),
+    // Arquivar e reativar (C18, rodada 1): com nota devolvida que conta na média, pede motivo.
+    toggle: body({ reason: str({ max: LIMITS.reasonMax, nullable: true, label: 'motivo' }) }),
     remove: body({ confirm: str({ max: 20, nullable: true, label: 'confirmação' }) }),
     copy: body({
         courseId: str({ max: 100, required: true, label: 'curso' }),
@@ -320,6 +333,22 @@ function deliveredSubmissions(memory, assignmentId) {
     return assignments.submissionsForAssignment(memory, assignmentId)
         .map(raw => assignments.normalizeSubmission(raw))
         .filter(sub => sub.versions.length > 0 || !!sub.manualEntry || !!sub.grade);
+}
+
+// Entregas com nota devolvida (o que o aluno já vê e já está na média dele).
+function returnedGradeCount(memory, assignmentId) {
+    return assignments.submissionsForAssignment(memory, assignmentId)
+        .map(raw => assignments.normalizeSubmission(raw))
+        .filter(sub => sub.status === 'devolvida' && sub.returnedAt !== null && !!sub.grade && sub.grade.finalScore !== null)
+        .length;
+}
+
+function reasonOf(body) {
+    return body && typeof body.reason === 'string' ? body.reason.trim() : '';
+}
+
+function validReason(reason) {
+    return reason.length >= LIMITS.reasonMin && reason.length <= LIMITS.reasonMax;
 }
 
 // Unidades do módulo com a chave de cada uma (a da apostila, a da avaliação ou a própria).
@@ -531,6 +560,10 @@ function presentAssignment(memory, raw, { tz, full = true } = {}) {
         // aluno, mudar prazo, abertura ou encerramento pede o motivo. O formulário mostra o
         // campo do motivo já com true (nota sem envio também conta, sem contar em enviadas).
         deadlineReasonRequired: deliveredSubmissions(memory, task.id).length > 0,
+        // C18, rodada 1: com nota devolvida, mudar "Conta na média", arquivar ou reativar
+        // (quando a nota entra ou sai da média) pede motivo, a mesma regra do /update, do
+        // /archive e do /unarchive. O formulário e a pergunta de arquivar mostram o campo.
+        averageReasonRequired: returnedGradeCount(memory, task.id) > 0,
     };
     if (full) {
         out.instructions = task.instructions;
@@ -1044,11 +1077,17 @@ function createAdminAssignmentsRouter() {
         const countsChanged = keys.includes('countsInAverage');
         if (countsChanged && !academicCalendar.assertClassOpen(classOfTask(task), { res })) return undefined;
 
-        const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
+        const reason = reasonOf(req.body);
         const deadlineChanged = keys.some(key => DEADLINE_KEYS.includes(key));
-        if (deadlineChanged && deliveredSubmissions(db.memory, task.id).length > 0
-            && (reason.length < LIMITS.reasonMin || reason.length > LIMITS.reasonMax)) {
+        if (deadlineChanged && deliveredSubmissions(db.memory, task.id).length > 0 && !validReason(reason)) {
             return sendFieldError(res, MESSAGES.reason, 'reason', { code: 'reason_required' });
+        }
+        // Com nota devolvida, tirar a tarefa da média ou pôr de volta muda a média que o
+        // aluno já viu: pede motivo (D10 do P1; a mesma regra do plano em Resultados), com
+        // ou sem os critérios do curso ligados.
+        const averageReason = countsChanged && returnedGradeCount(db.memory, task.id) > 0;
+        if (averageReason && !validReason(reason)) {
+            return sendFieldError(res, MESSAGES.countsReason, 'reason', { code: 'reason_required' });
         }
         const next = { ...raw, ...merged, updatedBy: String(account.email || '').toLowerCase(), updatedAt: now };
         replaceAssignment(raw, next);
@@ -1061,14 +1100,14 @@ function createAdminAssignmentsRouter() {
         audit(req, account, 'assignment_updated', merged, {
             before,
             after,
-            reason: deadlineChanged && reason ? reason : undefined,
+            reason: (deadlineChanged || countsChanged) && reason ? reason : undefined,
             details: { id: task.id, title: merged.title, campos: keys, ...(planChanged ? { planoDaTurma: true } : {}) },
         });
         await db.save({ only: planChanged ? ['assignments', 'classes', 'auditLogs'] : ['assignments', 'auditLogs'] });
         res.json({ success: true, changed: true, assignment: presentAssignment(db.memory, next, { tz }) });
     }));
 
-    router.post('/api/admin/assignments/:id/publish', SCHEMAS.empty, (req, res) => validateAdmin(req, res, async (config, account) => {
+    router.post('/api/admin/assignments/:id/publish', SCHEMAS.toggle, (req, res) => validateAdmin(req, res, async (config, account) => {
         const found = loadScopedAssignment(req, res, account);
         if (!found) return;
         const { raw, task } = found;
@@ -1077,33 +1116,51 @@ function createAdminAssignmentsRouter() {
         if (task.status === 'publicada') return res.json({ success: true, changed: false, assignment: presentAssignment(db.memory, raw, { tz }) });
         const problem = publishProblem(task);
         if (problem) return sendFieldError(res, problem.error, problem.field);
+        // Rascunho que já foi publicado (reativado como rascunho) pode ter nota devolvida:
+        // publicar de novo a põe de volta na média (C18 / P1-j), com o mesmo portão e o mesmo
+        // motivo do /unarchive. Rascunho novo não tem entrega nem nota.
+        const reason = reasonOf(req.body);
+        const republish = task.publishedAt !== null;
+        if (republish && !academicCalendar.assertClassOpen(classOfTask(task), { res })) return undefined;
+        if (republish && assignments.effectiveCountsInAverage(db.memory, task) && returnedGradeCount(db.memory, task.id) > 0 && !validReason(reason)) {
+            return sendFieldError(res, MESSAGES.unarchiveReason, 'reason', { code: 'reason_required' });
+        }
         const now = Date.now();
         const by = String(account.email || '').toLowerCase();
         const next = { ...raw, ...task, status: 'publicada', publishedAt: now, updatedBy: by, updatedAt: now };
         replaceAssignment(raw, next);
-        audit(req, account, 'assignment_published', task, { details: { id: task.id, title: task.title, opensAt: task.opensAt, dueAt: task.dueAt } });
+        audit(req, account, 'assignment_published', task, { reason: reason || undefined, details: { id: task.id, title: task.title, opensAt: task.opensAt, dueAt: task.dueAt } });
         await db.save({ only: ['assignments', 'auditLogs'] });
         res.json({ success: true, changed: true, assignment: presentAssignment(db.memory, next, { tz }) });
     }));
 
-    router.post('/api/admin/assignments/:id/archive', SCHEMAS.empty, (req, res) => validateAdmin(req, res, async (config, account) => {
+    router.post('/api/admin/assignments/:id/archive', SCHEMAS.toggle, (req, res) => validateAdmin(req, res, async (config, account) => {
         const found = loadScopedAssignment(req, res, account);
         if (!found) return;
         const { raw, task } = found;
         const tz = timezone();
         if (task.status === 'arquivada') return res.json({ success: true, changed: false, assignment: presentAssignment(db.memory, raw, { tz }) });
+        // A tarefa publicada é item do quadro de notas (C18 / P1-j): arquivada, a nota sai da
+        // média, como a da avaliação manual arquivada. Passa pelo portão da turma encerrada
+        // (409 class_closed) e, com nota devolvida que conta na média, pede motivo.
+        const reason = reasonOf(req.body);
+        const gradeItem = task.status === 'publicada';
+        if (gradeItem && !academicCalendar.assertClassOpen(classOfTask(task), { res })) return undefined;
+        const leavesAverage = gradeItem && assignments.effectiveCountsInAverage(db.memory, task) && returnedGradeCount(db.memory, task.id) > 0;
+        if (leavesAverage && !validReason(reason)) return sendFieldError(res, MESSAGES.archiveReason, 'reason', { code: 'reason_required' });
         const now = Date.now();
         const by = String(account.email || '').toLowerCase();
         const next = { ...raw, ...task, status: 'arquivada', archivedAt: now, archivedBy: by, updatedBy: by, updatedAt: now };
         replaceAssignment(raw, next);
         audit(req, account, 'assignment_archived', task, {
-            details: { id: task.id, title: task.title, statusAnterior: task.status, entregas: deliveredSubmissions(db.memory, task.id).length },
+            reason: reason || undefined,
+            details: { id: task.id, title: task.title, statusAnterior: task.status, entregas: deliveredSubmissions(db.memory, task.id).length, notasDevolvidas: returnedGradeCount(db.memory, task.id) },
         });
         await db.save({ only: ['assignments', 'auditLogs'] });
         res.json({ success: true, changed: true, assignment: presentAssignment(db.memory, next, { tz }) });
     }));
 
-    router.post('/api/admin/assignments/:id/unarchive', SCHEMAS.empty, (req, res) => validateAdmin(req, res, async (config, account) => {
+    router.post('/api/admin/assignments/:id/unarchive', SCHEMAS.toggle, (req, res) => validateAdmin(req, res, async (config, account) => {
         const found = loadScopedAssignment(req, res, account);
         if (!found) return;
         const { raw, task } = found;
@@ -1111,11 +1168,18 @@ function createAdminAssignmentsRouter() {
         if (task.status !== 'arquivada') return res.json({ success: true, changed: false, assignment: presentAssignment(db.memory, raw, { tz }) });
         // Volta como estava: publicada se já tinha sido publicada (e ainda pode), senão rascunho.
         const status = task.publishedAt !== null && !publishProblem({ ...task, status: 'publicada' }) ? 'publicada' : 'rascunho';
+        // Voltando publicada, a nota devolvida volta para a média (C18 / P1-j): o mesmo portão
+        // e o mesmo motivo do /archive.
+        const reason = reasonOf(req.body);
+        const gradeItem = status === 'publicada';
+        if (gradeItem && !academicCalendar.assertClassOpen(classOfTask(task), { res })) return undefined;
+        const backToAverage = gradeItem && assignments.effectiveCountsInAverage(db.memory, task) && returnedGradeCount(db.memory, task.id) > 0;
+        if (backToAverage && !validReason(reason)) return sendFieldError(res, MESSAGES.unarchiveReason, 'reason', { code: 'reason_required' });
         const now = Date.now();
         const by = String(account.email || '').toLowerCase();
         const next = { ...raw, ...task, status, archivedAt: null, archivedBy: '', updatedBy: by, updatedAt: now };
         replaceAssignment(raw, next);
-        audit(req, account, 'assignment_unarchived', task, { details: { id: task.id, title: task.title, status } });
+        audit(req, account, 'assignment_unarchived', task, { reason: reason || undefined, details: { id: task.id, title: task.title, status, notasDevolvidas: returnedGradeCount(db.memory, task.id) } });
         await db.save({ only: ['assignments', 'auditLogs'] });
         res.json({ success: true, changed: true, assignment: presentAssignment(db.memory, next, { tz }) });
     }));

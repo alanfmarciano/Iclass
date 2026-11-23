@@ -188,3 +188,40 @@ test('[UC-ESQUEMA-004] backup-cli recusa (verificar e restaurar) um backup feito
     assert.equal(crypto.createHash('sha256').update(fs.readFileSync(here.dbFile)).digest('hex'), hash);
     assert.equal(fs.existsSync(path.join(here.dataDir, 'quarentena')), false);
 });
+
+// Fila de regravação do pacote de curso excluído (fase 3, C18, rodada 1; LGPD): a
+// backup-cli troca o banco inteiro, mas o pacote em cursos_arquivados fica, então a
+// pendência de agora continua valendo. Backup de antes da fila (o da 281029f): fica como
+// está (missing 'keep'); backup com a fila: junta a do backup com a de agora pelo id
+// (restore 'merge', como na tela). Antes desta rodada só a conferência ao vivo cobria isso.
+test('[UC-ENCERRADOS-002] backup-cli restaurar mantém a fila de regravação de pacote de agora e junta a do backup', async () => {
+    const dir = newDataDir('cli-fila-pacote');
+    bootOnce(dir.dataDir);
+    const [oldZip] = fs.readdirSync(dir.backupsDir).filter(name => /^pre-atualizacao_.+\.zip$/.test(name));
+    assert.ok(oldZip, 'o backup de antes da atualização (sem a fila)');
+    const row = (id, folder) => JSON.stringify({ id, schemaVersion: 1, folder, mode: 'purge', ids: [`asub_${id}`], pseudonimoEmail: null, at: 1, criadaEm: 1 });
+    const queue = () => withDb(dir.dbFile, sqlite3.OPEN_READONLY, async ({ all }) => (await all('SELECT key FROM assignment_bundle_rewrites ORDER BY key')).map(item => item.key));
+    await withDb(dir.dbFile, sqlite3.OPEN_READWRITE, ({ run }) => run('INSERT INTO assignment_bundle_rewrites (key, value) VALUES (?, ?)', ['pbr_a', row('pbr_a', 'curso_a')]));
+
+    const port = await proc.freePort();
+    // Backup novo, com a fila (pbr_a).
+    const made = runCli(dir.dataDir, port, ['criar', '--dados']);
+    assert.equal(made.code, 0, made.output);
+    const newZip = fs.readdirSync(dir.backupsDir).find(name => /^manual_.+\.zip$/.test(name));
+    assert.ok(newZip, made.output);
+
+    // Depois do backup: pbr_a foi feita e entrou pbr_b.
+    await withDb(dir.dbFile, sqlite3.OPEN_READWRITE, async ({ run }) => {
+        await run('DELETE FROM assignment_bundle_rewrites');
+        await run('INSERT INTO assignment_bundle_rewrites (key, value) VALUES (?, ?)', ['pbr_b', row('pbr_b', 'curso_b')]);
+    });
+    const restoredNew = runCli(dir.dataDir, port, ['restaurar', path.join(dir.backupsDir, newZip), '--sim']);
+    assert.equal(restoredNew.code, 0, restoredNew.output);
+    assert.deepEqual(await queue(), ['pbr_a', 'pbr_b'], 'a do backup e a de agora');
+
+    // Backup de antes da fila: a de agora fica como está, com a contagem no resumo.
+    const restoredOld = runCli(dir.dataDir, port, ['restaurar', path.join(dir.backupsDir, oldZip), '--sim']);
+    assert.equal(restoredOld.code, 0, restoredOld.output);
+    assert.match(restoredOld.stdout, /Pacotes de curso a regravar \(anonimização\) \(2\)/);
+    assert.deepEqual(await queue(), ['pbr_a', 'pbr_b']);
+});

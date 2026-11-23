@@ -257,6 +257,34 @@ describe('Editar tarefa', () => {
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/assignments/asg_1_aaaaaa/update', { dueDate: '2026-12-08', dueTime: '23:00' }))
   })
 
+  // C18, rodada 1: com nota devolvida, "Conta na média" muda a média que o aluno já viu.
+  it('[UC-TAREFAS-002] tirar da média a tarefa com nota devolvida pede o motivo ao lado de "Conta na média" e o manda junto', async () => {
+    const user = userEvent.setup()
+    mocks.assignment = { ...SAVED, deadlineReasonRequired: true, averageReasonRequired: true }
+    renderAt('/tarefas/asg_1_aaaaaa/editar')
+    expect(screen.queryByLabelText('Motivo da mudança na média')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('checkbox', { name: 'Conta na média' }))
+    expect(screen.getByLabelText('Motivo da mudança na média')).toBeInTheDocument()
+    expect(screen.queryByLabelText('Motivo da mudança de prazo')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Salvar alterações' }))
+    expect(mocks.post).not.toHaveBeenCalled()
+    expect(screen.getByLabelText('Motivo da mudança na média')).toHaveAttribute('aria-invalid', 'true')
+    expect(screen.getAllByText(/Para tirar a tarefa da média ou pôr de volta, informe o motivo/).length).toBeGreaterThan(0)
+    await user.type(screen.getByLabelText('Motivo da mudança na média'), 'Tarefa opcional')
+    await user.click(screen.getByRole('button', { name: 'Salvar alterações' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/assignments/asg_1_aaaaaa/update', { countsInAverage: false, reason: 'Tarefa opcional' }))
+  })
+
+  it('[UC-TAREFAS-002] sem nota devolvida (averageReasonRequired false), "Conta na média" muda sem motivo', async () => {
+    const user = userEvent.setup()
+    mocks.assignment = { ...SAVED, deadlineReasonRequired: true, averageReasonRequired: false }
+    renderAt('/tarefas/asg_1_aaaaaa/editar')
+    await user.click(screen.getByRole('checkbox', { name: 'Conta na média' }))
+    expect(screen.queryByLabelText('Motivo da mudança na média')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Salvar alterações' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/assignments/asg_1_aaaaaa/update', { countsInAverage: false }))
+  })
+
   it('no celular as listas de módulo e unidade, as abas Escrever/Prévia e a ajuda são alvos de toque de 44 px', () => {
     renderAt('/tarefas/asg_1_aaaaaa/editar')
     const touch = /(^|\s)min-h-\[44px\](\s|$)/

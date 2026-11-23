@@ -2462,9 +2462,10 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
                 return { id: latest.id, examKey: latest.examKey, ...(manualTitle ? { title: manualTitle } : {}), timestamp: latest.timestamp, note: roundGrade(group.score) };
             })
             // A nota devolvida das tarefas (C18 / P1-j), na hora da devolução: a mesma de
-            // assignmentGradeEntries (só a devolvida, já com o desconto de atraso).
+            // assignmentGradeEntries (só a devolvida, já com o desconto de atraso). A tarefa com
+            // "Conta na média" desmarcado vai marcada (foraDaMedia), como em Minhas notas.
             .concat(assignmentGradeEntries(db.memory, { courseId: String(gradesCls.courseId || courseId || ''), studentClass: gradesCls.name, students: [email], published: true })
-                .map(entry => ({ id: entry.columnId, examKey: entry.assignmentId, title: `Tarefa: ${entry.title}`, timestamp: entry.returnedAt, note: roundGrade(entry.score) })))
+                .map(entry => ({ id: entry.columnId, examKey: entry.assignmentId, title: `Tarefa: ${entry.title}`, timestamp: entry.returnedAt, note: roundGrade(entry.score), ...(entry.countsInAverage === false ? { foraDaMedia: true } : {}) })))
             .sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0))
             .slice(-5)
             .map(({ timestamp, ...item }) => item),

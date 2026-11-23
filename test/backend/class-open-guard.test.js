@@ -83,6 +83,15 @@ const ROTAS_QUE_GRAVAM = [
     ['adminAssignments.js', 'POST', '/api/admin/assignments/:id/return-all'],
     ['adminAssignments.js', 'POST', '/api/admin/assignments/:id/manual-entry'],
     ['adminAssignments.js', 'POST', '/api/admin/assignments/:id/extension'],
+    // Nota da tarefa na média (fase 3, C18 / P1-j): "Conta na média" no /update e arquivar
+    // ou reativar a tarefa publicada tiram a nota da média ou a põem de volta, como o plano
+    // de avaliação e a avaliação manual arquivada.
+    ['adminAssignments.js', 'POST', '/api/admin/assignments/:id/update'],
+    ['adminAssignments.js', 'POST', '/api/admin/assignments/:id/archive'],
+    ['adminAssignments.js', 'POST', '/api/admin/assignments/:id/unarchive'],
+    // Publicar de novo o rascunho que já foi publicado (reativado como rascunho) põe a nota
+    // devolvida de volta na média.
+    ['adminAssignments.js', 'POST', '/api/admin/assignments/:id/publish'],
     // Plano de avaliação e avaliações manuais (B6 / P2-S3): etapa, peso, recuperação e
     // "fora da média" mudam a média; arquivar tira a nota da média (saveClassPlan).
     ['adminGrading.js', 'POST', '/api/admin/grading/plan'],
@@ -113,6 +122,11 @@ const FORA_DO_PORTAO = [
     ['testmode.js', 'POST', '/api/test/seed', 'dados de demonstração do TEST_MODE; não existe no computador da escola'],
     ['adminArchive.js', 'POST', '/api/admin/courses/:id/purge', 'arquivar o curso inteiro leva as notas para o pacote do curso; não é mudança de nota'],
     ['adminArchive.js', 'POST', '/api/admin/archived-courses/restore', 'restaurar o curso arquivado devolve as notas como estavam'],
+    // Tarefas (C18): gravam a lista de tarefas, mas a tarefa nova, a cópia e a excluída não
+    // têm nota (excluir só sem nenhum registro de aluno).
+    ['adminAssignments.js', 'POST', '/api/admin/assignments', 'tarefa nova (rascunho ou publicada agora) ainda não tem entrega nem nota; não muda a média da turma'],
+    ['adminAssignments.js', 'POST', '/api/admin/assignments/:id/copy', 'a cópia nasce rascunho, sem entrega nem nota, na outra turma; não muda a média de nenhuma turma'],
+    ['adminAssignments.js', 'POST', '/api/admin/assignments/:id/delete', 'só exclui tarefa sem nenhum registro de aluno (D13): não há nota para sair da média'],
 ];
 
 // Sinais de gravação de nota ou presença feita ali mesmo (no corpo de uma rota ou de uma
@@ -136,6 +150,10 @@ const DIRECT_WRITE_MARKERS = [
     /only:\s*\[[^\]]*['"]assignmentSubmissions['"]/,
     // Plano de avaliação da turma e avaliações manuais (B6): gravam classes[].avaliacao.
     /\bsaveClassPlan\(/,
+    // Tarefas (fase 3, C18 / P1-j): a tarefa publicada é item do quadro de notas; arquivar,
+    // reativar, publicar de novo e "Conta na média" mudam a média (gravam assignments e,
+    // com a linha da tarefa no plano, classes).
+    /only:[^;\n]*['"]assignments['"]/,
 ];
 
 const UTILS_DIR = path.join(__dirname, '../../backend/utils');

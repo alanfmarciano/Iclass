@@ -15,3 +15,29 @@ describe('Arquivar a tarefa', () => {
     expect(ASSIGNMENT_DIALOGS.archive({ title: 'Extra', publishedAt: 1795000000000, countsInAverage: false }).message).not.toMatch(/média/)
   })
 })
+
+// C18, rodada 1: arquivar, reativar e publicar de novo com nota devolvida que conta na média
+// pedem o motivo (o servidor recusa sem ele: 400 reason_required).
+describe('Motivo da mudança na média', () => {
+  const publicada = { title: 'Relatório', status: 'publicada', publishedAt: 1795000000000, countsInAverage: true, averageReasonRequired: true }
+
+  it('[UC-TAREFAS-002] arquivar a publicada com nota devolvida pede o motivo', () => {
+    const dialog = ASSIGNMENT_DIALOGS.archive(publicada)
+    expect(dialog.requireReason).toBe(true)
+    expect(dialog.reasonLabel).toBe('Motivo da mudança na média')
+  })
+
+  it('[UC-TAREFAS-002] reativar e publicar de novo pedem o motivo; reativar avisa que as notas voltam para a média', () => {
+    const arquivada = { ...publicada, status: 'arquivada' }
+    expect(ASSIGNMENT_DIALOGS.unarchive(arquivada).requireReason).toBe(true)
+    expect(ASSIGNMENT_DIALOGS.unarchive(arquivada).message).toContain('As notas devolvidas voltam para a média.')
+    expect(ASSIGNMENT_DIALOGS.publish({ ...publicada, status: 'rascunho' }).requireReason).toBe(true)
+  })
+
+  it('[UC-TAREFAS-002] sem nota devolvida, fora da média ou rascunho novo: sem motivo; o pedido do servidor (forceReason) liga o campo', () => {
+    expect(ASSIGNMENT_DIALOGS.archive({ ...publicada, averageReasonRequired: false }).requireReason).toBeUndefined()
+    expect(ASSIGNMENT_DIALOGS.archive({ ...publicada, countsInAverage: false }).requireReason).toBeUndefined()
+    expect(ASSIGNMENT_DIALOGS.publish({ ...publicada, status: 'rascunho', publishedAt: null }).requireReason).toBeUndefined()
+    expect(ASSIGNMENT_DIALOGS.archive({ ...publicada, averageReasonRequired: false }, { forceReason: true }).requireReason).toBe(true)
+  })
+})

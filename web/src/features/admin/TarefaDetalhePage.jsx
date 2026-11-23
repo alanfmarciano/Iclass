@@ -114,24 +114,28 @@ export default function TarefaDetalhePage() {
     setPending({ kind })
   }
 
-  async function run() {
+  async function run(reason) {
     try {
-      await runAction()
+      await runAction(reason)
     } catch (err) {
+      // O servidor pediu o motivo (nota devolvida que entra ou sai da média, C18): a pergunta
+      // passa a mostrar o campo.
+      if (err?.data?.code === 'reason_required') setPending((current) => (current ? { ...current, forceReason: true } : current))
       throw Object.assign(new Error(hidePlaceholderEmails(err?.message) || 'Não foi possível concluir. Tente de novo.'), { data: err?.data, status: err?.status })
     }
   }
 
-  async function runAction() {
+  async function runAction(reason) {
     const kind = pending?.kind
+    const withReason = reason && String(reason).trim() ? { reason: String(reason).trim() } : {}
     if (kind === 'publish') {
-      await api.post(`${base}/publish`, {})
+      await api.post(`${base}/publish`, withReason)
       toast.success('Tarefa publicada')
     } else if (kind === 'archive') {
-      await api.post(`${base}/archive`, {})
+      await api.post(`${base}/archive`, withReason)
       toast.success('Tarefa arquivada')
     } else if (kind === 'unarchive') {
-      await api.post(`${base}/unarchive`, {})
+      await api.post(`${base}/unarchive`, withReason)
       toast.success('Tarefa reativada')
     } else if (kind === 'delete') {
       await api.post(`${base}/delete`, { confirm: 'EXCLUIR' })
@@ -159,7 +163,7 @@ export default function TarefaDetalhePage() {
     refetch(true)
   }
 
-  const dialog = pending ? dialogFor(pending.kind, { assignment, returnable, exportChoice, setExportChoice, copy, setCopy, copyTargets }) : null
+  const dialog = pending ? dialogFor(pending.kind, { assignment, returnable, exportChoice, setExportChoice, copy, setCopy, copyTargets, forceReason: pending.forceReason === true }) : null
 
   return (
     <div className="max-w-6xl mx-auto space-y-5">
@@ -253,6 +257,9 @@ export default function TarefaDetalhePage() {
         confirmLabel={dialog?.confirmLabel}
         tone={dialog?.tone}
         confirmDisabled={dialog?.confirmDisabled}
+        requireReason={dialog?.requireReason === true}
+        reasonLabel={dialog?.reasonLabel}
+        reasonPlaceholder={dialog?.reasonPlaceholder}
       >
         {dialog?.children}
       </ConfirmDialog>
@@ -260,9 +267,9 @@ export default function TarefaDetalhePage() {
   )
 }
 
-function dialogFor(kind, { assignment, returnable, exportChoice, setExportChoice, copy, setCopy, copyTargets }) {
+function dialogFor(kind, { assignment, returnable, exportChoice, setExportChoice, copy, setCopy, copyTargets, forceReason = false }) {
   if (!assignment) return null
-  if (ASSIGNMENT_DIALOGS[kind]) return ASSIGNMENT_DIALOGS[kind](assignment)
+  if (ASSIGNMENT_DIALOGS[kind]) return ASSIGNMENT_DIALOGS[kind](assignment, { forceReason })
   if (kind === 'return-all') {
     return {
       title: 'Devolver todas as corrigidas?',

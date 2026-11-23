@@ -213,7 +213,12 @@ export default function InicioPage() {
             {data.performance?.length > 0 && <Card>
               <div className="flex items-center justify-between border-b border-border px-5 py-4"><h2 className="font-semibold text-text">Seu desempenho</h2><span className="text-xs text-muted">Últimas notas publicadas</span></div>
               <div className="flex h-40 items-end gap-3 p-5">
-                {data.performance.map((item) => <div key={item.id} className="flex h-full flex-1 flex-col justify-end text-center"><span className="mb-1 text-xs font-semibold text-text">{fmtGradeValue(item.note)}</span><div className="mx-auto w-full max-w-10 rounded-t bg-info" style={{ height: `${Math.max(8, item.note * 10)}%` }} /><span className="mt-2 truncate text-[10px] text-subtle" title={item.title || item.examKey}>{item.title || item.examKey?.replace(/^Avaliacao_/, '')}</span></div>)}
+                {/* Tarefa com "Conta na média" desmarcado (C18): barra apagada e "fora da média". */}
+                {data.performance.map((item) => {
+                  const label = item.title || item.examKey?.replace(/^Avaliacao_/, '')
+                  const out = item.foraDaMedia === true
+                  return <div key={item.id} className="flex h-full min-w-0 flex-1 flex-col justify-end text-center"><span className="mb-1 text-xs font-semibold text-text">{fmtGradeValue(item.note)}</span><div className={`mx-auto w-full max-w-10 rounded-t ${out ? 'border border-dashed border-border bg-surface-2' : 'bg-info'}`} style={{ height: `${Math.max(8, item.note * 10)}%` }} /><span className="mt-2 truncate text-[10px] text-subtle" title={out ? `${label} · fora da média` : label}>{label}</span>{out && <span className="text-[10px] leading-tight text-subtle">fora da média</span>}</div>
+                })}
               </div>
             </Card>}
           </div>

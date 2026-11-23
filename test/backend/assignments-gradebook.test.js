@@ -196,8 +196,14 @@ test('[UC-TAREFAS-002] tarefa arquivada: a nota fica guardada na coluna do profe
     const velha = task({ title: 'Tarefa velha', moduleId: 'M1' });
     graded(velha, 'ana@tarefa-nota.local', 0);
     assert.equal(rowOf(await gradebookOf(), 'ana@tarefa-nota.local').average, 4, '(4 + 8 + 0) / 3');
-    const archived = await as('prof', 'post', `/api/admin/assignments/${velha.id}/archive`).send({});
+    // Rodada 1: a nota devolvida sai da média, então arquivar pede o motivo (como a avaliação
+    // manual arquivada).
+    const noReason = await as('prof', 'post', `/api/admin/assignments/${velha.id}/archive`).send({});
+    assert.equal(noReason.status, 400, JSON.stringify(noReason.body));
+    assert.equal(noReason.body.code, 'reason_required');
+    const archived = await as('prof', 'post', `/api/admin/assignments/${velha.id}/archive`).send({ reason: 'Tarefa substituída' });
     assert.equal(archived.status, 200, JSON.stringify(archived.body));
+    assert.equal(db.memory.auditLogs.filter(entry => entry.action === 'assignment_archived').pop().reason, 'Tarefa substituída');
     const gb = await gradebookOf();
     const column = gb.columns.find(item => keyOf(item) === velha.id);
     assert.ok(column, 'a coluna continua no quadro do professor');
@@ -235,8 +241,14 @@ test('[UC-TAREFAS-002] com critérios: a tarefa é item do plano (peso 1 por pad
     assert.deepEqual(ana.etapas.map(etapa => etapa.media), [7, 8]);
     assert.equal(ana.mediaFinal, 7.5);
 
-    // Desmarcar "Conta na média" no formulário tira a linha do plano da média.
-    const off = await as('prof', 'post', `/api/admin/assignments/${relatorio.id}/update`).send({ countsInAverage: false });
+    // Desmarcar "Conta na média" no formulário tira a linha do plano da média. Com a nota
+    // já devolvida, pede o motivo, como o plano em Resultados (rodada 1; antes passava sem).
+    const noReason = await as('prof', 'post', `/api/admin/assignments/${relatorio.id}/update`).send({ countsInAverage: false });
+    assert.equal(noReason.status, 400, JSON.stringify(noReason.body));
+    assert.equal(noReason.body.code, 'reason_required');
+    assert.equal(noReason.body.field, 'reason');
+    assert.equal(db.memory.classes[0].avaliacao.itens[relatorio.id].fora, false, 'nada mudou sem o motivo');
+    const off = await as('prof', 'post', `/api/admin/assignments/${relatorio.id}/update`).send({ countsInAverage: false, reason: 'Tarefa de revisão' });
     assert.equal(off.status, 200, JSON.stringify(off.body));
     assert.equal(off.body.assignment.countsInAverage, false);
     assert.equal(db.memory.classes[0].avaliacao.itens[relatorio.id].fora, true);
@@ -247,6 +259,7 @@ test('[UC-TAREFAS-002] com critérios: a tarefa é item do plano (peso 1 por pad
     assert.deepEqual(audit.before, { countsInAverage: true });
     assert.deepEqual(audit.after, { countsInAverage: false });
     assert.equal(audit.details.planoDaTurma, true);
+    assert.equal(audit.reason, 'Tarefa de revisão');
 
     // Pôr de volta pelo plano (Resultados): a tela da tarefa mostra o que vale.
     const back = await as('prof', 'post', '/api/admin/grading/plan').send({ courseId: COURSE, studentClass: '1DES', itens: { [relatorio.id]: { fora: false } }, reason: 'Volta para a média' });
@@ -315,4 +328,183 @@ test('[UC-TAREFAS-003] aluno: Minhas notas e o Início mostram a nota devolvida 
     assert.equal(text.includes('Ainda corrigindo'), false, 'a não devolvida não aparece');
     const performance = JSON.stringify(dashboard.body.performance || dashboard.body);
     assert.ok(/"note":8\.1/.test(performance), performance);
+});
+
+// --- Rodada 1 do C18 (revisão): arquivar, reativar e publicar de novo mudam a média ------
+// A tarefa arquivada sai da média (como a avaliação manual arquivada). Então arquivar,
+// reativar e publicar de novo o rascunho que já foi publicado passam pelo portão da turma
+// encerrada (409 class_closed) e, com nota devolvida que conta na média, pedem motivo
+// (como manual-items/archive|restore e o "Não conta" do plano em Resultados). Antes da
+// rodada 1, /archive e /unarchive davam 200 numa turma encerrada e sem motivo.
+function withClosedGate(fn) {
+    const calendar = require('../../backend/utils/academicCalendar.js');
+    const original = calendar.assertClassOpen;
+    const calls = [];
+    calendar.assertClassOpen = (target, { res } = {}) => {
+        calls.push(target);
+        if (target && target.status === 'encerrada') {
+            if (res) res.status(409).json({ success: false, code: 'class_closed', error: 'Turma encerrada.' });
+            return false;
+        }
+        return true;
+    };
+    return Promise.resolve().then(() => fn(calls)).finally(() => { calendar.assertClassOpen = original; });
+}
+
+test('[UC-TAREFAS-002] arquivar e reativar a tarefa publicada passam pelo portão da turma encerrada e pedem motivo com nota devolvida na média', async () => {
+    const relatorio = task({ title: 'Relatório', moduleId: 'M1' });
+    graded(relatorio, 'ana@tarefa-nota.local', 100);
+    const base = `/api/admin/assignments/${relatorio.id}`;
+    assert.equal(rowOf(await gradebookOf(), 'ana@tarefa-nota.local').average, 7.3);
+    const shown = await as('prof', 'get', base);
+    assert.equal(shown.body.assignment.averageReasonRequired, true, 'a tela já sabe que pede motivo');
+
+    await withClosedGate(async (calls) => {
+        db.memory.classes[0].status = 'encerrada';
+        const closed = await as('admin', 'post', `${base}/archive`).send({ reason: 'Limpeza' });
+        assert.equal(closed.status, 409, JSON.stringify(closed.body));
+        assert.equal(closed.body.code, 'class_closed');
+        assert.equal(calls[calls.length - 1], db.memory.classes[0], 'a turma da tarefa');
+        assert.equal(db.memory.assignments.find(item => item.id === relatorio.id).status, 'publicada', 'nada mudou');
+        assert.equal(rowOf(await gradebookOf(), 'ana@tarefa-nota.local').average, 7.3, 'a média da turma encerrada fica');
+
+        db.memory.classes[0].status = undefined;
+        const noReason = await as('prof', 'post', `${base}/archive`).send({});
+        assert.equal(noReason.status, 400, JSON.stringify(noReason.body));
+        assert.equal(noReason.body.code, 'reason_required');
+        assert.match(noReason.body.error, /sai da média/);
+        const shortReason = await as('prof', 'post', `${base}/archive`).send({ reason: 'ok' });
+        assert.equal(shortReason.status, 400, 'motivo de 3 a 500 caracteres');
+        const archived = await as('prof', 'post', `${base}/archive`).send({ reason: 'Tarefa refeita em sala' });
+        assert.equal(archived.status, 200, JSON.stringify(archived.body));
+        assert.equal(rowOf(await gradebookOf(), 'ana@tarefa-nota.local').average, 6);
+        const archiveAudit = db.memory.auditLogs.filter(entry => entry.action === 'assignment_archived').pop();
+        assert.equal(archiveAudit.reason, 'Tarefa refeita em sala');
+        assert.equal(archiveAudit.details.notasDevolvidas, 1);
+
+        db.memory.classes[0].status = 'encerrada';
+        const closedBack = await as('admin', 'post', `${base}/unarchive`).send({ reason: 'Volta' });
+        assert.equal(closedBack.status, 409, JSON.stringify(closedBack.body));
+        assert.equal(db.memory.assignments.find(item => item.id === relatorio.id).status, 'arquivada');
+
+        db.memory.classes[0].status = undefined;
+        const backNoReason = await as('prof', 'post', `${base}/unarchive`).send({});
+        assert.equal(backNoReason.status, 400, JSON.stringify(backNoReason.body));
+        assert.match(backNoReason.body.error, /volta para a média/);
+        const back = await as('prof', 'post', `${base}/unarchive`).send({ reason: 'Arquivada por engano' });
+        assert.equal(back.status, 200, JSON.stringify(back.body));
+        assert.equal(back.body.assignment.status, 'publicada');
+        assert.equal(rowOf(await gradebookOf(), 'ana@tarefa-nota.local').average, 7.3);
+        assert.equal(db.memory.auditLogs.filter(entry => entry.action === 'assignment_unarchived').pop().reason, 'Arquivada por engano');
+    });
+});
+
+test('[UC-TAREFAS-002] arquivar sem mudar a média não pede motivo: tarefa fora da média, nota só salva ou rascunho (este nem passa pelo portão)', async () => {
+    const extra = task({ title: 'Exercício extra', countsInAverage: false });
+    graded(extra, 'ana@tarefa-nota.local', 30);
+    const salva = task({ title: 'Ainda corrigindo' });
+    graded(salva, 'ana@tarefa-nota.local', 50, { returned: false });
+    const rascunho = task({ title: 'Rascunho', status: 'rascunho' });
+    await withClosedGate(async (calls) => {
+        const a = await as('prof', 'post', `/api/admin/assignments/${extra.id}/archive`).send({});
+        assert.equal(a.status, 200, JSON.stringify(a.body));
+        const b = await as('prof', 'post', `/api/admin/assignments/${salva.id}/archive`).send({});
+        assert.equal(b.status, 200, JSON.stringify(b.body));
+        const before = calls.length;
+        db.memory.classes[0].status = 'encerrada';
+        const c = await as('prof', 'post', `/api/admin/assignments/${rascunho.id}/archive`).send({});
+        assert.equal(c.status, 200, 'rascunho não é item do quadro');
+        assert.equal(calls.length, before, 'rascunho não passa pelo portão');
+        const d = await as('prof', 'post', `/api/admin/assignments/${rascunho.id}/unarchive`).send({});
+        assert.equal(d.status, 200, JSON.stringify(d.body));
+        assert.equal(d.body.assignment.status, 'rascunho');
+        assert.equal(calls.length, before, 'volta como rascunho: não passa pelo portão');
+    });
+});
+
+test('[UC-TAREFAS-002] publicar de novo o rascunho que já foi publicado (com nota devolvida) passa pelo portão e pede motivo', async () => {
+    const relatorio = task({ title: 'Relatório', moduleId: 'M1' });
+    graded(relatorio, 'ana@tarefa-nota.local', 100);
+    // Reativada como rascunho (o caminho do /unarchive quando a tarefa não pode voltar
+    // publicada): publishedAt fica.
+    relatorio.status = 'rascunho';
+    assert.equal(rowOf(await gradebookOf(), 'ana@tarefa-nota.local').average, 6, 'rascunho fora do quadro');
+    await withClosedGate(async () => {
+        db.memory.classes[0].status = 'encerrada';
+        const closed = await as('prof', 'post', `/api/admin/assignments/${relatorio.id}/publish`).send({ reason: 'Volta' });
+        assert.equal(closed.status, 409, JSON.stringify(closed.body));
+        db.memory.classes[0].status = undefined;
+        const noReason = await as('prof', 'post', `/api/admin/assignments/${relatorio.id}/publish`).send({});
+        assert.equal(noReason.status, 400, JSON.stringify(noReason.body));
+        assert.equal(noReason.body.code, 'reason_required');
+        const ok = await as('prof', 'post', `/api/admin/assignments/${relatorio.id}/publish`).send({ reason: 'Corrigido o prazo' });
+        assert.equal(ok.status, 200, JSON.stringify(ok.body));
+        assert.equal(rowOf(await gradebookOf(), 'ana@tarefa-nota.local').average, 7.3);
+    });
+    // O rascunho novo publica sem motivo e sem portão, como antes.
+    const novo = task({ title: 'Nova', status: 'rascunho' });
+    const res = await as('prof', 'post', `/api/admin/assignments/${novo.id}/publish`).send({});
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+});
+
+test('[UC-TAREFAS-002] sem critérios, mudar "Conta na média" com nota devolvida pede motivo; só com nota salva, não', async () => {
+    const relatorio = task({ title: 'Relatório', moduleId: 'M1' });
+    graded(relatorio, 'ana@tarefa-nota.local', 100);
+    const salva = task({ title: 'Ainda corrigindo' });
+    graded(salva, 'ana@tarefa-nota.local', 50, { returned: false });
+    const noReason = await as('prof', 'post', `/api/admin/assignments/${relatorio.id}/update`).send({ countsInAverage: false });
+    assert.equal(noReason.status, 400, JSON.stringify(noReason.body));
+    assert.equal(noReason.body.code, 'reason_required');
+    assert.match(noReason.body.error, /tirar a tarefa da média/);
+    // O quadro do professor conta também a nota salva (5,0): (4 + 8 + 10 + 5) / 4.
+    assert.equal(rowOf(await gradebookOf(), 'ana@tarefa-nota.local').average, 6.8, 'nada mudou');
+    const ok = await as('prof', 'post', `/api/admin/assignments/${relatorio.id}/update`).send({ countsInAverage: false, reason: 'Tarefa opcional' });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.equal(db.memory.auditLogs.filter(entry => entry.action === 'assignment_updated').pop().reason, 'Tarefa opcional');
+    const saved = await as('prof', 'post', `/api/admin/assignments/${salva.id}/update`).send({ countsInAverage: false });
+    assert.equal(saved.status, 200, 'nota ainda não devolvida: o aluno não viu');
+    assert.equal(saved.body.assignment.averageReasonRequired, false);
+    // Mudar o título da tarefa com nota devolvida continua sem motivo.
+    const title = await as('prof', 'post', `/api/admin/assignments/${relatorio.id}/update`).send({ title: 'Relatório final' });
+    assert.equal(title.status, 200, JSON.stringify(title.body));
+});
+
+// Regressão de desempenho (rodada 1): o resumo de Alunos e o Dashboard montam a média aluno
+// por aluno; o provedor 'tarefa' varria todas as entregas da escola a cada aluno (O(alunos x
+// tarefas x entregas); 2,5 s com 10 turmas x 40 alunos x 15 tarefas). Agora as notas saem
+// uma vez por turma e pedido.
+test('[UC-TAREFAS-001] o resumo de Alunos lê as notas de tarefa uma vez por turma, não uma por aluno, e a média é a mesma do quadro', async () => {
+    for (let index = 0; index < 20; index += 1) {
+        db.memory.students.push({ id: `alu_${String(index).padStart(16, '1')}`, name: `Aluno ${index}`, email: `aluno${index}@tarefa-nota.local`, status: 'Ativo', classes: [{ name: '1DES', courseId: COURSE }], studentClass: '1DES' });
+    }
+    const tasks = [task({ title: 'T1', moduleId: 'M1' }), task({ title: 'T2', moduleId: 'M2' }), task({ title: 'T3' })];
+    db.memory.students.forEach((student, index) => tasks.forEach((item, position) => graded(item, student.email, (index * 7 + position * 13) % 101)));
+    const original = assignments.assignmentGradeEntries;
+    let calls = 0;
+    assignments.assignmentGradeEntries = (...args) => { calls += 1; return original(...args); };
+    try {
+        const res = await as('admin', 'get', `/api/admin/dashboard/students-overview?courseId=${COURSE}&studentClass=1DES`);
+        assert.equal(res.status, 200, JSON.stringify(res.body));
+        assert.equal(res.body.length, 22);
+        assert.ok(calls >= 1 && calls <= 2, `uma leitura por turma (publicadas e, para o professor, as salvas), não uma por aluno: ${calls}`);
+        const gb = await gradebookOf('admin');
+        res.body.forEach(row => {
+            const line = rowOf(gb, row.email);
+            assert.equal(row.media, line.average, `${row.email}: a média do resumo é a do quadro`);
+        });
+    } finally {
+        assignments.assignmentGradeEntries = original;
+    }
+});
+
+test('[UC-TAREFAS-003] Início: a tarefa com "Conta na média" desmarcado vem marcada fora da média no desempenho', async () => {
+    const extra = task({ title: 'Exercício extra', countsInAverage: false });
+    graded(extra, 'ana@tarefa-nota.local', 30);
+    const relatorio = task({ title: 'Relatório' });
+    graded(relatorio, 'ana@tarefa-nota.local', 90);
+    const dashboard = await asStudent('ana@tarefa-nota.local', `/api/student/dashboard?courseId=${COURSE}&studentClass=1DES`);
+    assert.equal(dashboard.status, 200, JSON.stringify(dashboard.body));
+    const byTitle = new Map(dashboard.body.performance.map(item => [item.title, item]));
+    assert.equal(byTitle.get('Tarefa: Exercício extra').foraDaMedia, true);
+    assert.equal('foraDaMedia' in byTitle.get('Tarefa: Relatório'), false);
 });

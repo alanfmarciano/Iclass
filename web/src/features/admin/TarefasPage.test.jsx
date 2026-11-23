@@ -189,6 +189,35 @@ describe('Tarefas', () => {
     expect(await within(dialog).findByText(/não pode ser excluída/)).toBeInTheDocument()
   })
 
+  // C18, rodada 1: arquivar tira da média a nota devolvida; o servidor pede o motivo.
+  it('[UC-TAREFAS-002] arquivar tarefa com nota devolvida na média pede o motivo e o manda; sem o campo na resposta, o pedido do servidor liga o campo', async () => {
+    const user = userEvent.setup()
+    mocks.lists.ativas = [
+      task('asg_1_aaaaaa', { title: 'Relatório de redes', countsInAverage: true, averageReasonRequired: true }),
+      task('asg_3_cccccc', { title: 'Lista de exercícios', countsInAverage: true }),
+    ]
+    renderAt()
+    await user.click(screen.getByRole('button', { name: 'Arquivar a tarefa Relatório de redes' }))
+    let dialog = await screen.findByRole('dialog', { name: 'Arquivar a tarefa?' })
+    const confirm = within(dialog).getByRole('button', { name: 'Arquivar' })
+    expect(confirm).toBeDisabled()
+    await user.type(within(dialog).getByLabelText('Motivo da mudança na média'), 'Tarefa refeita em sala')
+    await user.click(confirm)
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/assignments/asg_1_aaaaaa/archive', { reason: 'Tarefa refeita em sala' }))
+
+    // Resposta de um servidor que não manda averageReasonRequired: o 400 reason_required
+    // aparece no diálogo, que passa a pedir o motivo.
+    mocks.post.mockRejectedValueOnce(Object.assign(new Error('Informe o motivo (de 3 a 500 caracteres): a tarefa tem nota devolvida, que sai da média do aluno enquanto ela estiver arquivada.'), { status: 400, data: { code: 'reason_required', field: 'reason' } }))
+    await user.click(screen.getByRole('button', { name: 'Arquivar a tarefa Lista de exercícios' }))
+    dialog = await screen.findByRole('dialog', { name: 'Arquivar a tarefa?' })
+    expect(within(dialog).queryByLabelText('Motivo da mudança na média')).not.toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Arquivar' }))
+    expect(await within(dialog).findByText(/sai da média do aluno/)).toBeInTheDocument()
+    await user.type(within(dialog).getByLabelText('Motivo da mudança na média'), 'Arquivada no fim do bimestre')
+    await user.click(within(dialog).getByRole('button', { name: 'Arquivar' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenLastCalledWith('/api/admin/assignments/asg_3_cccccc/archive', { reason: 'Arquivada no fim do bimestre' }))
+  })
+
   it('"Nova tarefa" e "Editar" abrem o formulário; o título e "Entregas" abrem o detalhe (C8)', async () => {
     const user = userEvent.setup()
     renderAt()

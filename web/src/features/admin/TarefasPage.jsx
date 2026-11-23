@@ -78,26 +78,30 @@ export default function TarefasPage() {
     setPending({ kind, assignment })
   }
 
-  async function run() {
+  async function run(reason) {
     try {
-      await runAction()
+      await runAction(reason)
     } catch (error) {
+      // O servidor pediu o motivo (nota devolvida que entra ou sai da média, C18): a pergunta
+      // passa a mostrar o campo.
+      if (error?.data?.code === 'reason_required') setPending((current) => (current ? { ...current, forceReason: true } : current))
       // O diálogo mostra a recusa do servidor; nunca com o endereço interno de aluno.
       throw Object.assign(new Error(hidePlaceholderEmails(error?.message) || 'Não foi possível concluir. Tente de novo.'), { data: error?.data, status: error?.status })
     }
   }
 
-  async function runAction() {
+  async function runAction(reason) {
     const { kind, assignment } = pending
     const base = `/api/admin/assignments/${encodeURIComponent(assignment.id)}`
+    const withReason = reason && String(reason).trim() ? { reason: String(reason).trim() } : {}
     if (kind === 'publish') {
-      await api.post(`${base}/publish`, {})
+      await api.post(`${base}/publish`, withReason)
       toast.success('Tarefa publicada')
     } else if (kind === 'archive') {
-      await api.post(`${base}/archive`, {})
+      await api.post(`${base}/archive`, withReason)
       toast.success('Tarefa arquivada')
     } else if (kind === 'unarchive') {
-      await api.post(`${base}/unarchive`, {})
+      await api.post(`${base}/unarchive`, withReason)
       toast.success('Tarefa reativada')
     } else if (kind === 'delete') {
       await api.post(`${base}/delete`, { confirm: 'EXCLUIR' })
@@ -107,7 +111,7 @@ export default function TarefasPage() {
     refetch()
   }
 
-  const dialog = pending ? DIALOGS[pending.kind](pending.assignment) : null
+  const dialog = pending ? DIALOGS[pending.kind](pending.assignment, { forceReason: pending.forceReason === true }) : null
 
   return (
     <div className="max-w-5xl mx-auto space-y-5">
@@ -162,6 +166,9 @@ export default function TarefasPage() {
         message={dialog?.message}
         confirmLabel={dialog?.confirmLabel}
         tone={dialog?.tone}
+        requireReason={dialog?.requireReason === true}
+        reasonLabel={dialog?.reasonLabel}
+        reasonPlaceholder={dialog?.reasonPlaceholder}
       />
     </div>
   )

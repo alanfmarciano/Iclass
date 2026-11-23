@@ -466,11 +466,14 @@ test('[UC-ERRO-003] contrato das telas do professor: Tarefas (opções, criar, a
     const updated = ok(await asInstructor(`/api/admin/assignments/${created.id}/update`, 'professor').send(web.updateBody(initial, changed, options)), 'alterar').body;
     assert.equal(updated.changed, true);
     assert.deepEqual([updated.assignment.moduleId, updated.assignment.unitKey, updated.assignment.closeAt], ['', '', null]);
-    screen('features/admin/TarefasPage.jsx', 'await api.post(`${base}/publish`, {})');
+    // C18, rodada 1: o motivo (da mudança na média) vai junto quando a pergunta o pediu;
+    // sem ele, o corpo é {} (withReason vazio), como antes.
+    screen('features/admin/TarefasPage.jsx', "const withReason = reason && String(reason).trim() ? { reason: String(reason).trim() } : {}");
+    screen('features/admin/TarefasPage.jsx', 'await api.post(`${base}/publish`, withReason)');
     ok(await asInstructor(`/api/admin/assignments/${draft.id}/publish`, 'professor').send({}), 'publicar');
-    screen('features/admin/TarefasPage.jsx', 'await api.post(`${base}/archive`, {})');
+    screen('features/admin/TarefasPage.jsx', 'await api.post(`${base}/archive`, withReason)');
     ok(await asInstructor(`/api/admin/assignments/${created.id}/archive`, 'professor').send({}), 'arquivar');
-    screen('features/admin/TarefasPage.jsx', 'await api.post(`${base}/unarchive`, {})');
+    screen('features/admin/TarefasPage.jsx', 'await api.post(`${base}/unarchive`, withReason)');
     ok(await asInstructor(`/api/admin/assignments/${created.id}/unarchive`, 'professor').send({}), 'reativar');
     screen('features/admin/TarefasPage.jsx', "await api.post(`${base}/delete`, { confirm: 'EXCLUIR' })");
     ok(await asInstructor(`/api/admin/assignments/${draft.id}/delete`, 'professor').send({ confirm: 'EXCLUIR' }), 'excluir');
@@ -549,7 +552,10 @@ test('[UC-ERRO-003] contrato das telas do professor: entregas e correção (abri
     const copied = ok(await asInstructor(`${base}/copy`, 'professor').send({ courseId: COURSE_ID, studentClass: CLASS_NAME, dueDate: '2026-12-20', dueTime: '18:00' }), 'copiar').body.assignment;
     assert.equal(copied.status, 'rascunho');
     ok(await asInstructor(`/api/admin/assignments/${copied.id}/copy`, 'professor').send({ courseId: COURSE_ID, studentClass: CLASS_NAME, dueDate: null, dueTime: null }), 'copiar sem prazo');
-    for (const action of ['publish', 'archive', 'unarchive']) screen('features/admin/TarefaDetalhePage.jsx', `await api.post(\`\${base}/${action}\`, {})`);
+    // C18, rodada 1: o motivo (da mudança na média) vai junto quando a pergunta o pediu;
+    // sem ele, o corpo é {} (withReason vazio), como antes.
+    screen('features/admin/TarefaDetalhePage.jsx', "const withReason = reason && String(reason).trim() ? { reason: String(reason).trim() } : {}");
+    for (const action of ['publish', 'archive', 'unarchive']) screen('features/admin/TarefaDetalhePage.jsx', `await api.post(\`\${base}/${action}\`, withReason)`);
     screen('features/admin/TarefaDetalhePage.jsx', "await api.post(`${base}/delete`, { confirm: 'EXCLUIR' })");
     ok(await asInstructor(`/api/admin/assignments/${copied.id}/delete`, 'professor').send({ confirm: 'EXCLUIR' }), 'excluir a cópia');
 });

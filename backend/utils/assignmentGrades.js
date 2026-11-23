@@ -105,21 +105,20 @@ function gradeEntries(memory, { cls, courseId, studentClass, emails = null, publ
     const name = String(studentClass || (cls && cls.name) || '');
     if (!course || !name) return [];
     const wanted = Array.isArray(emails) ? emails : null;
+    // Uma chamada só (C18, rodada 1): publishedOnly pede só as devolvidas; senão vêm também
+    // as salvas sem devolver, e returned diz qual é qual.
+    const rows = assignments.assignmentGradeEntries(memory, { courseId: course, studentClass: name, students: wanted, published: publishedOnly, includeArchived: true });
     const out = [];
     const seen = new Set();
-    const add = (entry, publicada) => {
+    const add = (entry) => {
         const key = `${entry.assignmentId}\u0000${entry.email}`;
         if (seen.has(key)) return;
         seen.add(key);
-        out.push({ itemId: entry.assignmentId, email: entry.email, studentId: entry.studentId || null, score: entry.score, publicada });
+        out.push({ itemId: entry.assignmentId, email: entry.email, studentId: entry.studentId || null, score: entry.score, publicada: entry.returned === true });
     };
     // Devolvidas primeiro (publicadas); depois, para o professor, as salvas sem devolver.
-    assignments.assignmentGradeEntries(memory, { courseId: course, studentClass: name, students: wanted, published: true, includeArchived: true })
-        .forEach(entry => add(entry, true));
-    if (!publishedOnly) {
-        assignments.assignmentGradeEntries(memory, { courseId: course, studentClass: name, students: wanted, published: false, includeArchived: true })
-            .forEach(entry => add(entry, false));
-    }
+    rows.filter(entry => entry.returned === true).forEach(add);
+    if (!publishedOnly) rows.filter(entry => entry.returned !== true).forEach(add);
     return out;
 }
 

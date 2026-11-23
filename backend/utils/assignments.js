@@ -732,14 +732,6 @@ function assignmentStatusSummary(memory, assignmentOrId) {
 }
 
 // ------------------------------------------------------------ notas para o quadro
-// Notas de tarefa para o quadro e a média (contrato C1 do P1, K1 do plano: uma fonte só,
-// assignmentSubmissions.grade; o provedor 'tarefa' do gradebook lê daqui).
-// [{ email, studentId, columnId 'tarefa:<id>', assignmentId, title, moduleId, score
-//   (0 a 100, já com desconto), countsInAverage, returnedAt }].
-// - published (padrão true): só nota devolvida (o que o aluno já vê). false traz também a
-//   correção salva e não devolvida (só para o professor);
-// - tarefas publicadas da turma; includeArchived traz também as arquivadas;
-// - students: lista de e-mails (ou cadastros) para limitar; sem ela, todos.
 // "Conta na média" que vale para a tarefa (C18 / P1-j): no plano da turma a tarefa é
 // classes[].avaliacao.itens['asg_*']; com a linha dela no plano, a linha manda (fora =
 // não conta); sem a linha, vale o countsInAverage da tarefa.
@@ -752,18 +744,42 @@ function effectiveCountsInAverage(memory, assignmentOrRaw) {
     return task.countsInAverage !== false;
 }
 
+// Notas de tarefa para o quadro e a média (contrato C1 do P1, K1 do plano: uma fonte só,
+// assignmentSubmissions.grade; o provedor 'tarefa' do gradebook lê daqui).
+// [{ email, studentId, columnId 'tarefa:<id>', assignmentId, title, moduleId, score
+//   (0 a 100, já com desconto), countsInAverage, returnedAt, returned }].
+// - published (padrão true): só nota devolvida (o que o aluno já vê). false traz também a
+//   correção salva e não devolvida (só para o professor); returned diz qual é qual;
+// - tarefas publicadas da turma; includeArchived traz também as arquivadas;
+// - students: lista de e-mails (ou cadastros) para limitar; sem ela, todos.
+// Uma passada só pelas entregas (C18, rodada 1): antes cada tarefa varria todas as entregas
+// da escola, e o resumo de Alunos (uma chamada por aluno) ficava O(alunos x tarefas x
+// entregas). Só a entrega da tarefa da turma (e do aluno pedido) é normalizada.
 function assignmentGradeEntries(memory, { courseId, studentClass, students = null, published = true, includeArchived = false } = {}) {
     const statuses = includeArchived ? ['publicada', 'arquivada'] : ['publicada'];
     const wanted = Array.isArray(students)
         ? new Set(students.map(item => normalizeEmail(item && typeof item === 'object' ? item.email : item)).filter(Boolean))
         : null;
+    if (wanted && wanted.size === 0) return [];
+    const tasks = assignmentsForClass(memory, { courseId, studentClass, statuses }).map(normalizeAssignment);
+    if (!tasks.length) return [];
+    const byTask = new Map(tasks.map(task => [task.id, []]));
+    submissionList(memory).forEach(rawSub => {
+        const bucket = byTask.get(String(rawSub.assignmentId || ''));
+        if (!bucket) return;
+        if (wanted && !submissionOwners(rawSub).some(email => wanted.has(email))) return;
+        bucket.push(rawSub);
+    });
     const out = [];
-    assignmentsForClass(memory, { courseId, studentClass, statuses }).forEach(raw => {
-        const task = normalizeAssignment(raw);
-        submissionsForAssignment(memory, task.id).forEach(rawSub => {
+    tasks.forEach(task => {
+        const rows = byTask.get(task.id);
+        if (!rows.length) return;
+        const countsInAverage = effectiveCountsInAverage(memory, task);
+        rows.forEach(rawSub => {
             const sub = normalizeSubmission(rawSub);
             if (!sub.grade || sub.grade.finalScore === null) return;
-            if (published && !(sub.status === 'devolvida' && sub.returnedAt !== null)) return;
+            const returned = sub.status === 'devolvida' && sub.returnedAt !== null;
+            if (published && !returned) return;
             submissionOwners(sub).forEach(email => {
                 if (wanted && !wanted.has(email)) return;
                 out.push({
@@ -774,8 +790,9 @@ function assignmentGradeEntries(memory, { courseId, studentClass, students = nul
                     title: task.title,
                     moduleId: task.moduleId,
                     score: sub.grade.finalScore,
-                    countsInAverage: effectiveCountsInAverage(memory, task),
+                    countsInAverage,
                     returnedAt: sub.returnedAt,
+                    returned,
                 });
             });
         });

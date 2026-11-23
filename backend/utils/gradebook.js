@@ -594,7 +594,8 @@ function newManualItemId() {
 //   entries(memory, { course, cls, courseId, studentClass, emails, publishedOnly })
 //     => [{ itemId, email, studentId?, score (0 a 100), publicada }]
 //     as notas da turma (emails: lista de e-mails minúsculos para limitar, ou null para
-//     todos; publishedOnly: só o que o aluno já vê).
+//     todos; publishedOnly: só o que o aluno já vê). O contexto da turma pede a turma
+//     inteira (null) uma vez e filtra por aluno ali mesmo.
 // })
 // O id do item não pode ser de prova da estrutura nem começar com 'man_'. Provedor que
 // falha não derruba o quadro: os itens dele ficam de fora e o erro vai para o registro.
@@ -756,16 +757,30 @@ function classGradingContext(memory, { course = null, cls = null, structure = nu
         return entry ? entry.stats : null;
     };
 
+    // As notas dos provedores saem uma vez por contexto (a turma inteira) e cada pedido por
+    // aluno filtra dali (C18, rodada 1): o resumo de Alunos e o Dashboard pedem aluno por
+    // aluno, e cada pedido varria de novo todas as entregas de tarefa da escola. O contexto
+    // é de um pedido só (montado de novo a cada pedido), como itens e itemById.
+    const providerEntries = new Map();
+    const entriesOf = (provider, publishedOnly) => {
+        const key = `${provider.origem}\u0000${publishedOnly ? 1 : 0}`;
+        if (!providerEntries.has(key)) {
+            providerEntries.set(key, callGradeItemProvider(provider, 'entries', [mem, { course, cls, courseId, studentClass, emails: null, publishedOnly }]));
+        }
+        return providerEntries.get(key);
+    };
     const providerGroups = ({ emails = null, publishedOnly = false } = {}) => {
-        const wanted = Array.isArray(emails) ? emails.map(item => String(item || '').trim().toLowerCase()).filter(Boolean) : null;
+        const wantedList = Array.isArray(emails) ? emails.map(item => String(item || '').trim().toLowerCase()).filter(Boolean) : null;
+        const wanted = wantedList ? new Set(wantedList) : null;
         const out = [];
+        if (wanted && wanted.size === 0) return out;
         gradeItemProviderList().forEach(provider => {
-            callGradeItemProvider(provider, 'entries', [mem, { course, cls, courseId, studentClass, emails: wanted, publishedOnly }]).forEach(raw => {
+            entriesOf(provider, publishedOnly).forEach(raw => {
                 const itemId = raw && typeof raw.itemId === 'string' ? raw.itemId : '';
                 const item = itemById.get(itemId);
                 if (!item || item.origem !== provider.origem) return;
                 const email = String((raw && raw.email) || '').trim().toLowerCase();
-                if (!email || (wanted && !wanted.includes(email))) return;
+                if (!email || (wanted && !wanted.has(email))) return;
                 const publicada = raw.publicada === true;
                 if (publishedOnly && !publicada) return;
                 out.push({

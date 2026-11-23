@@ -30,6 +30,8 @@ export const MESSAGES = Object.freeze({
   penaltyPerDay: 'Com desconto por atraso, informe o desconto por dia (de 1% a 100%).',
   penaltyMax: 'Com desconto por atraso, o desconto máximo precisa ser de 1% a 100%.',
   reason: (min, max) => `Esta tarefa já tem entrega ou nota de aluno. Para mudar a abertura, o prazo ou o encerramento, informe o motivo (de ${min} a ${max} caracteres).`,
+  // C18, rodada 1: "Conta na média" com nota devolvida.
+  averageReason: (min, max) => `Esta tarefa já tem nota devolvida ao aluno. Para tirar a tarefa da média ou pôr de volta, informe o motivo (de ${min} a ${max} caracteres).`,
   maxSize: (ceiling) => `O tamanho máximo por arquivo vai até ${ceiling} MB (o limite das entregas em Sistema).`,
   range: (label, min, max) => `O campo "${label}" deve estar entre ${min} e ${max}.`,
   dateMissing: (label) => `Informe a data ${label}.`,
@@ -204,8 +206,9 @@ export function deadlineChanged(initial, form) {
 
 // Confere o formulário como o servidor: { field, error } do primeiro problema ou null.
 // publish: a tarefa vai ficar publicada (exige prazo). needsReason: a tarefa já tem
-// entrega e o prazo mudou.
-export function validateForm(form, options, { publish = false, needsReason = false } = {}) {
+// entrega e o prazo mudou; averageReason: o motivo é o da mudança na média ("Conta na
+// média" com nota devolvida), para a mensagem.
+export function validateForm(form, options, { publish = false, needsReason = false, averageReason = false } = {}) {
   const limits = limitsOf(options)
   const title = String(form.title || '').trim()
   if (title.length < limits.titleMin || title.length > limits.titleMax) return { field: 'title', error: MESSAGES.title(limits.titleMin, limits.titleMax) }
@@ -246,7 +249,7 @@ export function validateForm(form, options, { publish = false, needsReason = fal
   if (form.response.files && form.types.length === 0 && extras.value.length === 0) return { field: 'files.types', error: MESSAGES.types }
   if (needsReason) {
     const reason = String(form.reason || '').trim()
-    if (reason.length < limits.reasonMin || reason.length > limits.reasonMax) return { field: 'reason', error: MESSAGES.reason(limits.reasonMin, limits.reasonMax) }
+    if (reason.length < limits.reasonMin || reason.length > limits.reasonMax) return { field: 'reason', error: (averageReason ? MESSAGES.averageReason : MESSAGES.reason)(limits.reasonMin, limits.reasonMax) }
   }
   return null
 }
