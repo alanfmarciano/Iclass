@@ -608,7 +608,7 @@ async function mirrorAssignmentsStep(job, { destino, now, req = null, actor = 's
         await db.save({ only: ['auditLogs'], changed: { assignmentFileTombstones: marked }, detached: true })
             .catch(e => logError('espelho das entregas: gravação das lápides e da auditoria', e));
     }
-    return { ok: true, copiados, bytes: resumo.bytes, removidosPorLapide: resumo.removidosPorLapide, arquivos: resumo.arquivos };
+    return { ok: true, copiados, bytes: resumo.bytes, removidosPorLapide: resumo.removidosPorLapide, arquivos: resumo.arquivos, diferentesDoRegistro: resumo.diferentesDoRegistro || 0 };
 }
 
 // Mensagem da falha do espelho: as recusas previstas (destino fora, sem espaço) com o
@@ -622,10 +622,11 @@ function mirrorFailureMessage(err) {
 
 // "Trazer arquivos do destino externo" (Sistema > Armazenamento, só administrador): com a
 // trava do backup (um backup ou restauração em andamento responde 409).
-async function recoverAssignmentFilesFromDestination() {
+// actor: quem pediu (deletedBy do arquivo daqui diferente do registro que vai para a lixeira).
+async function recoverAssignmentFilesFromDestination({ actor = '' } = {}) {
     const { destino } = settingsUtil.backupSettings();
     if (!destino) throw Object.assign(new Error('Configure o destino externo no cartão Backup antes de trazer arquivos de lá.'), { status: 409, code: 'no_destination' });
-    return withBackupLock('recuperar-entregas', job => require('./assignmentMirror.js').recoverAssignmentFiles({ destino, memory: db.memory, signal: job.controller.signal }));
+    return withBackupLock('recuperar-entregas', job => require('./assignmentMirror.js').recoverAssignmentFiles({ destino, memory: db.memory, signal: job.controller.signal, actor }));
 }
 
 // Backup automático, conferido no boot e de hora em hora (server.js). Está devido quando

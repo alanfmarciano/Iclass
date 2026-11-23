@@ -326,3 +326,21 @@ test('[UC-BACKUP-002] criar não carrega o database.js (não abre o banco parado
     const manifest = JSON.parse(new AdmZip(path.join(dataDir, 'backups', zip)).readAsText('iclass-backup.json'));
     assert.equal(manifest.banco.tabelas.auth_sessions, 0);
 });
+
+// C11, ajuste 2: quem restaura pelo launcher via só a linha fixa sobre data/entregas; o
+// resumo da backup-cli agora traz o mesmo aviso da prévia da tela Sistema, com as tarefas
+// e entregas de hoje que saem com a restauração.
+test('[UC-ARMAZENAMENTO-002] o resumo da backup-cli (o mesmo do verificar e do restaurar) avisa das tarefas e entregas de hoje que o backup não tem', async () => {
+    const dataDir = makeDataDir('entregas-de-hoje');
+    const port = await proc.freePort();
+    assert.equal(runCli(dataDir, port, ['criar', '--dados']).code, 0);
+    const [zip] = zipsIn(dataDir);
+    withDatabase(dataDir, `
+        const now = Date.now();
+        db.memory.assignments.push({ id: 'asg_1_cliaaa', schemaVersion: 1, courseId: 'c', studentClass: 'T', title: 'Relatório', status: 'publicada', dueAt: now + 86400000 });
+        db.memory.assignmentSubmissions.push({ id: 'asub_1_cliaaa', schemaVersion: 1, assignmentId: 'asg_1_cliaaa', courseId: 'c', studentClass: 'T', studentEmail: 'ana@cli.local', status: 'enviada', versions: [{ n: 1, requestAt: now, receivedAt: now, late: false, lateMs: 0, text: 'oi', link: '', files: [] }], createdAt: now, updatedAt: now });
+    `);
+    const verified = runCli(dataDir, port, ['verificar', path.join(dataDir, 'backups', zip)]);
+    assert.equal(verified.code, 0, verified.output);
+    assert.match(verified.stdout, /Aviso: Hoje há 1 tarefa e 1 entrega de aluno que não estão neste backup: esses registros saem com a restauração\./);
+});

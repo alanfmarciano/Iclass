@@ -710,3 +710,131 @@ test('[UC-ARMAZENAMENTO-002] sem espaço no destino: a mensagem separa o que fal
         store.freeBytesAt = original;
     }
 });
+
+// Rodada de ajuste 2 do C11: o arquivo daqui trocado por outro de tamanho diferente (disco
+// com defeito, programa que regravou, ransomware) ia por cima da cópia boa do pendrive no
+// backup seguinte ("copiado assim mesmo" só no crash.log), o cartão dizia "Em dia" e
+// "Trazer arquivos" não o consertava: a única cópia boa do trabalho se perdia sem aviso.
+test('[UC-ARMAZENAMENTO-002] arquivo daqui diferente do registro não vai por cima da cópia boa do destino; cartão e fila avisam e "Trazer arquivos" o troca, com o daqui na lixeira', async () => {
+    const destino = await resetState();
+    const bia = addSubmission(BIA, ['trabalho original da Bia, versão entregue', 'segundo arquivo intacto']);
+    await db.save();
+    const first = await backup.runBackupJob({ origem: 'manual' });
+    assert.equal(first.espelho.copiados, 2);
+    const [file, intact] = bia.files;
+    const copy = mirrorPath(destino, file.storedRel);
+    assert.equal(sha(fs.readFileSync(copy)), file.sha256);
+
+    // "Cifrado" aqui: outro conteúdo e outro tamanho.
+    const broken = Buffer.from('ARQUIVO CIFRADO POR RANSOMWARE xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx');
+    fs.writeFileSync(localPath(file.storedRel), broken);
+    const after = await backup.runBackupJob({ origem: 'manual' });
+    assert.equal(after.espelho.ok, true, JSON.stringify(after.espelho));
+    assert.equal(after.espelho.copiados, 0, 'nada vai por cima da cópia boa');
+    assert.equal(after.espelho.diferentesDoRegistro, 1);
+    assert.equal(sha(fs.readFileSync(copy)), file.sha256, 'a cópia boa do pendrive continua');
+    assert.equal(fs.existsSync(`${copy}${mirror.PARTIAL_SUFFIX}`), false);
+    // "Fazer backup agora" diz que o arquivo ficou de fora.
+    const manual = await as()('post', '/api/admin/backup/server').send({});
+    assert.equal(manual.status, 200, manual.body.error);
+    assert.equal(manual.body.espelho.diferentes, 1);
+    assert.equal(manual.body.espelho.copiados, 0);
+    // De novo: continua sem copiar.
+    const again = await mirror.mirrorAssignmentFiles({ destino, memory: db.memory });
+    assert.equal(again.resumo.copiados + again.resumo.corrigidos, 0);
+    assert.deepEqual(again.resumo.diferentes, [file.storedRel.slice('entregas/'.length)]);
+    assert.equal(sha(fs.readFileSync(copy)), file.sha256);
+
+    const card = await as()('get', '/api/admin/storage');
+    assert.equal(card.status, 200);
+    assert.equal(card.body.entregas.diferentes, 1);
+    assert.equal(card.body.entregas.espelho.pendentes, 0, 'o arquivo diferente não fica esperando cópia');
+    await withoutTestMode(async () => {
+        const item = (await queueOf(ADMIN)).find(entry => entry.id === 'entregas_arquivo_diferente');
+        assert.ok(item, 'a fila do administrador avisa');
+        assert.equal(item.tone, 'danger');
+        assert.match(item.detalhe, /1 arquivo deste computador não confere com o registro da entrega/);
+        assert.match(item.detalhe, /Trazer arquivos do destino externo/);
+        assert.equal((await queueOf(PROFESSOR)).some(entry => entry.id === 'entregas_arquivo_diferente'), false);
+    });
+
+    // "Trazer arquivos": o daqui vai para a lixeira (só do administrador) e a cópia
+    // conferida toma o lugar; o arquivo intacto não é tocado.
+    const intactMtime = fs.statSync(localPath(intact.storedRel)).mtimeMs;
+    const res = await as()('post', '/api/admin/backup/entregas/recuperar').send({});
+    assert.equal(res.status, 200, res.body.error);
+    assert.equal(res.body.trocados, 1);
+    assert.equal(res.body.copiados, 0);
+    assert.equal(res.body.naoTrocados, 0);
+    assert.equal(sha(fs.readFileSync(localPath(file.storedRel))), file.sha256);
+    assert.equal(fs.statSync(localPath(intact.storedRel)).mtimeMs, intactMtime);
+    const trashed = require('../../backend/utils/storage.js').listTrash().filter(entry => String(entry.originalRel || '').includes(file.id));
+    assert.equal(trashed.length, 1, 'o arquivo daqui foi para a lixeira, não apagado');
+    const trashedFile = path.join(require('../../backend/utils/storage.js').LIXEIRA_DIR, trashed[0].id);
+    assert.deepEqual(fs.readFileSync(trashedFile), broken);
+    assert.equal(auditOf('assignment_files_recovered').at(-1).details.trocados, 1);
+    assert.equal(fs.readdirSync(runtimePaths.ASSIGNMENT_RECEIVING_DIR).length, 0);
+    const fixed = await as()('get', '/api/admin/storage');
+    assert.equal(fixed.body.entregas.diferentes, 0);
+    const last = await backup.runBackupJob({ origem: 'manual' });
+    assert.equal(last.espelho.copiados, 0);
+    assert.equal(last.espelho.diferentesDoRegistro, 0);
+});
+
+test('[UC-ARMAZENAMENTO-002] arquivo daqui diferente do registro com o mesmo tamanho: a releitura de rodízio percebe, e no destino novo ele não é copiado', async () => {
+    const destino = await resetState();
+    const bia = addSubmission(BIA, ['conteúdo entregue pela Bia 0123456789']);
+    await db.save();
+    await backup.runBackupJob({ origem: 'manual' });
+    const [file] = bia.files;
+    const copy = mirrorPath(destino, file.storedRel);
+    const buffer = fs.readFileSync(localPath(file.storedRel));
+    buffer[4] ^= 0xff;
+    fs.writeFileSync(localPath(file.storedRel), buffer);
+    const rolled = await mirror.mirrorAssignmentFiles({ destino, memory: db.memory });
+    assert.equal(rolled.resumo.diferentesDoRegistro, 1);
+    assert.equal(sha(fs.readFileSync(copy)), file.sha256);
+    // Sem o espelho.json (pendrive de outro computador): a cópia do destino confere com o
+    // registro e fica.
+    fs.rmSync(path.join(mirror.mirrorDirFor(destino), mirror.MANIFEST_FILE));
+    const unknown = await mirror.mirrorAssignmentFiles({ destino, memory: db.memory });
+    assert.equal(unknown.resumo.copiados + unknown.resumo.corrigidos, 0);
+    assert.equal(sha(fs.readFileSync(copy)), file.sha256);
+    // Cópia do destino estragada também: o arquivo daqui não vai por cima dela.
+    fs.writeFileSync(copy, 'cópia estragada no pendrive');
+    const both = await mirror.mirrorAssignmentFiles({ destino, memory: db.memory });
+    assert.equal(both.resumo.copiados + both.resumo.corrigidos, 0);
+    assert.equal(both.resumo.diferentesDoRegistro, 1);
+    assert.equal(fs.readFileSync(copy, 'utf8'), 'cópia estragada no pendrive', 'nada é apagado nem trocado por um arquivo que também não confere');
+
+    // Destino novo: o arquivo daqui que não confere não vai para lá.
+    const novo = fs.mkdtempSync(path.join(externalRoot, 'novo-'));
+    db.memory.config.settings.backup = { destino: novo, guardarExterno: 14 };
+    await db.save();
+    const fresh = await backup.runBackupJob({ origem: 'manual' });
+    assert.equal(fresh.espelho.ok, true);
+    assert.equal(fresh.espelho.copiados, 0);
+    assert.equal(fresh.espelho.diferentesDoRegistro, 1);
+    assert.equal(fs.existsSync(mirrorPath(novo, file.storedRel)), false);
+    const card = await as()('get', '/api/admin/storage');
+    assert.equal(card.body.entregas.diferentes, 1);
+    const res = await as()('post', '/api/admin/backup/entregas/recuperar').send({});
+    assert.equal(res.status, 200, res.body.error);
+    assert.equal(res.body.trocados, 0);
+    assert.equal(res.body.naoTrocados, 1, 'sem cópia conferida, o daqui fica');
+    assert.deepEqual(fs.readFileSync(localPath(file.storedRel)), buffer);
+});
+
+test('[UC-ARMAZENAMENTO-002] arquivo sem registro que mudou continua sendo refeito no destino (não há registro para conferir)', async () => {
+    const destino = await resetState();
+    const orphan = path.join(runtimePaths.ASSIGNMENT_FILES_DIR, 'asg_9_zzzzzz', 'asub_9_zzzzzz', 'orfao.txt');
+    fs.mkdirSync(path.dirname(orphan), { recursive: true });
+    fs.writeFileSync(orphan, 'primeira versão');
+    const first = await mirror.mirrorAssignmentFiles({ destino, memory: db.memory });
+    assert.equal(first.resumo.copiados, 1);
+    fs.writeFileSync(orphan, 'segunda versão, maior');
+    const second = await mirror.mirrorAssignmentFiles({ destino, memory: db.memory });
+    assert.equal(second.resumo.corrigidos, 1);
+    assert.equal(second.resumo.diferentesDoRegistro, 0);
+    assert.equal(fs.readFileSync(path.join(mirror.mirrorDirFor(destino), 'asg_9_zzzzzz', 'asub_9_zzzzzz', 'orfao.txt'), 'utf8'), 'segunda versão, maior');
+});

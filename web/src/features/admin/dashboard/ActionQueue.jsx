@@ -10,8 +10,9 @@ const ICONE = {
   senhas_pedidas: KeyRound, login_tentativas: ShieldAlert, login_ip_alerta: Wifi,
   // Backup (H4b): falhou, atrasado, cópia externa atrasada, destino externo não escolhido.
   backup_falhou: DatabaseBackup, backup_atrasado: DatabaseBackup, backup_externo_atrasado: HardDriveUpload, backup_sem_destino: Usb,
-  // Trabalhos dos alunos (C11): sem cópia fora daqui, cópia no destino falhou, disco cheio.
-  entregas_sem_copia: Usb, entregas_espelho_falhou: FileWarning, entregas_disco_baixo: HardDrive,
+  // Trabalhos dos alunos (C11): sem cópia fora daqui, cópia no destino falhou, disco cheio,
+  // arquivo daqui diferente do registro da entrega.
+  entregas_sem_copia: Usb, entregas_espelho_falhou: FileWarning, entregas_disco_baixo: HardDrive, entregas_arquivo_diferente: FileWarning,
 }
 const TONE_ICO = {
   danger: 'bg-danger-soft text-danger', warning: 'bg-warning-soft text-warning',

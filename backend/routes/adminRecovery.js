@@ -249,6 +249,8 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                     ok: !!result.espelho.ok,
                     copiados: Number(result.espelho.copiados) || 0,
                     removidosPorLapide: Number(result.espelho.removidosPorLapide) || 0,
+                    // Arquivos daqui diferentes do registro da entrega (não vão para o destino).
+                    diferentes: Number(result.espelho.diferentesDoRegistro) || 0,
                     erro: result.espelho.ok ? null : (professor ? withoutDestination(result.espelho.mensagem, destino) : result.espelho.mensagem),
                 } : null,
             });
@@ -272,7 +274,7 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
             if (!RECOVER_BODY.check(req, res)) return undefined;
             let result;
             try {
-                result = await backupUtil.recoverAssignmentFilesFromDestination();
+                result = await backupUtil.recoverAssignmentFilesFromDestination({ actor: matchedAdmin && matchedAdmin.email });
             } catch (error) {
                 if (error && error.code === 'ICLASS_BACKUP_ABORTED') {
                     return res.status(503).json({ success: false, error: 'A cópia foi interrompida porque o servidor está sendo desligado. Tente de novo quando o IClass voltar.', retryable: true });
@@ -286,10 +288,10 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                 actor: matchedAdmin,
                 action: 'assignment_files_recovered',
                 category: 'backup',
-                details: { copiados: result.copiados, deOutroComputador: result.deOutroComputador, faltando: result.faltando, divergentes: result.divergentes, bytes: result.bytes },
+                details: { copiados: result.copiados, trocados: result.trocados, deOutroComputador: result.deOutroComputador, faltando: result.faltando, divergentes: result.divergentes, naoTrocados: result.naoTrocados, bytes: result.bytes },
             });
             await db.save({ only: ['auditLogs'] });
-            res.json({ success: true, copiados: result.copiados, deOutroComputador: result.deOutroComputador, conferidos: result.conferidos, faltando: result.faltando, divergentes: result.divergentes, bytes: result.bytes });
+            res.json({ success: true, copiados: result.copiados, trocados: result.trocados, deOutroComputador: result.deOutroComputador, conferidos: result.conferidos, faltando: result.faltando, divergentes: result.divergentes, naoTrocados: result.naoTrocados, bytes: result.bytes });
         });
     });
 

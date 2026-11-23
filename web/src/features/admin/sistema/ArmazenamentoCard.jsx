@@ -5,7 +5,8 @@
 // o servidor recusa com prova em andamento (GET /api/admin/storage, POST
 // /api/admin/storage/compact).
 // Fase 3 (C11 / P1-i): os trabalhos dos alunos (data/entregas, fora do backup): tamanho,
-// arquivos sem registro, os registrados que faltam aqui e a cópia no destino externo
+// arquivos sem registro, os registrados que faltam aqui, os daqui diferentes do registro
+// e a cópia no destino externo
 // (espelho), com "Trazer arquivos do destino externo" para o administrador (POST
 // /api/admin/backup/entregas/recuperar).
 import { useState } from 'react'
@@ -167,10 +168,25 @@ export function mirrorStatusText(entregas) {
   if (pending === null || pending === undefined) {
     return { tone: 'warning', text: `Última cópia em ${when}. O destino não está conectado agora.` }
   }
+  // Arquivo daqui diferente do registro: fica de fora da cópia (a de lá é a boa).
+  const different = Number(entregas.diferentes) || 0
+  const left = different ? ` ${countText(different, 'arquivo deste computador ficou', 'arquivos deste computador ficaram')} de fora por não conferir com o registro; a cópia de lá foi mantida.` : ''
   if (pending > 0) {
-    return { tone: 'ok', text: `Última cópia em ${when}; ${countText(pending, 'arquivo novo espera', 'arquivos novos esperam')} a próxima, junto com o backup.` }
+    return { tone: different ? 'warning' : 'ok', text: `Última cópia em ${when}; ${countText(pending, 'arquivo novo espera', 'arquivos novos esperam')} a próxima, junto com o backup.${left}` }
   }
+  if (different) return { tone: 'warning', text: `Última cópia em ${when}.${left}` }
   return { tone: 'ok', text: `Em dia (última cópia em ${when}).` }
+}
+
+// Arquivos deste computador que não conferem com o registro da entrega (disco com defeito,
+// programa que alterou o arquivo): o espelho não os copia e mantém a cópia boa do destino.
+export function differentFilesText(entregas) {
+  const n = Math.max(0, Math.round(Number(entregas && entregas.diferentes) || 0))
+  if (!n) return ''
+  const base = `${countText(n, 'arquivo deste computador não confere', 'arquivos deste computador não conferem')} com o que o aluno enviou (registro da entrega): disco com defeito ou programa que ${n === 1 ? 'alterou o arquivo' : 'alterou os arquivos'}.`
+  return entregas.podeRecuperar
+    ? `${base} A cópia do destino externo não foi trocada; "Trazer arquivos do destino externo" põe a cópia conferida no lugar e manda o daqui para a lixeira.`
+    : `${base} A cópia do destino externo não foi trocada.`
 }
 
 // Resultado de "Trazer arquivos do destino externo".
@@ -182,8 +198,12 @@ export function recoverResultText(r) {
   const fromOther = !other ? '' : other >= r.copiados
     ? ', da cópia feita em outro computador'
     : ` (${countText(other, 'deles veio', 'deles vieram')} da cópia feita em outro computador)`
-  parts.push(r.copiados ? `${countText(r.copiados, 'arquivo trazido', 'arquivos trazidos')} do destino externo${fromOther}.` : 'Nenhum arquivo precisou ser trazido.')
+  const trocados = Number(r.trocados) || 0
+  if (r.copiados) parts.push(`${countText(r.copiados, 'arquivo trazido', 'arquivos trazidos')} do destino externo${fromOther}.`)
+  if (trocados) parts.push(`${countText(trocados, 'arquivo diferente do registro foi trocado', 'arquivos diferentes do registro foram trocados')} pela cópia conferida (o de antes foi para a lixeira).`)
+  if (!r.copiados && !trocados) parts.push('Nenhum arquivo precisou ser trazido.')
   if (r.faltando) parts.push(`${countText(r.faltando, 'arquivo não está', 'arquivos não estão')} no destino externo.`)
+  if (r.naoTrocados) parts.push(`${countText(r.naoTrocados, 'arquivo diferente do registro continua', 'arquivos diferentes do registro continuam')} aqui: não há cópia conferida dele no destino externo.`)
   if (r.divergentes) parts.push(`${countText(r.divergentes, 'cópia não conferiu', 'cópias não conferiram')} com o registro e ${r.divergentes === 1 ? 'ficou' : 'ficaram'} de fora.`)
   return parts.join(' ')
 }
@@ -289,6 +309,11 @@ export function ArmazenamentoCard() {
                 {countText(entregas.semRegistro, 'arquivo', 'arquivos')} ({formatBytes(entregas.semRegistroBytes)}) de trabalhos que nenhuma entrega registra (por exemplo, depois de restaurar um backup antigo). Nada é apagado sozinho.
               </Row>
             )}
+            {entregas && Number(entregas.diferentes) > 0 && (
+              <Row label="Diferentes do registro">
+                <span className="text-danger">{differentFilesText(entregas)}</span>
+              </Row>
+            )}
             {entregas && Number(entregas.faltando) > 0 && (
               <Row label="Faltando neste computador">
                 <span className="text-danger">{countText(entregas.faltando, 'arquivo de entrega registrada não está', 'arquivos de entregas registradas não estão')} neste computador.</span>
@@ -299,7 +324,7 @@ export function ArmazenamentoCard() {
         {recoverResult && <p className="text-sm text-success" role="status">{recoverResultText(recoverResult)}</p>}
         {entregas?.podeRecuperar && (
           <div className="space-y-2 pt-1">
-            <p className="text-xs text-muted">Arquivo de trabalho que sumiu deste computador volta do pendrive ou HD do backup, conferido pelo registro da entrega. Nenhum arquivo daqui é substituído.</p>
+            <p className="text-xs text-muted">Arquivo de trabalho que sumiu deste computador volta do pendrive ou HD do backup, conferido pelo registro da entrega. Só é trocado o arquivo daqui que não confere com o registro (ele vai para a lixeira).</p>
             <Button variant="secondary" icon={Download} onClick={() => setRecoverOpen(true)}>Trazer arquivos do destino externo</Button>
           </div>
         )}
@@ -308,7 +333,7 @@ export function ArmazenamentoCard() {
           onClose={() => setRecoverOpen(false)}
           onConfirm={recover}
           title="Trazer arquivos do destino externo?"
-          message="O IClass copia de volta para este computador os arquivos de entregas que estão faltando aqui, conferindo cada um pelo registro da entrega. Se este computador substituiu outro, ele procura também na cópia que o computador de antes deixou no mesmo pendrive ou HD. Nenhum arquivo deste computador é substituído, e o que foi tirado ao anonimizar ou apagar um aluno não volta."
+          message="O IClass copia de volta para este computador os arquivos de entregas que estão faltando aqui, conferindo cada um pelo registro da entrega. Se este computador substituiu outro, ele procura também na cópia que o computador de antes deixou no mesmo pendrive ou HD. O arquivo daqui que não confere com o registro da entrega vai para a lixeira e a cópia conferida toma o lugar; os outros não são substituídos, e o que foi tirado ao anonimizar ou apagar um aluno não volta."
           confirmLabel="Trazer arquivos"
           tone="primary"
         />

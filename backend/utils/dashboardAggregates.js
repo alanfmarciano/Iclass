@@ -184,7 +184,7 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
 // mesmo IP, esses dois só para administrador.
 // backup (H4b, OPS-03): { falha, atrasado, externoAtrasado, semDestino } de
 // utils/backup.js backupAlerts, só para administrador com system.manage.
-// entregas (C11 / P1-i): { semCopia, espelhoFalhou, discoBaixo } de
+// entregas (C11 / P1-i): { semCopia, diferentes, espelhoFalhou, discoBaixo } de
 // utils/assignmentMirror.js queueAlerts, só para administrador.
 // ---------------------------------------------------------------------------
 function computeQueue({ memory, cls, course, students, today, now, canSeeMatriculas, pendingEnrollments }, extras = {}) {
@@ -425,6 +425,18 @@ function assignmentStorageQueueItems(entregas) {
             titulo: 'Trabalhos dos alunos sem cópia fora deste computador',
             detalhe: `${plural(arquivos, 'arquivo', 'arquivos')} (${sizeText(entregas.semCopia.bytes)}) só neste computador; o backup não leva os trabalhos. Escolha um pendrive ou HD externo · Sistema → Backup`,
             count: arquivos, tone: 'warning', ...common,
+        });
+    }
+    if (entregas.diferentes) {
+        // Arquivo deste computador que não confere com o registro da entrega (disco
+        // estragado, programa que regravou, ransomware): o espelho não o copia e mantém a
+        // cópia boa no destino; "Trazer arquivos" troca o daqui por ela.
+        const arquivos = Math.max(1, Number(entregas.diferentes.arquivos) || 1);
+        items.push({
+            id: 'entregas_arquivo_diferente', tipo: 'entregas_arquivo_diferente',
+            titulo: arquivos === 1 ? 'Trabalho de aluno diferente do que foi enviado' : 'Trabalhos de alunos diferentes do que foi enviado',
+            detalhe: `${plural(arquivos, 'arquivo', 'arquivos')} deste computador não ${arquivos === 1 ? 'confere' : 'conferem'} com o registro da entrega (disco com defeito ou programa que alterou ${arquivos === 1 ? 'o arquivo' : 'os arquivos'}). ${entregas.diferentes.podeTrazer ? 'A cópia do pendrive ou HD não foi trocada; use "Trazer arquivos do destino externo"' : 'Confira o disco deste computador'} · Sistema → Armazenamento`,
+            count: arquivos, tone: 'danger', ...common,
         });
     }
     if (entregas.espelhoFalhou) {

@@ -208,6 +208,9 @@ describe('ActionQueue: itens do backup', () => {
     expect(serverBackupMessage({ fileName: 'a.zip', externo: { fileName: 'b.zip' }, espelho: { ok: true, copiados: 12 } }))
       .toEqual({ tone: 'success', text: 'Backup feito neste computador e no destino externo (b.zip). 12 arquivos novos de trabalhos copiados para lá.' })
     expect(serverBackupMessage({ fileName: 'a.zip', externo: { fileName: 'b.zip' }, espelho: { ok: true, copiados: 0 } }).text).toBe('Backup feito neste computador e no destino externo (b.zip).')
+    // C11, ajuste 2: o arquivo daqui diferente do registro não vai para o destino e o aviso diz.
+    expect(serverBackupMessage({ fileName: 'a.zip', externo: { fileName: 'b.zip' }, espelho: { ok: true, copiados: 0, diferentes: 1 } }))
+      .toEqual({ tone: 'warning', text: 'Backup feito neste computador e no destino externo (b.zip). 1 arquivo de trabalho deste computador não confere com o registro da entrega e ficou de fora da cópia; veja o cartão Armazenamento.' })
     expect(serverBackupMessage({ fileName: 'a.zip', externoErro: 'O destino externo não está acessível.' }).tone).toBe('warning')
   })
 })

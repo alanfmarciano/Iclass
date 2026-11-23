@@ -360,6 +360,7 @@ function printSummary(file, verified) {
     // restauração nunca toca data/entregas (contrato C7 do P1); a proteção deles é o
     // espelho no destino externo (C11).
     say(ASSIGNMENT_FILES_LINE);
+    if (content.entregas) say(`Aviso: ${content.entregas}`);
     (content.warnings || []).forEach(warning => say(`Aviso: ${warning}`));
 }
 
@@ -607,9 +608,35 @@ async function internalCheck(file, liveDb) {
             .filter(entry => entry.missing === 'keep')
             .map(entry => ({ colecao: entry.collection, rotulo: COLLECTION_LABELS[entry.collection] || entry.collection, atual: Number(live[entry.table]) || 0 }))
             .filter(item => item.atual > 0) : [];
-        return { ok: true, warnings, counts, esquema, kept };
+        const entregas = await liveAssignmentsNotice(db, data, liveDb);
+        return { ok: true, warnings, counts, esquema, kept, ...(entregas ? { entregas } : {}) };
     } finally {
         await dbFile.closeDatabaseFile(connection);
+    }
+}
+
+// As tarefas e entregas de hoje que o backup não tem (o mesmo aviso da prévia da tela
+// Sistema, assignmentMirror.restorePreviewNotice): lê do banco atual só as duas coleções.
+async function liveAssignmentsNotice(db, data, liveDb) {
+    if (!liveDb || !fs.existsSync(liveDb)) return null;
+    let connection = null;
+    try {
+        connection = await dbFile.openDatabaseFile(liveDb, { readOnly: true });
+        const existing = new Set(await dbFile.tableNames(connection));
+        const memory = {};
+        for (const collection of ['assignments', 'assignmentSubmissions']) {
+            const entry = db.COLLECTION_TABLES.find(item => item.collection === collection);
+            memory[collection] = [];
+            if (!entry || !existing.has(entry.table)) continue;
+            const rows = await dbFile.allOn(connection, `SELECT value FROM ${entry.table}`);
+            rows.forEach(row => { try { memory[collection].push(JSON.parse(row.value)); } catch (e) { /* ilegível: fora da conta */ } });
+        }
+        const notice = require('../utils/assignmentMirror.js').restorePreviewNotice(data, memory);
+        return notice ? notice.aviso : null;
+    } catch (e) {
+        return null;
+    } finally {
+        if (connection) await dbFile.closeDatabaseFile(connection).catch(() => {});
     }
 }
 

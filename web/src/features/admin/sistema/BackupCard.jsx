@@ -343,6 +343,11 @@ export function serverBackupMessage(r) {
   if (r.espelho && r.espelho.ok === false) return { tone: 'warning', text: `Backup feito neste computador e no destino externo, mas a cópia dos trabalhos dos alunos falhou: ${r.espelho.erro || 'veja o cartão Armazenamento'}` }
   if (r.externo) {
     const copied = r.espelho && r.espelho.copiados > 0 ? ` ${r.espelho.copiados === 1 ? '1 arquivo novo de trabalho copiado' : `${r.espelho.copiados.toLocaleString('pt-BR')} arquivos novos de trabalhos copiados`} para lá.` : ''
+    // Arquivo daqui diferente do registro da entrega: não foi copiado (a cópia de lá é a boa).
+    const different = Number(r.espelho && r.espelho.diferentes) || 0
+    if (different) {
+      return { tone: 'warning', text: `Backup feito neste computador e no destino externo (${r.externo.fileName}).${copied} ${different === 1 ? '1 arquivo de trabalho deste computador não confere' : `${different.toLocaleString('pt-BR')} arquivos de trabalhos deste computador não conferem`} com o registro da entrega e ficou de fora da cópia; veja o cartão Armazenamento.` }
+    }
     return { tone: 'success', text: `Backup feito neste computador e no destino externo (${r.externo.fileName}).${copied}` }
   }
   return { tone: 'success', text: `Backup feito neste computador (${r.fileName}). Ficam os ${r.kept || 20} backups manuais mais recentes.` }

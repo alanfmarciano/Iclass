@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ArmazenamentoCard, ONEDRIVE_WARNING, assignmentFilesText, compactResultText, databaseSizeText, formatBytes, freeSpaceText, mirrorStatusText, recoverResultText, topCollections, writeErrorText } from './ArmazenamentoCard'
+import { ArmazenamentoCard, ONEDRIVE_WARNING, assignmentFilesText, compactResultText, databaseSizeText, differentFilesText, formatBytes, freeSpaceText, mirrorStatusText, recoverResultText, topCollections, writeErrorText } from './ArmazenamentoCard'
 
 const MB = 1024 * 1024
 
@@ -179,11 +179,30 @@ describe('ArmazenamentoCard · Armazenamento', () => {
     mocks.post.mockResolvedValue({ success: true, copiados: 2, conferidos: 1238, faltando: 0, divergentes: 0 })
     render(<ArmazenamentoCard />)
     await user.click(screen.getByRole('button', { name: /Trazer arquivos do destino externo/ }))
-    expect(screen.getByText(/Nenhum arquivo deste computador é substituído/)).toBeVisible()
+    expect(screen.getByText(/O arquivo daqui que não confere com o registro da entrega vai para a lixeira e a cópia conferida toma o lugar/)).toBeVisible()
     await user.click(screen.getByRole('button', { name: 'Trazer arquivos' }))
     await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/backup/entregas/recuperar', {}, { timeoutMs: 0 }))
     expect(mocks.toast.success).toHaveBeenCalledWith('2 arquivos trazidos do destino externo.')
     expect(mocks.refetch).toHaveBeenCalled()
+  })
+
+  // Rodada 2 do C11: o arquivo daqui trocado (disco com defeito, ransomware) não pode
+  // sumir no "Em dia": o cartão mostra que ele não confere com o registro e que a cópia do
+  // destino foi mantida, e "Trazer arquivos" diz que trocou.
+  it('[UC-ARMAZENAMENTO-002] arquivo deste computador diferente do registro aparece no cartão e a cópia não fica "Em dia"', async () => {
+    const user = userEvent.setup()
+    mocks.result = { data: storage({ entregas: entregas({ diferentes: 1 }) }), error: null }
+    mocks.post.mockResolvedValue({ success: true, copiados: 0, trocados: 1, conferidos: 1239, faltando: 0, divergentes: 0, naoTrocados: 0 })
+    render(<ArmazenamentoCard />)
+    expect(screen.getByText('Diferentes do registro')).toBeVisible()
+    expect(screen.getByText(/^1 arquivo deste computador não confere com o que o aluno enviou/)).toBeVisible()
+    expect(screen.queryByText(/^Em dia/)).toBeNull()
+    expect(screen.getByText(/1 arquivo deste computador ficou de fora por não conferir com o registro; a cópia de lá foi mantida\.$/)).toBeVisible()
+    await user.click(screen.getByRole('button', { name: /Trazer arquivos do destino externo/ }))
+    await user.click(screen.getByRole('button', { name: 'Trazer arquivos' }))
+    await waitFor(() => expect(mocks.toast.success).toHaveBeenCalledWith('1 arquivo diferente do registro foi trocado pela cópia conferida (o de antes foi para a lixeira).'))
+    expect(differentFilesText({ diferentes: 2, podeRecuperar: false })).toBe('2 arquivos deste computador não conferem com o que o aluno enviou (registro da entrega): disco com defeito ou programa que alterou os arquivos. A cópia do destino externo não foi trocada.')
+    expect(recoverResultText({ copiados: 1, trocados: 0, naoTrocados: 1 })).toBe('1 arquivo trazido do destino externo. 1 arquivo diferente do registro continua aqui: não há cópia conferida dele no destino externo.')
   })
 
   it('[UC-ARMAZENAMENTO-002] textos da cópia dos trabalhos', () => {

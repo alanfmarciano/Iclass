@@ -18,8 +18,15 @@
 //   com o mesmo tamanho e a mesma data de gravação do espelho.json não é relida, a não ser
 //   pela releitura de rodízio (até 256 MB por espelhamento, as conferidas há mais tempo
 //   primeiro). A que foi mexida no destino (outra data de gravação) ou que não está no
-//   espelho.json (perdido, outro computador) é conferida pelo SHA-256. A de tamanho ou
-//   SHA-256 diferente (pendrive tirado no meio, byte trocado) é refeita.
+//   espelho.json (perdido, outro computador) é conferida pelo SHA-256 do registro. A que
+//   não confere (pendrive tirado no meio, byte trocado) é refeita, mas só com um arquivo
+//   daqui que confere com o registro (D3: o espelho nunca troca a cópia boa).
+// - O registro manda: o arquivo daqui que não confere com o SHA-256 do registro (disco
+//   estragado, programa que regravou, ransomware) nunca vai para o destino, nem por cima
+//   de uma cópia que lá existe. Ele é percebido pelo tamanho diferente do registro, ao
+//   copiar (a cópia não ganha o nome final) e na releitura de rodízio (que relê também o
+//   daqui); fica em estado.json -> espelho.diferentes, no cartão e na fila. Sem SHA-256 no
+//   registro (arquivo sem registro), vale o arquivo daqui, o único que há.
 // - Espaço: antes de copiar, o livre no destino precisa caber o que falta copiar mais uma
 //   folga; sem espaço, nada é copiado e o motivo vai para o estado.
 // - Remoção só por ordem explícita (D4): o arquivo com lápide (assignmentFileTombstones:
@@ -34,12 +41,13 @@
 // - Recuperar (POST /api/admin/backup/entregas/recuperar, só administrador): traz de
 //   volta para data/entregas os arquivos registrados que faltam aqui, conferindo o SHA-256
 //   do registro; procura na pasta deste computador e, no computador trocado, nas pastas
-//   IClass-* de outros computadores no mesmo destino; nunca substitui arquivo existente e
-//   nunca traz arquivo com lápide.
+//   IClass-* de outros computadores no mesmo destino; nunca traz arquivo com lápide e só
+//   substitui o arquivo daqui que não confere com o registro (ele vai para a lixeira).
 // - Cartão Armazenamento (GET /api/admin/storage): tamanho e quantidade dos arquivos,
-//   os sem registro, os registrados que faltam aqui e a situação do espelho. Fila do
-//   administrador: trabalhos sem cópia fora deste computador, falha do espelho e pouco
-//   espaço no disco para receber entregas.
+//   os sem registro, os registrados que faltam aqui, os daqui diferentes do registro e a
+//   situação do espelho. Fila do administrador: trabalhos sem cópia fora deste
+//   computador, arquivo daqui diferente do registro, falha do espelho e pouco espaço no
+//   disco para receber entregas.
 // - Prévia da restauração: as tarefas e entregas de hoje que o backup não tem.
 // ---------------------------------------------------------------------------
 const crypto = require('crypto');
@@ -54,6 +62,7 @@ const { renameWithRetry } = require('./backupArchive.js');
 const { resolveInside, assertInside } = require('./safePath.js');
 const { logError } = require('./errorLog.js');
 const assignmentLifecycle = require('./assignmentLifecycle.js');
+const fileStore = require('./storage.js');
 
 const MB = 1024 * 1024;
 const MIRROR_SEGMENT = 'entregas';
@@ -286,7 +295,9 @@ function sourceGone(abs) {
 // Copia from -> to passando por <to>.iclass-parcial: o SHA-256 é tirado da origem durante
 // a cópia e a cópia é relida do destino e conferida antes de ganhar o nome final.
 // Devolve { sha256, size }. Lança com code 'EMIRROR_VERIFY' quando a releitura não bate.
-async function copyVerified(from, to, { signal } = {}) {
+// expectedSha256 (o do registro da entrega): a origem que não bate com ele não ganha o
+// nome final (code 'EMIRROR_SOURCE_MISMATCH'), e o que já estava em `to` fica como estava.
+async function copyVerified(from, to, { signal, expectedSha256 = '' } = {}) {
     const temporary = `${to}${PARTIAL_SUFFIX}`;
     await fs.promises.mkdir(path.dirname(to), { recursive: true });
     const hash = crypto.createHash('sha256');
@@ -295,6 +306,9 @@ async function copyVerified(from, to, { signal } = {}) {
     try {
         await pipeline(fs.createReadStream(from), tap, fs.createWriteStream(temporary), signal ? { signal } : {});
         const sha256 = hash.digest('hex');
+        if (expectedSha256 && sha256 !== expectedSha256) {
+            throw Object.assign(new Error('O arquivo de origem não confere com o SHA-256 do registro da entrega.'), { code: 'EMIRROR_SOURCE_MISMATCH', sha256, size });
+        }
         const copy = await hashFile(temporary, signal);
         if (copy.sha256 !== sha256 || copy.size !== size) {
             throw Object.assign(new Error('A cópia gravada não conferiu com o arquivo de origem (SHA-256 diferente).'), { code: 'EMIRROR_VERIFY' });
@@ -333,7 +347,7 @@ async function mirrorAssignmentFiles({ destino, memory, signal = null, now = new
     const localSet = new Set(localFiles.map(item => item.rel));
     const tombs = tombstonedRels(memory, registered, localSet);
     const mirrorExists = fs.existsSync(mirrorDir);
-    const resumo = { copiados: 0, bytes: 0, removidosPorLapide: 0, corrigidos: 0, conferidos: 0, origemDiferente: 0, sumiram: 0, arquivos: 0, bytesTotal: 0 };
+    const resumo = { copiados: 0, bytes: 0, removidosPorLapide: 0, corrigidos: 0, conferidos: 0, diferentesDoRegistro: 0, diferentes: [], sumiram: 0, arquivos: 0, bytesTotal: 0 };
     const lapidesFeitas = new Set();
     // Nada aqui e nada a tirar de lá: não cria a pasta no destino.
     if (!localFiles.length && !mirrorExists) {
@@ -371,66 +385,94 @@ async function mirrorAssignmentFiles({ destino, memory, signal = null, now = new
     }
 
     // 2. O que falta copiar (ou refazer) e o que já está lá. A cópia anotada no
-    // espelho.json com o mesmo tamanho e a mesma data de gravação no destino é dada como
-    // boa, a não ser pela releitura de rodízio; a que foi mexida no destino (outra data
-    // de gravação), a de outro tamanho e a que não está no espelho.json são conferidas
-    // pelo SHA-256 e, se não baterem, refeitas.
+    // espelho.json com a mesma data de gravação e o mesmo tamanho no destino (e, com
+    // registro, o SHA-256 do registro) é dada como boa, a não ser pela releitura de
+    // rodízio; a que foi mexida no destino (outra data de gravação), a de outro tamanho e
+    // a que não está no espelho.json são conferidas pelo SHA-256.
+    // O registro da entrega manda (D3: o espelho nunca troca uma cópia boa): com SHA-256
+    // no registro, a cópia do destino que confere com ele fica, mesmo que o arquivo daqui
+    // tenha mudado (disco estragado, programa que regravou, ransomware); o arquivo daqui
+    // que não confere com o registro nunca vai para o destino e aparece no cartão e na
+    // fila como diferente do registro ("Trazer arquivos" o troca pela cópia boa).
     const wanted = filesToMirror(localFiles, tombs);
     const plan = [];
     const settled = [];
+    const differs = new Set();
     for (const item of wanted) {
         throwIfAborted(signal);
         const target = mirrorAbs(mirrorDir, item.rel);
+        const reg = registered.get(item.rel);
+        const regSha = (reg && reg.sha256) || '';
+        // Tamanho daqui diferente do registro: o arquivo daqui não é o que o aluno enviou.
+        if (regSha && reg.size && item.size !== reg.size) differs.add(item.rel);
         let stat = null;
         try { stat = await fs.promises.stat(target); } catch (e) { stat = null; }
         const isFile = !!(stat && stat.isFile());
         const known = manifest.arquivos[item.rel];
         const sameSize = isFile && stat.size === item.size;
-        if (sameSize && known && known.tamanho === item.size && known.sha256 && known.mtimeMs !== null && Math.floor(stat.mtimeMs) === known.mtimeMs) {
-            settled.push({ ...item, target, known });
+        const knownOk = isFile && known && known.sha256 && known.mtimeMs !== null && Math.floor(stat.mtimeMs) === known.mtimeMs
+            && stat.size === known.tamanho && (regSha ? known.sha256 === regSha : known.tamanho === item.size);
+        if (knownOk) {
+            settled.push({ ...item, target, known, regSha });
             continue;
         }
-        plan.push({ ...item, target, exists: isFile, sameSize, known });
+        plan.push({ ...item, target, exists: isFile, sameSize, known, regSha });
     }
     // Releitura de rodízio: a cada espelhamento, até ROLLING_VERIFY_BYTES das cópias
-    // conferidas há mais tempo são relidas do destino (pendrive que estraga aos poucos).
+    // conferidas há mais tempo são relidas do destino (pendrive que estraga aos poucos) e,
+    // com registro, o arquivo daqui também (o que mudou aqui com o mesmo tamanho).
     settled.sort((a, b) => String(a.known.conferidoEm || a.known.copiadoEm || '').localeCompare(String(b.known.conferidoEm || b.known.copiadoEm || '')) || a.rel.localeCompare(b.rel));
     let rollingBudget = ROLLING_VERIFY_BYTES;
     for (const item of settled) {
         if (rollingBudget > 0) {
             rollingBudget -= Math.max(1, item.size);
-            plan.push({ ...item, exists: true, sameSize: true });
+            plan.push({ ...item, exists: true, sameSize: item.size === item.known.tamanho, rolling: true });
             continue;
         }
         resumo.arquivos += 1;
         resumo.bytesTotal += item.size;
     }
-    // Cópia que já está lá com o mesmo tamanho: confere pelo SHA-256 do registro (sem
-    // registro, o do espelho.json ou, sem ele, o do arquivo daqui).
+    // Cópia que já está lá: confere pelo SHA-256 do registro (sem registro e com o mesmo
+    // tamanho, o do espelho.json ou, sem ele, o do arquivo daqui; sem registro e com outro
+    // tamanho, é refeita com o arquivo daqui, o único que há).
     const toCopy = [];
     for (const item of plan) {
         throwIfAborted(signal);
-        if (!item.sameSize) { toCopy.push(item); continue; }
-        let expected = (registered.get(item.rel) && registered.get(item.rel).sha256) || (item.known && item.known.sha256) || '';
+        if (item.rolling && item.regSha && !differs.has(item.rel)) {
+            try {
+                if ((await hashFile(localAbs(item.rel), signal)).sha256 !== item.regSha) differs.add(item.rel);
+            } catch (err) {
+                if (err && err.code === 'ICLASS_BACKUP_ABORTED') throw err;
+                if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) throw abortError();
+            }
+        }
+        // O arquivo daqui já se sabe diferente do registro (tamanho): não vai para lá.
+        if (!item.exists) { if (!(item.regSha && differs.has(item.rel))) toCopy.push(item); continue; }
+        if (!item.regSha && !item.sameSize) { toCopy.push(item); continue; }
+        let expected = item.regSha || (item.known && item.known.sha256) || '';
         try {
             if (!expected) expected = (await hashFile(localAbs(item.rel), signal)).sha256;
             const there = await hashFile(item.target, signal);
             if (there.sha256 === expected) {
                 const stat = await fs.promises.stat(item.target);
                 manifest.arquivos[item.rel] = {
-                    tamanho: item.size, sha256: expected,
+                    tamanho: there.size, sha256: expected,
                     copiadoEm: (item.known && item.known.copiadoEm) || now.toISOString(),
                     conferidoEm: now.toISOString(), mtimeMs: Math.floor(stat.mtimeMs),
                 };
                 resumo.conferidos += 1;
                 resumo.arquivos += 1;
-                resumo.bytesTotal += item.size;
+                resumo.bytesTotal += there.size;
                 continue;
             }
         } catch (err) {
             if (err && err.code === 'ICLASS_BACKUP_ABORTED') throw err;
+            if (err && (err.name === 'AbortError' || err.code === 'ABORT_ERR')) throw abortError();
             if (sourceGone(localAbs(item.rel))) { resumo.sumiram += 1; continue; }
         }
+        // O arquivo daqui já se sabe diferente do registro: a cópia do destino (mesmo a que
+        // não conferiu) não é trocada por ele.
+        if (item.regSha && differs.has(item.rel)) continue;
         toCopy.push(item);
     }
 
@@ -440,11 +482,12 @@ async function mirrorAssignmentFiles({ destino, memory, signal = null, now = new
         const free = await store.freeBytesAt(mirrorDir);
         if (free !== null && free < needed + FREE_MARGIN_BYTES) {
             await writeManifest(mirrorDir, manifest, now).catch(() => {});
-            throw Object.assign(new Error(`Espaço insuficiente no destino externo para a cópia dos trabalhos dos alunos: faltam copiar cerca de ${sizeText(needed)} (${plural(toCopy.length, 'arquivo', 'arquivos')}), o destino precisa ficar com uma folga de ${sizeText(FREE_MARGIN_BYTES)} e há ${sizeText(free)} livres. Nada foi apagado por isso; libere espaço no pendrive ou HD.`), { status: 400, code: 'ENOSPC_DESTINO' });
+            throw Object.assign(new Error(`Espaço insuficiente no destino externo para a cópia dos trabalhos dos alunos: faltam copiar cerca de ${sizeText(needed)} (${plural(toCopy.length, 'arquivo', 'arquivos')}), o destino precisa ficar com uma folga de ${sizeText(FREE_MARGIN_BYTES)} e há ${sizeText(free)} livres. Nada foi apagado por isso; libere espaço no pendrive ou HD.`), { status: 400, code: 'ENOSPC_DESTINO', diferentes: [...differs] });
         }
     }
 
-    // 4. Cópias, uma por vez, conferidas.
+    // 4. Cópias, uma por vez, conferidas (com registro, pelo SHA-256 dele: o arquivo daqui
+    // que não confere não ganha o nome final e o que estava no destino fica).
     let sinceFlush = 0;
     try {
         for (const item of toCopy) {
@@ -452,17 +495,13 @@ async function mirrorAssignmentFiles({ destino, memory, signal = null, now = new
             const source = localAbs(item.rel);
             let copied;
             try {
-                copied = await copyVerified(source, item.target, { signal });
+                copied = await copyVerified(source, item.target, { signal, expectedSha256: item.regSha });
             } catch (err) {
                 if (err && err.code === 'ICLASS_BACKUP_ABORTED') throw err;
+                if (err && err.code === 'EMIRROR_SOURCE_MISMATCH') { differs.add(item.rel); continue; }
                 // O arquivo saiu daqui no meio (foi para a lixeira): não é falha do destino.
                 if (sourceGone(source)) { resumo.sumiram += 1; continue; }
                 throw err;
-            }
-            const expected = registered.get(item.rel) && registered.get(item.rel).sha256;
-            if (expected && expected !== copied.sha256) {
-                resumo.origemDiferente += 1;
-                logError(`espelho das entregas: o arquivo ${item.rel} deste computador não bate com o SHA-256 do registro (copiado assim mesmo)`, new Error('SHA-256 diferente do registro'));
             }
             let mtimeMs = null;
             try { mtimeMs = Math.floor((await fs.promises.stat(item.target)).mtimeMs); } catch (e) { mtimeMs = null; }
@@ -482,6 +521,11 @@ async function mirrorAssignmentFiles({ destino, memory, signal = null, now = new
         // Interrompido ou com falha: o que já foi copiado fica anotado.
         await writeManifest(mirrorDir, manifest, now).catch(error => logError('espelho das entregas: gravação do espelho.json', error));
     }
+    resumo.diferentesDoRegistro = differs.size;
+    resumo.diferentes = [...differs].sort();
+    if (differs.size) {
+        logError(`espelho das entregas: ${differs.size} arquivo(s) deste computador não conferem com o SHA-256 do registro e não foram copiados para o destino (a cópia de lá foi mantida): ${resumo.diferentes.slice(0, 5).join(', ')}`, new Error('SHA-256 diferente do registro'));
+    }
     return { resumo, lapidesFeitas: [...lapidesFeitas], pasta: mirrorDir };
 }
 
@@ -494,6 +538,19 @@ function openMirrorFailure(espelho, destino) {
     if (!Number.isFinite(at)) return null;
     const okAt = Date.parse(String((espelho.destino === destino && espelho.ultimoSucesso) || ''));
     return Number.isFinite(okAt) && okAt >= at ? null : failure;
+}
+
+// Arquivos deste computador que o último espelhamento achou diferentes do registro (o
+// cartão e a fila mostram; "Trazer arquivos" tira da lista o que trocou).
+const MAX_DIFFERENT_LISTED = 500;
+function differentState(rels, now = new Date()) {
+    const arquivos = list(rels).map(String).filter(Boolean).slice(0, MAX_DIFFERENT_LISTED);
+    return { em: now.toISOString(), arquivos };
+}
+
+function differentListed(state) {
+    const espelho = isObject(state && state.espelho) ? state.espelho : {};
+    return new Set(list(isObject(espelho.diferentes) ? espelho.diferentes.arquivos : []).map(String));
 }
 
 // A etapa 'espelho' do runBackupJob. Nunca lança (o backup já está gravado e vale), a
@@ -515,19 +572,29 @@ async function runMirrorStep({ job = null, destino, memory, now = new Date(), fa
                 removidosPorLapide: outcome.resumo.removidosPorLapide,
                 arquivos: outcome.resumo.arquivos,
                 bytesTotal: outcome.resumo.bytesTotal,
+                diferentes: differentState(outcome.resumo.diferentes, now),
                 ultimaFalha: null,
             },
         })).catch(e => logError('espelho das entregas: gravação do estado', e));
+        localSummaryCache = null;
         if (typeof onChanged === 'function') await onChanged(outcome);
         return { ok: true, resumo: outcome.resumo, lapidesFeitas: outcome.lapidesFeitas };
     } catch (err) {
         if (err && err.code === 'ICLASS_BACKUP_ABORTED') return { ok: false, interrompido: true, mensagem: 'A cópia dos trabalhos no destino externo foi interrompida porque o servidor está sendo desligado; ela continua no próximo backup.' };
         const mensagem = typeof failureMessage === 'function' ? failureMessage(err) : String((err && err.message) || 'Falha desconhecida.');
         if (!(err && err.status && err.status < 500)) logError('espelho das entregas no destino externo', err);
-        await store.updateState(state => ({
-            ...state,
-            espelho: { ...(isObject(state.espelho) ? state.espelho : {}), ultimaFalha: { em: now.toISOString(), mensagem, destino } },
-        })).catch(e => logError('espelho das entregas: gravação do estado', e));
+        await store.updateState(state => {
+            const previous = isObject(state.espelho) ? state.espelho : {};
+            return {
+                ...state,
+                espelho: {
+                    ...previous,
+                    ...(err && Array.isArray(err.diferentes) ? { diferentes: differentState(err.diferentes, now) } : {}),
+                    ultimaFalha: { em: now.toISOString(), mensagem, destino },
+                },
+            };
+        }).catch(e => logError('espelho das entregas: gravação do estado', e));
+        localSummaryCache = null;
         return { ok: false, mensagem, destinoFora: Boolean(err && err.code === 'destination_unavailable') };
     }
 }
@@ -573,29 +640,50 @@ async function mirrorSources(destino) {
 // Traz de volta do espelho os arquivos registrados que faltam em data/entregas, conferindo
 // o SHA-256 do registro (sem SHA-256 no registro, o tamanho, e só da pasta deste
 // computador). Procura primeiro na pasta deste computador e depois nas de outros
-// computadores no mesmo destino. Nunca substitui arquivo existente; nunca traz arquivo
-// com lápide nem arquivo sem registro. Devolve
-// { copiados, deOutroComputador, conferidos, faltando, divergentes, bytes }.
-async function recoverAssignmentFiles({ destino, memory, signal = null } = {}) {
+// computadores no mesmo destino. Nunca traz arquivo com lápide nem arquivo sem registro.
+// O arquivo daqui só é trocado quando não confere com o SHA-256 do registro (disco
+// estragado, programa que regravou, ransomware: o espelho mantém a cópia boa no destino e
+// lista o daqui como diferente): ele vai antes para a lixeira de arquivos (só do
+// administrador; deletedBy: quem pediu) e a cópia conferida toma o lugar. Devolve
+// { copiados, trocados, deOutroComputador, conferidos, faltando, divergentes,
+//   naoTrocados, bytes }.
+async function recoverAssignmentFiles({ destino, memory, signal = null, actor = '' } = {}) {
     if (!(await destinationReachable(destino))) throw Object.assign(new Error(UNREACHABLE_MESSAGE), { status: 409, code: 'destination_unavailable' });
     const sources = await mirrorSources(destino);
     const registered = registeredFiles(memory);
     const localFiles = await listLocalFiles();
     const localSet = new Set(localFiles.map(item => item.rel));
+    const localSize = new Map(localFiles.map(item => [item.rel, item.size]));
     const tombs = tombstonedRels(memory, registered, localSet);
-    const out = { copiados: 0, deOutroComputador: 0, conferidos: 0, faltando: 0, divergentes: 0, bytes: 0 };
-    const missing = [];
+    const listed = differentListed(store.readState());
+    const settledRels = new Set();
+    const out = { copiados: 0, trocados: 0, deOutroComputador: 0, conferidos: 0, faltando: 0, divergentes: 0, naoTrocados: 0, bytes: 0 };
+    const wanted = [];
     for (const [rel, info] of registered) {
+        throwIfAborted(signal);
         if (tombs.has(rel)) continue;
         let abs;
         try { abs = localAbs(rel); } catch (e) { continue; }
-        if (fs.existsSync(abs)) { out.conferidos += 1; continue; }
+        if (fs.existsSync(abs)) {
+            const suspect = info.sha256 && (listed.has(rel) || (info.size > 0 && localSize.has(rel) && localSize.get(rel) !== info.size));
+            if (suspect) {
+                let here = '';
+                try { here = (await hashFile(abs, signal)).sha256; } catch (err) {
+                    if (err && (err.code === 'ICLASS_BACKUP_ABORTED' || err.name === 'AbortError' || err.code === 'ABORT_ERR')) throw abortError();
+                    here = '';
+                }
+                if (here && here !== info.sha256) { wanted.push({ rel, info, abs, replace: true }); continue; }
+                if (here) settledRels.add(rel);
+            }
+            out.conferidos += 1;
+            continue;
+        }
         // O arquivo do pacote de curso excluído conta uma vez: no caminho do pacote.
         if (info.origem === 'pacote' && !rel.startsWith(`${assignmentLifecycle.COURSE_ARCHIVE_SEGMENT}/`)) continue;
-        missing.push({ rel, info, abs });
+        wanted.push({ rel, info, abs, replace: false });
     }
     const available = [];
-    for (const item of missing) {
+    for (const item of wanted) {
         const candidates = [];
         for (const source of sources) {
             // Pasta de outro computador: só com o SHA-256 do registro para conferir.
@@ -608,7 +696,11 @@ async function recoverAssignmentFiles({ destino, memory, signal = null } = {}) {
             if (item.info.size && stat.size !== item.info.size) { candidates.push({ file, size: stat.size, propria: source.propria, wrongSize: true }); continue; }
             candidates.push({ file, size: stat.size, propria: source.propria });
         }
-        if (!candidates.length) { out.faltando += 1; continue; }
+        if (!candidates.length) {
+            if (item.replace) out.naoTrocados += 1;
+            else out.faltando += 1;
+            continue;
+        }
         // As de tamanho certo primeiro (a de tamanho errado só conta como divergente).
         candidates.sort((a, b) => Number(!!a.wrongSize) - Number(!!b.wrongSize));
         available.push({ ...item, candidates });
@@ -622,39 +714,65 @@ async function recoverAssignmentFiles({ destino, memory, signal = null } = {}) {
         }
     }
     await fs.promises.mkdir(runtimePaths.ASSIGNMENT_RECEIVING_DIR, { recursive: true });
-    for (const item of available) {
-        let done = false;
-        for (const candidate of item.candidates) {
-            throwIfAborted(signal);
-            if (candidate.wrongSize) continue;
-            const temporary = path.join(runtimePaths.ASSIGNMENT_RECEIVING_DIR, `recuperar_${Date.now()}_${crypto.randomBytes(6).toString('hex')}.part`);
-            try {
-                const copied = await copyVerified(candidate.file, temporary, { signal });
-                const ok = item.info.sha256 ? copied.sha256 === item.info.sha256 : (!item.info.size || copied.size === item.info.size);
-                if (!ok) {
-                    await fs.promises.rm(temporary, { force: true }).catch(() => {});
-                    continue;
-                }
-                await fs.promises.mkdir(path.dirname(item.abs), { recursive: true });
-                // Chegou outro no meio (a restauração do curso, por exemplo): o daqui fica.
-                if (fs.existsSync(item.abs)) {
-                    out.conferidos += 1;
-                    await fs.promises.rm(temporary, { force: true }).catch(() => {});
+    try {
+        for (const item of available) {
+            let done = false;
+            for (const candidate of item.candidates) {
+                throwIfAborted(signal);
+                if (candidate.wrongSize) continue;
+                const temporary = path.join(runtimePaths.ASSIGNMENT_RECEIVING_DIR, `recuperar_${Date.now()}_${crypto.randomBytes(6).toString('hex')}.part`);
+                try {
+                    const copied = await copyVerified(candidate.file, temporary, { signal });
+                    const ok = item.info.sha256 ? copied.sha256 === item.info.sha256 : (!item.info.size || copied.size === item.info.size);
+                    if (!ok) {
+                        await fs.promises.rm(temporary, { force: true }).catch(() => {});
+                        continue;
+                    }
+                    await fs.promises.mkdir(path.dirname(item.abs), { recursive: true });
+                    if (item.replace) {
+                        // O arquivo daqui, diferente do registro, vai para a lixeira (nada é
+                        // apagado); sem conseguir tirá-lo, ele fica e a cópia é descartada.
+                        if (fs.existsSync(item.abs) && !fileStore.moveToTrash(item.abs, { deletedBy: actor })) {
+                            await fs.promises.rm(temporary, { force: true }).catch(() => {});
+                            logError(`espelho das entregas: o arquivo ${item.rel} diferente do registro não foi para a lixeira e não foi trocado`, new Error('lixeira recusou'));
+                            out.naoTrocados += 1;
+                            done = true;
+                            break;
+                        }
+                    } else if (fs.existsSync(item.abs)) {
+                        // Chegou outro no meio (a restauração do curso, por exemplo): o daqui fica.
+                        out.conferidos += 1;
+                        await fs.promises.rm(temporary, { force: true }).catch(() => {});
+                        done = true;
+                        break;
+                    }
+                    await renameWithRetry(temporary, item.abs);
+                    if (item.replace) { out.trocados += 1; settledRels.add(item.rel); } else out.copiados += 1;
+                    if (!candidate.propria && !item.replace) out.deOutroComputador += 1;
+                    out.bytes += copied.size;
                     done = true;
                     break;
+                } catch (err) {
+                    await fs.promises.rm(temporary, { force: true }).catch(() => {});
+                    throw err;
                 }
-                await renameWithRetry(temporary, item.abs);
-                out.copiados += 1;
-                if (!candidate.propria) out.deOutroComputador += 1;
-                out.bytes += copied.size;
-                done = true;
-                break;
-            } catch (err) {
-                await fs.promises.rm(temporary, { force: true }).catch(() => {});
-                throw err;
+            }
+            if (!done) {
+                if (item.replace) out.naoTrocados += 1;
+                else out.divergentes += 1;
             }
         }
-        if (!done) out.divergentes += 1;
+    } finally {
+        // O que já confere com o registro sai da lista de diferentes do cartão e da fila.
+        if (settledRels.size) {
+            await store.updateState(state => {
+                const espelho = isObject(state.espelho) ? state.espelho : null;
+                if (!espelho || !isObject(espelho.diferentes)) return state;
+                const arquivos = list(espelho.diferentes.arquivos).filter(rel => !settledRels.has(String(rel)));
+                return { ...state, espelho: { ...espelho, diferentes: { ...espelho.diferentes, arquivos } } };
+            }).catch(e => logError('espelho das entregas: gravação do estado', e));
+        }
+        localSummaryCache = null;
     }
     return out;
 }
@@ -670,7 +788,20 @@ function recordsSignature(memory) {
     return `${list(memory && memory.assignmentSubmissions).length}:${files}:${list(memory && memory.assignmentFileTombstones).length}`;
 }
 
-// Arquivos daqui: { arquivos, bytes, semRegistro, semRegistroBytes, faltando, files }.
+// Arquivos daqui que não conferem com o registro da entrega (com SHA-256 no registro): os
+// que o último espelhamento achou (lista no estado) e os de tamanho diferente do registro
+// (conta barata, sem ler o arquivo). [rel]
+function differentLocalFiles(files, registered, tombs) {
+    let listed = new Set();
+    try { listed = differentListed(store.readState()); } catch (e) { listed = new Set(); }
+    return list(files).filter(item => {
+        const info = registered.get(item.rel);
+        if (!info || !info.sha256 || tombs.has(item.rel)) return false;
+        return listed.has(item.rel) || (info.size > 0 && item.size !== info.size);
+    }).map(item => item.rel);
+}
+
+// Arquivos daqui: { arquivos, bytes, semRegistro, semRegistroBytes, faltando, diferentes, files }.
 async function localSummary(memory, { fresh = true, now = Date.now() } = {}) {
     const signature = recordsSignature(memory);
     if (!fresh && localSummaryCache && localSummaryCache.signature === signature && now - localSummaryCache.at < LOCAL_SUMMARY_MAX_AGE_MS) return localSummaryCache.value;
@@ -691,7 +822,8 @@ async function localSummary(memory, { fresh = true, now = Date.now() } = {}) {
         if (info.origem === 'pacote' && !rel.startsWith(`${assignmentLifecycle.COURSE_ARCHIVE_SEGMENT}/`)) return;
         faltando += 1;
     });
-    const value = { arquivos: files.length, bytes, semRegistro, semRegistroBytes, faltando, files, registered, tombs };
+    const diferentes = differentLocalFiles(files, registered, tombs);
+    const value = { arquivos: files.length, bytes, semRegistro, semRegistroBytes, faltando, diferentes: diferentes.length, diferentesRels: new Set(diferentes), files, registered, tombs };
     localSummaryCache = { at: now, signature, value };
     return value;
 }
@@ -709,7 +841,9 @@ async function storageSummary(memory, { full = false } = {}) {
     if (destino && acessivel) {
         const mirrorDir = mirrorDirFor(destino);
         const manifest = await readManifest(mirrorDir);
+        // O arquivo daqui diferente do registro não espera cópia: ele não vai para lá.
         pendentes = filesToMirror(local.files, local.tombs)
+            .filter(item => !local.diferentesRels.has(item.rel))
             .filter(item => !(manifest.arquivos[item.rel] && manifest.arquivos[item.rel].tamanho === item.size)).length;
     }
     const failure = openMirrorFailure(espelhoState, destino);
@@ -719,6 +853,9 @@ async function storageSummary(memory, { full = false } = {}) {
         semRegistro: local.semRegistro,
         semRegistroBytes: local.semRegistroBytes,
         faltando: local.faltando,
+        // Arquivos daqui diferentes do registro (o espelho não os copia; a cópia boa do
+        // destino fica e "Trazer arquivos" troca o daqui por ela).
+        diferentes: local.diferentes,
         espelho: {
             configurado: !!destino,
             acessivel,
@@ -732,14 +869,16 @@ async function storageSummary(memory, { full = false } = {}) {
 }
 
 // Alertas da fila "Precisa de você" (só administrador; quem chama filtra e desliga em
-// TEST_MODE): semCopia (há trabalhos e nenhum destino externo), espelhoFalhou (a última
+// TEST_MODE): semCopia (há trabalhos e nenhum destino externo), diferentes (arquivos daqui
+// que não conferem com o registro da entrega), espelhoFalhou (a última
 // cópia dos trabalhos falhou e a do backup não está falhando pelo mesmo destino) e
 // discoBaixo (livre abaixo do dobro do mínimo das entregas; recusando: abaixo do mínimo).
 async function queueAlerts(memory, { backupFailingExternal = false, now = Date.now(), statfs = fs.promises.statfs } = {}) {
-    const alerts = { semCopia: null, espelhoFalhou: null, discoBaixo: null };
+    const alerts = { semCopia: null, espelhoFalhou: null, discoBaixo: null, diferentes: null };
     const { destino } = settingsUtil.backupSettings();
     const local = await localSummary(memory, { fresh: false, now });
     if (!destino && local.arquivos > 0) alerts.semCopia = { arquivos: local.arquivos, bytes: local.bytes };
+    if (local.diferentes > 0) alerts.diferentes = { arquivos: local.diferentes, podeTrazer: !!destino };
     if (destino && !backupFailingExternal) {
         const state = store.readState();
         const failure = openMirrorFailure(isObject(state.espelho) ? state.espelho : {}, destino);
