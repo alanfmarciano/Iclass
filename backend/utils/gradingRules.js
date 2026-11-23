@@ -591,9 +591,14 @@ function computeCore(criterios, plan, grupos, { frequencia, aulasPrevistas, term
 // das disciplinas: esses avisos saem do núcleo da turma e entram os de cada disciplina,
 // com o nome dela, para nunca contradizer a situação mostrada.
 const AVISOS_DE_SITUACAO = ['recuperacao_nao_lancada'];
+// Avisos da conta de cada disciplina que também sobem para o geral, com o nome dela (a
+// etapa sem nota que contou 0 muda a situação da disciplina e, por ela, a geral).
+const AVISOS_DAS_DISCIPLINAS = ['etapa_sem_nota_zero'];
 
 // Situação geral a partir das disciplinas (unidade 'disciplina').
-const SITUACAO_PRIORIDADE = ['cursando', 'em_recuperacao', 'reprovado_falta', 'reprovado_nota', 'aprovado'];
+// A falta de uma disciplina vem antes da recuperação de outra: a recuperação não tira a
+// reprovação por falta (igual à unidade 'turma', em que a falta decide antes da nota).
+const SITUACAO_PRIORIDADE = ['cursando', 'reprovado_falta', 'em_recuperacao', 'reprovado_nota', 'aprovado'];
 function combineSituacoes(situacoes) {
     const comNota = (situacoes || []).filter(situacao => situacao && situacao !== 'sem_notas');
     if (!comNota.length) return 'sem_notas';
@@ -657,13 +662,33 @@ function computeStudentResult({ criterios = null, plano = null, grupos = [], fre
         if (!moduloDaDisciplina.has(key)) moduloDaDisciplina.set(key, String(item.id));
     }));
     const porDisciplina = new Map(ligadas.map(item => [String(item.id), []]));
+    const comNotaPropria = new Set();
+    const recuperacoesSemDisciplina = [];
     let foraDeDisciplina = 0;
+    let foraSemModulo = 0;
     (grupos || []).forEach(group => {
         if (normalizeScore(group && group.score) === null) return;
         const disciplina = moduloDaDisciplina.get(String((group && group.moduloId) || ''));
-        if (!disciplina) { foraDeDisciplina += 1; return; }
+        const item = planItemFor(plan, groupItemId(group));
+        const recuperacao = !item.fora && (!!item.recuperacaoDe || groupFinalidade(group) === 'recuperacao');
+        if (!disciplina) {
+            // Recuperação sem disciplina (a recuperação final lançada à mão, sem módulo):
+            // vale para cada disciplina que tem nota, como na conta da turma (B4/J2).
+            if (recuperacao) { recuperacoesSemDisciplina.push(group); return; }
+            foraDeDisciplina += 1;
+            if (!(group && group.moduloId)) foraSemModulo += 1;
+            return;
+        }
         porDisciplina.get(disciplina).push(group);
+        if (!recuperacao && !item.fora) comNotaPropria.add(disciplina);
     });
+    recuperacoesSemDisciplina.forEach(group => {
+        comNotaPropria.forEach(disciplina => porDisciplina.get(disciplina).push(group));
+    });
+    if (!comNotaPropria.size) {
+        foraDeDisciplina += recuperacoesSemDisciplina.length;
+        foraSemModulo += recuperacoesSemDisciplina.filter(group => !(group && group.moduloId)).length;
+    }
 
     // Frequência da turma inteira: todas as aulas lançadas, com ou sem disciplina.
     const turma = readFrequency(frequencia);
@@ -693,6 +718,11 @@ function computeStudentResult({ criterios = null, plano = null, grupos = [], fre
     result.disciplinas.forEach(item => item.avisos
         .filter(entry => AVISOS_DE_SITUACAO.includes(entry.codigo))
         .forEach(entry => avisos.push({ ...entry, disciplinaId: item.id, texto: `${item.nome}: ${entry.texto}` })));
+    // A etapa sem nota que contou 0 numa disciplina (e não na turma inteira, que já avisa).
+    const avisosDaTurma = new Set(core.avisos.map(entry => `${entry.codigo}|${entry.texto}`));
+    result.disciplinas.forEach(item => item.avisos
+        .filter(entry => AVISOS_DAS_DISCIPLINAS.includes(entry.codigo) && !avisosDaTurma.has(`${entry.codigo}|${entry.texto}`))
+        .forEach(entry => avisos.push({ ...entry, disciplinaId: item.id, texto: `${item.nome}: ${entry.texto}` })));
     // A frequência mínima vale também para a turma inteira: as faltas lançadas sem
     // disciplina (ou numa disciplina sem módulo) não podem sumir da situação. Sem nota
     // nenhuma, só reprova com o período terminado (igual à disciplina).
@@ -708,7 +738,12 @@ function computeStudentResult({ criterios = null, plano = null, grupos = [], fre
         avisos.push(aviso('disciplina_sem_notas', `${semNotas.map(item => item.nome).join(', ')} sem notas: não ${semNotas.length === 1 ? 'entra' : 'entram'} na situação geral.`));
     }
     if (foraDeDisciplina) {
-        avisos.push(aviso('itens_fora_de_disciplina', `${countLabel(foraDeDisciplina, 'nota de módulo sem disciplina conta', 'notas de módulos sem disciplina contam')} só na média da turma, não na situação das disciplinas.`));
+        // A nota lançada à mão sem módulo também fica fora das disciplinas: o aviso diz isso.
+        let origem;
+        if (!foraSemModulo) origem = countLabel(foraDeDisciplina, 'nota de módulo sem disciplina conta', 'notas de módulos sem disciplina contam');
+        else if (foraSemModulo === foraDeDisciplina) origem = countLabel(foraDeDisciplina, 'nota de avaliação sem módulo conta', 'notas de avaliações sem módulo contam');
+        else origem = `${countLabel(foraDeDisciplina, 'nota fora das disciplinas (módulo sem disciplina ou avaliação sem módulo) conta', 'notas fora das disciplinas (módulos sem disciplina ou avaliações sem módulo) contam')}`;
+        avisos.push(aviso('itens_fora_de_disciplina', `${origem} só na média da turma, não na situação das disciplinas.`));
     }
     result.avisos = [...result.avisos.filter(entry => situacaoDaTurma || !AVISOS_DE_SITUACAO.includes(entry.codigo)), ...avisos];
     return result;

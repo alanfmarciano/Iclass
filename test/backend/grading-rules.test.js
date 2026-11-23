@@ -315,7 +315,8 @@ test('[UC-NOTAS-005] situação por disciplina quando os módulos estão ligados
     assert.deepEqual(r.disciplinas.map(item => [item.id, item.mediaFinal, item.situacao, item.faltasPermitidasRestantes]), [
         ['REDES', 9, 'reprovado_falta', 4], ['PROG', 3, 'em_recuperacao', 9],
     ]);
-    assert.equal(r.situacao, 'em_recuperacao');
+    // A falta de Redes vem antes da recuperação de Programação (pendência do B4 na J2).
+    assert.equal(r.situacao, 'reprovado_falta');
     // A média da turma continua com todas as notas (inclusive a do módulo sem disciplina).
     assert.equal(r.mediaFinalScore, (90 + 30 + 80) / 3);
     assert.match(r.avisos.find(item => item.codigo === 'itens_fora_de_disciplina').texto, /^1 nota de módulo sem disciplina conta só na média da turma/);
@@ -525,4 +526,62 @@ test('[UC-NOTAS-005] o motor é puro: não muda a entrada e dá o mesmo resultad
     assert.equal(Object.isFrozen(rules.CRITERIOS_PADRAO), true);
     const fonte = require('node:fs').readFileSync(require.resolve('../../backend/utils/gradingRules.js'), 'utf8');
     assert.doesNotMatch(fonte, /require\(['"][^'"]*(database|db|routes|express)[^'"]*['"]\)/);
+});
+
+test('[UC-NOTAS-005] por disciplina: a falta vem antes da recuperação, a recuperação final lançada à mão vale para as disciplinas e a etapa que contou 0 avisa no geral', () => {
+    const disciplinas = [{ id: 'd1', nome: 'Redes', modulos: ['m1'] }, { id: 'd2', nome: 'Programação', modulos: ['m2'] }];
+    // (1) Redes reprovada por falta e Programação em recuperação: a situação geral é a falta
+    // (na unidade "turma", a falta também decide antes da nota).
+    const falta = computeStudentResult({
+        criterios: criterios(), grupos: [g('A', 90, { moduloId: 'm1' }), g('B', 40, { moduloId: 'm2' })],
+        frequencia: { frequenciaGeral: 80, porDisciplina: { d1: { frequencia: 50, faltas: 10 }, d2: { frequencia: 90, faltas: 1 } } },
+        disciplinas, periodo: { terminado: true },
+    });
+    assert.deepEqual(falta.disciplinas.map(item => item.situacao), ['reprovado_falta', 'em_recuperacao']);
+    assert.deepEqual([falta.situacao, falta.situacaoRotulo], ['reprovado_falta', 'Reprovado por falta']);
+    assert.equal(combineSituacoes(['em_recuperacao', 'reprovado_falta', 'aprovado']), 'reprovado_falta');
+    assert.equal(combineSituacoes(['em_recuperacao', 'reprovado_nota']), 'em_recuperacao');
+
+    // (2) Recuperação final como avaliação manual (sem módulo): entra na conta de cada
+    // disciplina com nota, sem o aviso falso de recuperação não lançada.
+    const rec = computeStudentResult({
+        criterios: criterios(), plano: { itens: { man_rec: { recuperacaoDe: 'final' } } },
+        grupos: [g('A', 90, { moduloId: 'm1' }), g('B', 40, { moduloId: 'm2' }), g('man_rec', 80)],
+        disciplinas, periodo: { encerrada: true },
+    });
+    assert.deepEqual(rec.disciplinas.map(item => [item.id, item.mediaFinal, item.situacao]), [['d1', 9, 'aprovado'], ['d2', 8, 'aprovado']]);
+    assert.equal(rec.situacao, 'aprovado');
+    assert.deepEqual(rec.avisos.map(item => item.codigo), []);
+    // Disciplina sem nota nenhuma não ganha nota só pela recuperação.
+    const soUma = computeStudentResult({
+        criterios: criterios(), plano: { itens: { man_rec: { recuperacaoDe: 'final' } } },
+        grupos: [g('B', 40, { moduloId: 'm2' }), g('man_rec', 80)], disciplinas, periodo: { encerrada: true },
+    });
+    assert.deepEqual(soUma.disciplinas.map(item => item.situacao), ['sem_notas', 'aprovado']);
+    // A nota lançada à mão sem módulo (que não é recuperação) continua só na média da turma,
+    // e o aviso diz que é avaliação sem módulo.
+    const manual = computeStudentResult({ criterios: criterios(), grupos: [g('A', 90, { moduloId: 'm1' }), g('man_1', 80)], disciplinas });
+    assert.equal(manual.avisos.find(item => item.codigo === 'itens_fora_de_disciplina').texto, '1 nota de avaliação sem módulo conta só na média da turma, não na situação das disciplinas.');
+    const misto = computeStudentResult({ criterios: criterios(), grupos: [g('A', 90, { moduloId: 'm1' }), g('man_1', 80), g('C', 70, { moduloId: 'm3' })], disciplinas });
+    assert.match(misto.avisos.find(item => item.codigo === 'itens_fora_de_disciplina').texto, /^2 notas fora das disciplinas \(módulos sem disciplina ou avaliações sem módulo\) contam só na média da turma/);
+    // Só notas manuais: a situação geral é a da turma (B6), com o aviso.
+    const soManuais = computeStudentResult({ criterios: criterios(), grupos: [g('man_1', 80), g('man_2', 90)], disciplinas, periodo: { terminado: true } });
+    assert.deepEqual([soManuais.situacao, soManuais.mediaFinal], ['aprovado', 8.5]);
+
+    // (3) Etapa sem nota numa disciplina (a turma tem nota nela): contou 0 na disciplina e
+    // o aviso sobe para o geral com o nome da disciplina; sem repetir o da turma.
+    const etapas = {
+        criterios: criterios({ etapas: DUAS_ETAPAS }), plano: { itens: { A: { etapa: 1 }, A2: { etapa: 2 }, B: { etapa: 1 } } },
+        grupos: [g('A', 90, { moduloId: 'm1' }), g('A2', 90, { moduloId: 'm1' }), g('B', 90, { moduloId: 'm2' })], disciplinas,
+    };
+    const zero = computeStudentResult({ ...etapas, periodo: { terminado: true } });
+    assert.equal(zero.disciplinas[1].etapas[1].contouComoZero, true);
+    assert.deepEqual(zero.avisos.filter(item => item.codigo === 'etapa_sem_nota_zero'), [
+        { codigo: 'etapa_sem_nota_zero', disciplinaId: 'd2', texto: 'Programação: 2º bimestre sem nota: contou como 0 na média final.' },
+    ]);
+    const turmaSemEtapa = computeStudentResult({ ...etapas, grupos: [g('A', 90, { moduloId: 'm1' }), g('B', 90, { moduloId: 'm2' })], periodo: { terminado: true } });
+    // Sem nota no 2º bimestre na turma inteira: um aviso só, o da turma.
+    assert.deepEqual(turmaSemEtapa.avisos.filter(item => item.codigo === 'etapa_sem_nota_zero').map(item => item.texto), [
+        '2º bimestre sem nota: contou como 0 na média final.',
+    ]);
 });
