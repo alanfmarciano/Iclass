@@ -494,12 +494,6 @@ function applyCascade(db, { mode, student, ownership, keystrokeRows, actor, reas
         deletedBy: actor,
         asName: anonymize ? fileStore.studentFolderName(memory.students[index]) : undefined,
     });
-    // O que os handlers deixaram para depois (arquivos das entregas de tarefa para a
-    // lixeira, C10): só agora, com todos os handlers feitos. Falha num arquivo não desfaz
-    // o passo (o registro já está sem dado pessoal e a lápide já foi gravada).
-    diskEffects.forEach(effect => {
-        try { effect({ deletedBy: actor }); } catch (error) { logError(`studentLifecycle: efeito em disco de coleção nova falhou (${mode})`, error); }
-    });
 
     // Entrada da auditoria sem dado pessoal: no anonimizar, só o pseudônimo; no apagar,
     // nem isso (só as contagens e o motivo).
@@ -530,7 +524,17 @@ function applyCascade(db, { mode, student, ownership, keystrokeRows, actor, reas
         .map(item => item.id);
     const keystrokesDone = keystrokeIds.length ? db.keystrokes.deleteRows(keystrokeIds) : Promise.resolve({ deleted: 0 });
     const saved = db.save();
-    return { pseudonym, counts, keystrokes: keystrokeIds.length, completion: Promise.all([saved, keystrokesDone]) };
+    // O que os handlers deixaram para depois (arquivos das entregas de tarefa e do pacote
+    // de curso excluído para a lixeira, pacote regravado; C10): só depois de a gravação
+    // dar certo. Se ela falhar, nada sai do lugar (o banco no disco ainda aponta para os
+    // arquivos). Falha num efeito não desfaz o passo (o registro já está sem dado pessoal
+    // e a lápide já foi gravada): fica no crash.log.
+    const effectsDone = saved.then(() => {
+        diskEffects.forEach(effect => {
+            try { effect({ deletedBy: actor }); } catch (error) { logError(`studentLifecycle: efeito em disco de coleção nova falhou (${mode})`, error); }
+        });
+    });
+    return { pseudonym, counts, keystrokes: keystrokeIds.length, completion: Promise.all([effectsDone, keystrokesDone]) };
 }
 
 // Anonimiza (mode 'anonymize') ou apaga de vez (mode 'purge') o cadastro encerrado.

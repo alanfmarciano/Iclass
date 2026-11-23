@@ -247,6 +247,8 @@ function createAdminArchiveRouter({ studentClassNames }) {
             if (restoredTasks.length) db.memory.assignments = [...(db.memory.assignments || []), ...restoredTasks];
             if (restoredDeliveries.length) {
                 relinkRecordsByEmail(db.memory, restoredDeliveries, studentIdsByEmail(db.memory));
+                // Aluno que trocou de e-mail com o curso fora: a entrega vai para o e-mail de hoje.
+                assignmentLifecycle.followCurrentStudentEmails(db.memory, restoredDeliveries);
                 db.memory.assignmentSubmissions = [...(db.memory.assignmentSubmissions || []), ...restoredDeliveries];
             }
             recordAudit(db.memory, {
@@ -268,8 +270,9 @@ function createAdminArchiveRouter({ studentClassNames }) {
                 },
             });
             await db.save();
-            // Os arquivos das entregas voltam para data/entregas (sem sobrescrever).
-            await assignmentLifecycle.restoreCourseAssignmentFiles(path.basename(directory));
+            // Os arquivos das entregas voltam para data/entregas (sem sobrescrever). O que não
+            // voltar vai para a lixeira de arquivos antes de o pacote sair (não fica perdido).
+            await assignmentLifecycle.restoreCourseAssignmentFiles(path.basename(directory), { deletedBy: matchedAdmin.email || 'admin' });
             try { fs.rmSync(directory, { recursive: true, force: true }); } catch (error) {}
             res.json({ success: true, course });
         });

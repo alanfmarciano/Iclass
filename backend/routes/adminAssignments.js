@@ -137,6 +137,8 @@ const MESSAGES = Object.freeze({
     submissionNotFound: 'Entrega não encontrada nesta tarefa.',
     fileNotFound: 'Arquivo não encontrado nesta tarefa.',
     fileMissing: 'Este arquivo não está mais no computador. Se houver cópia no destino externo do backup, ele pode ser trazido de volta em Sistema.',
+    // Anonimização do aluno (C10, D14): o arquivo saiu de propósito, não sumiu.
+    fileRemoved: 'Este arquivo foi tirado da entrega quando o cadastro do aluno foi anonimizado (proteção de dados). Ele foi para a lixeira de arquivos, que só o administrador vê.',
     readFailed: 'Não foi possível ler o arquivo agora. Tente de novo em alguns segundos.',
     exportFailed: 'Não foi possível montar o ZIP das entregas agora. Tente de novo em alguns segundos.',
     gradeRequired: 'Informe a nota (de 0 a 10).',
@@ -883,8 +885,10 @@ function presentAdminSubmission(task, raw, student = null) {
                 ext: file.ext,
                 category: file.category,
                 comprovante: assignments.fileReceiptCode(file),
-                preview: assignmentFiles.previewKind(file),
+                preview: file.removedAt ? null : assignmentFiles.previewKind(file),
                 missing: !assignmentFiles.storedFileExists(file),
+                // Tirado na anonimização do aluno (C10): a tela diz isso, não "sumiu".
+                removed: !!file.removedAt,
             })),
         })),
         grade: presentGrade(sub.grade),
@@ -1212,6 +1216,7 @@ function createAdminAssignmentsRouter() {
             });
         }
         if (!file) return sendFieldError(res, MESSAGES.fileNotFound, null, { status: 404 });
+        if (file.removedAt) return sendFieldError(res, MESSAGES.fileRemoved, null, { status: 410, code: 'file_removed' });
         return assignmentFiles.sendStoredFile(res, file, {
             inline: String((req.query && req.query.inline) || '') === '1',
             missingMessage: MESSAGES.fileMissing,

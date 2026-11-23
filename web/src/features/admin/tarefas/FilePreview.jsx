@@ -52,7 +52,9 @@ export function fileUrl(base, file, { inline = false } = {}) {
 
 export function FilePreview({ base, file }) {
   const ext = extOf(file)
-  const kind = file?.missing ? null : file?.preview
+  // Fora do computador: sumiu (missing) ou foi tirado na anonimização do aluno (removed).
+  const gone = !!(file?.missing || file?.removed)
+  const kind = gone ? null : file?.preview
   const imageType = kind === 'image' ? IMAGE_TYPES[ext] : null
   const [state, setState] = useState({ status: 'idle', url: '', text: '', error: '' })
   const [downloading, setDownloading] = useState(false)
@@ -152,13 +154,16 @@ export function FilePreview({ base, file }) {
         </div>
         <div className="flex flex-wrap gap-2">
           {kind === 'pdf' && <Button size="sm" variant="secondary" icon={ExternalLink} className={TOUCH} onClick={openPdf} aria-label={`Abrir ${name} em outra aba`}>Abrir</Button>}
-          {!file?.missing && <Button size="sm" variant="secondary" icon={Download} className={TOUCH} loading={downloading} onClick={download} aria-label={`Baixar ${name}`}>Baixar</Button>}
+          {!gone && <Button size="sm" variant="secondary" icon={Download} className={TOUCH} loading={downloading} onClick={download} aria-label={`Baixar ${name}`}>Baixar</Button>}
         </div>
       </div>
-      {file?.missing && (
+      {file?.removed && (
+        <p role="status" className="text-sm text-muted">Este arquivo foi tirado da entrega quando o cadastro do aluno foi anonimizado (proteção de dados).</p>
+      )}
+      {file?.missing && !file?.removed && (
         <p role="status" className="text-sm text-warning">Este arquivo não está mais no computador. Se houver cópia no destino externo do backup, ele pode ser trazido de volta em Sistema.</p>
       )}
-      {!file?.missing && kind === null && (
+      {!gone && kind === null && (
         <p className="text-xs text-muted">{ext === '.heic' || ext === '.heif' ? 'Foto HEIC (do iPhone) não tem prévia no navegador: baixe para abrir.' : 'Sem prévia para este tipo de arquivo: baixe para abrir.'}</p>
       )}
       {state.status === 'loading' && <p className="text-xs text-muted" aria-live="polite">Carregando a prévia...</p>}

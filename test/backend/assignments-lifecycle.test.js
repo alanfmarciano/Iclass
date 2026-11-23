@@ -28,6 +28,7 @@ const assignmentLifecycle = require('../../backend/utils/assignmentLifecycle.js'
 const studentData = require('../../backend/utils/studentDataHandlers.js');
 const fileStore = require('../../backend/utils/storage.js');
 const { studentEmailOwnership } = require('../../backend/utils/gradebook.js');
+const { recordAudit } = require('../../backend/utils/audit.js');
 const { createAdminSession, createStudentSession } = require('../../backend/utils/authSessions.js');
 const { createApp } = require('../../backend/server.js');
 
@@ -487,4 +488,232 @@ test('lápides: nunca repetem o fileId (o backup recusa chave repetida) e só ac
     assert.equal(assignmentLifecycle.addFileTombstones(db.memory, files, { reason: 'apagar_aluno', at: 2 }), 0);
     assert.equal(db.memory.assignmentFileTombstones.length, 1);
     assert.throws(() => assignmentLifecycle.addFileTombstones(db.memory, files, { reason: 'qualquer' }), /motivo/);
+});
+
+// ------------------------------------------------------------ ajuste 1 do C10
+// Data civil daqui a n dias no fuso da escola (o formulário de prorrogação manda data e hora).
+function civilDate(daysAhead) {
+    const parts = new Intl.DateTimeFormat('en-CA', { timeZone: 'America/Sao_Paulo', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(Date.now() + daysAhead * DAY));
+    return parts;
+}
+
+// A Bia ganha, pelas rotas do professor, o texto livre que a auditoria guarda: comentário
+// devolvido e trocado depois (só o comentário), prorrogação com motivo e entrega em mãos
+// com observação. Depois ela fica encerrada (para anonimizar ou apagar).
+async function biaWithAuditText() {
+    const seeded = seedDeliveries();
+    const { task1, task2 } = seeded;
+    let res = await asAdmin(request(app).post(`/api/admin/assignments/${task1.id}/grade`)).send({ studentEmail: BIA, action: 'devolver', grade: '9', comment: 'MARCA-CMT1 ótimo trabalho', version: 1 });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    res = await asAdmin(request(app).post(`/api/admin/assignments/${task1.id}/grade`)).send({ studentEmail: BIA, action: 'devolver', comment: 'MARCA-CMT2 comentário trocado', reason: 'MARCA-MOTIVO ajuste do comentário' });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(audits('assignment_grade_changed').length, 1);
+    res = await asAdmin(request(app).post(`/api/admin/assignments/${task2.id}/extension`)).send({ studentEmail: BIA, dueDate: civilDate(6), dueTime: '23:00', reason: 'MARCA-EXT atestado médico da Bia' });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    res = await asAdmin(request(app).post(`/api/admin/assignments/${task2.id}/manual-entry`)).send({ studentEmail: BIA, note: 'MARCA-NOTA entregou o caderno' });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    const markers = ['MARCA-CMT1', 'MARCA-CMT2', 'MARCA-MOTIVO', 'MARCA-EXT', 'MARCA-NOTA'];
+    const auditText = JSON.stringify(db.memory.auditLogs);
+    markers.forEach(marker => assert.equal(auditText.includes(marker), true, `a rota gravou ${marker}`));
+    const bia = db.memory.students.find(item => item.email === BIA);
+    bia.status = 'Transferido';
+    bia.statusChangedAt = Date.now() - HOUR;
+    return { ...seeded, markers };
+}
+
+for (const mode of ['anonimizar', 'apagar de vez']) {
+    test(`[UC-ENCERRADOS-002] ${mode}: o comentário do professor, a observação da entrega em mãos e os motivos saem também da auditoria`, async () => {
+        const { markers, biaSub } = await biaWithAuditText();
+        // Entradas de entrega que não são da Bia (nenhuma hoje, mas uma da Ana para conferir).
+        recordAudit(db.memory, { actor: 'adm@ciclo.local', action: 'assignment_extension_granted', category: 'assignment', studentEmail: ANA, submissionId: 'asub_1_aaaaaa', field: 'Prazo da tarefa', oldValue: 'a', newValue: 'b', reason: 'Motivo da Ana fica', details: { note: 'x' } });
+        const othersBefore = JSON.stringify(db.memory.auditLogs.filter(entry => entry.submissionId === 'asub_1_aaaaaa'));
+        const res = mode === 'anonimizar' ? await anonymize(BIA) : await purge(BIA);
+        assert.equal(res.status, 200, JSON.stringify(res.body));
+        const auditText = JSON.stringify(db.memory.auditLogs);
+        markers.forEach(marker => assert.equal(auditText.includes(marker), false, marker));
+        // A entrada fica: a ação, o campo, a nota e o prazo continuam no histórico.
+        const changed = audits('assignment_grade_changed')[0];
+        assert.equal(changed.field, 'Comentário da tarefa');
+        assert.equal(changed.oldValue, '(texto removido)');
+        assert.equal(changed.newValue, '(texto removido)');
+        assert.equal(changed.reason, undefined);
+        const returned = audits('assignment_grade_returned').find(entry => entry.submissionId === biaSub.id);
+        assert.equal(returned.newValue, '9,0');
+        const extension = audits('assignment_extension_granted')[0];
+        assert.equal(extension.reason, undefined);
+        assert.equal(extension.field, 'Prazo da tarefa');
+        assert.equal(extension.details.closeAt === null || extension.details.closeAt > 0, true);
+        assert.equal(audits('assignment_manual_entry')[0].details.note, '(texto removido)');
+        // O que não é da Bia não mudou (a entrada da Ana continua como estava).
+        assert.equal(JSON.stringify(db.memory.auditLogs.filter(entry => entry.submissionId === 'asub_1_aaaaaa')), othersBefore);
+    });
+}
+
+// Bia em duas turmas: o curso do ciclo sai de vez e ela continua cadastrada (pelo outro
+// curso), com a entrega dela dentro do pacote.
+async function purgeCourseKeepingBia() {
+    const seeded = seedDeliveries();
+    const bia = db.memory.students.find(item => item.email === BIA);
+    bia.classes = [{ name: CLASS, courseId: COURSE }, { name: '2OUT', courseId: OTHER_COURSE }];
+    const res = await asAdmin(request(app).post(`/api/admin/courses/${COURSE}/purge`)).send({});
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.ok(db.memory.students.some(item => item.email === BIA));
+    const folder = res.body.folder;
+    const bundleFile = path.join(runtimePaths.ARCHIVE_DIR, folder, 'curso.json');
+    const archivedAbs = file => path.join(runtimePaths.ASSIGNMENT_FILES_DIR, '_cursos_arquivados', folder, ...file.storedRel.split('/').slice(1));
+    filesOf(seeded.biaSub).forEach(file => assert.equal(fs.existsSync(archivedAbs(file)), true));
+    return { ...seeded, folder, bundleFile, archivedAbs, readBundle: () => JSON.parse(fs.readFileSync(bundleFile, 'utf8')) };
+}
+
+for (const mode of ['anonimizar', 'apagar de vez']) {
+    test(`[UC-CURSO-001] ${mode} com o curso excluído de vez: a entrega dela no pacote e os arquivos em _cursos_arquivados também saem; restaurar o curso não traz nada de volta`, async () => {
+        const { biaSub, anaSub, folder, archivedAbs, readBundle } = await purgeCourseKeepingBia();
+        const bia = db.memory.students.find(item => item.email === BIA);
+        bia.status = 'Transferido';
+        bia.statusChangedAt = Date.now() - HOUR;
+        const biaFiles = filesOf(biaSub);
+        const res = mode === 'anonimizar' ? await anonymize(BIA) : await purge(BIA);
+        assert.equal(res.status, 200, JSON.stringify(res.body));
+        const bundle = readBundle();
+        const row = bundle.assignmentSubmissions.find(item => item.id === biaSub.id);
+        if (mode === 'anonimizar') {
+            assert.equal(row.studentEmail, res.body.email);
+            assert.equal(row.studentId, null);
+            assert.equal(row.anonymized, true);
+            assert.equal(row.versions[0].text, '');
+            assert.equal(row.grade.comment, '');
+            assert.equal(row.grade.finalScore, 90);
+            assert.deepEqual(row.versions[0].files.map(file => file.originalName), ['arquivo-1.pdf']);
+        } else {
+            assert.equal(row, undefined);
+        }
+        const bundleText = JSON.stringify(bundle.assignmentSubmissions);
+        ['bia@ciclo.local', 'Da Bia.', 'bia.pdf', 'Ótimo, ainda não devolvi'].forEach(piece => assert.equal(bundleText.includes(piece), false, piece));
+        // Os da Ana (que saiu com o curso) continuam no pacote, intactos.
+        assert.equal(bundle.assignmentSubmissions.filter(item => item.studentEmail === ANA).length, 2);
+        filesOf(anaSub).forEach(file => assert.equal(fs.existsSync(archivedAbs(file)), true));
+        // Arquivos dela: fora de _cursos_arquivados, na lixeira só do administrador, com lápide.
+        biaFiles.forEach(file => assert.equal(fs.existsSync(archivedAbs(file)), false));
+        const trash = fileStore.listTrash().filter(item => item.name === biaSub.id);
+        assert.equal(trash.length, 1);
+        assert.match(trash[0].originalRel, new RegExp(`^entregas/_cursos_arquivados/${folder}/`));
+        assert.equal(fileStore.isAdminOnlyTrashEntry(trash[0]), true);
+        const stones = db.memory.assignmentFileTombstones.filter(item => biaFiles.some(file => file.id === item.fileId));
+        assert.equal(stones.length, biaFiles.length);
+        stones.forEach(stone => {
+            assert.equal(stone.reason, mode === 'anonimizar' ? 'anonimizar' : 'apagar_aluno');
+            assert.equal(stone.archivedRel, `entregas/_cursos_arquivados/${folder}/${stone.storedRel.slice('entregas/'.length)}`);
+        });
+
+        // Restaurar o curso: a entrega dela volta só como está no pacote (sem dado pessoal).
+        const restored = await asAdmin(request(app).post('/api/admin/archived-courses/restore')).send({ folder });
+        assert.equal(restored.status, 200, JSON.stringify(restored.body));
+        const back = JSON.stringify(db.memory.assignmentSubmissions);
+        ['bia@ciclo.local', 'Da Bia.', 'bia.pdf', 'Ótimo, ainda não devolvi'].forEach(piece => assert.equal(back.includes(piece), false, piece));
+        assert.equal(db.memory.assignmentSubmissions.some(item => item.id === biaSub.id), mode === 'anonimizar');
+        filesOf(anaSub).forEach(file => assert.equal(onDisk(file), true));
+        biaFiles.forEach(file => assert.equal(onDisk(file), false));
+    });
+}
+
+test('[UC-CURSO-001] troca de e-mail com o curso excluído: restaurar o curso liga a entrega ao e-mail de hoje do aluno', async () => {
+    const { task1, biaSub, folder } = await purgeCourseKeepingBia();
+    const res = await asAdmin(request(app).post('/api/admin/student/update')).send({ originalEmail: BIA, email: 'bia.nova@ciclo.local', name: 'Bia Rocha', studentClass: '2OUT', classes: [{ name: '2OUT', courseId: OTHER_COURSE }] });
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    const restored = await asAdmin(request(app).post('/api/admin/archived-courses/restore')).send({ folder });
+    assert.equal(restored.status, 200, JSON.stringify(restored.body));
+    const sub = db.memory.assignmentSubmissions.find(item => item.id === biaSub.id);
+    assert.equal(sub.studentEmail, 'bia.nova@ciclo.local');
+    assert.equal(sub.studentId, 'alu_00000000000000b2');
+    assert.equal(assignments.findSubmission(db.memory, task1.id, 'bia.nova@ciclo.local').id, biaSub.id);
+    // A da Ana (que saiu com o curso e voltou com ele) continua no e-mail dela.
+    assert.equal(db.memory.assignmentSubmissions.filter(item => item.studentEmail === ANA).length, 2);
+});
+
+test('[UC-CURSO-001] restaurar o curso com arquivo que não volta ao lugar: a sobra vai para a lixeira de arquivos (não fica perdida em _cursos_arquivados)', async () => {
+    const { biaSub, folder } = await purgeCourseKeepingBia();
+    // Já há um arquivo com o mesmo nome no destino (a volta não sobrescreve).
+    const file = filesOf(biaSub)[0];
+    const dest = path.join(runtimePaths.DATA_DIR, ...file.storedRel.split('/'));
+    fs.mkdirSync(path.dirname(dest), { recursive: true });
+    fs.writeFileSync(dest, PDF);
+    const restored = await asAdmin(request(app).post('/api/admin/archived-courses/restore')).send({ folder });
+    assert.equal(restored.status, 200, JSON.stringify(restored.body));
+    assert.equal(fs.existsSync(path.join(runtimePaths.ASSIGNMENT_FILES_DIR, '_cursos_arquivados', folder)), false);
+    assert.equal(fs.existsSync(path.join(runtimePaths.ARCHIVE_DIR, folder)), false);
+    const trash = fileStore.listTrash().filter(item => item.originalRel === `entregas/_cursos_arquivados/${folder}`);
+    assert.equal(trash.length, 1);
+    assert.equal(fileStore.isAdminOnlyTrashEntry(trash[0]), true);
+    assert.equal(trash[0].size > 0, true);
+    assert.equal(onDisk(file), true);
+});
+
+test('[UC-LGPD-010] Meus dados do aluno com pedido para refazer: o comentário que o portal mostra vem junto; a nota não', async () => {
+    const task = addTask({ title: 'Refazer' });
+    addSubmission(task, BIA, [{ files: [['r.pdf', PDF]] }], {
+        status: 'refazer',
+        grade: { score: 40, penaltyPct: 0, finalScore: 40, comment: 'REFAZER: falta a conclusão', versionGraded: 1, gradedBy: 'adm@ciclo.local', gradedAt: Date.now(), penaltyWaived: false },
+        returnedAt: null,
+    });
+    const res = await asStudent(BIA, request(app).get('/api/student/my-data?finalidade=baixar'));
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    const row = res.body.tarefas.find(item => item.assignmentId === task.id);
+    assert.equal(row.situacao, 'Refazer');
+    assert.equal(row.comentario, 'REFAZER: falta a conclusão');
+    assert.equal(row.nota, null);
+    assert.equal(row.notaFinal, null);
+    // O portal mostra o mesmo comentário (Atividades).
+    const portal = await asStudent(BIA, request(app).get(`/api/student/assignments/${task.id}`));
+    assert.equal(portal.status, 200, JSON.stringify(portal.body));
+    assert.equal(JSON.stringify(portal.body).includes('REFAZER: falta a conclusão'), true);
+});
+
+test('[UC-ENCERRADOS-002] arquivo tirado na anonimização: o painel diz que foi removido (410 file_removed), não que sumiu', async () => {
+    const { task1, anaSub } = seedDeliveries();
+    const res = await anonymize(ANA);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    const file = filesOf(anaSub)[0];
+    const download = await asAdmin(request(app).get(`/api/admin/assignments/${task1.id}/files/${file.id}`));
+    assert.equal(download.status, 410);
+    assert.equal(download.body.code, 'file_removed');
+    assert.match(download.body.error, /anonimizado/);
+    assert.doesNotMatch(download.body.error, /destino externo/);
+    const detail = await asAdmin(request(app).get(`/api/admin/assignments/${task1.id}/submissions/${anaSub.id}`));
+    assert.equal(detail.status, 200, JSON.stringify(detail.body));
+    const files = detail.body.submission.versions.flatMap(version => version.files);
+    assert.ok(files.length > 0);
+    files.forEach(item => {
+        assert.equal(item.removed, true);
+        assert.equal(item.preview, null);
+    });
+});
+
+test('[UC-ENCERRADOS-002] a gravação do banco falha: nenhum arquivo sai do lugar nem o pacote do curso muda', async () => {
+    const { anaSub } = seedDeliveries();
+    const failing = { memory: db.memory, keystrokes: db.keystrokes, save: () => Promise.reject(new Error('disco cheio de propósito')) };
+    const studentLifecycle = require('../../backend/utils/studentLifecycle.js');
+    await assert.rejects(studentLifecycle.runStudentLifecycle(failing, { mode: 'anonymize', email: ANA, actor: 'adm@ciclo.local', reason: 'Pedido da família' }), /disco cheio/);
+    filesOf(anaSub).forEach(file => assert.equal(onDisk(file), true, file.storedRel));
+    assert.equal(fileStore.listTrash().filter(item => /^entregas\//.test(item.originalRel)).length, 0);
+});
+
+test('[UC-FUNDACAO-003] o handler das entregas vale fora das rotas (backup-cli): o registro já o traz ao ser consultado', () => {
+    const { spawnSync } = require('node:child_process');
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'iclass-handlers-cli-'));
+    try {
+        const script = `
+            const B = ${JSON.stringify(path.join(__dirname, '..', '..', 'backend'))} + '/';
+            require(B + 'utils/schemaMigrations.js');
+            require(B + 'utils/backup.js');
+            require(B + 'database.js');
+            const h = require(B + 'utils/studentDataHandlers.js');
+            process.stdout.write(JSON.stringify(h.studentDataHandlers().map(x => x.collection)));
+        `;
+        const env = { ...process.env, ICLASS_DATA_DIR: path.join(dir, 'data'), ICLASS_CONTENT_DIR: path.join(dir, 'content'), ICLASS_ARCHIVE_DIR: path.join(dir, 'arch') };
+        const out = spawnSync(process.execPath, ['-e', script], { env, encoding: 'utf8', timeout: 30000 });
+        assert.equal(out.status, 0, out.stderr);
+        assert.ok(JSON.parse(out.stdout).includes('assignmentSubmissions'), out.stdout);
+    } finally {
+        fs.rmSync(dir, { recursive: true, force: true });
+    }
 });

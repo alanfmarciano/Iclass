@@ -453,6 +453,9 @@ const MAY_ALTER = {
     'backend/database.js': '*',
     'backend/utils/gradebook.js': ['anonymizeStudentAuditTrail'],
     'backend/routes/admin.js': ['renameStudentEmailEverywhere'],
+    // Anonimizar e apagar de vez o aluno (C10): tira o texto livre das entradas das
+    // entregas de tarefa dele, como anonymizeStudentAuditTrail faz com nome e e-mail.
+    'backend/utils/assignmentLifecycle.js': ['scrubSubmissionAuditText'],
 };
 // Onde entra entrada sem o recordAudit: o próprio audit.js, a carga do banco e a
 // restauração (backup.js, que junta a trilha do backup com a atual por mergeAuditTrails).

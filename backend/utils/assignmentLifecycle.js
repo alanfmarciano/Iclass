@@ -13,16 +13,22 @@
 //   e o nome original dos arquivos (fica 'arquivo-1.pdf'). Os arquivos vão para a lixeira
 //   de arquivos (só o administrador vê; a pasta da entrega tem nome de id, sem nada da
 //   pessoa) e cada um ganha uma lápide (assignmentFileTombstones, reason 'anonimizar'),
-//   que o espelho no destino externo (C11) usa para apagar a cópia de lá;
-// - apagar de vez: a linha sai; arquivos para a lixeira com lápide ('apagar_aluno');
+//   que o espelho no destino externo (C11) usa para apagar a cópia de lá. Na auditoria,
+//   as entradas das entregas dele perdem o mesmo texto livre (comentário, observação da
+//   entrega em mãos e motivos; scrubSubmissionAuditText);
+// - apagar de vez: a linha sai; arquivos para a lixeira com lápide ('apagar_aluno'); a
+//   auditoria perde o texto livre como no anonimizar;
+// - curso excluído de vez: anonimizar e apagar alcançam também as entregas dele que estão
+//   no pacote do curso (curso.json regravado) e os arquivos delas em _cursos_arquivados
+//   (lixeira e lápide com archivedRel), para restaurar o curso não trazer nada de volta;
 // - trocar o e-mail: studentEmail das entregas acompanha;
 // - Meus dados: seção 'tarefas'. O aluno vê o que vê no portal (versões com nome, tamanho,
 //   data, atraso e comprovante; nota e comentário só depois de devolvida); o
 //   administrador vê tudo, inclusive a correção ainda não devolvida e o IP do envio;
 // - contagem 'Trabalhos entregues' (entregas com envio, entrega em mãos ou nota).
-// Os arquivos só saem do lugar depois que todos os handlers do passo deram certo
-// (efeito devolvido ao applyCascade): falha de um handler não deixa arquivo na lixeira
-// com o registro intacto.
+// Os arquivos só saem do lugar (e o pacote só é regravado) depois que todos os handlers
+// do passo deram certo e a gravação do banco terminou (efeito devolvido ao applyCascade):
+// falha de um handler ou da gravação não deixa arquivo na lixeira com o registro intacto.
 //
 // Curso excluído de vez (adminArchive.js, D14): as tarefas e as entregas vão para o pacote
 // do curso (cursos_arquivados/<pasta>/curso.json, que vai nos backups) e os arquivos
@@ -39,7 +45,7 @@ const assignmentFiles = require('./assignmentFiles.js');
 const fileStore = require('./storage.js');
 const { renameWithRetry } = require('./backupArchive.js');
 const { logError } = require('./errorLog.js');
-const { assertSafeId } = require('./safePath.js');
+const { assertSafeId, assertInside, resolveInside } = require('./safePath.js');
 const { normalizeEmail } = require('./students.js');
 const { registerStudentDataHandler, relinkRecordsByEmail, mergeOwnedRecords } = require('./studentDataHandlers.js');
 
@@ -140,12 +146,13 @@ function removeEmptyDirs(dir, stopAt = runtimePaths.ASSIGNMENT_FILES_DIR) {
 // todos da lista vai inteira (um item na lixeira por entrega, com o nome de id dela);
 // se houver nela arquivo de fora da lista, vão só os da lista. Nada aqui lança: o que
 // não sai fica no lugar (e o registro já não aponta para ele com nome da pessoa).
-// Devolve quantos arquivos foram para a lixeira.
-function moveFilesToTrash(files, { deletedBy } = {}) {
+// resolve(file) dá o caminho no disco (padrão: o de data/entregas pelo storedRel; o do
+// pacote de curso excluído usa archivedAbsFor). Devolve quantos arquivos foram.
+function moveFilesToTrash(files, { deletedBy, resolve = file => assignmentFiles.absFromStoredRel(file && file.storedRel) } = {}) {
     const byDir = new Map();
     list(files).forEach(file => {
         let abs;
-        try { abs = assignmentFiles.absFromStoredRel(file && file.storedRel); } catch (e) { return; }
+        try { abs = resolve(file); } catch (e) { return; }
         const dir = path.dirname(abs);
         if (!byDir.has(dir)) byDir.set(dir, new Set());
         byDir.get(dir).add(abs);
@@ -212,6 +219,135 @@ function anonymizedSubmissionRow(raw, pseudonimo, at) {
         next.mergedFrom = raw.mergedFrom.map(item => (isObject(item) ? { ...item, studentEmail: null, studentId: null } : item));
     }
     return next;
+}
+
+// ------------------------------------------------------------ auditoria (D14)
+// O texto livre que as rotas das tarefas guardam na auditoria sobre a entrega do aluno: o
+// comentário do professor (assignment_grade_changed só do comentário, até 300
+// caracteres), a observação da entrega em mãos (assignment_manual_entry details.note) e
+// o motivo (prorrogação, nota alterada depois de devolvida, pedido para refazer). No
+// anonimizar e no apagar de vez ele sai das entradas das entregas do aluno (pelo id da
+// entrega: o e-mail delas já foi trocado por anonymizeStudentAuditTrail); a entrada fica, com
+// a ação, a data, quem fez, as notas e os prazos. Devolve quantas entradas mudaram.
+const AUDIT_TEXT_REMOVED = '(texto removido)';
+function scrubSubmissionAuditText(memory, submissionIds) {
+    const ids = new Set(list(submissionIds).filter(id => typeof id === 'string' && id));
+    if (!ids.size || !Array.isArray(memory.auditLogs)) return 0;
+    let changed = 0;
+    memory.auditLogs.forEach((entry, index) => {
+        if (!isObject(entry) || !ids.has(entry.submissionId) || !/^assignment_/.test(String(entry.action || ''))) return;
+        const next = { ...entry };
+        if (next.reason !== undefined) delete next.reason;
+        if (next.field === 'Comentário da tarefa') {
+            if (next.oldValue !== undefined) next.oldValue = AUDIT_TEXT_REMOVED;
+            if (next.newValue !== undefined) next.newValue = AUDIT_TEXT_REMOVED;
+        }
+        if (isObject(next.details) && typeof next.details.note === 'string' && next.details.note) {
+            next.details = { ...next.details, note: AUDIT_TEXT_REMOVED };
+        }
+        if (JSON.stringify(next) === JSON.stringify(entry)) return;
+        memory.auditLogs[index] = next;
+        changed += 1;
+    });
+    return changed;
+}
+
+// ------------------------------------------------------------ pacotes de curso excluído
+// Entregas do aluno nos pacotes dos cursos excluídos de vez (cursos_arquivados/<pasta>/
+// curso.json, desde o C10) e os arquivos delas em data/entregas/_cursos_arquivados/<pasta>.
+// Sem isto, anonimizar ou apagar o aluno com o curso excluído deixava o texto, o link, o
+// e-mail e os nomes dos arquivos no pacote (e restaurar o curso trazia tudo de volta), e
+// os arquivos fora da lixeira e sem lápide (o espelho os guardaria para sempre).
+// Leitura no passo da memória (o pacote ilegível fica de fora, com o erro no crash.log);
+// a regravação do pacote e os arquivos saem depois de gravar (efeito devolvido).
+function readArchivedBundles() {
+    const out = [];
+    let entries = [];
+    try { entries = fs.readdirSync(runtimePaths.ARCHIVE_DIR, { withFileTypes: true }); } catch (e) { return out; }
+    entries.forEach(entry => {
+        if (!entry.isDirectory()) return;
+        let folder;
+        try { folder = assertSafeId(entry.name); } catch (e) { return; }
+        const file = path.join(runtimePaths.ARCHIVE_DIR, folder, 'curso.json');
+        if (!fs.existsSync(file)) return;
+        let bundle;
+        try { bundle = JSON.parse(fs.readFileSync(file, 'utf8')); } catch (error) {
+            logError(`assignmentLifecycle: pacote de curso excluído ilegível (${folder})`, error);
+            return;
+        }
+        if (!isObject(bundle) || !Array.isArray(bundle.assignmentSubmissions) || !bundle.assignmentSubmissions.length) return;
+        out.push({ folder, file, bundle });
+    });
+    return out;
+}
+
+// O caminho do arquivo de uma entrega dentro do pacote: 'entregas/<tarefa>/<entrega>/<id>'
+// vira data/entregas/_cursos_arquivados/<pasta>/<tarefa>/<entrega>/<id> (relativo a data,
+// para a lápide: archivedRel; absoluto, para a lixeira: archivedAbsFor).
+function archivedRelFor(folderName, storedRel) {
+    const rel = String(storedRel || '').split('\\').join('/');
+    return rel.startsWith('entregas/') ? `entregas/${COURSE_ARCHIVE_SEGMENT}/${folderName}/${rel.slice('entregas/'.length).split('/').slice(0, 3).join('/')}` : '';
+}
+
+function archivedAbsFor(folderName, storedRel) {
+    const rel = archivedRelFor(folderName, storedRel);
+    if (!rel) throw new Error('Caminho de arquivo de entrega inválido.');
+    const abs = resolveInside(runtimePaths.DATA_DIR, rel.split('/').join(path.sep));
+    return assertInside(courseArchiveFolder(folderName), abs);
+}
+
+// Regrava o curso.json do pacote (arquivo temporário e troca; se a troca falhar, por
+// cima). Lança se não conseguir (quem chama registra no crash.log).
+function writeBundle(file, bundle) {
+    const text = JSON.stringify(bundle, null, 2);
+    const temporary = `${file}.${process.pid}.${Date.now()}.tmp`;
+    try {
+        fs.writeFileSync(temporary, text);
+        fs.renameSync(temporary, file);
+    } catch (error) {
+        try { fs.rmSync(temporary, { force: true }); } catch (e) { /* já saiu */ }
+        fs.writeFileSync(file, text);
+    }
+}
+
+// As entregas do aluno nos pacotes: mode 'anonymize' troca a linha pela anonimizada,
+// 'purge' tira a linha. Grava as lápides na memória e devolve { ids, effect }: os ids das
+// entregas (para limpar a auditoria) e o efeito em disco (pacote regravado, arquivos do
+// pacote e os que ficaram em data/entregas para a lixeira), ou null sem nada a fazer.
+function archivedBundleChanges(memory, aluno, { mode, pseudonimo, at }) {
+    const isHis = ownedBy(aluno);
+    const reason = mode === 'anonymize' ? 'anonimizar' : 'apagar_aluno';
+    const ids = [];
+    const jobs = [];
+    readArchivedBundles().forEach(({ folder, file, bundle }) => {
+        const files = [];
+        let touched = false;
+        const rows = [];
+        bundle.assignmentSubmissions.forEach(sub => {
+            if (!isHis(sub)) { rows.push(sub); return; }
+            touched = true;
+            if (typeof sub.id === 'string') ids.push(sub.id);
+            files.push(...submissionFiles(sub));
+            if (mode === 'anonymize') rows.push(anonymizedSubmissionRow(sub, pseudonimo, at));
+        });
+        if (!touched) return;
+        addFileTombstones(memory, files, { reason, at, extra: item => ({ archivedRel: archivedRelFor(folder, item.storedRel) }) });
+        jobs.push({ folder, file, bundle: { ...bundle, assignmentSubmissions: rows }, files });
+    });
+    if (!jobs.length) return { ids, effect: null };
+    const effect = ({ deletedBy } = {}) => {
+        jobs.forEach(job => {
+            try {
+                writeBundle(job.file, job.bundle);
+            } catch (error) {
+                logError(`assignmentLifecycle: pacote do curso excluído não foi regravado (${job.folder})`, error);
+            }
+            moveFilesToTrash(job.files, { deletedBy, resolve: item => archivedAbsFor(job.folder, item.storedRel) });
+            // O que ficou em data/entregas (o arquivamento não tinha conseguido mover).
+            moveFilesToTrash(job.files, { deletedBy });
+        });
+    };
+    return { ids, effect };
 }
 
 // ------------------------------------------------------------ Meus dados
@@ -285,7 +421,9 @@ function exportRow(memory, raw, audience) {
         nota: grade ? grade.score : null,
         descontoPct: grade ? grade.penaltyPct : null,
         notaFinal: grade ? grade.finalScore : null,
-        comentario: grade ? grade.comment : '',
+        // O comentário do pedido para refazer o aluno já lê no portal (presentRedo de
+        // studentAssignments.js); a nota continua escondida até a devolução.
+        comentario: grade ? grade.comment : (sub.status === 'refazer' && sub.grade ? sub.grade.comment : ''),
         devolvidaEm: returned ? iso(sub.returnedAt) : null,
     };
     if (audience === 'admin') {
@@ -373,25 +511,39 @@ registerStudentDataHandler({
         const isHis = ownedBy(aluno);
         const at = Date.now();
         const files = [];
+        const ids = [];
         memory.assignmentSubmissions = list(memory.assignmentSubmissions).map(sub => {
             if (!isHis(sub)) return sub;
+            if (typeof sub.id === 'string') ids.push(sub.id);
             files.push(...submissionFiles(sub));
             return anonymizedSubmissionRow(sub, pseudonimo, at);
         });
         addFileTombstones(memory, files, { reason: 'anonimizar', at });
-        return files.length ? ({ deletedBy } = {}) => moveFilesToTrash(files, { deletedBy }) : undefined;
+        const archived = archivedBundleChanges(memory, aluno, { mode: 'anonymize', pseudonimo, at });
+        scrubSubmissionAuditText(memory, [...ids, ...archived.ids]);
+        return [
+            files.length ? ({ deletedBy } = {}) => moveFilesToTrash(files, { deletedBy }) : null,
+            archived.effect,
+        ];
     },
     purge(memory, aluno) {
         const isHis = ownedBy(aluno);
         const at = Date.now();
         const files = [];
+        const ids = [];
         memory.assignmentSubmissions = list(memory.assignmentSubmissions).filter(sub => {
             if (!isHis(sub)) return true;
+            if (typeof sub.id === 'string') ids.push(sub.id);
             files.push(...submissionFiles(sub));
             return false;
         });
         addFileTombstones(memory, files, { reason: 'apagar_aluno', at });
-        return files.length ? ({ deletedBy } = {}) => moveFilesToTrash(files, { deletedBy }) : undefined;
+        const archived = archivedBundleChanges(memory, aluno, { mode: 'purge', at });
+        scrubSubmissionAuditText(memory, [...ids, ...archived.ids]);
+        return [
+            files.length ? ({ deletedBy } = {}) => moveFilesToTrash(files, { deletedBy }) : null,
+            archived.effect,
+        ];
     },
     merge(memory, fica, sai) {
         mergeSubmissions(memory, fica, sai);
@@ -516,9 +668,12 @@ async function archiveCourseAssignmentFiles(assignmentIds, folderName, { rename 
 }
 
 // Restaurar o curso: os arquivos voltam para data/entregas/<tarefa>, sem sobrescrever.
-// Nunca lança; o que não voltou fica em _cursos_arquivados (crash.log).
-async function restoreCourseAssignmentFiles(folderName, { rename = renameWithRetry } = {}) {
-    const out = { arquivos: 0, falhas: 0 };
+// Nunca lança. O que não voltou (troca de lugar recusada pelo sistema, ou já havia um
+// arquivo com o mesmo nome no destino) não fica perdido em _cursos_arquivados depois que
+// o pacote sai: a pasta que sobrou vai para a lixeira de arquivos (só do administrador),
+// e o aviso para o crash.log. Devolve { arquivos, falhas, naLixeira }.
+async function restoreCourseAssignmentFiles(folderName, { rename = renameWithRetry, deletedBy } = {}) {
+    const out = { arquivos: 0, falhas: 0, naLixeira: 0 };
     let base;
     try { base = courseArchiveFolder(folderName); } catch (e) { return out; }
     if (!fs.existsSync(base)) return out;
@@ -535,6 +690,13 @@ async function restoreCourseAssignmentFiles(folderName, { rename = renameWithRet
         }
     }
     removeEmptyDirs(base, COURSE_ARCHIVE_DIR);
+    if (fs.existsSync(base)) {
+        const { files: left } = countFiles(base);
+        if (left && fileStore.moveDirToTrash(base, { deletedBy })) {
+            out.naLixeira = left;
+            logError(`assignmentLifecycle: ${left} arquivo(s) de entrega do curso restaurado não voltaram ao lugar e foram para a lixeira de arquivos (${folderName})`, new Error('arquivos de entrega fora do lugar'));
+        }
+    }
     removeEmptyDirs(COURSE_ARCHIVE_DIR, runtimePaths.ASSIGNMENT_FILES_DIR);
     return out;
 }
@@ -550,11 +712,7 @@ function trashArchivedCourseAssignmentFiles(memory, folderName, bundleSubmission
     try { base = courseArchiveFolder(folderName); } catch (e) { return out; }
     const files = [];
     list(bundleSubmissions).forEach(sub => { if (isObject(sub)) files.push(...submissionFiles(sub)); });
-    const archivedRel = storedRel => {
-        const rel = String(storedRel || '').split('\\').join('/');
-        return rel.startsWith('entregas/') ? `entregas/${COURSE_ARCHIVE_SEGMENT}/${folderName}/${rel.slice('entregas/'.length).split('/').slice(0, 3).join('/')}` : '';
-    };
-    out.lapides = addFileTombstones(memory, files, { reason: 'excluir_curso', at, extra: file => ({ archivedRel: archivedRel(file.storedRel) }) });
+    out.lapides = addFileTombstones(memory, files, { reason: 'excluir_curso', at, extra: file => ({ archivedRel: archivedRelFor(folderName, file.storedRel) }) });
     if (fs.existsSync(base)) {
         const { files: count } = countFiles(base);
         if (fileStore.moveDirToTrash(base, { deletedBy })) out.arquivos += count;
@@ -568,6 +726,24 @@ function trashArchivedCourseAssignmentFiles(memory, folderName, bundleSubmission
     return out;
 }
 
+// Restaurar o curso: a entrega volta ligada ao aluno de hoje. relinkRecordsByEmail religa
+// pelo e-mail o studentId que não resolve; aqui, a entrega cujo studentId é de um aluno
+// que trocou de e-mail depois de o curso sair (a troca não alcança o pacote) passa para o
+// e-mail atual dele, para ele continuar vendo a entrega no portal. Devolve quantas mudaram.
+function followCurrentStudentEmails(memory, rows) {
+    const byId = new Map(list(memory.students).filter(student => isObject(student) && typeof student.id === 'string' && student.id).map(student => [student.id, student]));
+    let changed = 0;
+    list(rows).forEach(sub => {
+        if (!isObject(sub) || typeof sub.studentId !== 'string') return;
+        const student = byId.get(sub.studentId);
+        const email = normalizeEmail(student && student.email);
+        if (!email || email === normalizeEmail(sub.studentEmail)) return;
+        sub.studentEmail = email;
+        changed += 1;
+    });
+    return changed;
+}
+
 module.exports = {
     COLLECTION,
     TOMBSTONE_REASONS,
@@ -577,6 +753,8 @@ module.exports = {
     moveFilesToTrash,
     anonymizedSubmissionRow,
     mergeSubmissions,
+    scrubSubmissionAuditText,
+    followCurrentStudentEmails,
     courseAssignmentRecords,
     archiveCourseAssignmentFiles,
     restoreCourseAssignmentFiles,

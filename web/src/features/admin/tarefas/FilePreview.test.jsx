@@ -114,6 +114,14 @@ describe('FilePreview', () => {
     expect(mocks.fetchBlob).not.toHaveBeenCalled()
   })
 
+  it('arquivo tirado na anonimização do aluno: diz isso (não "sumiu") e sem "Baixar" nem prévia', () => {
+    render(<FilePreview base={BASE} file={{ id: 'f_7', name: 'arquivo-1.pdf', size: 10, ext: '.pdf', preview: null, missing: true, removed: true }} />)
+    expect(screen.getByRole('status')).toHaveTextContent('foi tirado da entrega quando o cadastro do aluno foi anonimizado')
+    expect(screen.queryByText(/não está mais no computador/)).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: /Baixar|Abrir/ })).not.toBeInTheDocument()
+    expect(mocks.fetchBlob).not.toHaveBeenCalled()
+  })
+
   it('endereço do arquivo codifica o id', () => {
     expect(fileUrl(BASE, { id: 'a/b' })).toBe(`${BASE}/files/a%2Fb`)
     expect(fileUrl(BASE, { id: 'f_1' }, { inline: true })).toBe(`${BASE}/files/f_1?inline=1`)

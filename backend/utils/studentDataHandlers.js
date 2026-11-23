@@ -12,10 +12,11 @@
 //   pseudonimo) e purge(memory, aluno). Rodam depois dos blocos de hoje e antes da pasta
 //   do aluno ir para a lixeira; se um handler lança erro, a memória volta inteira ao que
 //   era antes do passo (nada fica pela metade) e o pedido é recusado. Por isso o handler
-//   mexe só na memória. O que é em disco (arquivo de entrega para a lixeira, C10) o
-//   handler devolve como função (ou lista de funções): ela só roda depois que TODOS os
-//   handlers do passo deram certo, junto com a pasta do aluno indo para a lixeira; erro
-//   numa delas fica no crash.log e não desfaz o resto (a memória já está certa);
+//   mexe só na memória. O que é em disco (arquivo de entrega para a lixeira, pacote de
+//   curso excluído regravado, C10) o handler devolve como função (ou lista de funções;
+//   null fica de fora): ela só roda depois que TODOS os handlers do passo deram certo e
+//   a gravação do banco terminou (se a gravação falha, nada sai do lugar); erro numa
+//   delas fica no crash.log e não desfaz o resto (a memória já está certa);
 // - contagens (tela Cadastros encerrados, resposta e auditoria do anonimizar e do apagar,
 //   studentLifecycle.recordCounts e closedStudentRows): count(memory, aluno) => número.
 //   Com replaceCore, a contagem do handler substitui a de hoje com a mesma chave nos três
@@ -101,7 +102,22 @@ function registerStudentDataHandler(handler) {
     return () => { if (handlers.get(collection) === entry) handlers.delete(collection); };
 }
 
+// Módulos que registram o handler da sua coleção ao carregar (cada grupo no próprio
+// módulo). Entram na primeira consulta ao registro, e não só quando uma rota os carrega:
+// assim todo caminho que percorre a lista tem todos os handlers, inclusive a backup-cli,
+// que restaura sem as rotas e precisa religar as entregas (handler.relink, chamado por
+// ensureStudentIds) na mesma passada da restauração. Carga na hora da consulta (não no
+// topo) porque esses módulos dependem deste e de database.js.
+const HANDLER_MODULES = Object.freeze(['./assignmentLifecycle.js']);
+let handlerModulesLoaded = false;
+function loadHandlerModules() {
+    if (handlerModulesLoaded) return;
+    handlerModulesLoaded = true;
+    HANDLER_MODULES.forEach(name => require(name));
+}
+
 function studentDataHandlers() {
+    loadHandlerModules();
     return [...handlers.values()];
 }
 
@@ -110,7 +126,7 @@ function withFunction(name) {
 }
 
 function hasStudentDataHandlers(name) {
-    return name ? withFunction(name).length > 0 : handlers.size > 0;
+    return name ? withFunction(name).length > 0 : studentDataHandlers().length > 0;
 }
 
 // Contexto do aluno para os handlers a partir do cadastro e da posse dos e-mails.
