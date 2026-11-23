@@ -25,11 +25,17 @@ const TONE_TEXT = { success: 'text-success', warning: 'text-warning', danger: 't
 const gradeText = (g) => TONE_TEXT[tomDaNota(g, criterio, 'aluno', 'danger')]
 const isPublished = (s) => s.gradePublished === true && !Number.isNaN(Number(s.score))
 const isConsidered = (s) => s.countsTowardResult && s.resultStatus !== 'archived'
+// Avaliação manual da turma (trabalho, seminário...; id 'man_*'): o rótulo é o título
+// (examTitle), nunca o id técnico.
+const isManualKey = (key = '') => String(key).startsWith('man_')
 const shortLabel = (key = '') => key.replace(/^Avaliacao_?/i, '').replace(/_/g, ' ').slice(0, 8)
+const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
+const labelOf = (s) => (isManualKey(s.examKey) ? clip(String(s.examTitle || 'Avaliação'), 12) : shortLabel(s.examKey))
 
 // ----- Agrupamento por materia e por tentativa -----
-// Materia = prefixo alfabetico do examKey (FUTEC, FECOP, IRCOM...).
-const materiaOf = (key = '') => (String(key).replace(/^Avaliacao_?/i, '').match(/^[A-Za-z]+/) || ['—'])[0].toUpperCase()
+// Materia = prefixo alfabetico do examKey (FUTEC, FECOP, IRCOM...); as avaliações manuais
+// da turma ficam juntas em "OUTRAS".
+const materiaOf = (key = '') => (isManualKey(key) ? 'OUTRAS' : (String(key).replace(/^Avaliacao_?/i, '').match(/^[A-Za-z]+/) || ['—'])[0].toUpperCase())
 // Chave do grupo de tentativas: mesma aplicacao = mesmo grupo (espelha attemptGroupKey do backend).
 const groupKeyOf = (s) => String(s.applicationId || s.examKey || '')
 const POLICY_LABEL = { highest: 'Maior nota', latest: 'Última tentativa', average: 'Média das tentativas', selected: 'Selecionada pelo professor' }
@@ -433,7 +439,7 @@ export default function ProvasPage() {
     const chartPoints = published
       .slice()
       .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
-      .map((s) => ({ value: Number(toGrade(s.score).toFixed(1)), label: shortLabel(s.examKey) }))
+      .map((s) => ({ value: Number(toGrade(s.score).toFixed(1)), label: labelOf(s) }))
     const buckets = distributionBuckets(grades)
     const maxBucket = Math.max(1, ...buckets.map((b) => b.n))
     return { avg, best, bestSub, compoem, total: mine.length, chartPoints, buckets, maxBucket, hasData: mine.length > 0 }
@@ -509,7 +515,7 @@ export default function ProvasPage() {
                 <StatValue target={metrics.total} />
               </MetricCard>
 
-              <MetricCard label="Melhor nota" icon={Award} tone="text-success" badge={metrics.bestSub ? <Badge tone="success" dot>{shortLabel(metrics.bestSub.examKey)}</Badge> : null}>
+              <MetricCard label="Melhor nota" icon={Award} tone="text-success" badge={metrics.bestSub ? <Badge tone="success" dot>{labelOf(metrics.bestSub)}</Badge> : null}>
                 <StatValue target={metrics.best} decimals={1} className={metrics.best != null ? gradeText(metrics.best) : ''} />
               </MetricCard>
 

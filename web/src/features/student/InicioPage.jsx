@@ -136,7 +136,7 @@ export default function InicioPage() {
             {data.performance?.length > 0 && <Card>
               <div className="flex items-center justify-between border-b border-border px-5 py-4"><h2 className="font-semibold text-text">Seu desempenho</h2><span className="text-xs text-muted">Últimas notas publicadas</span></div>
               <div className="flex h-40 items-end gap-3 p-5">
-                {data.performance.map((item) => <div key={item.id} className="flex h-full flex-1 flex-col justify-end text-center"><span className="mb-1 text-xs font-semibold text-text">{fmtGradeValue(item.note)}</span><div className="mx-auto w-full max-w-10 rounded-t bg-info" style={{ height: `${Math.max(8, item.note * 10)}%` }} /><span className="mt-2 truncate text-[10px] text-subtle" title={item.examKey}>{item.examKey?.replace(/^Avaliacao_/, '')}</span></div>)}
+                {data.performance.map((item) => <div key={item.id} className="flex h-full flex-1 flex-col justify-end text-center"><span className="mb-1 text-xs font-semibold text-text">{fmtGradeValue(item.note)}</span><div className="mx-auto w-full max-w-10 rounded-t bg-info" style={{ height: `${Math.max(8, item.note * 10)}%` }} /><span className="mt-2 truncate text-[10px] text-subtle" title={item.title || item.examKey}>{item.title || item.examKey?.replace(/^Avaliacao_/, '')}</span></div>)}
               </div>
             </Card>}
           </div>

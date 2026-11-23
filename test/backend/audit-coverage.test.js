@@ -561,3 +561,53 @@ test('tarefas: correção, devolução, refazer, prorrogação, entrega em mãos
     assert.equal(exported.actor, 'prof@cobertura.local');
     assert.deepEqual([exported.courseId, exported.studentClass, exported.details.alunos], [COURSE, '1DES', 2]);
 });
+
+// Critérios, plano da turma e avaliação manual (fase 3, B6 / P2-S3): cada rota que grava
+// registra a sua ação (categoria academic) na mesma gravação, com curso e turma; pedido
+// que não muda nada não grava outra entrada.
+test('[UC-AUDITORIA-002] critérios, plano da turma e avaliação manual ficam na trilha', async () => {
+    const criteria = {
+        courseId: COURSE,
+        ativo: true,
+        mediaMinima: 6,
+        etapas: [{ ordem: 1, nome: '1º bimestre', peso: 1 }, { ordem: 2, nome: '2º bimestre', peso: 1 }],
+    };
+    const saved = await admin(request(app).post('/api/admin/grading/criteria')).send(criteria);
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.equal((await admin(request(app).post('/api/admin/grading/criteria')).send(criteria)).body.semMudanca, true);
+    assert.equal(entries('grading_criteria_updated').length, 1);
+    assert.equal(last('grading_criteria_updated').after.mediaMinima, 6);
+
+    const plan = { courseId: COURSE, studentClass: '1DES', itens: { Avaliacao_P1: { etapa: 1, peso: 2 } } };
+    assert.equal((await professor(request(app).post('/api/admin/grading/plan')).send(plan)).status, 200);
+    assert.equal((await professor(request(app).post('/api/admin/grading/plan')).send(plan)).body.semMudanca, true);
+    assert.equal(entries('grading_plan_updated').length, 1);
+    assert.equal(last('grading_plan_updated').after.Avaliacao_P1.peso, 2);
+
+    const created = await professor(request(app).post('/api/admin/grading/manual-items/create')).send({ courseId: COURSE, studentClass: '1DES', titulo: 'Seminário', tipo: 'seminario' });
+    assert.equal(created.status, 200, JSON.stringify(created.body));
+    const id = created.body.item.id;
+    const manual = (suffix, payload = {}) => professor(request(app).post(`/api/admin/grading/manual-items/${suffix}`)).send({ courseId: COURSE, studentClass: '1DES', id, ...payload });
+    assert.equal((await manual('update', { titulo: 'Seminário final' })).status, 200);
+    assert.equal((await manual('update', { titulo: 'Seminário final' })).body.semMudanca, true);
+    assert.equal((await manual('archive')).status, 200);
+    assert.equal((await manual('archive')).body.semMudanca, true);
+    assert.equal((await manual('restore')).status, 200);
+    assert.equal((await manual('restore')).body.semMudanca, true);
+    for (const action of ['grading_plan_updated', 'manual_assessment_created', 'manual_assessment_updated', 'manual_assessment_archived', 'manual_assessment_restored']) {
+        assert.equal(entries(action).length, 1, action);
+        const entry = last(action);
+        assert.equal(entry.category, 'academic', action);
+        assert.equal(entry.courseId, COURSE, action);
+        assert.equal(entry.studentClass, '1DES', action);
+        assert.equal(entry.actor, 'prof@cobertura.local', action);
+    }
+    assert.equal(last('grading_criteria_updated').category, 'academic');
+    assert.equal(last('grading_criteria_updated').actor, 'admin@cobertura.local');
+    assert.equal(last('manual_assessment_updated').after.titulo, 'Seminário final');
+    assert.equal(last('manual_assessment_archived').details.titulo, 'Seminário final');
+    // A prévia só lê: nada na trilha.
+    const before = db.memory.auditLogs.length;
+    assert.equal((await professor(request(app).post('/api/admin/grading/preview')).send({ courseId: COURSE, studentClass: '1DES', criterios: { mediaMinima: 7 } })).status, 200);
+    assert.equal(db.memory.auditLogs.length, before);
+});

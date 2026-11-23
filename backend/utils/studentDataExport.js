@@ -20,7 +20,7 @@
 // Não grava nada e não lê o banco: recebe a memória (db.memory) e as teclas da prova já
 // buscadas (db.keystrokes.findByEmails), porque elas moram em tabela própria.
 const { stripSecrets, normalizeAuditEntry, auditEntryWithoutSecrets } = require('./audit.js');
-const { studentEmailOwnership } = require('./gradebook.js');
+const { studentEmailOwnership, manualAssessmentTitle } = require('./gradebook.js');
 const { normalizeEmail, studentClassEntries, isAnonymizedStudent, AUDITABLE_FIELDS } = require('./students.js');
 const legal = require('./legalDocuments.js');
 const { studentCourseId } = require('./legalAcceptance.js');
@@ -465,6 +465,9 @@ function examTitleOf(memory, student, examKey) {
             || unitNameIn(courses.get(courseId) && courses.get(courseId).structure, examKey);
         if (found) return String(found);
     }
+    // Avaliação manual da turma (B6, classes[].avaliacao.manuais): o título dela.
+    const manual = manualAssessmentTitle(list(memory.classes), examKey);
+    if (manual) return manual;
     return String(examKey).replace(/_/g, ' ');
 }
 

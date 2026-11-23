@@ -31,7 +31,8 @@
 // - POST /api/admin/grading/manual-items/create, /update, /archive e /restore: avaliação
 //   manual da turma (classes[].avaliacao.manuais, id 'man_<ms>_<6hex>'). A nota é lançada
 //   pelo submissions/create (lançamento rápido, examKey = id). Arquivar só esconde: as
-//   notas ficam guardadas e saem da média com aviso; com nota publicada, pede motivo.
+//   notas ficam guardadas e saem da média com aviso. Com nota publicada, arquivar, reativar
+//   e mudar etapa, peso (critérios ligados) ou módulo pedem motivo.
 //   Auditoria manual_assessment_created/updated/archived/restored.
 //
 // O plano e as avaliações manuais passam pelo portão da turma encerrada (assertClassOpen,
@@ -133,7 +134,7 @@ const SCHEMAS = {
         reason: REASON_FIELD,
     }),
     manualCreate: body({ ...CONTEXT_FIELDS, ...MANUAL_FIELDS, titulo: str({ max: 120, required: true, label: 'título' }) }),
-    manualUpdate: body({ ...CONTEXT_FIELDS, id: str({ ...ID_FIELD, required: true }), ...MANUAL_FIELDS }),
+    manualUpdate: body({ ...CONTEXT_FIELDS, id: str({ ...ID_FIELD, required: true }), ...MANUAL_FIELDS, reason: REASON_FIELD }),
     manualArchive: body({ ...CONTEXT_FIELDS, id: str({ ...ID_FIELD, required: true }), reason: REASON_FIELD }),
 };
 
@@ -591,8 +592,11 @@ function prepareManualToggle(req, res, account, archive) {
     const grading = gradingFor(course, cls, structure);
     const count = gradeCountsByItem(grading, classSubmissions(grading.courseId, grading.studentClass)).get(id) || { lancadas: 0, publicadas: 0 };
     const reason = text(req.body.reason);
-    if (archive && count.publicadas > 0 && reason.length < REASON_MIN) {
-        reasonRequired(res, 'Informe o motivo (de 3 a 500 caracteres): a avaliação tem nota publicada, que sai da média do aluno.');
+    // Arquivar tira a nota publicada da média e reativar a põe de volta: as duas pedem motivo.
+    if (count.publicadas > 0 && reason.length < REASON_MIN) {
+        reasonRequired(res, archive
+            ? 'Informe o motivo (de 3 a 500 caracteres): a avaliação tem nota publicada, que sai da média do aluno.'
+            : 'Informe o motivo (de 3 a 500 caracteres): a avaliação tem nota publicada, que volta para a média do aluno.');
         return null;
     }
     return { found, course, cls, structure, id, plan, index, current, count, reason, archive };
@@ -620,7 +624,7 @@ function applyManualToggle(req, res, account, prep) {
         category: 'academic',
         courseId: String(course.id),
         studentClass: cls.name,
-        details: archive ? { id, titulo, notas: count.lancadas, notasPublicadas: count.publicadas } : { id, titulo },
+        details: { id, titulo, notas: count.lancadas, notasPublicadas: count.publicadas },
         ...(reason ? { reason } : {}),
     });
     saveClassPlan(cls, plan);
@@ -869,6 +873,18 @@ function registerGradingRoutes(router) {
             const samePlan = samePlanItem(currentPlanItem, nextPlanItem);
             if (sameText && samePlan) return res.json({ success: true, semMudanca: true, item: manualView(beforeItem, new Map()) });
             if (!academicCalendar.assertClassOpen(cls, { res })) return;
+            // Mesma regra do POST /grading/plan: com nota publicada, mudar etapa ou peso (com
+            // critérios ligados) ou o módulo (média do módulo e situação da disciplina) muda a
+            // média que o aluno já viu, e pede motivo.
+            const reason = text(req.body.reason);
+            const grading = gradingFor(course, cls, structure);
+            const mudaMedia = (!samePlan && grading.ativo) || beforeItem.moduloId !== afterItem.moduloId;
+            if (mudaMedia && reason.length < REASON_MIN) {
+                const count = gradeCountsByItem(grading, classSubmissions(grading.courseId, grading.studentClass)).get(id) || { publicadas: 0 };
+                if (count.publicadas > 0) {
+                    return reasonRequired(res, 'Informe o motivo (de 3 a 500 caracteres): a mudança altera a média de nota já publicada.');
+                }
+            }
             const now = Date.now();
             plan.manuais[index] = { ...nextRaw, atualizadoEm: now, atualizadoPor: actorEmail(account) };
             if (!samePlan) plan.itens[id] = nextPlanItem;
@@ -882,6 +898,7 @@ function registerGradingRoutes(router) {
                 studentClass: cls.name,
                 before: { id, ...pick(beforeItem), ...(samePlan ? {} : { plano: currentPlanItem }) },
                 after: { id, ...pick(afterItem), ...(samePlan ? {} : { plano: nextPlanItem }) },
+                ...(reason ? { reason } : {}),
             });
             saveClassPlan(cls, plan);
             const view = planView(account, { course, cls, structure });

@@ -241,7 +241,7 @@ function applicationIndex(memory) {
 // stripSecrets (auditEntryWithoutSecrets): entrada antiga, de antes do recordAudit, pode
 // ter vindo de um backup.
 function enrichItem(item, context, raw) {
-    const { names, courses, evaluations } = context;
+    const { names, courses, evaluations, classes } = context;
     const device = raw && typeof raw.device === 'string' ? raw.device : '';
     return {
         ...auditEntryWithoutSecrets(item),
@@ -251,7 +251,7 @@ function enrichItem(item, context, raw) {
         studentName: personName(names, item.studentEmail),
         targetName: personName(names, item.targetEmail),
         courseName: item.courseId ? courses.get(String(item.courseId)) || '' : '',
-        examTitle: item.examKey ? examTitle(item.examKey, { evaluations }) : '',
+        examTitle: item.examKey ? examTitle(item.examKey, { evaluations, classes }) : '',
     };
 }
 
@@ -260,6 +260,7 @@ function readContext(memory) {
         names: buildNameIndex(memory),
         courses: courseNames(memory),
         evaluations: memory.evaluations || {},
+        classes: memory.classes || [],
     };
 }
 
@@ -281,7 +282,7 @@ function auditFacets(memory, context) {
             const key = `${item.courseId || ''}::${fold(item.studentClass)}`;
             if (!classes.has(key)) classes.set(key, { courseId: item.courseId || '', name: item.studentClass });
         }
-        if (item.examKey && !exams.has(item.examKey)) exams.set(item.examKey, examTitle(item.examKey, { evaluations: context.evaluations }));
+        if (item.examKey && !exams.has(item.examKey)) exams.set(item.examKey, examTitle(item.examKey, { evaluations: context.evaluations, classes: context.classes }));
         if (item.applicationId) {
             const previous = applications.get(item.applicationId);
             if (!previous || item.timestamp > previous.lastAt) {
@@ -309,7 +310,7 @@ function auditFacets(memory, context) {
             .sort((a, b) => b.lastAt - a.lastAt)
             .slice(0, FACET_MAX)
             .map(app => {
-                const title = app.examKey ? examTitle(app.examKey, { evaluations: context.evaluations }) : '';
+                const title = app.examKey ? examTitle(app.examKey, { evaluations: context.evaluations, classes: context.classes }) : '';
                 const when = Number(app.createdAt) || Date.parse(app.createdAt || '') || app.lastAt;
                 const date = when && Number.isFinite(new Date(when).getTime()) ? dayFormatter.format(new Date(when)) : '';
                 return { value: app.id, examKey: app.examKey, label: [title || app.examKey || 'Aplicação', app.studentClass, date].filter(Boolean).join(' · ') };

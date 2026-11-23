@@ -721,7 +721,7 @@ router.post('/api/admin/submissions/result-control', (req, res) => {
 
         const refreshed = groupResult();
         const after = refreshed.find(item => String(item.id) === String(target.id));
-        const title = examTitle(target.examKey, { evaluations: db.memory.evaluations });
+        const title = examTitle(target.examKey, { evaluations: db.memory.evaluations, classes: db.memory.classes });
         const policyLabel = value => RESULT_POLICY_LABELS[value] || value || 'Melhor nota';
         const consolidated = item => (item && item.consolidatedScore != null ? formatGradeBR(item.consolidatedScore) : 'sem nota');
         const actionLabel = {
@@ -899,7 +899,7 @@ router.post('/api/admin/submissions/publish', (req, res) => {
                     submission: item,
                     action: published ? 'grade_publish' : 'grade_unpublish',
                     field: 'Publicação da nota',
-                    oldValue: `${describeSubmissionGrade(item, examTitle(item.examKey, { evaluations: db.memory.evaluations }))} · ${wasPublished ? 'publicada' : 'em revisão'}`,
+                    oldValue: `${describeSubmissionGrade(item, examTitle(item.examKey, { evaluations: db.memory.evaluations, classes: db.memory.classes }))} · ${wasPublished ? 'publicada' : 'em revisão'}`,
                     newValue: published ? 'publicada para o aluno' : 'oculta do aluno',
                     reason: motive.reason,
                 });
@@ -949,7 +949,7 @@ router.post('/api/admin/submissions/delete', (req, res) => {
                 submission: item,
                 action: 'grade_delete',
                 field: 'Nota',
-                oldValue: `${describeSubmissionGrade(item, examTitle(item.examKey, { evaluations: db.memory.evaluations }))} · tentativa ${item.attemptNumber || 1}${item.gradePublished === true ? ' · publicada' : ''}`,
+                oldValue: `${describeSubmissionGrade(item, examTitle(item.examKey, { evaluations: db.memory.evaluations, classes: db.memory.classes }))} · tentativa ${item.attemptNumber || 1}${item.gradePublished === true ? ' · publicada' : ''}`,
                 newValue: 'registro excluído',
                 details: { deletedSubmission: item },
                 reason: motive.reason,
@@ -1050,7 +1050,7 @@ router.get('/api/admin/submissions/deleted', (req, res) => {
                 studentEmail: email,
                 studentName: (student && student.name) || copy.student?.name || copy.studentName || email,
                 examKey: copy.examKey || '',
-                examTitle: examTitle(copy.examKey, { evaluations: db.memory.evaluations }),
+                examTitle: examTitle(copy.examKey, { evaluations: db.memory.evaluations, classes: db.memory.classes }),
                 applicationId: copy.applicationId || null,
                 attemptNumber: copy.attemptNumber || 1,
                 type: copy.type || '',
@@ -1138,7 +1138,7 @@ router.post('/api/admin/submissions/restore', (req, res) => {
             action: 'grade_restore',
             field: 'Nota',
             oldValue: 'registro excluído',
-            newValue: `${describeSubmissionGrade(restored, examTitle(restored.examKey, { evaluations: db.memory.evaluations }))} · restaurada da lixeira (${restored.gradePublished === true ? 'publicada' : 'em revisão'})${notes.length ? ` · ${notes.join(' · ')}` : ''}`,
+            newValue: `${describeSubmissionGrade(restored, examTitle(restored.examKey, { evaluations: db.memory.evaluations, classes: db.memory.classes }))} · restaurada da lixeira (${restored.gradePublished === true ? 'publicada' : 'em revisão'})${notes.length ? ` · ${notes.join(' · ')}` : ''}`,
             details: { fromAuditId: entry.id },
         });
         writeJSON(DB_SUBMISSIONS_FILE, submissions);
@@ -1475,7 +1475,7 @@ router.post('/api/admin/submissions/create', (req, res) => {
             action: 'grade_create',
             field: 'Nota',
             oldValue: '',
-            newValue: `${describeSubmissionGrade(submissionObj, manualItem ? manualItem.titulo : examTitle(examKey, { evaluations: db.memory.evaluations }))} · lançamento ${entryMode === 'card' ? 'pelo cartão-resposta' : 'manual'} (${submissionObj.type})${ignoredNote ? ` · ${ignoredNote}` : ''}`,
+            newValue: `${describeSubmissionGrade(submissionObj, manualItem ? manualItem.titulo : examTitle(examKey, { evaluations: db.memory.evaluations, classes: db.memory.classes }))} · lançamento ${entryMode === 'card' ? 'pelo cartão-resposta' : 'manual'} (${submissionObj.type})${ignoredNote ? ` · ${ignoredNote}` : ''}`,
         });
         writeJSON(DB_SUBMISSIONS_FILE, submissions);
 
@@ -5182,7 +5182,7 @@ router.get('/api/admin/export-grades/:class/:examKey', (req, res) => {
         const submissions = enrichSubmissionsWithAttemptResult(scoped).sort((a, b) =>
             String(a.student?.name || a.studentName || '').localeCompare(String(b.student?.name || b.studentName || ''), 'pt-BR')
             || new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
-        const title = examTitle(examKey, { evaluations: db.memory.evaluations, examIndex: structureExamIndex(effectiveStructure(courseId, studentClass)?.structure || []) });
+        const title = examTitle(examKey, { evaluations: db.memory.evaluations, classes: db.memory.classes, examIndex: structureExamIndex(effectiveStructure(courseId, studentClass)?.structure || []) });
         const applicationsById = new Map((db.memory.examApplications || []).map(item => [String(item.id), item]));
 
         const header = ['Aluno', 'E-mail', 'Turma', 'Avaliação', 'Aplicação', 'Tentativa', 'Versão', 'Acertos', 'Questões', 'Nota da tentativa', 'Compõe a nota', 'Nota da aplicação', 'Publicada', 'Data de envio'];

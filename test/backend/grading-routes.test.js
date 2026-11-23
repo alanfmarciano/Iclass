@@ -515,8 +515,14 @@ test('[UC-NOTAS-006] avaliação manual: criar "Seminário", lançar 8,5, recusa
     assert.match((await launch({ grade: 9 })).body.error, /arquivada/);
     // Arquivar de novo não muda nada; reativar devolve a nota à média.
     assert.equal((await as('prof', 'post', '/api/admin/grading/manual-items/archive').send({ courseId: COURSE, studentClass: '1DES', id: item.id })).body.semMudanca, true);
-    const restored = await as('prof', 'post', '/api/admin/grading/manual-items/restore').send({ courseId: COURSE, studentClass: '1DES', id: item.id });
+    // Reativar põe a nota publicada de volta na média: também pede motivo.
+    const restoreNoReason = await as('prof', 'post', '/api/admin/grading/manual-items/restore').send({ courseId: COURSE, studentClass: '1DES', id: item.id });
+    assert.equal(restoreNoReason.status, 400);
+    assert.equal(restoreNoReason.body.code, 'reason_required');
+    assert.equal(rowOf(await gradebookOf(), 'ana@grading.local').average, 6.3, 'o pedido recusado não reativa');
+    const restored = await as('prof', 'post', '/api/admin/grading/manual-items/restore').send({ courseId: COURSE, studentClass: '1DES', id: item.id, reason: 'Seminário remarcado' });
     assert.equal(restored.status, 200);
+    assert.equal(audits('manual_assessment_restored')[0].reason, 'Seminário remarcado');
     assert.equal(restored.body.item.arquivado, false);
     assert.equal(audits('manual_assessment_restored').length, 1);
     assert.equal(rowOf(await gradebookOf(), 'ana@grading.local').average, 6.9);
@@ -547,6 +553,115 @@ test('[UC-NOTAS-006] avaliação manual com critérios: entra na etapa do plano 
     assert.equal(trabalho.etapaNome, '2º bimestre');
     assert.equal(trabalho.nota, null);
     assert.equal(summary.body.criterio.regraAntiga, false);
+});
+
+// Rodada de ajuste 1 do B6: o motivo não se contorna pela avaliação manual.
+test('[UC-NOTAS-006] avaliação manual com nota publicada: mudar etapa, peso ou módulo e reativar pedem motivo', async () => {
+    assert.equal((await saveCriteria()).status, 200);
+    assert.equal((await savePlan(PLAN, { reason: 'Plano do semestre' })).status, 200);
+    const created = await as('prof', 'post', '/api/admin/grading/manual-items/create').send({ courseId: COURSE, studentClass: '1DES', titulo: 'Trabalho', tipo: 'trabalho', etapa: 2, peso: 1 });
+    assert.equal(created.status, 200, JSON.stringify(created.body));
+    const id = created.body.item.id;
+    const update = fields => as('prof', 'post', '/api/admin/grading/manual-items/update').send({ courseId: COURSE, studentClass: '1DES', id, ...fields });
+    // Sem nota publicada, mudar o peso não pede motivo.
+    assert.equal((await update({ peso: 2 })).status, 200);
+    assert.equal((await as('prof', 'post', '/api/admin/submissions/create').send({ studentEmail: 'ana@grading.local', courseId: COURSE, studentClass: '1DES', examKey: id, grade: 10 })).status, 200);
+    const stored = db.memory.submissions.find(entry => entry.examKey === id);
+    assert.equal((await as('prof', 'post', '/api/admin/submissions/publish').send({ ids: [stored.id] })).status, 200);
+    const media = async () => (await asStudent('ana@grading.local', `/api/student/grades-summary?courseId=${COURSE}&studentClass=1DES`)).body.mediaFinal;
+    const before = await media();
+
+    // Etapa e peso pela avaliação manual: a mesma regra do POST /grading/plan.
+    const viaPlan = await savePlan({ [id]: { etapa: 1, peso: 5 } });
+    assert.equal(viaPlan.status, 400);
+    assert.equal(viaPlan.body.code, 'reason_required');
+    const noReason = await update({ etapa: 1, peso: 5 });
+    assert.equal(noReason.status, 400, JSON.stringify(noReason.body));
+    assert.equal(noReason.body.code, 'reason_required');
+    assert.equal(noReason.body.field, 'reason');
+    assert.equal(await media(), before, 'o pedido recusado não muda a média');
+    assert.equal(db.memory.classes[0].avaliacao.itens[id].etapa, 2);
+    // Módulo também muda a média (do módulo e da disciplina).
+    assert.equal((await update({ moduloId: 'M2' })).body.code, 'reason_required');
+    // Só texto (título, descrição) não pede motivo.
+    assert.equal((await update({ titulo: 'Trabalho final', descricao: 'Em dupla' })).status, 200);
+    const ok = await update({ etapa: 1, peso: 5, reason: 'Trabalho vale pelo 1º bimestre' });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    const audit = audits('manual_assessment_updated').pop();
+    assert.equal(audit.reason, 'Trabalho vale pelo 1º bimestre');
+    assert.equal(audit.after.plano.etapa, 1);
+    assert.notEqual(await media(), before);
+
+    // Arquivar e reativar: os dois pedem motivo com nota publicada.
+    const toggle = (action, fields = {}) => as('prof', 'post', `/api/admin/grading/manual-items/${action}`).send({ courseId: COURSE, studentClass: '1DES', id, ...fields });
+    assert.equal((await toggle('archive', { reason: 'Trabalho cancelado' })).status, 200);
+    const archivedMedia = await media();
+    const restoreNoReason = await toggle('restore');
+    assert.equal(restoreNoReason.status, 400);
+    assert.equal(restoreNoReason.body.code, 'reason_required');
+    assert.equal(await media(), archivedMedia);
+    assert.equal((await toggle('restore', { reason: 'Trabalho remarcado' })).status, 200);
+    assert.equal(audits('manual_assessment_restored').pop().reason, 'Trabalho remarcado');
+});
+
+test('[UC-NOTAS-006] avaliação manual: a tela Provas do aluno, Meus dados, o Início e a auditoria da nota mostram o título, não o id', async () => {
+    const created = await as('prof', 'post', '/api/admin/grading/manual-items/create').send({ courseId: COURSE, studentClass: '1DES', titulo: 'Seminário de Redes', tipo: 'seminario' });
+    const id = created.body.item.id;
+    assert.equal((await as('prof', 'post', '/api/admin/submissions/create').send({ studentEmail: 'ana@grading.local', courseId: COURSE, studentClass: '1DES', examKey: id, grade: 9 })).status, 200);
+    const stored = db.memory.submissions.find(entry => entry.examKey === id);
+    assert.equal((await as('prof', 'post', '/api/admin/submissions/publish').send({ ids: [stored.id] })).status, 200);
+    assert.match(audits('grade_publish').pop().oldValue, /^Seminário de Redes/);
+    assert.doesNotMatch(audits('grade_publish').pop().oldValue, /man_/);
+
+    const token = createStudentSession(db.memory, 'ana@grading.local');
+    const mine = await request(app).post('/api/student/my-submissions').set('x-session-token', token).send({ courseId: COURSE, studentClass: '1DES' });
+    assert.equal(mine.status, 200, JSON.stringify(mine.body));
+    const list = Array.isArray(mine.body) ? mine.body : (mine.body.submissions || mine.body.items || []);
+    const manual = list.find(entry => entry.examKey === id);
+    assert.ok(manual, JSON.stringify(mine.body).slice(0, 500));
+    assert.equal(manual.examTitle, 'Seminário de Redes');
+    const data = await request(app).get('/api/student/my-data').set('x-session-token', token);
+    assert.equal(data.status, 200);
+    assert.equal(data.body.examTitles[id], 'Seminário de Redes');
+    const home = await request(app).get(`/api/student/dashboard?courseId=${COURSE}&studentClass=1DES`).set('x-session-token', token);
+    assert.equal(home.body.performance.find(entry => entry.examKey === id).title, 'Seminário de Redes');
+    assert.equal(home.body.performance.find(entry => entry.examKey === 'Av_P1').title, undefined, 'a prova continua sem o campo novo');
+
+    const deleted = await as('admin', 'post', '/api/admin/submissions/delete').send({ id: stored.id, reason: 'Lançada errada' });
+    assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+    assert.match(audits('grade_delete').pop().oldValue, /^Seminário de Redes/);
+});
+
+test('[UC-NOTAS-006] Início do portal: média geral e média do módulo iguais às do boletim com avaliação manual no módulo ou arquivada', async () => {
+    const created = await as('prof', 'post', '/api/admin/grading/manual-items/create').send({ courseId: COURSE, studentClass: '1DES', titulo: 'Seminário de Redes', tipo: 'seminario', moduloId: 'M1' });
+    const id = created.body.item.id;
+    assert.equal((await as('prof', 'post', '/api/admin/submissions/create').send({ studentEmail: 'ana@grading.local', courseId: COURSE, studentClass: '1DES', examKey: id, grade: 10 })).status, 200);
+    const stored = db.memory.submissions.find(entry => entry.examKey === id);
+    assert.equal((await as('prof', 'post', '/api/admin/submissions/publish').send({ ids: [stored.id] })).status, 200);
+    const token = createStudentSession(db.memory, 'ana@grading.local');
+    const check = async (overall, redes) => {
+        const home = await request(app).get(`/api/student/dashboard?courseId=${COURSE}&studentClass=1DES`).set('x-session-token', token);
+        assert.equal(home.status, 200, JSON.stringify(home.body));
+        const report = await as('admin', 'get', `/api/admin/student/report?email=ana@grading.local&courseId=${COURSE}&studentClass=1DES`);
+        const summary = await request(app).get(`/api/student/grades-summary?courseId=${COURSE}&studentClass=1DES`).set('x-session-token', token);
+        assert.equal(home.body.overallNote, overall);
+        assert.equal(report.body.overallAverage, overall);
+        assert.equal(summary.body.mediaFinal, overall);
+        const homeRedes = home.body.modules.find(module => module.name === 'Redes');
+        assert.equal(homeRedes.note, redes);
+        assert.equal(report.body.modules.find(module => module.name === 'Redes').average, redes);
+        assert.equal(summary.body.modulos.find(module => module.nome === 'Redes').media, redes);
+        assert.equal(home.body.modules.find(module => module.name === 'Banco de Dados').note, 7);
+        return home.body;
+    };
+    // (4 + 8 + 7 + 10) / 4 = 7,25; Redes (4 + 8 + 10) / 3 = 7,3 (antes o Início dava 6,0).
+    const withManual = await check(7.3, 7.3);
+    assert.equal(withManual.modules.find(module => module.name === 'Redes').noteStatus, 'published');
+    // Arquivada: a nota fica guardada e sai da média (antes o Início continuava com 7,3).
+    assert.equal((await as('prof', 'post', '/api/admin/grading/manual-items/archive').send({ courseId: COURSE, studentClass: '1DES', id, reason: 'Seminário cancelado' })).status, 200);
+    const archived = await check(6.3, 6);
+    assert.equal(archived.performance.some(entry => entry.examKey === id), false);
+    assert.equal('situacao' in archived, false, 'sem critérios, o Início não ganha situação');
 });
 
 // ------------------------------------------------------------------ resumo do aluno

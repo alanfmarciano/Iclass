@@ -37,4 +37,23 @@ describe('Início do aluno · notas', () => {
     expect(screen.queryByText('7.5')).not.toBeInTheDocument()
     expect(screen.queryByText('9.0')).not.toBeInTheDocument()
   })
+
+  it('[UC-NOTAS-006] barra de avaliação manual mostra o título dela, não o id', () => {
+    // Antes a barra mostrava o examKey ("man_1795397447192_410b1b").
+    mocks.dashboard = {
+      courseName: 'Desenvolvimento',
+      overallNote: 8,
+      modules: [],
+      performance: [
+        { id: 's1', examKey: 'Avaliacao_FUTEC_1', note: 7 },
+        { id: 's2', examKey: 'man_1795397447192_410b1b', title: 'Seminário de redes', note: 9 },
+      ],
+      announcements: [],
+      calendar: [],
+    }
+    render(<MemoryRouter><InicioPage /></MemoryRouter>)
+    expect(screen.getByText('Seminário de redes')).toBeInTheDocument()
+    expect(screen.getByText('FUTEC_1')).toBeInTheDocument()
+    expect(screen.queryByText(/man_1795397447192/)).not.toBeInTheDocument()
+  })
 })

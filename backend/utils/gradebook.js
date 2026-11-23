@@ -418,11 +418,30 @@ function structureExamIndex(structure) {
     return index;
 }
 
-function examTitle(examKey, { evaluations = {}, examIndex = null } = {}) {
+// Nome da avaliação: o título cadastrado, senão o nome da unidade na estrutura, senão (com
+// classes) o título da avaliação manual da turma (id 'man_*'), senão a própria chave.
+function examTitle(examKey, { evaluations = {}, examIndex = null, classes = null } = {}) {
     const evaluation = evaluations && evaluations[examKey];
     return (evaluation && (evaluation.title || evaluation.name))
         || (examIndex && examIndex.get(examKey)?.unitName)
+        || manualAssessmentTitle(classes, examKey)
         || examKey;
+}
+
+// Título da avaliação manual (classes[].avaliacao.manuais) pelo id, em qualquer turma (o id
+// 'man_<ms>_<6hex>' não se repete); '' quando não é avaliação manual ou não foi achada.
+// Assim a tela Provas do aluno, Meus dados e a auditoria da nota mostram "Seminário de
+// redes" e não o id técnico.
+function manualAssessmentTitle(classes, examKey) {
+    if (!isManualItemId(examKey) || !Array.isArray(classes)) return '';
+    for (const cls of classes) {
+        const raw = cls && cls.avaliacao && Array.isArray(cls.avaliacao.manuais) ? cls.avaliacao.manuais : null;
+        const found = raw && raw.find(item => item && typeof item === 'object' && String(item.id || '').trim() === examKey);
+        if (!found) continue;
+        const normalized = gradingRules.normalizePlan({ manuais: [found] }).manuais[0];
+        if (normalized && normalized.titulo) return normalized.titulo;
+    }
+    return '';
 }
 
 function groupScopeId(group) {
@@ -1938,6 +1957,7 @@ module.exports = {
     courseForContext,
     gradeItemProviderList,
     isManualItemId,
+    manualAssessmentTitle,
     manualItemOfClass,
     planItemView,
     planWarnings,

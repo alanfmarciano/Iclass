@@ -56,6 +56,23 @@ describe('Provas do aluno · média', () => {
   })
 })
 
+describe('Provas do aluno · avaliação manual da turma', () => {
+  it('[UC-NOTAS-006] a avaliação manual aparece pelo título, em "OUTRAS", nunca pelo id', async () => {
+    // Antes a tela mostrava "man 1795397447192 410b1b" no gráfico, no destaque e no filtro "MAN".
+    mocks.submissions = [
+      sub('a1', { score: 70 }),
+      { ...sub('m1', { examKey: 'man_1795397447192_410b1b', score: 95 }), examTitle: 'Seminário de redes', type: 'manual' },
+    ]
+    render(<MemoryRouter><ProvasPage /></MemoryRouter>)
+    const best = (await screen.findByText('Melhor nota')).parentElement
+    expect(best).toHaveTextContent('Seminário d…')
+    expect(screen.getAllByText(/Seminário de redes/).length).toBeGreaterThan(0)
+    expect(screen.getAllByText('OUTRAS').length).toBeGreaterThan(0)
+    expect(document.body.textContent).not.toMatch(/man[ _]1795/)
+    expect(screen.queryByText('MAN')).not.toBeInTheDocument()
+  })
+})
+
 describe('Provas do aluno · distribuição por faixa', () => {
   it('[UC-NOTAS-003] faixas de nota com vírgula decimal, sem ponto', async () => {
     // Antes os rótulos eram '7-8.9', '6-6.9' e '0-5.9'.

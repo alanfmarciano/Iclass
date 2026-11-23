@@ -70,7 +70,7 @@ const {
     normalizeMaxAttempts,
 } = require('../utils/examAttempts.js');
 const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, normalizeScore, roundGrade } = require('../utils/submissionAttempts.js');
-const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
+const { scopeSubmissionsToContext, manualAssessmentTitle, manualItemOfClass, structureModuleId } = require('../utils/gradebook.js');
 const { normalizeCriteria } = require('../utils/gradingRules.js');
 const { buildStudentGradesSummary } = require('../utils/studentReport.js');
 const { createStudentSession, revokeStudentSession, pruneExpiredSessions, studentSessionByEmail } = require('../utils/authSessions.js');
@@ -548,6 +548,10 @@ function studentApplicationLabel(application, cls) {
         const unit = (module?.units || []).find(item => item?.avaliacaoKey === application.examKey);
         if (unit?.name || unit?.title) return unit.name || unit.title;
     }
+    // Avaliação manual da turma (B6): o título dela, primeiro na turma do aluno.
+    const manual = manualAssessmentTitle(cls ? [cls] : [], application.examKey)
+        || manualAssessmentTitle(db.memory.classes || [], application.examKey);
+    if (manual) return manual;
     return String(application.examKey || 'Prova').replace(/_/g, ' ');
 }
 
@@ -2263,14 +2267,28 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         { courseId, studentClass: className, students: db.memory.students || [], classes: db.memory.classes || [] },
     );
 
+    // Notas pela conta única do boletim (contrato C1 do P2; B6): a média geral, a média de
+    // cada módulo (com a avaliação manual ligada ao módulo) e a situação saem do resumo de
+    // notas do aluno (só o publicado), o mesmo de GET /api/student/grades-summary. Nota de
+    // avaliação manual arquivada fica guardada e sai da média, como no boletim.
+    const gradesCls = (db.memory.classes || []).find(item => item.name === cls.name && String(item.courseId || '') === String(cls.courseId || '')) || cls;
+    const gradesSummary = buildStudentGradesSummary(db.memory, { email, course, cls: gradesCls, hoje: settingsUtil.today() });
+    const withCriteria = !!(course && normalizeCriteria(course.avaliacao));
+    const isArchivedManual = examKey => !!(manualItemOfClass(gradesCls, examKey) || {}).arquivadoEm;
+
     const modules = structure.map((module, moduleIndex) => {
         const units = module.units || module.items || [];
         const unitKeys = units.map(unit => unit.apostilaKey || unit.key).filter(Boolean);
-        const examKeys = new Set(units.map(unit => unit.avaliacaoKey).filter(Boolean));
+        const moduleId = structureModuleId(module, moduleIndex);
+        const examKeys = new Set([
+            ...units.map(unit => unit.avaliacaoKey).filter(Boolean),
+            ...gradesSummary.itens.filter(item => item.origem !== 'prova' && item.moduloId === moduleId).map(item => item.id),
+        ]);
         const moduleSubmissions = submissions.filter(item => examKeys.has(item.examKey));
-        const published = moduleSubmissions.filter(item => item.gradePublished === true && Number.isFinite(Number(item.score)));
-        const consolidated = consolidateSubmissions(published).filter(item => item.score != null);
-        const note = consolidated.length ? roundGrade(consolidated.reduce((sum, item) => sum + Number(item.score), 0) / consolidated.length) : null;
+        // As médias do resumo seguem a ordem da estrutura (o módulo "Outras avaliações" vem
+        // depois dos da estrutura).
+        const summaryModule = gradesSummary.modulos[moduleIndex];
+        const note = summaryModule && summaryModule.id === moduleId ? summaryModule.media : null;
         const done = unitKeys.filter(key => completed[key]).length;
         return {
             id: module.id || module.key || `module_${moduleIndex}`,
@@ -2283,7 +2301,7 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         };
     });
 
-    const publishedSubmissions = consolidateSubmissions(submissions.filter(item => item.gradePublished === true && Number.isFinite(Number(item.score))))
+    const publishedSubmissions = consolidateSubmissions(submissions.filter(item => item.gradePublished === true && Number.isFinite(Number(item.score)) && !isArchivedManual(item.examKey)))
         .filter(item => item.score != null);
     const totalUnits = structure.flatMap(module => module.units || module.items || []).map(unit => unit.apostilaKey || unit.key).filter(Boolean);
     const completedCount = totalUnits.filter(key => completed[key]).length;
@@ -2325,12 +2343,6 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         .slice(0, 4)
         .map(item => ({ id: item.id, title: item.title, eventDate: item.eventDate, startTime: item.startTime || '', eventType: item.eventType || 'outro' }));
 
-    // Critérios do curso ligados (B6 / P2-S3): a nota geral é a média final do resumo de
-    // notas (a conta única do boletim), com a situação e a menção. Sem critérios, a média
-    // de sempre, e a resposta não muda.
-    const gradesSummary = course && normalizeCriteria(course.avaliacao)
-        ? buildStudentGradesSummary(db.memory, { email, course, cls: (db.memory.classes || []).find(item => item.name === cls.name && String(item.courseId || '') === String(cls.courseId || '')) || cls, hoje: settingsUtil.today() })
-        : null;
     res.json({
         courseName: course?.name || courseId,
         modules,
@@ -2338,10 +2350,9 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         completedCount,
         totalUnits: totalUnits.length,
         // Mesmo arredondamento do boletim, do quadro e das planilhas (roundGrade).
-        overallNote: gradesSummary
-            ? gradesSummary.mediaFinal
-            : (publishedSubmissions.length ? roundGrade(publishedSubmissions.reduce((sum, item) => sum + Number(item.score), 0) / publishedSubmissions.length) : null),
-        ...(gradesSummary ? { situacao: gradesSummary.situacao, situacaoRotulo: gradesSummary.situacaoRotulo, mencao: gradesSummary.mencao } : {}),
+        // Com critérios, a média final; sem eles, a média de sempre (a do boletim).
+        overallNote: gradesSummary.mediaFinal,
+        ...(withCriteria ? { situacao: gradesSummary.situacao, situacaoRotulo: gradesSummary.situacaoRotulo, mencao: gradesSummary.mencao } : {}),
         frequency,
         pendingCount,
         continueItem,
@@ -2351,7 +2362,9 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         performance: publishedSubmissions
             .map(group => {
                 const latest = [...group.attempts].sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0))[0] || {};
-                return { id: latest.id, examKey: latest.examKey, timestamp: latest.timestamp, note: roundGrade(group.score) };
+                // Avaliação manual (B6): leva o título, para o gráfico não mostrar o id.
+                const manualTitle = manualAssessmentTitle([gradesCls], latest.examKey);
+                return { id: latest.id, examKey: latest.examKey, ...(manualTitle ? { title: manualTitle } : {}), timestamp: latest.timestamp, note: roundGrade(group.score) };
             })
             .sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0))
             .slice(-5)
