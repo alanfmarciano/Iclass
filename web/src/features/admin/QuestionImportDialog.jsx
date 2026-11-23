@@ -233,7 +233,7 @@ export default function QuestionImportDialog({ open, onClose, onImported }) {
               </p>
             ) : (
               <p className="text-xs text-subtle">
-                Planilha: a primeira linha é o cabeçalho, com Enunciado e, se quiser, Categoria, Tipo, Alternativa A a H, Correta (B, ou A, C), Pontos, Valor, Tolerância, Unidade, Respostas aceitas, Revisão, Resposta esperada, Rubrica, Explicação, Dificuldade, Habilidades, Etiquetas e Pontuação parcial. Listas separadas por “|”. Para ter o modelo, exporte o banco em planilha.
+                Planilha: a primeira linha é o cabeçalho, com Enunciado e, se quiser, Categoria, Tipo, Alternativa A a H, Correta (B, ou A, C), Pontos, Valor, Tolerância, Unidade, Respostas aceitas, Revisão, Resposta esperada, Rubrica, Explicação, Dificuldade, Habilidades, Etiquetas e Pontuação parcial. Listas separadas por “|” (para um “|” dentro do item, escreva “\|”). Para ter o modelo, exporte o banco em planilha.
               </p>
             )}
           </>

@@ -27,7 +27,10 @@
 //   fica guardado.
 // - GET export?formato=gift|csv (e os filtros do GET): as questões da lista em GIFT
 //   (.gift.txt, UTF-8) ou planilha CSV (UTF-8 com BOM, ";", fórmula neutralizada), com
-//   auditoria question_bank_exported. A coordenação, só de leitura, também exporta.
+//   auditoria question_bank_exported. A coordenação, só de leitura, também exporta. As
+//   imagens citadas (referencedExamUploads, contrato C8) não vão no arquivo: o GIFT lista
+//   os nomes num comentário, a auditoria guarda quantas e quais, o cabeçalho
+//   X-IClass-Imagens diz quantas e cada item do GET traz as suas em `imagens`.
 // Permissão page.exams para todas (adminPermissions.js); a coordenação, só de leitura,
 // recebe o GET. O escopo do item que veio de uma prova é conferido pelo guarda
 // (validateProfessorRequestScope: sourceExamKey do pedido e do item no update, no
@@ -68,6 +71,7 @@ const {
     toGift,
 } = require('../utils/questionFormats.js');
 const { schoolDateOf } = require('../utils/schoolTime.js');
+const { referencedExamUploads } = require('../utils/examMedia.js');
 
 // Categoria do banco: até QUESTION_CATEGORY_MAX_CHARS (500, o teto do Tema do editor),
 // o mesmo teto do filtro ?categoria= do GET (questionBank.js).
@@ -137,6 +141,13 @@ function statsFor(account) {
         ? null
         : (studentClass, courseId) => adminCanAccessClass(account, studentClass, courseId);
     return questionBankStats(db.memory, { canAccessClass });
+}
+
+// Item para a tela, com `imagens`: os arquivos de /uploads citados na questão (enunciado,
+// alternativas, explicação e resposta esperada), pelo referencedExamUploads do contrato C8.
+// A tela de Exportar avisa quantas questões têm imagem, que não vai no arquivo.
+function screenItem(item, stats = null) {
+    return { ...bankItemForScreen(item, stats), imagens: referencedExamUploads(item) };
 }
 
 function categoryOf(value, fallback = DEFAULT_CATEGORY) {
@@ -222,7 +233,7 @@ function createAdminQuestionBankRouter() {
             const stats = statsFor(matchedAdmin);
             const questions = visible
                 .filter(item => matchesBankFilters(item, parsed.filters))
-                .map(item => bankItemForScreen(item, stats.get(item.key)));
+                .map(item => screenItem(item, stats.get(item.key)));
             res.json({
                 success: true,
                 questions,
@@ -268,7 +279,7 @@ function createAdminQuestionBankRouter() {
                 details: { key: item.key, categoria: item.category, tipo: item.type },
             });
             db.save({ only: ['questionBank', 'auditLogs'] });
-            res.json({ success: true, question: bankItemForScreen(item) });
+            res.json({ success: true, question: screenItem(item) });
         });
     });
 
@@ -298,7 +309,7 @@ function createAdminQuestionBankRouter() {
             const changed = changedBankFields(baseline, next);
             if (changed.length === 0) {
                 // Nada mudou: a revisão fica, e nada é gravado nem auditado.
-                return res.json({ success: true, unchanged: true, question: bankItemForScreen(item, statsFor(matchedAdmin).get(item.key)) });
+                return res.json({ success: true, unchanged: true, question: screenItem(item, statsFor(matchedAdmin).get(item.key)) });
             }
             applyBankQuestion(item, normalized);
             if (req.body.category !== undefined) item.category = next.category;
@@ -316,7 +327,7 @@ function createAdminQuestionBankRouter() {
             db.save({ only: ['questionBank', 'auditLogs'] });
             // Item antigo com curriculumKey ou type de outro tipo volta como texto (o guardado
             // fica como estava, igual ao GET).
-            res.json({ success: true, question: bankItemForScreen(item, statsFor(matchedAdmin).get(item.key)) });
+            res.json({ success: true, question: screenItem(item, statsFor(matchedAdmin).get(item.key)) });
         });
     });
 
@@ -327,7 +338,7 @@ function createAdminQuestionBankRouter() {
             if (!item) return res.status(404).json({ error: 'Questão não encontrada no banco.' });
             const archived = req.body.archived !== false;
             if (isArchivedItem(item) === archived) {
-                return res.json({ success: true, unchanged: true, question: bankItemForScreen(item, statsFor(matchedAdmin).get(item.key)) });
+                return res.json({ success: true, unchanged: true, question: screenItem(item, statsFor(matchedAdmin).get(item.key)) });
             }
             item.archived = archived;
             item.updatedAt = new Date().toISOString();
@@ -340,7 +351,7 @@ function createAdminQuestionBankRouter() {
                 details: { key: item.key, categoria: categoryOf(item.category), texto: bankQuestionText(item).slice(0, 200) },
             });
             db.save({ only: ['questionBank', 'auditLogs'] });
-            res.json({ success: true, question: bankItemForScreen(item, statsFor(matchedAdmin).get(item.key)) });
+            res.json({ success: true, question: screenItem(item, statsFor(matchedAdmin).get(item.key)) });
         });
     });
 
@@ -409,7 +420,7 @@ function createAdminQuestionBankRouter() {
             res.json({
                 success: true,
                 importedCount: imported.length,
-                questions: imported.map(item => bankItemForScreen(item)),
+                questions: imported.map(item => screenItem(item)),
                 skippedCount: skipped.length,
                 skipped,
                 ...(skipped.length ? { message: skippedMessage } : {}),
@@ -515,7 +526,11 @@ function createAdminQuestionBankRouter() {
                 return res.status(404).json({ success: false, error: 'Nenhuma questão do banco com estes filtros para exportar.', code: 'nothing_to_export' });
             }
             const today = schoolDateOf(Date.now()) || new Date().toISOString().slice(0, 10);
-            const built = formato === 'gift' ? toGift(items, { exportedAt: today }) : toCsv(items);
+            // Contrato C8: as imagens citadas não vão no arquivo (só o endereço no Markdown);
+            // o GIFT lista os nomes num comentário, a auditoria guarda quantas e quais, e o
+            // cabeçalho X-IClass-Imagens diz quantas.
+            const imagens = [...new Set(items.flatMap(item => referencedExamUploads(item)))].sort();
+            const built = formato === 'gift' ? toGift(items, { exportedAt: today, imagens }) : toCsv(items);
             if (!built.quantidade) {
                 return res.status(404).json({ success: false, error: 'As questões desta lista estão incompletas e não podem ser exportadas. Abra e salve cada uma no banco.', code: 'nothing_to_export' });
             }
@@ -523,13 +538,14 @@ function createAdminQuestionBankRouter() {
                 req,
                 actor: matchedAdmin,
                 action: 'question_bank_exported',
-                details: { formato, quantidade: built.quantidade, foraDoArquivo: built.foraDoArquivo, filtros: parsed.filters },
+                details: { formato, quantidade: built.quantidade, foraDoArquivo: built.foraDoArquivo, filtros: parsed.filters, imagens: imagens.length, ...(imagens.length ? { arquivosDeImagem: imagens.slice(0, 50) } : {}) },
             });
             db.save({ only: ['auditLogs'] });
             const fileName = formato === 'gift' ? `banco-de-questoes_${today}.gift.txt` : `banco-de-questoes_${today}.csv`;
             res.setHeader('Content-Type', formato === 'gift' ? 'text/plain; charset=utf-8' : 'text/csv; charset=utf-8');
             res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
             res.setHeader('Cache-Control', 'no-store');
+            res.setHeader('X-IClass-Imagens', String(imagens.length));
             res.send(built.text);
         });
     });

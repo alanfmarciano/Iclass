@@ -844,7 +844,8 @@ test('[UC-BANCO-002] exportar e importar de novo dá as mesmas questões, em GIF
             assert.match(exported.headers['content-type'], /^text\/plain; charset=utf-8/);
             assert.match(exported.headers['content-disposition'], /banco-de-questoes_\d{4}-\d{2}-\d{2}\.gift\.txt/);
             const text = file.toString('utf8');
-            assert.match(text, /\$CATEGORY: Redes\/\/TCP\\: avançado/);
+            // O Moodle lê o nome da categoria sem tirar as barras de escape: o ":" vai como está.
+            assert.match(text, /\$CATEGORY: Redes\/\/TCP: avançado\r\n/);
             assert.match(text, /\/\/ \[tag:redes\] \[tag:HTTP\]/);
             assert.match(text, /\/\/ iclass: \{"points":2,"difficulty":"facil","skills":\["Competência 3"\]\}/);
         } else {
@@ -993,4 +994,133 @@ test('[UC-BANCO-002] GIFT: escapes, peso parcial, palavra que falta, HTML do Moo
     assert.match(numeric.avisos[0], /primeira que vale 100%/);
     assert.deepEqual(comma.questao.numeric, { value: 3.5, tolerance: 0.5, unit: 'ms' });
     assert.equal(comma.questao.review, 'professor');
+});
+
+// Rodada de ajuste 1 do A13 (verificação): "->" nas alternativas, "|" nas listas da
+// planilha, {=a =b ~c}, formato por resposta, texto que parece peso ou formato, categoria
+// com ":" e as imagens pelo referencedExamUploads (contrato C8).
+const exportFile = formato => asAdmin('get', `/api/admin/question-bank/export?formato=${formato}`).buffer(true).parse((res, cb) => {
+    const chunks = [];
+    res.on('data', chunk => chunks.push(chunk));
+    res.on('end', () => cb(null, Buffer.concat(chunks)));
+});
+
+test('[UC-BANCO-002] GIFT: "->" numa alternativa é texto (como no Moodle); só sem "~" é associação', () => {
+    const parsed = questionFormats.parseGift([
+        'Qual acessa o campo pelo ponteiro? {=p->next ~p.next ~*p.next}',
+        '',
+        'Várias {~%50%a->b ~%50%c ~%-100%d}',
+        '',
+        'Associe {=cão -> late =gato -> mia}',
+        '',
+        '// iclass: {"type":"short_answer"}',
+        'Resposta curta exportada pelo IClass {=a->b =c}',
+    ].join('\n'));
+    assert.deepEqual(parsed.erros, [{ linha: 5, mensagem: 'Questão de associação (->) não existe no IClass.' }]);
+    const [pointer, many, short] = parsed.entradas;
+    assert.equal(pointer.questao.type, 'multiple_choice');
+    assert.deepEqual(pointer.questao.alternatives, [{ text: 'p->next', isCorrect: true }, { text: 'p.next', isCorrect: false }, { text: '*p.next', isCorrect: false }]);
+    assert.equal(many.questao.type, 'multiple_answer');
+    assert.equal(many.questao.alternatives[0].text, 'a->b');
+    assert.equal(short.questao.type, 'short_answer');
+    assert.deepEqual(short.questao.acceptedAnswers, ['a->b', 'c']);
+    assert.equal(short.questao.type, 'short_answer');
+});
+
+test('[UC-BANCO-002] GIFT: {=a =b ~c} avisa que virou "Várias corretas"; formato por resposta; "=%50%x" numa de alternativas é a certa com esse texto', () => {
+    const parsed = questionFormats.parseGift([
+        'Porta do HTTP? {=80 =8080 ~21}',
+        '',
+        '[html]<p>Qual?</p>{=[html]<p>um <b>dois</b></p> ~[plain]três ####[html]<p>Porque <i>sim</i></p>}',
+        '',
+        'Desconto? {=%50% de desconto ~nenhum}',
+    ].join('\n'));
+    assert.deepEqual(parsed.erros, []);
+    const [two, html, percent] = parsed.entradas;
+    assert.equal(two.questao.type, 'multiple_answer');
+    assert.ok(two.avisos.some(text => /qualquer uma das certas valia a nota toda/.test(text) && /Várias corretas/.test(text)), JSON.stringify(two.avisos));
+    assert.deepEqual(html.questao.alternatives.map(item => item.text), ['um **dois**', 'três']);
+    assert.equal(html.questao.text, 'Qual?');
+    assert.equal(html.questao.explanation, 'Porque *sim*');
+    assert.deepEqual(percent.questao.alternatives, [{ text: '%50% de desconto', isCorrect: true }, { text: 'nenhum', isCorrect: false }]);
+});
+
+test('[UC-BANCO-002] ida e volta: "->", "|", texto que parece peso ou formato e categoria com ":" voltam iguais em GIFT e em planilha', async () => {
+    seed();
+    await create({ type: 'multiple_choice', text: 'Ponteiro em C?', alternatives: [{ text: 'p->next', isCorrect: true }, { text: '%50% de desconto' }, { text: '[html] é uma marca' }], explanation: '[html] também aqui' }, { category: 'Linguagem C: ponteiros / listas' });
+    await create({ type: 'short_answer', text: 'Filtre a listagem pelos .txt', acceptedAnswers: ['ls | grep txt', 'ls|grep txt', 'a->b', '%50%x', '[plain]y'], tags: ['shell|pipe', 'linux'], skills: ['Usar | no shell'] }, { category: 'Linux' });
+    await create({ type: 'multiple_answer', text: 'Quais acessam membro?', alternatives: [{ text: 'p->x', isCorrect: true }, { text: '%10% s.x', isCorrect: true }, { text: 'p=>x' }], partialCredit: true }, { category: 'Linguagem C: ponteiros / listas' });
+    await create({ type: 'essay', points: 2, text: 'Explique o pipe.', rubric: [{ nome: 'Usa | certo', pontos: 1 }, { nome: 'Clareza', pontos: 1 }] }, { category: 'Linux' });
+    const original = bankItems().map(item => ({ category: item.category, question: withoutKey(normalizeBankQuestion({}, { previous: item })) }));
+    const sortKey = entry => `${entry.category}\u0000${entry.question.questionText}`;
+    original.sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
+    for (const formato of ['gift', 'csv']) {
+        const exported = await exportFile(formato);
+        assert.equal(exported.status, 200);
+        if (formato === 'gift') {
+            const text = exported.body.toString('utf8');
+            assert.match(text, /\$CATEGORY: Linguagem C: ponteiros \/\/ listas\r\n/);
+            assert.match(text, /\t~%0%%50% de desconto\r\n/, 'errada que começa com "%50%" leva o peso 0 explícito');
+            assert.match(text, /\t~\[markdown\]\[html\] é uma marca\r\n/);
+            assert.match(text, /\/\/ iclass: \{"type":"short_answer"/);
+        } else {
+            const text = exported.body.toString('utf8');
+            assert.ok(text.includes('ls \\| grep txt | ls\\|grep txt | a->b'), 'o "|" do item vai como "\\|"');
+        }
+        const saved = db.memory.questionBank;
+        db.memory.questionBank = [];
+        const res = await preview(asFile(formato, exported.body, formato === 'gift' ? 'banco.gift.txt' : 'banco.csv'));
+        assert.equal(res.status, 200, JSON.stringify(res.body));
+        assert.deepEqual(res.body.erros, [], formato);
+        const confirmRes = await confirm(asFile(formato, exported.body, 'x'), res.body.sha256);
+        assert.equal(confirmRes.body.importadas, original.length, formato);
+        const back = bankItems().map(item => ({ category: item.category, question: withoutKey(normalizeBankQuestion({}, { previous: item })) }));
+        back.sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
+        assert.deepEqual(back, original, formato);
+        db.memory.questionBank = saved;
+    }
+});
+
+test('[UC-BANCO-002] planilha: lista com "\\|" é um item só; "|" sozinho separa', () => {
+    const { splitList, joinList } = questionFormats._internals;
+    assert.deepEqual(splitList('ls \\| grep txt | ls | pwd'), ['ls | grep txt', 'ls', 'pwd']);
+    assert.deepEqual(splitList('a|b'), ['a', 'b']);
+    const items = ['ls | grep txt', 'a\\|b', 'C:\\temp', 'fim\\'];
+    assert.deepEqual(splitList(joinList(items)), items);
+});
+
+test('[UC-BANCO-002] GIFT em Windows-1252 e UTF-16 (BOM) é lido sem pacote nem o leitor da planilha', async () => {
+    seed();
+    const text = 'Questão de configuração? {=sim ~não}\r\n';
+    const cp1252 = Buffer.from(text.replace('ã', '\u00e3'), 'latin1');
+    const utf16be = Buffer.concat([Buffer.from([0xFE, 0xFF]), Buffer.from(text, 'utf16le').swap16()]);
+    const utf16le = Buffer.concat([Buffer.from([0xFF, 0xFE]), Buffer.from(text, 'utf16le')]);
+    const curly = Buffer.from([...Buffer.from('Aspas '), 0x93, ...Buffer.from('x'), 0x94, ...Buffer.from(' {=a ~b}')]);
+    for (const [buffer, expected] of [[cp1252, 'Questão de configuração?'], [utf16be, 'Questão de configuração?'], [utf16le, 'Questão de configuração?'], [curly, 'Aspas \u201Cx\u201D']]) {
+        const res = await preview(asFile('gift', buffer, 'banco.txt'));
+        assert.equal(res.status, 200, JSON.stringify(res.body));
+        assert.equal(res.body.itens[0].questionText, expected);
+    }
+});
+
+test('[UC-BANCO-002] imagens (contrato C8): o GET traz as de cada questão; a exportação lista no GIFT, no cabeçalho e na auditoria', async () => {
+    seed();
+    const withImage = await create({ type: 'essay', text: 'Veja ![rede](/uploads/rede.png)', expectedAnswer: 'Como em <img src="/uploads/resposta.jpg">', explanation: 'Detalhe ![x](/uploads/rede.png)' });
+    await create({ type: 'multiple_choice', text: 'Sem imagem', alternatives: [{ text: 'a', isCorrect: true }, { text: '![b](/uploads/alt.png)' }] });
+    await create({ type: 'true_false', text: 'Nada aqui', correctAnswer: 'A' });
+    assert.deepEqual(withImage.imagens, ['rede.png', 'resposta.jpg'], 'a resposta esperada também conta');
+    const list = await asAdmin('get', '/api/admin/question-bank');
+    assert.deepEqual(list.body.questions.map(item => item.imagens), [['rede.png', 'resposta.jpg'], ['alt.png'], []]);
+    const gift = await exportFile('gift');
+    assert.equal(gift.headers['x-iclass-imagens'], '3');
+    assert.match(gift.body.toString('utf8'), /\/\/ As 3 imagens citadas nas questões não vão neste arquivo \(no outro computador, envie de novo pelo editor\): alt\.png, rede\.png, resposta\.jpg\./);
+    const entry = audits('question_bank_exported').pop();
+    assert.equal(entry.details.imagens, 3);
+    assert.deepEqual(entry.details.arquivosDeImagem, ['alt.png', 'rede.png', 'resposta.jpg']);
+    const csv = await exportFile('csv');
+    assert.equal(csv.headers['x-iclass-imagens'], '3');
+    // O arquivo GIFT com o comentário das imagens importa de volta sem erro.
+    const res = await preview(asFile('gift', gift.body, 'banco.gift.txt'));
+    assert.deepEqual(res.body.erros, []);
+    assert.equal(res.body.duplicadas, 3);
 });

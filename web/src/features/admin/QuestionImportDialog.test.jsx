@@ -24,6 +24,8 @@ import {
   importCount,
   importDuplicateText,
   importSummaryText,
+  markdownPlain,
+  bankExcerpt,
   questionsWithImages,
 } from './questionBankModel'
 
@@ -76,7 +78,16 @@ describe('[UC-BANCO-002] questionBankModel: importar e exportar', () => {
     expect(bankExportPath({}, 'gift')).toBe('/api/admin/question-bank/export?formato=gift')
     expect(bankExportPath({ categoria: 'Sub-redes', tag: 'ipv4', q: 'host', arquivadas: true }, 'csv'))
       .toBe('/api/admin/question-bank/export?formato=csv&categoria=Sub-redes&tag=ipv4&q=host&arquivadas=1')
-    expect(questionsWithImages([{ questionText: 'Veja ![rede](/uploads/a.png)' }, { questionText: 'sem' }, { questionText: 'x', alternatives: [{ text: '![b](/uploads/b.png)' }] }])).toBe(2)
+    // Quem diz se a questão tem imagem é o servidor (imagens, pelo referencedExamUploads):
+    // a resposta esperada conta, e o texto sem o campo não conta.
+    expect(questionsWithImages([{ imagens: ['a.png'] }, { imagens: [] }, { questionText: 'Veja ![rede](/uploads/a.png)' }, { imagens: ['b.png', 'c.png'] }])).toBe(2)
+  })
+
+  it('sem nada para importar, o botão diz isso; a prévia e o cartão mostram o enunciado sem as marcas do Markdown', () => {
+    expect(importConfirmLabel(0)).toBe('Nada para importar')
+    expect(markdownPlain('Qual porta o **HTTP** usa por _padrão_? Veja `curl` e ![rede](/uploads/a.png)')).toBe('Qual porta o HTTP usa por _padrão_? Veja curl e [imagem: rede]')
+    expect(markdownPlain('2 * 3 * 4 = 24 e *itálico*')).toBe('2 * 3 * 4 = 24 e itálico')
+    expect(bankExcerpt('# Título\n\n- item **um**\n```js\nx = 1\n```')).toBe('Título item um x = 1')
   })
 })
 
@@ -177,7 +188,7 @@ describe('[UC-BANCO-002] QuestionExportDialog e o painel do banco', () => {
   it('baixa em GIFT ou CSV com os filtros da lista e avisa das imagens', async () => {
     mocks.downloadFile.mockResolvedValue('banco-de-questoes_2026-11-23.csv')
     const onClose = vi.fn()
-    render(<QuestionExportDialog open onClose={onClose} filters={{ categoria: 'Redes', tipo: '', q: '' }} questions={[{ questionText: '![a](/uploads/a.png)' }, { questionText: 'b' }]} />)
+    render(<QuestionExportDialog open onClose={onClose} filters={{ categoria: 'Redes', tipo: '', q: '' }} questions={[{ questionText: '![a](/uploads/a.png)', imagens: ['a.png'] }, { questionText: 'b', imagens: [] }]} />)
     const dialog = screen.getByRole('dialog', { name: 'Exportar questões' })
     expect(within(dialog).getByText(/1 questão tem imagem/)).toBeTruthy()
     await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Baixar planilha (CSV)' })) })

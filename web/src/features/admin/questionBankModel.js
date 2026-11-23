@@ -87,8 +87,22 @@ export function bankAccuracyText(stats) {
 }
 
 // Texto curto do enunciado para a lista (o Markdown aparece como foi escrito).
+// Começo do enunciado em texto corrido, sem as marcas do Markdown (o cartão do banco e a
+// prévia da importação mostram "Qual porta o HTTP usa?", não "Qual porta o **HTTP**
+// usa?"); a imagem vira "[imagem]".
+export function markdownPlain(text) {
+  return String(text || '')
+    .replace(/```[^\n]*\n?/g, '')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, (match, alt) => (alt.trim() ? `[imagem: ${alt.trim()}]` : '[imagem]'))
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/(\*\*|__)(?=\S)([\s\S]*?\S)\1/g, '$2')
+    .replace(/(^|[^*\w])\*(?=\S)([^*\n]*?\S)\*(?!\*)/g, '$1$2')
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/^\s{0,3}(?:#{1,6}\s+|>\s?|[-*+]\s+(?=\S))/gm, '')
+}
+
 export function bankExcerpt(text, max = 180) {
-  const clean = String(text || '').replace(/\s+/g, ' ').trim()
+  const clean = markdownPlain(text).replace(/\s+/g, ' ').trim()
   return clean.length > max ? `${clean.slice(0, max - 3)}...` : clean
 }
 
@@ -117,6 +131,7 @@ export function importCount(preview, includeDuplicates = false) {
 }
 
 export function importConfirmLabel(count) {
+  if (!count) return 'Nada para importar'
   return count === 1 ? 'Importar 1 questão' : `Importar ${count} questões`
 }
 
@@ -141,10 +156,9 @@ export function importDuplicateText(item) {
 }
 
 // Questões da lista com imagem enviada: a imagem não vai no arquivo exportado (só o
-// endereço dela no Markdown).
+// endereço dela no Markdown). Quem diz é o servidor: cada item do GET traz `imagens`, os
+// arquivos citados no enunciado, nas alternativas, na explicação e na resposta esperada
+// (referencedExamUploads, contrato C8 do desenho P3).
 export function questionsWithImages(questions = []) {
-  return (Array.isArray(questions) ? questions : []).filter((question) => {
-    const texts = [question?.questionText, question?.explanation, ...(Array.isArray(question?.alternatives) ? question.alternatives.map((alternative) => (typeof alternative === 'string' ? alternative : alternative?.text)) : [])]
-    return texts.some((text) => /\]\(\/uploads\//.test(String(text || '')))
-  }).length
+  return (Array.isArray(questions) ? questions : []).filter((question) => Array.isArray(question?.imagens) && question.imagens.length > 0).length
 }

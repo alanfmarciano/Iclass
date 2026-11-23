@@ -27,8 +27,8 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 
 ### Importar e exportar o banco de questões
 - No banco de questões, "Importar" traz questões de um arquivo GIFT (o formato de texto do Moodle, e também o que outro IClass exporta) ou de uma planilha (CSV do Excel ou XLSX), escolhendo o arquivo ou colando o texto. Antes de gravar, a prévia mostra quantas questões estão prontas, as que têm erro com a linha do arquivo e as que já estão no banco; as repetidas ficam de fora, a não ser que você peça.
-- O GIFT entra com os seis tipos, a explicação, as etiquetas e a categoria; o texto em HTML do Moodle vira texto com negrito e código. A questão de associação, que não existe no IClass, aparece como erro da linha.
-- "Exportar" baixa as questões da lista, com os filtros de agora, em GIFT (para o Moodle ou outro IClass, sem perder pontos, dificuldade nem rubrica) ou em planilha CSV, que abre no Excel com os acentos. Importar o arquivo exportado traz as mesmas questões de volta.
+- O GIFT entra com os seis tipos, a explicação, as etiquetas e a categoria; o texto em HTML do Moodle vira texto com negrito e código, também nas alternativas. Alternativa com seta, como `p->next` de C, entra normalmente; a questão de associação, que não existe no IClass, aparece como erro da linha. A questão do Moodle com duas alternativas certas em que o aluno marca uma (`{=80 =8080 ~21}`) vira "Várias corretas", com um aviso na prévia para conferir.
+- "Exportar" baixa as questões da lista, com os filtros de agora, em GIFT (para o Moodle ou outro IClass, sem perder pontos, dificuldade nem rubrica) ou em planilha CSV, que abre no Excel com os acentos. Importar o arquivo exportado traz as mesmas questões de volta, inclusive alternativa com seta (`p->next`) e resposta com barra vertical (`ls | grep txt`, que a planilha escreve `ls \| grep txt`). A imagem da questão não vai no arquivo: a tela avisa quantas questões têm imagem e o arquivo GIFT lista os nomes.
 - A importação e a exportação ficam na Auditoria. A Coordenação pode exportar, mas não importa.
 
 ### Prova do aluno com os tipos novos de questão

@@ -1355,9 +1355,6 @@ module.exports = {
     TabularFileError,
     buildXlsx,
     columnLetter,
-    // Texto de um arquivo enviado (BOM, UTF-8 ou Windows-1252), também para o GIFT do banco
-    // de questões (utils/questionFormats.js), que não é planilha.
-    decodeText,
     fileSha256,
     parseTabularFile,
     // Para os testes.

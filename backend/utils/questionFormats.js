@@ -27,14 +27,19 @@
 //   questão com o que o GIFT não tem (pontos, dificuldade, habilidades, revisão, unidade,
 //   resposta esperada, rubrica, pontuação parcial): o Moodle ignora a linha e o IClass lê
 //   de volta (ida e volta sem perder nada).
-// Associação (->) não existe no IClass e vira erro na linha.
+// - o formato ([html] etc.) também vale no começo de cada resposta e do comentário geral;
+// - como no Moodle, "->" só é associação sem "~" (com "=" e "->"); associação não existe
+//   no IClass e vira erro na linha. Com "~", "p->next" é texto da alternativa;
+// - {=a =b ~c} (no Moodle o aluno marca uma e qualquer certa vale tudo) vira "Várias
+//   corretas", com aviso.
+// Texto em UTF-8, UTF-16 com BOM ou Windows-1252 (decodeGiftBytes).
 //
 // Planilha: lida só por parseTabularFile (utils/tabularFile.js, contrato C4 do P4; CSV com
 // ";", "," ou tab, UTF-8 ou Windows-1252, e também XLSX) e gravada por buildCsv
 // (utils/gradebook.js, com csvSafe contra fórmula). A primeira linha é o cabeçalho, com as
 // colunas de CSV_COLUMNS em qualquer ordem (sem acento, maiúscula ou espaço importar);
 // só "enunciado" é obrigatória. O apóstrofo que o csvSafe põe na frente de "=", "+", "-"
-// e "@" sai na leitura.
+// e "@" sai na leitura. Listas com "|" entre os itens; "\|" é um "|" dentro do item.
 //
 // Cada questão passa pelo modelo único do banco (normalizeBankQuestion): o erro de uma
 // questão vem com a linha onde ela começa e não impede as outras.
@@ -49,7 +54,7 @@ const {
     normalizeBankQuestion,
 } = require('./questionBank.js');
 const { normalizeSearch } = require('./textSearch.js');
-const { TabularFileError, decodeText, fileSha256, parseTabularFile } = require('./tabularFile.js');
+const { TabularFileError, fileSha256, parseTabularFile } = require('./tabularFile.js');
 const { buildCsv } = require('./gradebook.js');
 
 const IMPORT_LIMITS = Object.freeze({
@@ -81,6 +86,37 @@ function formatDecimal(value) {
     const number = Number(value);
     if (!Number.isFinite(number)) return '';
     return String(number).replace('.', ',');
+}
+
+// ------------------------------------------------------------------ GIFT: texto do arquivo
+
+// Bytes do arquivo GIFT -> texto: BOM de UTF-8 ou UTF-16, UTF-8 conferido byte a byte e,
+// se não for UTF-8, Windows-1252 (o "Bloco de Notas" antigo e o Moodle em Windows).
+// Mesma regra do texto do CSV em utils/tabularFile.js (que é da trilha da planilha e
+// fica sem mudança); GIFT não é planilha e não passa pelo parseTabularFile.
+const CP1252_HIGH = [
+    0x20AC, 0x81, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, 0x02C6, 0x2030, 0x0160, 0x2039, 0x0152, 0x8D, 0x017D, 0x8F,
+    0x90, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, 0x02DC, 0x2122, 0x0161, 0x203A, 0x0153, 0x9D, 0x017E, 0x0178,
+];
+
+function decodeGiftBytes(buffer) {
+    if (buffer.length >= 3 && buffer[0] === 0xEF && buffer[1] === 0xBB && buffer[2] === 0xBF) return buffer.subarray(3).toString('utf8');
+    if (buffer.length >= 2 && buffer[0] === 0xFF && buffer[1] === 0xFE) return buffer.subarray(2).toString('utf16le');
+    if (buffer.length >= 2 && buffer[0] === 0xFE && buffer[1] === 0xFF) {
+        const body = Buffer.from(buffer.subarray(2, 2 + (buffer.length - 2) - ((buffer.length - 2) % 2)));
+        body.swap16();
+        return body.toString('utf16le');
+    }
+    try {
+        return new TextDecoder('utf-8', { fatal: true }).decode(buffer);
+    } catch (error) {
+        const chars = [];
+        for (let index = 0; index < buffer.length; index += 1) {
+            const byte = buffer[index];
+            chars.push(String.fromCharCode(byte >= 0x80 && byte <= 0x9F ? CP1252_HIGH[byte - 0x80] : byte));
+        }
+        return chars.join('');
+    }
 }
 
 // ------------------------------------------------------------------ GIFT: escapes
@@ -185,11 +221,16 @@ function splitAnswers(section) {
     marks.forEach((start, index) => {
         const end = index + 1 < marks.length ? marks[index + 1] : section.length;
         const mark = section[start];
-        const { weight, rest } = readWeight(section.slice(start + 1, end));
-        const hash = rest.indexOf('#');
-        const text = (hash >= 0 ? rest.slice(0, hash) : rest).trim();
-        const feedback = hash >= 0 ? rest.slice(hash + 1).trim() : '';
-        tokens.push({ mark, weight, text, feedback });
+        const body = section.slice(start + 1, end);
+        const { weight, rest } = readWeight(body);
+        // `plain`: o texto sem ler o peso. Numa questão de alternativas, o Moodle só lê o
+        // peso depois de "~": "=%50% de desconto" é a certa, com o texto "%50% de desconto".
+        const cutFeedback = value => {
+            const hash = value.indexOf('#');
+            return { text: (hash >= 0 ? value.slice(0, hash) : value).trim(), feedback: hash >= 0 ? value.slice(hash + 1).trim() : '' };
+        };
+        const { text, feedback } = cutFeedback(rest);
+        tokens.push({ mark, weight, text, feedback, plain: cutFeedback(body).text });
     });
     return { tokens, leading };
 }
@@ -224,7 +265,9 @@ function parseNumericAnswer(text) {
 }
 
 // Campos que o comentário "// iclass: {...}" pode trazer (o que o GIFT não tem).
-const META_FIELDS = Object.freeze(['points', 'partialCredit', 'review', 'unit', 'expectedAnswer', 'rubric', 'difficulty', 'skills', 'tags']);
+// `type` só serve para a resposta curta com "->" numa resposta (o Moodle leria como
+// associação; o IClass grava o tipo para ler de volta).
+const META_FIELDS = Object.freeze(['type', 'points', 'partialCredit', 'review', 'unit', 'expectedAnswer', 'rubric', 'difficulty', 'skills', 'tags']);
 
 function readComments(comments, warn) {
     const tags = [];
@@ -254,8 +297,9 @@ function readComments(comments, warn) {
 }
 
 // Uma questão GIFT (já sem os comentários, com os escapes protegidos) -> questão crua para
-// o modelo do banco. Lança QuestionFormatError com a mensagem da linha.
-function parseGiftQuestion(source, warn) {
+// o modelo do banco. `meta`: o comentário "// iclass:" já lido (ou null). Lança
+// QuestionFormatError com a mensagem da linha.
+function parseGiftQuestion(source, warn, meta = null) {
     let text = source.trim();
     if (text.startsWith('::')) {
         const close = text.indexOf('::', 2);
@@ -279,14 +323,27 @@ function parseGiftQuestion(source, warn) {
         before = before.slice(marker[0].length);
     }
     let image = false;
+    // Cada resposta e o comentário geral podem ter o próprio formato ("=[html]<p>a</p>"),
+    // como no Moodle; sem ele, vale o do enunciado.
     const toText = value => {
-        const restored = restoreGift(value).trim();
-        if (format !== 'html') return restored;
+        let restored = restoreGift(value).trim();
+        let textFormat = format;
+        const own = FORMAT_MARKER.exec(restored);
+        if (own) {
+            textFormat = own[1].toLowerCase();
+            restored = restored.slice(own[0].length).trim();
+        }
+        if (textFormat !== 'html') return restored;
         const converted = htmlToText(restored);
         if (converted.image) image = true;
         return converted.text;
     };
-    let questionText = toText(before);
+    let questionText = restoreGift(before).trim();
+    if (format === 'html') {
+        const converted = htmlToText(questionText);
+        if (converted.image) image = true;
+        questionText = converted.text;
+    }
     if (after) {
         questionText = `${questionText} ${MISSING_WORD} ${toText(after)}`.trim();
         warn(`a questão de palavra que falta virou "${MISSING_WORD}" no enunciado.`);
@@ -329,11 +386,15 @@ function parseGiftQuestion(source, warn) {
         const { tokens, leading } = splitAnswers(answers);
         if (leading) throw new QuestionFormatError('cada resposta começa com = (certa) ou ~ (errada).', 'gift_answers');
         if (!tokens.length) throw new QuestionFormatError('a questão não tem respostas.', 'gift_answers');
-        if (tokens.some(token => token.text.includes('->'))) {
+        // Como no Moodle: com "~" é de alternativas ("p->next" é só texto); sem "~", com "="
+        // e "->", é associação, que não existe aqui. A resposta curta que o IClass exporta
+        // com "->" numa resposta leva o tipo no comentário // iclass:.
+        const hasTilde = tokens.some(token => token.mark === '~');
+        if (!hasTilde && answers.includes('->') && !(meta && meta.type === 'short_answer')) {
             throw new QuestionFormatError('questão de associação (->) não existe no IClass.', 'gift_matching');
         }
         if (tokens.some(token => token.feedback)) warn('o comentário de cada resposta (#) não existe no IClass e ficou de fora.');
-        if (tokens.every(token => token.mark === '=')) {
+        if (!hasTilde) {
             raw.type = 'short_answer';
             const full = tokens.filter(token => token.weight === null || token.weight === 100);
             if (full.length < tokens.length) warn('as respostas que valem só parte dos pontos ficaram de fora; ficaram as que valem 100%.');
@@ -349,7 +410,11 @@ function parseGiftQuestion(source, warn) {
                 warn('a alternativa que valia só parte dos pontos virou errada: aqui a questão de uma correta vale tudo ou nada.');
             }
             raw.type = correct.length > 1 ? 'multiple_answer' : 'multiple_choice';
-            raw.alternatives = tokens.map(token => ({ text: toText(token.text), isCorrect: correct.includes(token) }));
+            if (hasFull && correct.length > 1) {
+                // {=80 =8080 ~21}: no Moodle o aluno marca uma e qualquer certa vale tudo.
+                warn('no Moodle, o aluno marcava uma alternativa e qualquer uma das certas valia a nota toda; aqui a questão virou "Várias corretas", em que o aluno marca todas as certas (com pontuação parcial). Confira antes de usar.');
+            }
+            raw.alternatives = tokens.map(token => ({ text: toText(token.mark === '=' ? token.plain : token.text), isCorrect: correct.includes(token) }));
             if (raw.type === 'multiple_answer') raw.partialCredit = true;
         }
     }
@@ -402,8 +467,8 @@ function parseGift(text) {
         const warn = message => { const text = capitalize(message); if (!avisos.includes(text)) avisos.push(text); };
         try {
             const protectedText = protectGift(content.map(line => line.text).join('\n'));
-            const parsed = parseGiftQuestion(protectedText, warn);
             const comments = readComments(current.comments, warn);
+            const parsed = parseGiftQuestion(protectedText, warn, comments.meta);
             entradas.push({ linha, categoria: category, questao: applyGiftMeta(parsed, comments), avisos });
         } catch (error) {
             if (!(error instanceof QuestionFormatError)) throw error;
@@ -493,8 +558,15 @@ function cellText(value) {
     return /^'[=+\-@\t\r]/.test(text) ? text.slice(1) : text;
 }
 
+// Listas da planilha (respostas aceitas, rubrica, habilidades, etiquetas): itens
+// separados por "|"; um "|" dentro do item é escrito "\|" (a exportação escreve assim: a
+// resposta "ls | grep txt" volta inteira).
 function splitList(value) {
-    return String(value || '').split('|').map(item => item.trim()).filter(Boolean);
+    return String(value || '').split(/(?<!\\)\|/).map(item => item.replace(/\\\|/g, '|').trim()).filter(Boolean);
+}
+
+function joinList(items) {
+    return (Array.isArray(items) ? items : []).map(item => String(item).replace(/\|/g, '\\|')).join(LIST_SEPARATOR);
 }
 
 // "A, C", "A e C", "A;C", "AC" -> ['A', 'C']; V/F: "V", "F", "Verdadeiro", "Falso".
@@ -691,7 +763,7 @@ function readQuestionImport({ formato, conteudo, arquivo, nomeArquivo, categoria
     let parsed;
     if (formato === 'gift') {
         if (looksBinary(buffer)) throw new QuestionFormatError('O arquivo não é um texto GIFT. No Moodle, exporte o banco em "Formato GIFT"; para planilha, escolha "Planilha (CSV)".', 'unsupported_format');
-        const { texto } = decodeText(buffer);
+        const texto = decodeGiftBytes(buffer);
         if (texto.includes('\u0000')) throw new QuestionFormatError('O arquivo não é um texto GIFT.', 'unsupported_format');
         parsed = { ...parseGift(texto), avisos: [] };
     } else {
@@ -761,6 +833,9 @@ function weightText(value) {
 
 function giftMeta(question) {
     const meta = {};
+    // Resposta curta com "->" numa resposta: sem o tipo, a leitura (aqui e no Moodle) diria
+    // que é associação.
+    if (question.type === 'short_answer' && (question.acceptedAnswers || []).some(answer => String(answer).includes('->'))) meta.type = 'short_answer';
     if (question.points !== undefined && question.points !== 1) meta.points = question.points;
     if (question.type === 'multiple_answer' && question.partialCredit === false) meta.partialCredit = false;
     if ((question.type === 'numeric' || question.type === 'short_answer') && question.review === 'professor') meta.review = 'professor';
@@ -774,17 +849,30 @@ function giftMeta(question) {
     return meta;
 }
 
+// Texto de uma resposta ou do comentário geral: o GIFT não tem escape para "%50%" nem
+// para "[html]" no começo do texto, então o texto que começa assim leva antes o peso
+// (`weight`, quando a leitura lê o peso ali) e o formato explícitos: "~%0%%50% de
+// desconto" é a errada "%50% de desconto", "=[markdown][html] é uma marca" é a certa
+// "[html] é uma marca" (o Moodle e o IClass leem um só de cada).
+function giftText(text, { weight = '' } = {}) {
+    let escaped = giftEscape(text);
+    if (FORMAT_MARKER.test(escaped)) escaped = `[markdown]${escaped}`;
+    if (weight && readWeight(escaped).weight !== null) escaped = `%${weight}%${escaped}`;
+    return escaped;
+}
+
 function giftAnswers(question) {
     const lines = [];
     const alternatives = Array.isArray(question.alternatives) ? question.alternatives : [];
     if (question.type === 'multiple_choice') {
-        alternatives.forEach(alternative => lines.push(`${alternative.isCorrect ? '=' : '~'}${giftEscape(alternative.text)}`));
+        // Depois de "=", o peso não é lido (como no Moodle); depois de "~", é.
+        alternatives.forEach(alternative => lines.push(alternative.isCorrect ? `=${giftText(alternative.text)}` : `~${giftText(alternative.text, { weight: '0' })}`));
     } else if (question.type === 'multiple_answer') {
         const correct = alternatives.filter(alternative => alternative.isCorrect).length;
         const wrong = alternatives.length - correct;
         alternatives.forEach(alternative => {
             const weight = alternative.isCorrect ? 100 / correct : -100 / (wrong || 1);
-            lines.push(`~%${weightText(weight)}%${giftEscape(alternative.text)}`);
+            lines.push(`~%${weightText(weight)}%${giftText(alternative.text)}`);
         });
     } else if (question.type === 'true_false') {
         lines.push(question.correctAnswer === 'B' ? 'FALSE' : 'TRUE');
@@ -792,14 +880,24 @@ function giftAnswers(question) {
         const numeric = question.numeric || {};
         lines.push(`#${numeric.value}${Number(numeric.tolerance) > 0 ? `:${numeric.tolerance}` : ''}`);
     } else if (question.type === 'short_answer') {
-        (question.acceptedAnswers || []).forEach(answer => lines.push(`=${giftEscape(answer)}`));
+        (question.acceptedAnswers || []).forEach(answer => lines.push(`=${giftText(answer, { weight: '100' })}`));
     }
-    if (question.explanation) lines.push(`####${giftEscape(question.explanation)}`);
+    if (question.explanation) lines.push(`####${giftText(question.explanation)}`);
     return lines;
 }
 
-// Itens do banco -> texto GIFT. Devolve { text, quantidade, foraDoArquivo }.
-function toGift(items, { exportedAt = '' } = {}) {
+// Nome da categoria no "$CATEGORY:": o Moodle lê o nome como está (não tira as barras de
+// escape), então só a barra do caminho vira "//" e a barra invertida que viraria escape na
+// leitura do IClass é dobrada.
+function giftCategoryLine(category) {
+    const name = String(category || '').replace(/[\r\n]+/g, ' ').replace(/\\(?=[\\~=#{}:n])/g, '\\\\').replace(/\//g, '//');
+    return `$CATEGORY: ${name}`;
+}
+
+// Itens do banco -> texto GIFT. `imagens`: os arquivos de /uploads citados nas questões
+// (referencedExamUploads, contrato C8), que não vão no texto: o arquivo lista os nomes num
+// comentário. Devolve { text, quantidade, foraDoArquivo }.
+function toGift(items, { exportedAt = '', imagens = [] } = {}) {
     const groups = new Map();
     let skipped = 0;
     (Array.isArray(items) ? items : []).forEach(item => {
@@ -814,10 +912,14 @@ function toGift(items, { exportedAt = '' } = {}) {
         `// Banco de questões do IClass${exportedAt ? `, exportado em ${exportedAt}` : ''}: ${total} ${total === 1 ? 'questão' : 'questões'}.`,
         '// Formato GIFT: importe no Moodle (Banco de questões > Importar > GIFT) ou em outro IClass (Provas > Ver banco de questões > Importar).',
         '// As linhas "// iclass:" guardam o que o GIFT não tem (pontos, dificuldade, rubrica...); o Moodle as ignora.',
-        '',
     ];
+    const images = (Array.isArray(imagens) ? imagens : []).map(name => String(name).replace(/[\r\n]/g, '')).filter(Boolean);
+    if (images.length) {
+        out.push(`// ${images.length === 1 ? 'A imagem citada nas questões não vai' : `As ${images.length} imagens citadas nas questões não vão`} neste arquivo (no outro computador, envie de novo pelo editor): ${images.join(', ')}.`);
+    }
+    out.push('');
     groups.forEach((questions, category) => {
-        out.push(`$CATEGORY: ${giftEscape(category).replace(/\//g, '//')}`, '');
+        out.push(giftCategoryLine(category), '');
         questions.forEach(question => {
             const tags = (question.tags || []).filter(tag => !/[\]\r\n]/.test(tag));
             if (tags.length) out.push(`// ${tags.map(tag => `[tag:${tag}]`).join(' ')}`);
@@ -853,16 +955,16 @@ function sheetRow(question, category) {
         cells.unidade = numeric.unit || '';
         cells.revisao = question.review === 'professor' ? 'professor' : '';
     } else if (question.type === 'short_answer') {
-        cells.respostas_aceitas = (question.acceptedAnswers || []).join(LIST_SEPARATOR);
+        cells.respostas_aceitas = joinList(question.acceptedAnswers);
         cells.revisao = question.review === 'professor' ? 'professor' : '';
     } else {
         cells.resposta_esperada = question.expectedAnswer || '';
-        cells.rubrica = (question.rubric || []).map(criterion => `${criterion.nome}: ${formatDecimal(criterion.pontos)}`).join(LIST_SEPARATOR);
+        cells.rubrica = joinList((question.rubric || []).map(criterion => `${criterion.nome}: ${formatDecimal(criterion.pontos)}`));
     }
     cells.explicacao = question.explanation || '';
     cells.dificuldade = { facil: 'Fácil', media: 'Média', dificil: 'Difícil' }[question.difficulty] || '';
-    cells.habilidades = (question.skills || []).join(LIST_SEPARATOR);
-    cells.etiquetas = (question.tags || []).join(LIST_SEPARATOR);
+    cells.habilidades = joinList(question.skills);
+    cells.etiquetas = joinList(question.tags);
     return CSV_COLUMNS.map(column => cells[column.key]);
 }
 
@@ -891,5 +993,5 @@ module.exports = {
     toCsv,
     toGift,
     // Para os testes.
-    _internals: { giftEscape, htmlToText, protectGift, restoreGift, giftCategory, readLetters },
+    _internals: { giftEscape, htmlToText, protectGift, restoreGift, giftCategory, readLetters, splitList, joinList, decodeGiftBytes },
 };
