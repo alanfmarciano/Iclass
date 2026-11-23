@@ -16,6 +16,7 @@
 //   anotação usam `trim: false`. O tamanho é o .length do texto (como o maxLength do
 //   navegador), contado depois de aparar.
 // - Número que a tela manda como texto usa `coerce: true` (o número volta para req.body).
+//   Com `emptyAsNull: true` (e `nullable: true`), o texto vazio ou só com espaços vale null.
 //
 // Uso:
 //   const { body, str, int } = require('../utils/inputSchema.js');
@@ -105,6 +106,9 @@ function numberCheck(integer) {
         let number = value;
         if (opts.coerce && typeof value === 'string') {
             const text = value.trim();
+            // emptyAsNull (com nullable): o campo numérico vazio da tela ('' ou só espaços)
+            // vale null, igual a apagar o valor; sem a opção, o texto vazio é tipo errado.
+            if (!text && opts.emptyAsNull && opts.nullable) return pass(null);
             const shape = integer ? /^-?\d{1,15}$/ : /^-?(?:\d{1,15}(?:\.\d+)?|\.\d+)$/;
             if (!shape.test(text)) return fail(field, MESSAGES.invalid(label));
             number = Number(text);
@@ -120,12 +124,12 @@ function numberCheck(integer) {
     };
 }
 
-// Inteiro: { min, max, coerce, nullable, required, label }.
+// Inteiro: { min, max, coerce, nullable, emptyAsNull, required, label }.
 function int(options = {}) {
     return validator('int', options, numberCheck(true));
 }
 
-// Número (com casas decimais): { min, max, coerce, nullable, required, label }.
+// Número (com casas decimais): { min, max, coerce, nullable, emptyAsNull, required, label }.
 function num(options = {}) {
     return validator('num', options, numberCheck(false));
 }

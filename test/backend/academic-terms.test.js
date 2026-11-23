@@ -480,6 +480,19 @@ test('[UC-CURSO-002] disciplinas: carga horária, professor e módulos pela rota
     assert.equal(badProfessor.status, 400);
     assert.equal((await as('admin', 'post', '/api/admin/course/disciplinas').send({ courseId: 'TI', disciplinas: 'x' })).body.error, 'Lista de disciplinas inválida.');
     assert.equal(db.memory.courses[0].disciplinas[0].cargaHoraria, 80, 'recusado, nada muda');
+    // O campo numérico vazio da tela ('' ou só espaços) apaga a carga horária, igual a null
+    // (C6: um campo enviado vazio apaga); texto que não é número continua 400.
+    const blank = await as('admin', 'post', '/api/admin/course/disciplinas').send({ courseId: 'TI', disciplinas: [{ id: 'REDES', nome: 'Redes', cargaHoraria: '' }, { id: 'BD', nome: 'Banco de Dados', cargaHoraria: '  ' }] });
+    assert.equal(blank.status, 200, JSON.stringify(blank.body));
+    assert.equal('cargaHoraria' in db.memory.courses[0].disciplinas[0], false, "'' apaga a carga horária");
+    assert.equal('cargaHoraria' in db.memory.courses[0].disciplinas[1], false, "'  ' apaga a carga horária");
+    assert.deepEqual(db.memory.courses[0].disciplinas[0].modulos, ['M1'], 'os outros campos ficam');
+    const word = await as('admin', 'post', '/api/admin/course/disciplinas').send({ courseId: 'TI', disciplinas: [{ id: 'REDES', nome: 'Redes', cargaHoraria: 'oitenta' }] });
+    assert.equal(word.status, 400);
+    assert.equal(word.body.field, 'disciplinas[0].cargaHoraria');
+    const again = await as('admin', 'post', '/api/admin/course/disciplinas').send({ courseId: 'TI', disciplinas: [{ id: 'REDES', nome: 'Redes', cargaHoraria: ' 80 ' }, { id: 'BD', nome: 'Banco de Dados' }] });
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    assert.equal(db.memory.courses[0].disciplinas[0].cargaHoraria, 80);
 
     // Módulo que só existe na estrutura própria de uma turma também vale.
     db.memory.classes[0].contentOverrides = { materials: {}, evaluations: {}, unitNames: {}, extraUnits: [], structure: [{ id: 'M1', name: 'Redes', units: [] }, { id: 'M_EXTRA', name: 'Extra', units: [] }] };

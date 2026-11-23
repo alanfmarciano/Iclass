@@ -3252,7 +3252,7 @@ router.post('/api/admin/class/update', (req, res) => {
 // a normalização de sempre (sanitizeDisciplinas).
 const DISCIPLINAS_SCHEMA = body({
     disciplinas: list(shape({
-        cargaHoraria: int({ min: 0, max: attendanceUtil.DISCIPLINA_CARGA_MAX, coerce: true, nullable: true, label: 'carga horária' }),
+        cargaHoraria: int({ min: 0, max: attendanceUtil.DISCIPLINA_CARGA_MAX, coerce: true, nullable: true, emptyAsNull: true, label: 'carga horária' }),
         professor: str({ max: 80, nullable: true, label: 'professor responsável' }),
         modulos: list(str({ max: 200, label: 'módulo' }), { max: 60, nullable: true, label: 'módulos da disciplina' }),
     }, { nullable: true, label: 'disciplina' }), { max: 100, label: 'disciplinas' }),
