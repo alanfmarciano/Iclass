@@ -61,12 +61,24 @@ describe('Início do aluno · atividades a fazer', () => {
     render(<MemoryRouter><InicioPage /></MemoryRouter>)
     const card = screen.getByRole('heading', { name: 'Atividades a fazer (2)' }).closest('.premium-card')
     expect(within(card).getByText('Relatório de redes')).toBeInTheDocument()
-    expect(within(card).getByText('Prazo: seg., 23/11 às 14:00 (falta 1 dia)')).toBeInTheDocument()
+    expect(within(card).getByText('Prazo: seg., 23/11 às 14:00 (falta 1 dia e 2 horas)')).toBeInTheDocument()
     expect(within(card).getByText('Diagrama')).toBeInTheDocument()
     expect(within(card).queryByText('Já enviada')).not.toBeInTheDocument()
     fireEvent.click(within(card).getByText('Relatório de redes'))
     expect(navigate).toHaveBeenCalledWith('/aluno/atividades/asg_a')
     fireEvent.click(within(card).getByRole('button', { name: 'Ver todas' }))
     expect(navigate).toHaveBeenCalledWith('/aluno/atividades')
+  })
+})
+
+// C9 ajuste 2 (UXA-25): o número "Pendências" não levava a nada; agora abre os conteúdos.
+describe('Início do aluno · Pendências', () => {
+  it('o cartão "Pendências" abre os conteúdos liberados', () => {
+    mocks.dashboard = { modules: [], announcements: [], calendar: [], pendingCount: 6 }
+    mocks.assignments = { serverNow: Date.now(), timezone: 'America/Sao_Paulo', assignments: [] }
+    render(<MemoryRouter><InicioPage /></MemoryRouter>)
+    const button = screen.getByRole('button', { name: /Pendências\s*6\s*Conteúdos liberados para estudar/ })
+    fireEvent.click(button)
+    expect(navigate).toHaveBeenCalledWith('/aluno/modulos')
   })
 })

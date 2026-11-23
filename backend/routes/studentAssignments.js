@@ -681,7 +681,8 @@ function createStudentAssignmentsRouter() {
         if (!found) return refuseBeforeBody(req, res, () => undefined);
         const { task, cls } = found;
         // O mesmo envio já chegou (a resposta se perdeu): devolve a versão dele antes de
-        // conferir turma, prazo e aceite, e sem receber os arquivos de novo.
+        // conferir turma, prazo e aceite, e sem gravar os arquivos de novo (a resposta sai
+        // logo; o corpo que ainda estiver subindo é lido e descartado, sem ir para o disco).
         const envioId = requestEnvioId(req);
         const earlier = assignments.findSubmission(db.memory, task.id, req.studentEmail);
         const repeated = envioId ? assignments.versionByEnvioId(earlier, envioId) : null;

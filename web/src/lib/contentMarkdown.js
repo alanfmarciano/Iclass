@@ -82,6 +82,28 @@ function cleanGeneratedHtml(html) {
   })
 }
 
+// Desce os títulos de um HTML já limpo (markdownToHtml) em `offset` níveis, para o texto
+// caber debaixo dos títulos da página: as instruções da atividade do aluno (C9, ajuste 2)
+// ficam debaixo do <h1> da atividade e do <h2> "Instruções", e um '# Parte 1' virava um
+// segundo <h1> na página. O título vira h(N + offset), no máximo h6, com a classe
+// 'prose-nivel-N', que mantém o tamanho que ele tinha (index.css).
+export function shiftHeadingLevels(html, offset = 2) {
+  const step = Math.max(0, Math.floor(Number(offset) || 0))
+  if (!html || !step || typeof DOMParser === 'undefined') return html || ''
+  const doc = new DOMParser().parseFromString(`<main>${html}</main>`, 'text/html')
+  const root = doc.body.firstElementChild
+  if (!root) return html
+  root.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach((heading) => {
+    const level = Number(heading.tagName.slice(1))
+    const next = doc.createElement(`h${Math.min(6, level + step)}`)
+    for (const attr of Array.from(heading.attributes)) next.setAttribute(attr.name, attr.value)
+    next.classList.add(`prose-nivel-${level}`)
+    while (heading.firstChild) next.appendChild(heading.firstChild)
+    heading.replaceWith(next)
+  })
+  return root.innerHTML
+}
+
 function escapeHtmlText(value) {
   return String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
 }

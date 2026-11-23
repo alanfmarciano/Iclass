@@ -311,8 +311,13 @@ export async function downloadFile(path, fallbackName = 'arquivo') {
 // sai como AbortError, sem mensagem de conexão). timeoutMs: prazo (padrão 0 = sem prazo,
 // porque o tempo depende do tamanho do arquivo e da rede da sala). headers: cabeçalhos a
 // mais do pedido (o envio da atividade manda o x-envio-id); os de sessão vêm sempre.
+// stallMs (C9, ajuste 2): prazo SEM NOVIDADE, contado de novo a cada pedaço que sobe e
+// quando a resposta começa a chegar (padrão 0 = desligado). A Wi-Fi da sala congestionada
+// pode parar de passar dados sem fechar a conexão; sem este prazo o envio ficava parado
+// até o sistema desistir da conexão, muitos minutos depois. Estourado, o pedido é
+// cancelado e o erro sai como o do tempo-limite (status 0, err.timeout), com err.stalled.
 // Devolve o JSON da resposta (ou null sem corpo JSON).
-export function uploadWithProgress(path, formData, { method = 'POST', onProgress, signal, timeoutMs = 0, headers: extraHeaders = null } = {}) {
+export function uploadWithProgress(path, formData, { method = 'POST', onProgress, signal, timeoutMs = 0, stallMs = 0, headers: extraHeaders = null } = {}) {
   return new Promise((resolve, reject) => {
     if (signal && signal.aborted) { reject(abortError(signal)); return }
     if (typeof XMLHttpRequest !== 'function') { reject(noteFailure(connectionError('network'))); return }
@@ -320,14 +325,29 @@ export function uploadWithProgress(path, formData, { method = 'POST', onProgress
     const xhr = new XMLHttpRequest()
     let settled = false
     let timedOut = false
+    let stalled = false
     let timer = null
+    let stallTimer = null
+    const stallLimit = Math.max(0, Number(stallMs) || 0)
     const onCallerAbort = () => { try { xhr.abort() } catch {} }
     const finish = () => {
       settled = true
       if (timer) clearTimeout(timer)
+      if (stallTimer) clearTimeout(stallTimer)
       if (signal) signal.removeEventListener('abort', onCallerAbort)
     }
+    const timeoutError = () => {
+      const err = noteFailure(connectionError('timeout'))
+      if (stalled) err.stalled = true
+      return err
+    }
     const fail = (err) => { if (settled) return; finish(); reject(err) }
+    // Algo andou (pedaço enviado, resposta chegando): o prazo sem novidade recomeça.
+    const armStall = () => {
+      if (!stallLimit || settled) return
+      if (stallTimer) clearTimeout(stallTimer)
+      stallTimer = setTimeout(() => { stalled = true; timedOut = true; try { xhr.abort() } catch {} }, stallLimit)
+    }
     const report = (loaded, total) => {
       if (typeof onProgress !== 'function') return
       const safeTotal = Number(total) > 0 ? Number(total) : 0
@@ -342,14 +362,19 @@ export function uploadWithProgress(path, formData, { method = 'POST', onProgress
       return
     }
     if (xhr.upload) {
-      xhr.upload.onprogress = (event) => { if (event && event.lengthComputable) report(event.loaded, event.total) }
-      xhr.upload.onload = () => report(1, 1)
+      xhr.upload.onprogress = (event) => {
+        armStall()
+        if (event && event.lengthComputable) report(event.loaded, event.total)
+      }
+      xhr.upload.onload = () => { armStall(); report(1, 1) }
     }
+    // Cabeçalhos ou pedaços da resposta chegando também contam como novidade.
+    xhr.onreadystatechange = () => { if (xhr.readyState >= 2) armStall() }
     xhr.onload = () => {
       if (settled) return
       const status = xhr.status
       // Status 0 no onload: o navegador não recebeu resposta de verdade (conexão cortada).
-      if (!status) { fail(noteFailure(connectionError(timedOut ? 'timeout' : 'network'))); return }
+      if (!status) { fail(timedOut ? timeoutError() : noteFailure(connectionError('network'))); return }
       const res = { headers: { get: (name) => xhr.getResponseHeader(name) } }
       noteBuildFrom(res, path, headers)
       let data = null
@@ -367,10 +392,10 @@ export function uploadWithProgress(path, formData, { method = 'POST', onProgress
       }
       resolve(data)
     }
-    xhr.onerror = () => fail(noteFailure(connectionError(timedOut ? 'timeout' : 'network')))
-    xhr.ontimeout = () => fail(noteFailure(connectionError('timeout')))
+    xhr.onerror = () => fail(timedOut ? timeoutError() : noteFailure(connectionError('network')))
+    xhr.ontimeout = () => fail(timeoutError())
     xhr.onabort = () => {
-      if (timedOut) fail(noteFailure(connectionError('timeout')))
+      if (timedOut) fail(timeoutError())
       else fail(abortError(signal))
     }
     if (signal) signal.addEventListener('abort', onCallerAbort, { once: true })
@@ -378,6 +403,7 @@ export function uploadWithProgress(path, formData, { method = 'POST', onProgress
     if (limit > 0) timer = setTimeout(() => { timedOut = true; try { xhr.abort() } catch {} }, limit)
     try {
       xhr.send(formData)
+      armStall()
     } catch {
       fail(noteFailure(connectionError('network')))
     }

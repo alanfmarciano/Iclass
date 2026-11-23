@@ -92,6 +92,8 @@ Foto grande (mais de 3 MB) é reduzida no próprio celular para chegar mais ráp
 
 Se a internet da sala cair no meio, aparece **Tentar de novo**: os arquivos que você escolheu continuam lá. Ao tocar, a tela primeiro confere se o envio tinha chegado; se chegou, mostra o comprovante, e o mesmo envio nunca vira duas versões. Se a rede ainda estiver fora, nada é enviado: espere a Wi-Fi voltar e toque de novo.
 
+Se a Wi-Fi ficar lenta e a barra parar, a tela avisa **A rede está lenta**. Você pode esperar ou tocar em **Cancelar envio**: os arquivos escolhidos continuam lá. Se nada andar por 45 segundos, o envio é interrompido sozinho e aparece **Tentar de novo**, que funciona do mesmo jeito (confere antes se o envio chegou).
+
 **Prazo:** vale a hora do computador do professor, mostrada na tela da atividade, e a hora em que o envio **chegou**, não a hora em que terminou de subir. Depois do prazo, a tela avisa **Você está enviando com atraso** e diz a regra da atividade (aceita e marca atrasada, aceita com desconto ou não aceita mais).
 
 **Comprovante:** depois de enviar, aparece "Recebido às 14:32 de 20/11 — versão 2 — 3 arquivos (5,2 MB) — código A1B2C3D4". **Imprimir comprovante** abre o comprovante da escola para imprimir ou salvar em PDF. O professor vê o mesmo código.

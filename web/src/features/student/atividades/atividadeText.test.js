@@ -3,7 +3,7 @@ import { printDocumentHtml } from '../../../lib/printDocument'
 import {
   MB, buildSubmissionForm, closeLine, dateTimeText, deadlineLine, emptySubmissionText, fileProblem, groupAssignments,
   isToDo, limitsText, linkProblem, newEnvioId, receiptDocument, receiptLine, responseKindsText, returnSummary, sectionOf, situationText, versionWithEnvioId,
-  selectionProblem, situationTone, versionTimingText, withExtension,
+  selectionProblem, situationTone, studentRelativeDeadlineText, versionTimingText, withExtension,
 } from './atividadeText'
 
 // Fase 3, C9 (P1-g; FUN-01): textos e regras das telas de atividade do aluno. Antes do C9
@@ -79,11 +79,24 @@ describe('atividades do aluno: prazo no relógio da escola', () => {
   it('escreve o prazo no fuso da escola e o "faltam" pelo relógio do servidor', () => {
     const dueAt = Date.UTC(2026, 10, 25, 2, 0) // 24/11 23:00 em São Paulo
     expect(dateTimeText(dueAt, TZ, NOW)).toBe('ter., 24/11 às 23:00')
-    expect(deadlineLine({ situacao: 'a_fazer', aceitaEnvio: true, dueAt }, NOW, TZ)).toBe('Prazo: ter., 24/11 às 23:00 (faltam 2 dias)')
+    expect(deadlineLine({ situacao: 'a_fazer', aceitaEnvio: true, dueAt }, NOW, TZ)).toBe('Prazo: ter., 24/11 às 23:00 (faltam 2 dias e 11 horas)')
     // Enviada ou devolvida: sem o "faltam".
     expect(deadlineLine({ situacao: 'enviada', aceitaEnvio: true, dueAt }, NOW, TZ)).toBe('Prazo: ter., 24/11 às 23:00')
     expect(deadlineLine({ situacao: 'atrasada', aceitaEnvio: true, dueAt: NOW - 3 * DAY }, NOW, TZ)).toMatch(/\(terminou há 3 dias\)$/)
     expect(deadlineLine({ situacao: 'a_fazer', dueAt: null }, NOW, TZ)).toBe('Sem prazo definido')
+  })
+
+  it('C9 ajuste 2: nos três últimos dias o "faltam" do aluno mostra também as horas (1 dia e 23 h não é "falta 1 dia")', () => {
+    const HOUR = 60 * 60 * 1000
+    expect(studentRelativeDeadlineText(NOW + DAY + 23 * HOUR + 59 * 60000, NOW)).toBe('falta 1 dia e 23 horas')
+    expect(studentRelativeDeadlineText(NOW + DAY + HOUR, NOW)).toBe('falta 1 dia e 1 hora')
+    expect(studentRelativeDeadlineText(NOW + DAY + 20 * 60000, NOW)).toBe('falta 1 dia')
+    expect(studentRelativeDeadlineText(NOW + 2 * DAY + 5 * HOUR, NOW)).toBe('faltam 2 dias e 5 horas')
+    // Menos de um dia e três dias ou mais: como no painel do professor.
+    expect(studentRelativeDeadlineText(NOW + 5 * HOUR, NOW)).toBe('faltam 5 horas')
+    expect(studentRelativeDeadlineText(NOW + 3 * DAY + 20 * HOUR, NOW)).toBe('faltam 3 dias')
+    expect(studentRelativeDeadlineText(NOW - DAY - 5 * HOUR, NOW)).toBe('terminou há 1 dia')
+    expect(studentRelativeDeadlineText(null, NOW)).toBe('')
   })
 
   it('mostra o ano quando o prazo é de outro ano e não depende do fuso do aparelho', () => {

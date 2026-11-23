@@ -39,15 +39,19 @@ const EVENT_TONES = { aula: 'info', prova: 'danger', entrega: 'warning', aviso: 
 // Rótulo do tipo de evento (o dia não letivo, feriado ou recesso, aparece como "Sem aula").
 const EVENT_LABELS = { nao_letivo: 'Sem aula', reuniao: 'reunião' }
 
-function Metric({ label, value, helper, icon: Icon, tone = 'text-primary' }) {
-  return (
-    <Card className="premium-card-interactive relative overflow-hidden p-5">
+// onClick: o cartão leva à tela do número (a "Pendências" abre os conteúdos liberados,
+// UXA-25: antes o número não levava a nada).
+function Metric({ label, value, helper, icon: Icon, tone = 'text-primary', onClick }) {
+  const card = (
+    <Card className="premium-card-interactive relative h-full overflow-hidden p-5">
       <span className="absolute -right-5 -top-6 h-20 w-20 rounded-full bg-primary-soft blur-2xl" aria-hidden />
       <div className="flex items-center justify-between gap-3"><span className="text-[13px] font-medium text-muted">{label}</span><span className={`grid h-10 w-10 place-items-center rounded-xl bg-surface-2 ${tone}`}><Icon size={17} /></span></div>
       <p className="mt-4 text-[1.8rem] font-semibold leading-none tracking-[-0.04em] tabular-nums text-text">{value}</p>
       <p className="mt-2 text-xs text-subtle">{helper}</p>
     </Card>
   )
+  if (typeof onClick !== 'function') return card
+  return <button type="button" onClick={onClick} className="block h-full w-full rounded-[inherit] text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">{card}</button>
 }
 
 function CourseProgress({ value = 0 }) {
@@ -134,7 +138,7 @@ export default function InicioPage() {
           <Metric label="Nota geral" value={fmtGradeValue(data.overallNote, '-')} helper={data.overallNote == null ? 'Aguardando publicação' : 'Somente notas publicadas'} icon={TrendingUp} tone="text-success" />
           <Metric label="Frequência" value={data.frequency == null ? '-' : `${data.frequency}%`} helper={data.frequency == null ? 'Sem registros ainda' : 'Presença registrada'} icon={UserCheck} tone="text-info" />
           <Metric label="Tópicos concluídos" value={`${data.completedCount || 0}/${data.totalUnits || 0}`} helper="Progresso no curso" icon={CheckCircle2} tone="text-success" />
-          <Metric label="Pendências" value={data.pendingCount || 0} helper="Conteúdos liberados" icon={AlertTriangle} tone="text-warning" />
+          <Metric label="Pendências" value={data.pendingCount || 0} helper="Conteúdos liberados para estudar" icon={AlertTriangle} tone="text-warning" onClick={() => nav('/aluno/modulos')} />
         </div>
 
         <AtividadesAFazer data={assignments.data} onOpenAll={() => nav('/aluno/atividades')} onOpen={(id) => nav(atividadeHref(id))} />

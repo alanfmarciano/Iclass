@@ -135,10 +135,28 @@ export function fullDateTimeText(ms, timezone) {
 
 // Linha do prazo: 'Prazo: sex., 22/11 às 23:00 (faltam 2 dias)'. O "faltam" só aparece
 // enquanto a atividade espera o envio (na enviada ou devolvida ele só atrapalha).
+// "Faltam" do aluno (ajuste 2 do C9): o texto do painel (relativeDeadlineText, C7) conta
+// os dias inteiros, e com 1 dia e 23 horas o aluno lia "falta 1 dia" e achava que era
+// amanhã. Nos três últimos dias o aluno vê também as horas: "falta 1 dia e 23 horas".
+// Menos de um dia e mais de três ficam como no painel. As horas são cortadas para baixo
+// (nunca mostra mais tempo do que tem).
+const HOUR_MS = 60 * 60 * 1000
+const DAY_MS = 24 * HOUR_MS
+export function studentRelativeDeadlineText(ms, now) {
+  if (typeof ms !== 'number' || !Number.isFinite(ms) || typeof now !== 'number' || !Number.isFinite(now)) return ''
+  const diff = ms - now
+  if (diff < DAY_MS || diff >= 3 * DAY_MS) return relativeDeadlineText(ms, now)
+  const days = Math.floor(diff / DAY_MS)
+  const hours = Math.floor((diff - days * DAY_MS) / HOUR_MS)
+  const dayText = `${days} ${days === 1 ? 'dia' : 'dias'}`
+  if (!hours) return `${days === 1 ? 'falta' : 'faltam'} ${dayText}`
+  return `${days === 1 ? 'falta' : 'faltam'} ${dayText} e ${hours} ${hours === 1 ? 'hora' : 'horas'}`
+}
+
 export function deadlineLine(row, now, timezone) {
   if (!row || typeof row.dueAt !== 'number') return 'Sem prazo definido'
   const absolute = dateTimeText(row.dueAt, timezone, now)
-  const relative = isToDo(row) && row.situacao !== 'refazer' ? relativeDeadlineText(row.dueAt, now) : ''
+  const relative = isToDo(row) && row.situacao !== 'refazer' ? studentRelativeDeadlineText(row.dueAt, now) : ''
   return `Prazo: ${absolute}${relative ? ` (${relative})` : ''}`
 }
 

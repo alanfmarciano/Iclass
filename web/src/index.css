@@ -103,6 +103,10 @@ button { -webkit-tap-highlight-color: transparent; }
 .prose-iclass { color: var(--text); line-height: 1.75; }
 .prose-iclass h1,.prose-iclass h2,.prose-iclass h3 { color: var(--text); font-weight: 700; letter-spacing: -.02em; margin: 1.2em 0 .5em; }
 .prose-iclass h1 { font-size: 1.6rem; } .prose-iclass h2 { font-size: 1.3rem; } .prose-iclass h3 { font-size: 1.1rem; }
+/* Título descido de nível (shiftHeadingLevels, instruções da atividade do aluno): o nível
+   muda para a leitura de tela, o tamanho fica o de antes. */
+.prose-iclass h4,.prose-iclass h5,.prose-iclass h6 { color: var(--text); font-weight: 700; letter-spacing: -.02em; margin: 1.2em 0 .5em; }
+.prose-iclass .prose-nivel-1 { font-size: 1.6rem; } .prose-iclass .prose-nivel-2 { font-size: 1.3rem; } .prose-iclass .prose-nivel-3 { font-size: 1.1rem; }
 .prose-iclass p { margin: .7em 0; }
 .prose-iclass a { color: var(--primary); text-decoration: underline; }
 .prose-iclass code { background: var(--surface-2); padding: .1em .4em; border-radius: 6px; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: .9em; }

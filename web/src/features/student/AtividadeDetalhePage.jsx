@@ -15,13 +15,19 @@
 //   nada); se chegou, mostra o comprovante dela. Se não chegou, manda de novo com o mesmo
 //   identificador, e o servidor devolve a versão que já existe em vez de criar outra (o
 //   envio que chegou a tempo não vira versão atrasada nem recusa "prazo terminou").
+// - Rede parada sem cair (Wi-Fi da sala congestionada, ajuste 2): passados STALL_MS sem
+//   nada subir nem a resposta chegar, o envio é interrompido sozinho e vira o mesmo caso
+//   da resposta perdida (confere pelo identificador antes de mandar de novo). Depois de
+//   SLOW_HINT_MS parado, a tela avisa que a rede está lenta; "Cancelar envio" interrompe
+//   na hora e mantém os arquivos escolhidos. As consultas de conferência têm prazo
+//   (CHECK_TIMEOUT_MS), para a tela nunca ficar presa em "Enviando…".
 // - Comprovante: a linha "Recebido às 14:32 de 20/11 — versão 2 — ..." recebe o foco
 //   depois do envio, e "Imprimir comprovante" sai pelo printDocument (cabeçalho da escola).
 // - Hora: prazo, "faltam" e o relógio mostrados são os do computador do professor (o
 //   servidor manda serverNow e o fuso); o do celular pode estar errado (D8).
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from 'react-router-dom'
-import { AlertTriangle, ArrowLeft, Camera, CheckCircle2, Clock, Download, ExternalLink, FileText, Printer, RotateCcw, Send, Trash2 } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, Camera, CheckCircle2, Clock, Download, ExternalLink, FileText, Printer, RotateCcw, Send, Trash2, X } from 'lucide-react'
 import { Card } from '../../components/ui/Card'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
@@ -32,7 +38,7 @@ import { HelpLink } from '../../components/ui/HelpLink'
 import { useApi } from '../../hooks/useApi'
 import { useBranding } from '../../context/BrandingProvider'
 import { api, downloadFile, uploadWithProgress } from '../../lib/api'
-import { markdownToHtml } from '../../lib/contentMarkdown'
+import { markdownToHtml, shiftHeadingLevels } from '../../lib/contentMarkdown'
 import { openPrintWindow, printDocument, schoolFromBranding } from '../../lib/printDocument'
 import { resizeImage, shouldResizeImage } from '../../lib/imageResize'
 import { useStudent } from './useStudent'
@@ -44,6 +50,14 @@ import {
 } from './atividades/atividadeText'
 
 const CLOCK_TICK_MS = 30000
+// Sem nada subir nem resposta por este tempo, o envio é interrompido (ajuste 2).
+export const STALL_MS = 45000
+// Parado há este tempo: aviso de rede lenta com a saída "Cancelar envio".
+export const SLOW_HINT_MS = 10000
+// Prazo das consultas que conferem se o envio chegou (sem ele, rede parada prendia a tela).
+export const CHECK_TIMEOUT_MS = 20000
+export const STALLED_MESSAGE = 'A rede parou de responder no meio do envio. Os arquivos escolhidos continuam aqui: toque em Tentar de novo.'
+export const CANCELLED_MESSAGE = 'Envio cancelado. Os arquivos escolhidos continuam aqui: toque em Tentar de novo quando a rede melhorar.'
 let itemSeq = 0
 
 export function detailPath(id, courseId, studentClass) {
@@ -183,15 +197,19 @@ export default function AtividadeDetalhePage() {
   const [error, setError] = useState(null) // { message, retry, unknown, envioId }
   const [receipt, setReceipt] = useState(null) // { version, recovered }
   const [printError, setPrintError] = useState('')
+  const [slow, setSlow] = useState(false) // envio parado há SLOW_HINT_MS
   const inputRef = useRef(null)
   const receiptRef = useRef(null)
   const mountedRef = useRef(true)
   // Identificador do envio da escolha atual (null: escolha nova, ganha um no próximo envio).
   const envioIdRef = useRef(null)
+  // Cancelamento do envio em andamento ("Cancelar envio") e a hora da última novidade dele.
+  const abortRef = useRef(null)
+  const lastActivityRef = useRef(0)
   const now = useServerClock(data?.serverNow)
   const timezone = data?.timezone || ''
 
-  useEffect(() => () => { mountedRef.current = false }, [])
+  useEffect(() => { mountedRef.current = true; return () => { mountedRef.current = false } }, [])
   // Sair da página no meio do envio pergunta antes (o navegador mostra a caixa dele).
   useEffect(() => {
     if (phase !== 'sending') return undefined
@@ -202,13 +220,22 @@ export default function AtividadeDetalhePage() {
   useEffect(() => {
     if (receipt && receiptRef.current) receiptRef.current.focus()
   }, [receipt])
+  // Rede lenta: nada subiu (nem resposta) há SLOW_HINT_MS.
+  useEffect(() => {
+    if (phase !== 'sending') { setSlow(false); return undefined }
+    // Relógio da tela (não consulta o servidor).
+    const timer = setInterval(() => setSlow(Date.now() - lastActivityRef.current >= SLOW_HINT_MS), 1000)
+    return () => clearInterval(timer)
+  }, [phase])
 
   const assignment = data?.assignment || null
   const aceita = data?.aceita || {}
   const resposta = aceita.resposta || {}
   const versions = data?.minhaEntrega?.versoes || []
   const devolucao = returnSummary(data?.devolucao)
-  const instructionsHtml = useMemo(() => (assignment?.instructions ? markdownToHtml(assignment.instructions) : ''), [assignment?.instructions])
+  // Os títulos das instruções descem dois níveis (ficam debaixo do h1 da atividade e do h2
+  // "Instruções"): só um <h1> na página.
+  const instructionsHtml = useMemo(() => (assignment?.instructions ? shiftHeadingLevels(markdownToHtml(assignment.instructions), 2) : ''), [assignment?.instructions])
   const sending = phase === 'sending' || phase === 'checking'
   const preparing = items.some((item) => item.preparing)
   const accepts = !!data?.aceitaEnvio
@@ -295,7 +322,7 @@ export default function AtividadeDetalhePage() {
     if (previous && previous.unknown && previous.envioId === envioId) {
       setPhase('checking')
       try {
-        const fresh = await api.get(detailPath(id, courseId, studentClass))
+        const fresh = await api.get(detailPath(id, courseId, studentClass), { timeoutMs: CHECK_TIMEOUT_MS })
         if (!mountedRef.current) return
         if (fresh && fresh.success !== false) detail.setData(fresh)
         const arrived = versionWithEnvioId(fresh?.minhaEntrega?.versoes, envioId)
@@ -309,11 +336,19 @@ export default function AtividadeDetalhePage() {
     }
     setPhase('sending')
     setProgress(0)
+    const controller = new AbortController()
+    abortRef.current = controller
+    lastActivityRef.current = Date.now()
     try {
       const form = buildSubmissionForm({ files, text, link, resposta })
       const result = await uploadWithProgress(submitPath(assignment.id), form, {
         headers: { 'x-envio-id': envioId },
-        onProgress: ({ percent }) => { if (mountedRef.current) setProgress(percent) },
+        signal: controller.signal,
+        stallMs: STALL_MS,
+        onProgress: ({ percent }) => {
+          lastActivityRef.current = Date.now()
+          if (mountedRef.current) { setSlow(false); setProgress(percent) }
+        },
       })
       if (!mountedRef.current) return
       // repetido: o servidor já tinha esta versão (a resposta de antes se perdeu).
@@ -321,15 +356,27 @@ export default function AtividadeDetalhePage() {
       detail.refetch(true)
     } catch (err) {
       if (!mountedRef.current) return
-      // Sem resposta (rede caiu no meio): o envio pode ter chegado. A consulta abaixo e o
-      // "Tentar de novo" conferem pelo identificador antes de mandar outra vez.
-      const unknown = !!err && err.status === 0 && !err.aborted
-      if (unknown) await detail.refetch(true)
-      if (!mountedRef.current) return
-      setError({ message: err?.message || 'Não foi possível enviar agora. Tente de novo.', retry: err?.status === 0 || err?.retryable === true || err?.data?.retryable === true, unknown, envioId })
+      // Sem resposta (rede caiu, parou ou o aluno cancelou no meio): o envio pode ter
+      // chegado. A consulta abaixo e o "Tentar de novo" conferem pelo identificador antes
+      // de mandar outra vez. A consulta corre por trás, com prazo: o aviso e o "Tentar de
+      // novo" aparecem na hora, e se a versão chegou o comprovante dela toma o lugar (efeito
+      // abaixo). Esperar a consulta com a rede parada segurava "Enviando…" por mais 20 s.
+      // (Sair da página não cancela: o envio segue e chega.)
+      const cancelled = controller.signal.aborted
+      const unknown = cancelled || (!!err && err.status === 0 && !err.aborted)
+      if (unknown) detail.refetch(true, { timeoutMs: CHECK_TIMEOUT_MS })
+      const message = cancelled ? CANCELLED_MESSAGE : err?.stalled ? STALLED_MESSAGE : (err?.message || 'Não foi possível enviar agora. Tente de novo.')
+      setError({ message, retry: cancelled || err?.status === 0 || err?.retryable === true || err?.data?.retryable === true, unknown, envioId })
     } finally {
+      if (abortRef.current === controller) abortRef.current = null
       if (mountedRef.current) setPhase('idle')
     }
+  }
+
+  // "Cancelar envio": interrompe o pedido em andamento; a escolha (e o identificador)
+  // continua, e o "Tentar de novo" confere se o envio chegou antes de mandar de novo.
+  function cancelSend() {
+    if (abortRef.current) abortRef.current.abort()
   }
 
   // A resposta do envio se perdeu, mas a versão com o identificador deste envio apareceu
@@ -485,13 +532,17 @@ export default function AtividadeDetalhePage() {
                   {phase === 'sending' && <ProgressBar percent={progress} />}
                   <div aria-live="polite" className="text-sm">
                     {phase === 'checking' && <span className="text-muted">Conferindo se o envio anterior chegou…</span>}
-                    {phase === 'sending' && <span className="text-muted">{progress >= 100 ? 'Arquivos enviados. Esperando a confirmação do professor…' : 'Enviando… não feche esta página.'}</span>}
+                    {phase === 'sending' && <span className="text-muted">{progress >= 100 ? 'Os arquivos saíram deste aparelho. Esperando o computador do professor confirmar que recebeu…' : 'Enviando… não feche esta página.'}</span>}
+                    {phase === 'sending' && slow && <span className="mt-1 block text-warning">A rede está lenta. Você pode esperar ou tocar em Cancelar envio: os arquivos escolhidos continuam aqui.</span>}
                     {error && !sending && <span role="alert" className="text-danger">{error.message}</span>}
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <Button type="button" size="lg" icon={error?.retry ? RotateCcw : Send} className="h-12 flex-1" onClick={submit} loading={sending} disabled={preparing}>
                       {phase === 'checking' ? 'Conferindo…' : sending ? 'Enviando…' : error?.retry ? 'Tentar de novo' : lateNow ? 'Enviar com atraso' : 'Enviar'}
                     </Button>
+                    {phase === 'sending' && (
+                      <Button type="button" variant="secondary" size="lg" icon={X} className="h-12" onClick={cancelSend}>Cancelar envio</Button>
+                    )}
                   </div>
                   {preparing && <p className="text-xs text-muted">Preparando a foto para enviar…</p>}
                 </div>

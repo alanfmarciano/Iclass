@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import AtividadeDetalhePage from './AtividadeDetalhePage'
+import AtividadeDetalhePage, { CANCELLED_MESSAGE, CHECK_TIMEOUT_MS, SLOW_HINT_MS, STALL_MS, STALLED_MESSAGE } from './AtividadeDetalhePage'
 
 // Fase 3, C9 (P1-g; FUN-01, D8, D9 e D12 do P1): a atividade no portal do aluno, com o
 // envio pelo celular. Antes do C9 o portal não tinha input type=file nem rota de atividade.
@@ -138,7 +138,8 @@ describe('atividade do aluno: o que enviar', () => {
     renderPage()
     expect(screen.getByRole('heading', { name: 'Relatório da prática' })).toBeInTheDocument()
     expect(screen.getByText('A fazer')).toBeInTheDocument()
-    expect(screen.getByText('Prazo: ter., 24/11 às 23:00 (faltam 2 dias)')).toBeInTheDocument()
+    // C9 ajuste 2: com menos de três dias, o aluno vê também as horas.
+    expect(screen.getByText('Prazo: ter., 24/11 às 23:00 (faltam 2 dias e 11 horas)')).toBeInTheDocument()
     expect(screen.getAllByText('Depois do prazo, a entrega é aceita e fica marcada como atrasada.').length).toBeGreaterThan(0)
     expect(screen.getByText('Hora no computador do professor: 12:00', { exact: false })).toBeInTheDocument()
     expect(screen.getByText('relatório').tagName).toBe('STRONG')
@@ -235,7 +236,8 @@ describe('atividade do aluno: escolher e enviar', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Tentar de novo' }))
     await screen.findByText('Envio recebido.')
     // Antes de mandar de novo, perguntou ao servidor se o envio tinha chegado (não tinha).
-    expect(mocks.get).toHaveBeenCalledWith('/api/student/assignments/asg_1?courseId=DES&studentClass=1DES')
+    // A conferência tem prazo (com a rede parada, a tela não fica presa em "Conferindo…").
+    expect(mocks.get).toHaveBeenCalledWith('/api/student/assignments/asg_1?courseId=DES&studentClass=1DES', { timeoutMs: CHECK_TIMEOUT_MS })
     expect(mocks.upload).toHaveBeenCalledTimes(2)
     expect(mocks.upload.mock.calls[1][1].getAll('files').map((f) => f.name)).toEqual(['relatorio.pdf'])
     // O mesmo identificador nas duas tentativas (o servidor não cria versão repetida).
@@ -268,6 +270,80 @@ describe('atividade do aluno: escolher e enviar', () => {
     expect(within(recovered.closest('[role="status"]')).getByText('Recebido às 14:32 de 20/11 — versão 1 — 1 arquivo (2,0 MB) — código CODV1AAA')).toBeInTheDocument()
     expect(mocks.setData).toHaveBeenCalled()
     expect(screen.queryByRole('list', { name: 'Arquivos escolhidos' })).not.toBeInTheDocument()
+  })
+
+  it('C9 ajuste 2: rede parada sem cair: o envio leva stallMs e o cancelamento, e o "parou" vira "Tentar de novo" com os mesmos arquivos', async () => {
+    const stalled = Object.assign(new Error('O servidor do IClass demorou demais para responder. Confira se ele está ligado e tente de novo.'), { status: 0, timeout: true, stalled: true })
+    mocks.upload = vi.fn().mockRejectedValueOnce(stalled).mockResolvedValueOnce({ success: true, version: version(1) })
+    renderPage()
+    choose(file('relatorio.pdf', 2 * MB, 'application/pdf'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Enviar' }))
+    expect(await screen.findByText(STALLED_MESSAGE)).toBeInTheDocument()
+    const options = mocks.upload.mock.calls[0][2]
+    expect(options.stallMs).toBe(STALL_MS)
+    expect(STALL_MS).toBeGreaterThanOrEqual(30000)
+    expect(STALL_MS).toBeLessThanOrEqual(60000)
+    expect(options.signal).toBeInstanceOf(AbortSignal)
+    // A consulta logo depois do erro também tem prazo.
+    expect(mocks.refetch).toHaveBeenCalledWith(true, { timeoutMs: CHECK_TIMEOUT_MS })
+    expect(screen.getByText('relatorio.pdf')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Tentar de novo' }))
+    await screen.findByText('Envio recebido.')
+    // Conferiu antes de mandar de novo, com o mesmo identificador.
+    expect(mocks.get).toHaveBeenCalledTimes(1)
+    expect(mocks.upload.mock.calls[1][2].headers['x-envio-id']).toBe(options.headers['x-envio-id'])
+  })
+
+  it('C9 ajuste 2: "Cancelar envio" interrompe na hora, mantém a escolha e o "Tentar de novo" confere antes de mandar', async () => {
+    mocks.upload = vi.fn()
+      .mockImplementationOnce((path, form, options) => new Promise((resolve, reject) => {
+        options.onProgress({ loaded: 33, total: 100, percent: 33 })
+        options.signal.addEventListener('abort', () => reject(Object.assign(new Error('Pedido cancelado.'), { name: 'AbortError', aborted: true, status: 0 })))
+      }))
+      .mockResolvedValueOnce({ success: true, version: version(1) })
+    // A rede continua parada: a consulta de conferência não responde. O aviso e o "Tentar
+    // de novo" não esperam por ela.
+    mocks.refetch = vi.fn(() => new Promise(() => {}))
+    renderPage()
+    choose(file('relatorio.pdf', 2 * MB, 'application/pdf'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Enviar' }))
+    await screen.findByRole('progressbar', { name: 'Envio dos arquivos' })
+    fireEvent.click(screen.getByRole('button', { name: 'Cancelar envio' }))
+    expect(await screen.findByText(CANCELLED_MESSAGE)).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Cancelar envio' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('progressbar')).not.toBeInTheDocument()
+    expect(screen.getByText('relatorio.pdf')).toBeInTheDocument()
+    // O pedido cancelado pode ter chegado: confere pelo identificador antes de mandar.
+    expect(mocks.refetch).toHaveBeenCalledWith(true, { timeoutMs: CHECK_TIMEOUT_MS })
+    fireEvent.click(screen.getByRole('button', { name: 'Tentar de novo' }))
+    await screen.findByText('Envio recebido.')
+    expect(mocks.get).toHaveBeenCalledTimes(1)
+    expect(mocks.upload).toHaveBeenCalledTimes(2)
+    expect(mocks.upload.mock.calls[1][2].headers['x-envio-id']).toBe(mocks.upload.mock.calls[0][2].headers['x-envio-id'])
+  })
+
+  it('C9 ajuste 2: parado há alguns segundos avisa que a rede está lenta; o 100% não diz que o professor já recebeu', async () => {
+    vi.useFakeTimers({ toFake: ['Date', 'setInterval', 'clearInterval'] })
+    try {
+      let progress
+      mocks.upload = vi.fn((path, form, options) => { progress = options.onProgress; return new Promise(() => {}) })
+      renderPage()
+      choose(file('relatorio.pdf', 2 * MB, 'application/pdf'))
+      fireEvent.click(await screen.findByRole('button', { name: 'Enviar' }))
+      await screen.findByRole('progressbar', { name: 'Envio dos arquivos' })
+      expect(screen.getByRole('button', { name: 'Cancelar envio' })).toBeInTheDocument()
+      await act(async () => { vi.advanceTimersByTime(SLOW_HINT_MS - 2000) })
+      expect(screen.queryByText(/A rede está lenta/)).not.toBeInTheDocument()
+      await act(async () => { vi.advanceTimersByTime(3000) })
+      expect(screen.getByText('A rede está lenta. Você pode esperar ou tocar em Cancelar envio: os arquivos escolhidos continuam aqui.')).toBeInTheDocument()
+      // Subiu mais um pedaço: o aviso sai.
+      await act(async () => { progress({ loaded: 100, total: 100, percent: 100 }) })
+      expect(screen.queryByText(/A rede está lenta/)).not.toBeInTheDocument()
+      expect(screen.getByText('Os arquivos saíram deste aparelho. Esperando o computador do professor confirmar que recebeu…')).toBeInTheDocument()
+      expect(screen.queryByText(/Arquivos enviados/)).not.toBeInTheDocument()
+    } finally {
+      vi.useRealTimers()
+    }
   })
 
   it('C9 ajuste 1: o servidor responde "repetido" (o envio tinha chegado): mostra o comprovante dessa versão', async () => {
@@ -414,6 +490,18 @@ describe('atividade do aluno: versões e devolução', () => {
     expect(screen.queryByText('Refazer até 21/11 às 23:00')).not.toBeInTheDocument()
     expect(screen.getByText('O prazo para enviar a nova versão terminou em sáb., 21/11 às 23:00.')).toBeInTheDocument()
     expect(document.getElementById('atividade-arquivos')).toBeNull()
+  })
+
+  it('C9 ajuste 2: títulos das instruções descem de nível (só um <h1> na página, o da atividade)', () => {
+    mocks.detail = detail()
+    mocks.detail.assignment.instructions = '# Parte 1\n\nFaça isto.\n\n## Passo a passo\n\nDepois aquilo.'
+    const { container } = renderPage()
+    expect(container.querySelectorAll('h1')).toHaveLength(1)
+    expect(container.querySelector('h1')).toHaveTextContent('Relatório da prática')
+    const part = screen.getByRole('heading', { name: 'Parte 1' })
+    expect(part.tagName).toBe('H3')
+    expect(part).toHaveClass('prose-nivel-1')
+    expect(screen.getByRole('heading', { name: 'Passo a passo' }).tagName).toBe('H4')
   })
 
   it('C9 ajuste 1: mostra o módulo e a unidade da atividade', () => {

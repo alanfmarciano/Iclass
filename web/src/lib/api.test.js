@@ -557,6 +557,69 @@ describe('uploadWithProgress (envio da atividade com barra de progresso)', () =>
     }
   })
 
+  it('C9 ajuste 2: rede parada sem cair (nada sobe por stallMs) aborta e sai com err.timeout e err.stalled', async () => {
+    vi.useFakeTimers()
+    try {
+      const { promise, xhr } = await start({ stallMs: 1000 })
+      const caught = promise.catch((e) => e)
+      xhr.progress(10, 100)
+      vi.advanceTimersByTime(999)
+      expect(xhr.aborted).toBe(false)
+      vi.advanceTimersByTime(2)
+      const err = await caught
+      expect(xhr.aborted).toBe(true)
+      expect(err).toMatchObject({ status: 0, timeout: true, stalled: true, message: TIMEOUT_MESSAGE })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('C9 ajuste 2: rede lenta mas andando não é parada (cada pedaço recomeça o prazo)', async () => {
+    vi.useFakeTimers()
+    try {
+      const { promise, xhr } = await start({ stallMs: 1000 })
+      for (let step = 1; step <= 10; step += 1) {
+        vi.advanceTimersByTime(900)
+        xhr.progress(step * 10, 100)
+      }
+      expect(xhr.aborted).toBe(false)
+      xhr.respond(201, { success: true, version: { n: 1 } })
+      await expect(promise).resolves.toEqual({ success: true, version: { n: 1 } })
+      // Depois da resposta, o prazo não dispara mais nada.
+      vi.advanceTimersByTime(5000)
+      expect(xhr.aborted).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('C9 ajuste 2: corpo todo enviado (100%) e a resposta que não vem também estoura o prazo sem novidade', async () => {
+    vi.useFakeTimers()
+    try {
+      const { promise, xhr } = await start({ stallMs: 1000 })
+      const caught = promise.catch((e) => e)
+      xhr.progress(100, 100)
+      xhr.upload.onload?.()
+      vi.advanceTimersByTime(1001)
+      const err = await caught
+      expect(xhr.aborted).toBe(true)
+      expect(err).toMatchObject({ status: 0, timeout: true, stalled: true })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('sem stallMs (padrão) o envio parado espera (quem chama decide o prazo)', async () => {
+    vi.useFakeTimers()
+    try {
+      const { xhr } = await start()
+      vi.advanceTimersByTime(10 * 60 * 1000)
+      expect(xhr.aborted).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it('troca de senha obrigatória (403) avisa o AuthProvider, como o request()', async () => {
     const handler = vi.fn()
     setPasswordChangeRequiredHandler(handler)

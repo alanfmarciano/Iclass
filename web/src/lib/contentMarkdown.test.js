@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { htmlToMarkdown, markdownToHtml, stripFileAccess } from './contentMarkdown'
+import { htmlToMarkdown, markdownToHtml, shiftHeadingLevels, stripFileAccess } from './contentMarkdown'
 
 describe('markdownToHtml', () => {
   it('remove scripts, handlers e links javascript', () => {
@@ -37,5 +37,26 @@ describe('sessão fora do Markdown salvo (UXA-X2)', () => {
     } finally {
       localStorage.removeItem('iclass-v3-auth')
     }
+  })
+})
+
+// Fase 3, C9 ajuste 2: as instruções da atividade do aluno ficam debaixo do <h1> da página;
+// um '# Parte 1' virava um segundo <h1>.
+describe('shiftHeadingLevels', () => {
+  it('desce os títulos em offset níveis (até h6), com a classe do nível de antes e os atributos', () => {
+    const html = shiftHeadingLevels(markdownToHtml('# Parte 1\n\n## Passo\n\n###### Nota\n\nTexto com <h1> escrito.'), 2)
+    const doc = new DOMParser().parseFromString(`<main>${html}</main>`, 'text/html')
+    expect(doc.querySelectorAll('h1, h2')).toHaveLength(0)
+    expect(doc.querySelector('h3').textContent).toBe('Parte 1')
+    expect(doc.querySelector('h3').className).toBe('prose-nivel-1')
+    expect(doc.querySelector('h4').textContent).toBe('Passo')
+    expect(doc.querySelectorAll('h6')).toHaveLength(1)
+    expect(doc.querySelector('h6').className).toBe('prose-nivel-6')
+  })
+
+  it('sem título ou com offset 0 devolve o mesmo HTML', () => {
+    expect(shiftHeadingLevels('<p>oi</p>', 2)).toBe('<p>oi</p>')
+    expect(shiftHeadingLevels('<h1>Oi</h1>', 0)).toBe('<h1>Oi</h1>')
+    expect(shiftHeadingLevels('', 2)).toBe('')
   })
 })
