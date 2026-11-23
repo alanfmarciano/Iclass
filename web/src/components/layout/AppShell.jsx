@@ -14,7 +14,7 @@ const CRUMBS = {
   '/monitor': ['Avaliações', 'Monitor Online'], '/tarefas': ['Avaliações', 'Tarefas'], '/resultados': ['Avaliações', 'Resultados'],
   '/materiais': ['Conteúdo', 'Materiais & Liberação'], '/editor': ['Conteúdo', 'Editor'],
   '/turmas': ['Gestão acadêmica', 'Cursos e turmas'], '/alunos': ['Gestão', 'Alunos'], '/matriculas': ['Visão geral', 'Matrículas'], '/admins': ['Instituição', 'Administradores'],
-  '/forum': ['Gestão', 'Fórum & Dúvidas'], '/escolas': ['Instituição', 'Escolas'],
+  '/forum': ['Gestão', 'Fórum & Dúvidas'], '/mensagens': ['Gestão', 'Mensagens'], '/escolas': ['Instituição', 'Escolas'],
   '/identidade': ['Instituição', 'Identidade Visual'], '/sistema': ['Instituição', 'Sistema'], '/auditoria': ['Instituição', 'Auditoria'],
   '/lgpd': ['Instituição', 'Privacidade (LGPD)'],
   '/encerrados': ['Gestão acadêmica', 'Cadastros encerrados'],

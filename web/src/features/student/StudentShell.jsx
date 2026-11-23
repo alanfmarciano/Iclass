@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Home, BookOpen, ClipboardList, FileUp, NotebookPen, MessagesSquare, Megaphone, FolderOpen, GraduationCap, Menu, LogOut, CalendarDays, Sparkles, UserRound, ShieldCheck, CircleHelp } from 'lucide-react'
+import { Home, BookOpen, ClipboardList, FileUp, NotebookPen, MessagesSquare, Megaphone, FolderOpen, GraduationCap, Menu, LogOut, CalendarDays, Sparkles, UserRound, ShieldCheck, CircleHelp, Mail } from 'lucide-react'
 import { ThemeToggle } from '../../components/ui/ThemeToggle'
 import { useAuth } from '../../context/AuthProvider'
 import { cn } from '../../lib/cn'
@@ -15,6 +15,7 @@ import { NotificationBell } from '../../components/ui/NotificationBell'
 import { useStudentHeartbeat } from './useStudentHeartbeat'
 import { PageLoading } from '../../components/ui/PageLoading'
 import { AppErrorBoundary, STUDENT_ERROR_DESCRIPTION } from '../../components/ui/ErrorScreen'
+import { navBadgeLabel, setMessageCount, studentMessageCount, useMessageCount, useMessageCountScope } from '../../lib/messageCounter'
 const NAV = [
   { to: '/aluno', icon: Home, text: 'Início', end: true },
   { to: '/aluno/modulos', icon: BookOpen, text: 'Módulos' },
@@ -24,6 +25,9 @@ const NAV = [
   { to: '/aluno/atividades', icon: FileUp, text: 'Atividades' },
   { to: '/aluno/caderno', icon: NotebookPen, text: 'Caderno' },
   { to: '/aluno/duvidas', icon: MessagesSquare, text: 'Dúvidas' },
+  // Conversa particular com os professores (fase 3, C14 / P5-S7b; FUN-14). O número é o
+  // de conversas com mensagem nova, lido do sino (lib/messageCounter.js).
+  { to: '/aluno/mensagens', icon: Mail, text: 'Mensagens' },
   { to: '/aluno/avisos', icon: Megaphone, text: 'Avisos' },
   { to: '/aluno/calendario', icon: CalendarDays, text: 'Calendário' },
   { to: '/aluno/conta', icon: UserRound, text: 'Minha conta' },
@@ -93,10 +97,17 @@ export function StudentShell() {
   // O sino traz a versão publicada dos documentos: outra versão derruba a guarda do portão
   // de primeiro acesso (StudentPrivacyGate).
   const studentEmail = auth.email || s.email || ''
-  const onNotifications = (data) => notePublishedLegalVersion(studentEmail, data?.legalVersion)
+  const onPresence = (data) => notePublishedLegalVersion(studentEmail, data?.legalVersion)
+  const onNotifications = (data) => {
+    onPresence(data)
+    setMessageCount(studentMessageCount(data))
+  }
+  useMessageCountScope(`${studentEmail}::${notificationsContext}`)
+  const newMessages = useMessageCount()
+  const navItems = NAV.map((item) => (item.to === '/aluno/mensagens' ? { ...item, badge: newMessages, badgeTone: 'primary' } : item))
   const notifications = <NotificationBell endpoint={passwordChangePending ? null : notificationsEndpoint} seenEndpoint={notificationsSeenEndpoint} onOpenItem={openNotification} onData={onNotifications} />
   const examAvailability = passwordChangePending ? null : <StudentExamAvailability />
-  useStudentHeartbeat({ onPresence: onNotifications })
+  useStudentHeartbeat({ onPresence })
   usePrefetchExamScreen()
 
   if (interfacePreset === 'lumen') {
@@ -105,7 +116,7 @@ export function StudentShell() {
     return (
       <>
         <LumenShell
-          navGroups={[{ label: 'Sua jornada', items: NAV }]}
+          navGroups={[{ label: 'Sua jornada', items: navItems }]}
           brandName={brandName}
           logo={logo}
           conceptLabel="Portal do Aluno"
@@ -159,11 +170,11 @@ export function StudentShell() {
         )}
         <nav className="flex-1 overflow-y-auto px-3">
           <p className="mb-2 px-3 text-[10px] font-semibold uppercase tracking-[.18em] text-subtle">Sua jornada</p>
-          {NAV.map((n) => (
+          {navItems.map((n) => (
             <NavLink key={n.to} to={n.to} end={n.end}
               className={({ isActive }) => cn('group mb-1 flex items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] transition-all duration-300',
                 isActive ? 'bg-primary-soft font-semibold text-text shadow-[inset_0_0_0_1px_var(--primary-soft)]' : 'text-muted hover:bg-surface-2 hover:text-text')}>
-              {({ isActive }) => <><span className={cn('grid h-7 w-7 place-items-center rounded-lg transition-colors', isActive ? 'bg-primary text-primary-fg' : 'text-subtle group-hover:text-text')}><n.icon size={16} /></span>{n.text}{isActive && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-primary" />}</>}
+              {({ isActive }) => <><span className={cn('grid h-7 w-7 place-items-center rounded-lg transition-colors', isActive ? 'bg-primary text-primary-fg' : 'text-subtle group-hover:text-text')}><n.icon size={16} /></span>{n.text}{n.badge > 0 ? <><span aria-hidden="true" className="ml-auto rounded-full bg-primary px-2 py-0.5 text-[10px] font-bold text-primary-fg">{n.badge > 99 ? '99+' : n.badge}</span><span className="sr-only">{`, ${navBadgeLabel(n)}`}</span></> : isActive && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-primary" />}</>}
             </NavLink>
           ))}
         </nav>

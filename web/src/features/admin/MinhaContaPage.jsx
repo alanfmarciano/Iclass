@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react'
 import { KeyRound, LogOut, Save } from 'lucide-react'
+import { Switch } from '../../components/ui/Switch'
+import { usePreferences } from '../../context/PreferencesProvider'
 import { Card, CardHeader, CardBody } from '../../components/ui/Card'
 import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
@@ -9,17 +11,24 @@ import { PasswordChangeForm } from '../../components/PasswordChangeForm'
 import { useAuth } from '../../context/AuthProvider'
 import { useToast } from '../../context/ToastProvider'
 import { api } from '../../lib/api'
-import { accountRoleLabel } from '../../lib/adminPermissions'
+import { ADMIN_PERMISSIONS, accountRoleLabel, canAccessAdminPermission } from '../../lib/adminPermissions'
 
 export const NAME_MAX_LENGTH = 120
 export const END_OTHER_SESSIONS_TEXT = 'Os outros navegadores e computadores onde esta conta está aberta saem na hora. Este aparelho continua conectado.'
+// Preferência da conta (fase 3, C14 / P5-S7b; D8 do P5): desligada, o professor sai da
+// lista de quem o aluno escolhe para começar uma conversa (as conversas já abertas
+// continuam). Ausente vale ligada.
+export const RECEIVE_MESSAGES_PREF = 'messages.receive'
+export const RECEIVE_MESSAGES_HELP = 'Desligado, os alunos não conseguem começar conversa nova com você. As conversas que já existem continuam, e você ainda pode escrever para os alunos.'
 
 // Minha conta do instrutor (/minha-conta, UXI-07), para todos os papéis do painel:
 // - Seus dados: nome editável (POST /api/admin/account/profile); e-mail e papel só para
 //   ler (quem muda é o administrador, em Contas);
 // - Senha: o mesmo formulário da troca obrigatória, com a senha atual
 //   (POST /api/admin/change-password; as outras sessões da conta saem);
-// - Aparelhos: "Sair dos outros aparelhos" (POST /api/admin/account/end-other-sessions).
+// - Aparelhos: "Sair dos outros aparelhos" (POST /api/admin/account/end-other-sessions);
+// - Mensagens (quem tem page.messages e altera): "Receber mensagens de alunos"
+//   (preferência messages.receive, POST /api/admin/preferences pelo PreferencesProvider).
 // A Coordenação (só consulta) também usa: é autoatendimento (o servidor deixa passar).
 export default function MinhaContaPage() {
   const { auth, setAuth } = useAuth()
@@ -29,6 +38,9 @@ export default function MinhaContaPage() {
   const [savingName, setSavingName] = useState(false)
   const [changingPassword, setChangingPassword] = useState(false)
   const [confirmEnd, setConfirmEnd] = useState(false)
+  const { pref, setPref } = usePreferences()
+  const showMessages = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_MESSAGES) && auth.readOnly !== true
+  const receiveMessages = pref(RECEIVE_MESSAGES_PREF, true) !== false
 
   // O nome da sessão chega pelo whoami (abertura e revalidação).
   useEffect(() => { setName(auth.name || '') }, [auth.name])
@@ -100,6 +112,16 @@ export default function MinhaContaPage() {
           )}
         </CardBody>
       </Card>
+
+      {showMessages && (
+        <Card>
+          <CardHeader title="Mensagens" subtitle="Conversas particulares com os alunos das suas turmas." />
+          <CardBody className="space-y-2">
+            <Switch id="receber-mensagens" checked={receiveMessages} onChange={(value) => setPref(RECEIVE_MESSAGES_PREF, value === true)} label="Receber mensagens de alunos" />
+            <p className="text-xs text-muted">{RECEIVE_MESSAGES_HELP}</p>
+          </CardBody>
+        </Card>
+      )}
 
       <Card>
         <CardHeader title="Aparelhos" subtitle="Esqueceu a conta aberta em outro computador? Encerre as outras sessões daqui." />

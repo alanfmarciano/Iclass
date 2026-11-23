@@ -31,12 +31,14 @@ vi.mock('./StudentCourseGate', () => ({ StudentCourseGate: ({ children }) => chi
 vi.mock('./StudentExamAvailability', () => ({ StudentExamAvailability: () => null }))
 const heartbeat = vi.hoisted(() => ({ options: null }))
 vi.mock('./useStudentHeartbeat', () => ({ useStudentHeartbeat: (options) => { heartbeat.options = options } }))
-vi.mock('../../components/ui/NotificationBell', () => ({ NotificationBell: () => null }))
+const bell = vi.hoisted(() => ({ props: null }))
+vi.mock('../../components/ui/NotificationBell', () => ({ NotificationBell: (props) => { bell.props = props; return null } }))
 vi.mock('../../components/ui/ThemeToggle', () => ({ ThemeToggle: () => null }))
 
 import { EXAM_PREFETCH_DELAY_MS, StudentShell } from './StudentShell'
 import { resetClientErrorReportsForTests } from '../../lib/clientErrors'
 import { resetPrivacyGateCache } from './StudentPrivacyGate'
+import { resetMessageCountForTests } from '../../lib/messageCounter'
 
 function renderPortal(child = <p>Início do aluno</p>) {
   return render(
@@ -56,6 +58,8 @@ beforeEach(() => {
   apiGet.mockReset()
   apiGet.mockResolvedValue({})
   heartbeat.options = null
+  bell.props = null
+  resetMessageCountForTests()
   branding.interfacePreset = 'classic'
   resetClientErrorReportsForTests()
   window.matchMedia = vi.fn().mockImplementation((query) => ({ matches: true, media: query, addEventListener() {}, removeEventListener() {} }))
@@ -201,5 +205,39 @@ describe('portal do aluno · Atividades no menu', () => {
     expect(screen.getByText('Lista de atividades')).toBeInTheDocument()
     expect(aside).toHaveAttribute('aria-hidden', 'true')
     expect(screen.queryByRole('button', { name: 'Fechar menu' })).toBeNull()
+  })
+})
+
+// Fase 3, C14 (P5-S7b; FUN-14): "Mensagens" no menu do aluno, depois de Dúvidas, com o
+// número de conversas com mensagem nova lido do sino (sem consulta própria).
+describe('[UC-MENSAGEM-006] portal do aluno · Mensagens no menu', () => {
+  const mensagensLink = () => screen.getAllByRole('link').find((item) => item.getAttribute('href') === '/aluno/mensagens')
+  const bellData = { items: [
+    { id: 'mensagem:c1', type: 'mensagem', unread: true },
+    { id: 'mensagem:c2', type: 'mensagem', unread: false },
+    { id: 'aviso:a1', type: 'aviso', unread: true },
+  ] }
+
+  it('no visual clássico, o item vem depois de Dúvidas e mostra o número que o sino trouxe', async () => {
+    renderPortal()
+    expect(mensagensLink()).toHaveTextContent('Mensagens')
+    expect(mensagensLink()).not.toHaveTextContent('conversa')
+    expect(typeof bell.props?.onData).toBe('function')
+    await act(async () => { bell.props.onData(bellData) })
+    expect(mensagensLink()).toHaveTextContent('2 conversas com mensagem nova')
+    await act(async () => { bell.props.onData({ items: [] }) })
+    expect(mensagensLink()).not.toHaveTextContent('conversa')
+    const hrefs = screen.getAllByRole('link').map((item) => item.getAttribute('href'))
+    expect(hrefs.indexOf('/aluno/mensagens')).toBe(hrefs.indexOf('/aluno/duvidas') + 1)
+  })
+
+  it('no visual Lumen, o item fica no menu completo e o botão que o abre avisa que há novidade', async () => {
+    branding.interfacePreset = 'lumen'
+    renderPortal()
+    expect(screen.getByRole('button', { name: 'Abrir todos os módulos' })).toBeInTheDocument()
+    await act(async () => { bell.props.onData(bellData) })
+    expect(screen.getByRole('button', { name: 'Mais (há novidades no menu)' })).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('button', { name: 'Abrir todos os módulos (há novidades no menu)' }))
+    expect(mensagensLink()).toHaveTextContent('2 conversas com mensagem nova')
   })
 })

@@ -112,7 +112,27 @@ Se a Wi-Fi ficar lenta e a barra parar, a tela avisa **A rede está lenta**. Voc
 
 ## Mensagens {#mensagens}
 
-<!-- P5 (C14) escreve aqui: conversar com o professor e o aviso de leitura pelo administrador. -->
+Em **Mensagens** você conversa em particular com um professor da sua turma, sobre um assunto pessoal ou um pedido de revisão de nota. A turma não vê essas conversas (para dúvidas da matéria, que ajudam todo mundo, use **Dúvidas**).
+
+**Para escrever:**
+
+1. Toque em **Nova mensagem**.
+2. Em **Para**, escolha o professor. Aparecem só os professores da turma que estão recebendo mensagens.
+3. Se quiser, escreva o **assunto** (por exemplo, "Revisão da prova"). Escreva a mensagem e toque em **Enviar**.
+
+Se você já tem uma conversa aberta com o mesmo professor, a mensagem entra nela. Toque numa conversa da lista para ler e responder; no computador, **Ctrl+Enter** também envia.
+
+**Mensagem nova:** quando o professor responde, o **sino** avisa e o item **Mensagens** do menu mostra quantas conversas têm mensagem nova. Com a conversa aberta, as respostas aparecem sozinhas, sem recarregar a página.
+
+**Regras:**
+
+- Só texto, até 2.000 caracteres, sem anexos. As mensagens ficam guardadas e **não podem ser apagadas** nem editadas.
+- Durante a prova, as mensagens ficam fechadas: fale com o professor pelo botão da prova.
+- O professor pode **encerrar** a conversa. Encerrada, você continua lendo, mas não responde; se precisar, comece outra com **Nova mensagem**.
+- **Arquivar** tira a conversa da sua lista (só para você). Ela fica em **Arquivadas** e volta sozinha se chegar mensagem nova.
+- Há um limite de mensagens seguidas. Se aparecer o aviso de espera, aguarde os minutos indicados e envie de novo.
+
+**Quem lê:** você e o professor da conversa. **O administrador da escola pode ler estas mensagens**, e cada leitura dele fica registrada no sistema; o aviso aparece no topo da tela.
 
 ## Avisos {#avisos}
 

@@ -65,6 +65,8 @@ export const ADMIN_PATH_PERMISSIONS = Object.freeze({
   '/avisos': ADMIN_PERMISSIONS.PAGE_FORUM,
   '/calendario': ADMIN_PERMISSIONS.PAGE_FORUM,
   '/forum': ADMIN_PERMISSIONS.PAGE_FORUM,
+  // Mensagens com os alunos (fase 3, C14 / P5-S7b): a mesma permissão de /api/admin/conversations.
+  '/mensagens': ADMIN_PERMISSIONS.PAGE_MESSAGES,
   '/escolas': ADMIN_PERMISSIONS.PAGE_BRANDING,
   '/identidade': ADMIN_PERMISSIONS.SCHOOLS_SCOPE,
   '/sistema': ADMIN_PERMISSIONS.PAGE_SYSTEM,

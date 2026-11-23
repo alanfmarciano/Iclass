@@ -12,6 +12,7 @@ import { useAdminNotificationOpener } from './useAdminNotificationOpener'
 import { useApi } from '../../hooks/useApi'
 import { PageLoading } from '../ui/PageLoading'
 import { InsecureConnectionNotice } from '../ui/InsecureConnectionNotice'
+import { adminMessageCount, setMessageCount, useMessageCount, useMessageCountScope } from '../../lib/messageCounter'
 import { ADMIN_ERROR_DESCRIPTION, AppErrorBoundary } from '../ui/ErrorScreen'
 
 export function LumenAdminShell() {
@@ -29,10 +30,13 @@ export function LumenAdminShell() {
   const enrollmentPath = workspace?.courseId && canAccessAdminPermission(auth, ADMIN_PERMISSIONS.ENROLLMENTS_APPROVE) ? `/api/admin/enrollment-requests?courseId=${encodeURIComponent(workspace.courseId)}&studentClass=${encodeURIComponent(workspace.className)}` : null
   const enrollments = useApi(enrollmentPath, [workspace?.courseId, workspace?.className], { pollMs: 15000 })
   const openNotification = useAdminNotificationOpener()
+  // Contador de Mensagens no menu: lido do sino (lib/messageCounter.js).
+  const newMessages = useMessageCount()
+  useMessageCountScope(`${auth.email || ''}::${workspace?.courseId || ''}::${workspace?.className || ''}`)
 
   return (
     <LumenShell
-      navGroups={getAdminNavGroups(auth, enrollments.data?.pendingCount || 0)}
+      navGroups={getAdminNavGroups(auth, enrollments.data?.pendingCount || 0, newMessages)}
       brandName={brandName}
       logo={logo}
       conceptLabel={courseLabel || 'Ambiente da instituição'}
@@ -47,7 +51,7 @@ export function LumenAdminShell() {
         onClick: clearActiveWorkspace,
       } : null}
       onLogout={() => { logout(); navigate('/login') }}
-      notifications={<NotificationBell buttonClassName="lumen-icon-button relative" endpoint={workspace ? `/api/admin/notifications?courseId=${encodeURIComponent(workspace.courseId)}&studentClass=${encodeURIComponent(workspace.className)}` : '/api/admin/notifications'} seenEndpoint="/api/admin/notifications/seen" onOpenItem={openNotification} />}
+      notifications={<NotificationBell buttonClassName="lumen-icon-button relative" endpoint={workspace ? `/api/admin/notifications?courseId=${encodeURIComponent(workspace.courseId)}&studentClass=${encodeURIComponent(workspace.className)}` : '/api/admin/notifications'} seenEndpoint="/api/admin/notifications/seen" onOpenItem={openNotification} onData={(data) => setMessageCount(adminMessageCount(data))} />}
     >
       {/* Painel por http em outro aparelho (SEG-03): aviso fixo, fora do key da rota. */}
       <InsecureConnectionNotice className="mb-4" />

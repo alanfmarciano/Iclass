@@ -53,3 +53,21 @@ describe('menu Tarefas (fase 3, C7 / P1-e)', () => {
     expect(menuPaths({ accountRole: 'professor', additionalPermissions: [], activeWorkspace: null })).not.toContain('/tarefas')
   })
 })
+
+describe('[UC-MENSAGEM-006] menu Mensagens (fase 3, C14 / P5-S7b)', () => {
+  const inCourse = { activeWorkspace: { courseId: 'curso', className: '1A' } }
+  const item = (auth, count) => getAdminNavGroups(auth, 0, count).flatMap((group) => group.items).find((entry) => entry.to === '/mensagens')
+
+  it('aparece na turma para o professor (page.messages do padrão) e para o administrador, com o número de conversas com mensagem nova', () => {
+    expect(item({ accountRole: 'professor', additionalPermissions: [], ...inCourse }, 3)).toMatchObject({ text: 'Mensagens', badge: 3 })
+    expect(item({ accountRole: 'admin', ...inCourse }, 0)).toMatchObject({ text: 'Mensagens', badge: 0 })
+    expect(ADMIN_PATH_PERMISSIONS['/mensagens']).toBe('page.messages')
+  })
+
+  it('não aparece para Professor auxiliar, Secretaria e Coordenação (sem page.messages) nem fora da turma', () => {
+    expect(item({ accountRole: 'monitor', effectivePermissions: ['page.dashboard', 'page.monitor', 'page.students'], ...inCourse }, 1)).toBeUndefined()
+    expect(item({ accountRole: 'secretaria', effectivePermissions: ['page.dashboard', 'page.students'], ...inCourse }, 1)).toBeUndefined()
+    expect(item({ accountRole: 'coordenacao', effectivePermissions: ['page.dashboard', 'page.results'], readOnly: true, ...inCourse }, 1)).toBeUndefined()
+    expect(item({ accountRole: 'professor', additionalPermissions: [], activeWorkspace: null }, 1)).toBeUndefined()
+  })
+})

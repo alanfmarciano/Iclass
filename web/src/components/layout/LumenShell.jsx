@@ -5,6 +5,7 @@ import { ThemeToggle } from '../ui/ThemeToggle'
 import { cn } from '../../lib/cn'
 import { ConnectionStatus } from './ConnectionStatus'
 import { AccountMenu } from './AccountMenu'
+import { navBadgeLabel } from '../../lib/messageCounter'
 
 function initials(value = '') {
   return value
@@ -36,6 +37,10 @@ export function LumenShell({
   const menuPanelRef = useRef(null)
   const allItems = useMemo(() => navGroups.flatMap((group) => group.items), [navGroups])
   const primaryItems = allItems.slice(0, 4)
+  // Número de algum item que só está no menu completo (Mensagens, Matrículas): o botão
+  // "Mais" do celular e o do menu completo no computador ganham um ponto, para o aviso não
+  // ficar escondido.
+  const hiddenBadge = allItems.slice(4).reduce((sum, item) => sum + (Number(item.badge) > 0 ? Number(item.badge) : 0), 0)
   const activeItem = [...allItems]
     .sort((a, b) => b.to.length - a.to.length)
     .find((item) => item.end ? pathname === item.to : pathname === item.to || pathname.startsWith(`${item.to}/`))
@@ -140,9 +145,10 @@ export function LumenShell({
             onClick={toggleMenu}
             aria-expanded={menuOpen}
             aria-controls="lumen-navigation-panel"
-            aria-label="Abrir todos os módulos"
+            aria-label={hiddenBadge > 0 ? 'Abrir todos os módulos (há novidades no menu)' : 'Abrir todos os módulos'}
           >
             <Menu size={20} />
+            {hiddenBadge > 0 && <i aria-hidden="true" className="lumen-more-dot" />}
           </button>
         </div>
       </header>
@@ -169,7 +175,7 @@ export function LumenShell({
                     >
                       <span className="lumen-menu-icon"><item.icon size={17} aria-hidden="true" /></span>
                       <span>{item.text}</span>
-                      {item.badge > 0 && <span className="ml-auto rounded-full bg-warning px-2 py-0.5 text-[10px] font-bold text-white">{item.badge}</span>}
+                      {item.badge > 0 && <><span aria-hidden="true" className={cn('ml-auto rounded-full px-2 py-0.5 text-[10px] font-bold', item.badgeTone === 'primary' ? 'bg-primary text-primary-fg' : 'bg-warning text-white')}>{item.badge > 99 ? '99+' : item.badge}</span><span className="sr-only">{`, ${navBadgeLabel(item)}`}</span></>}
                     </NavLink>
                   ))}
                 </section>
@@ -206,12 +212,14 @@ export function LumenShell({
         <button
           type="button"
           onClick={openMenu}
-          className={menuOpen ? 'is-active' : ''}
+          className={cn('relative', menuOpen && 'is-active')}
+          aria-label={hiddenBadge > 0 ? 'Mais (há novidades no menu)' : undefined}
           aria-expanded={menuOpen}
           aria-controls="lumen-navigation-panel"
         >
           <Menu size={20} aria-hidden="true" />
           <span>Mais</span>
+          {hiddenBadge > 0 && <i aria-hidden="true" className="lumen-more-dot" />}
         </button>
       </nav>
     </div>

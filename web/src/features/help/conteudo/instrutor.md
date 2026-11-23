@@ -187,7 +187,21 @@ Registra a presença por aula. Escolha a data, marque quem veio e salve. A prese
 
 ## Mensagens {#mensagens}
 
-<!-- P5 (C13 e C14) escreve aqui: conversas com os alunos e o aviso de leitura pelo administrador. -->
+**Mensagens** (no menu, em Gestão) é a conversa particular entre você e um aluno de uma das suas turmas. A turma não vê. Para dúvidas da matéria, o **Fórum** continua sendo o melhor lugar.
+
+**A lista.** Mostra as suas conversas da turma escolhida no painel, da mais recente para a mais antiga, com o nome e a matrícula do aluno, o assunto e o selo **nova** quando o aluno escreveu e você ainda não leu. Filtre por **Abertas**, **Encerradas** ou **Todas**, troque para **Todas as minhas turmas** e busque pelo nome (sem precisar de acento). O item **Mensagens** do menu e o **sino** mostram quantas conversas têm mensagem nova.
+
+**Começar.** O aluno pode começar a conversa pelo portal (ele escolhe entre os professores da turma) ou você toca em **Nova conversa**, escolhe o aluno da turma, escreve o assunto (opcional) e a mensagem. Se já existe uma conversa aberta com o mesmo aluno, a mensagem entra nela.
+
+**Responder.** Toque na conversa, escreva no campo de baixo e toque em **Enviar** (ou **Ctrl+Enter**). Com a conversa aberta, as mensagens novas do aluno aparecem sozinhas. Só texto, até 2.000 caracteres; as mensagens **não podem ser apagadas** nem editadas.
+
+**Encerrar e reabrir.** **Encerrar conversa** (o motivo é opcional e fica na Auditoria) deixa o aluno só lendo: ele não responde, mas pode começar outra. Você ainda pode escrever na encerrada. **Reabrir** devolve a conversa ao aluno. Durante uma prova, o aluno não consegue mandar mensagem (ele usa o botão da prova); você pode escrever, e ele lê depois.
+
+**Aluno com o cadastro encerrado** (desligado ou anonimizado): a conversa fica só para consulta. Anonimizar o aluno tira o texto dele e o nome dele das suas mensagens.
+
+**Não quer receber mensagens?** Em **Minha conta**, desligue **Receber mensagens de alunos**: os alunos deixam de ver você na lista para começar conversa nova. As conversas que já existem continuam.
+
+**Quem lê.** Você e o aluno da conversa. **O administrador da escola pode ler estas mensagens** (decisão da escola), e as duas telas mostram esse aviso. Para o administrador: em **Turmas**, escolha **Todas da escola**; as conversas de outros professores aparecem sem o assunto, e abrir uma delas pede **Ler como administrador**, que fica registrado na **Auditoria** (uma vez por dia e conversa). Lendo a conversa de outra pessoa, o administrador não responde nem encerra.
 
 ## Responsáveis {#responsaveis}
 

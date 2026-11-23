@@ -294,6 +294,8 @@
 
 [data-interface='lumen'] .lumen-menu-trigger.is-active { background: var(--lumen-ink); color: var(--surface); }
 [data-interface='lumen'][data-theme='dark'] .lumen-menu-trigger.is-active { color: #171a24; }
+[data-interface='lumen'] .lumen-menu-trigger { position: relative; }
+[data-interface='lumen'] .lumen-menu-trigger .lumen-more-dot { position: absolute; top: 6px; right: 6px; width: 9px; height: 9px; border-radius: 999px; background: var(--primary); box-shadow: 0 0 0 2px var(--surface); }
 
 [data-interface='lumen'] .lumen-context-action {
   display: inline-flex !important;
@@ -531,6 +533,10 @@
   [data-interface='lumen'] .lumen-bottom-nav a span,
   [data-interface='lumen'] .lumen-bottom-nav button span { width: 100%; overflow: hidden; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
   [data-interface='lumen'] .lumen-bottom-nav .is-active { background: var(--lumen-ink); color: var(--surface); }
+  /* Ponto no "Mais" quando um item do menu completo tem número (Mensagens, Matrículas). */
+  [data-interface='lumen'] .lumen-bottom-nav .lumen-more-dot { position: absolute; top: 8px; right: calc(50% - 16px); width: 9px; height: 9px; border-radius: 999px; background: var(--primary); box-shadow: 0 0 0 2px var(--surface); }
+  /* Campo de escrita das Mensagens acima da barra de baixo do celular. */
+  [data-interface='lumen'] .mensagens-composer { bottom: calc(var(--exam-banner-space, 0px) + 84px); }
   [data-interface='lumen'][data-theme='dark'] .lumen-bottom-nav .is-active { color: #171a24; }
   [data-interface='lumen'] .lumen-menu-panel { top: auto; right: 10px; bottom: 10px; width: calc(100vw - 20px); max-height: calc(100dvh - 20px); border-radius: 23px; }
 }

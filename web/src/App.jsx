@@ -43,6 +43,8 @@ const AlunoDetailPage = lazyPage(() => import('./features/admin/AlunoDetailPage'
 const AdminsPage = lazyPage(() => import('./features/admin/AdminsPage'))
 const AdminEditPage = lazyPage(() => import('./features/admin/AdminEditPage'))
 const ForumPage = lazyPage(() => import('./features/admin/ForumPage'))
+// Mensagens com os alunos (fase 3, C14 / P5-S7b; FUN-14): page.messages.
+const MensagensPage = lazyPage(() => import('./features/admin/MensagensPage'))
 const IdentidadePage = lazyPage(() => import('./features/admin/IdentidadePage'))
 const EscolasPage = lazyPage(() => import('./features/admin/EscolasPage'))
 const EscolaEditPage = lazyPage(() => import('./features/admin/EscolaEditPage'))
@@ -73,6 +75,8 @@ const AtividadeDetalhePage = lazyPage(() => import('./features/student/Atividade
 const ExamRunner = lazyPage(() => import('./features/student/exam/ExamRunner'))
 const CadernoPage = lazyPage(() => import('./features/student/CadernoPage'))
 const DuvidasPage = lazyPage(() => import('./features/student/DuvidasPage'))
+// Mensagens do aluno com os professores (fase 3, C14 / P5-S7b; FUN-14).
+const MensagensStudentPage = lazyPage(() => import('./features/student/MensagensPage'))
 const AvisosStudentPage = lazyPage(() => import('./features/student/AvisosPage'))
 const CalendarioStudentPage = lazyPage(() => import('./features/student/CalendarioPage'))
 const BibliotecaStudentPage = lazyPage(() => import('./features/student/BibliotecaPage'))
@@ -163,6 +167,7 @@ export default function App() {
         <Route path="admins" element={<RequireAdminPath path="/admins"><AdminsPage /></RequireAdminPath>} />
         <Route path="admins/:email" element={<RequireAdminPath path="/admins"><AdminEditPage /></RequireAdminPath>} />
         <Route path="forum" element={<RequireAdminPath path="/forum"><ForumPage /></RequireAdminPath>} />
+        <Route path="mensagens" element={<RequireAdminPath path="/mensagens"><MensagensPage /></RequireAdminPath>} />
         <Route path="escolas" element={<RequireAdminPath path="/escolas"><EscolasPage /></RequireAdminPath>} />
         <Route path="escolas/:id" element={<RequireAdminPath path="/escolas"><EscolaEditPage /></RequireAdminPath>} />
         <Route path="identidade" element={<RequireAdminPath path="/identidade"><IdentidadePage /></RequireAdminPath>} />
@@ -191,6 +196,7 @@ export default function App() {
         <Route path="atividades/:id" element={<AtividadeDetalhePage />} />
         <Route path="caderno" element={<CadernoPage />} />
         <Route path="duvidas" element={<DuvidasPage />} />
+        <Route path="mensagens" element={<MensagensStudentPage />} />
         <Route path="avisos" element={<AvisosStudentPage />} />
         <Route path="calendario" element={<CalendarioStudentPage />} />
         <Route path="biblioteca" element={<BibliotecaStudentPage />} />

@@ -189,7 +189,7 @@ const ADMIN_PANEL_PAGES = Object.freeze([
     '/endereco', '/provas', '/monitor', '/tarefas', '/resultados', '/materiais', '/editor', '/biblioteca',
     '/turmas', '/alunos', '/matriculas', '/chamada', '/diretorio', '/admins', '/avisos',
     '/calendario', '/forum', '/escolas', '/identidade', '/sistema', '/auditoria', '/lgpd',
-    '/encerrados', '/minha-conta',
+    '/encerrados', '/minha-conta', '/mensagens',
 ]);
 // Nunca redirecionados para o https: é por eles que o aparelho passa a confiar no https.
 const CERTIFICATE_PATHS = Object.freeze(['/certificado', '/iclass-ca.crt']);
