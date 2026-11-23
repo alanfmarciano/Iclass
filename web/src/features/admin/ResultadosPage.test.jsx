@@ -2,7 +2,7 @@ import { cleanup, render, screen, waitFor, within } from '@testing-library/react
 import userEvent from '@testing-library/user-event'
 import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import ResultadosPage, { structureFromGradebook, studentResultsPath } from './ResultadosPage'
+import ResultadosPage, { correctionPath, structureFromGradebook, studentResultsPath } from './ResultadosPage'
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
@@ -821,6 +821,24 @@ describe('Resultados · correção do professor (A18)', () => {
     expect(screen.getByText('2 entregas aguardam a sua correção.')).toBeInTheDocument()
     await userEvent.click(screen.getByRole('button', { name: 'Corrigir provas (2)' }))
     expect(screen.getByTestId('where')).toHaveTextContent('/resultados/correcao')
+  })
+
+  it('[UC-PAPEIS-004] para a Coordenação, o aviso fala da correção do professor (ela não corrige)', async () => {
+    mocks.auth = {
+      role: 'admin', accountRole: 'coordenacao', readOnly: true,
+      effectivePermissions: ['page.dashboard', 'page.results', 'page.classes', 'page.students', 'page.forum', 'page.assignments', 'reports.view'],
+    }
+    mocks.corrections = { pendentes: [{ submissionId: 's1' }], total: 1 }
+    renderPage()
+    expect(await screen.findByText('1 entrega aguarda a correção do professor.')).toBeInTheDocument()
+    expect(screen.queryByText(/a sua correção/)).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Ver correções (1)' })).toBeInTheDocument()
+  })
+
+  it('[UC-CORRECAO-001] correctionPath leva a entrega, a prova e a aplicação do filtro', () => {
+    expect(correctionPath({})).toBe('/resultados/correcao')
+    expect(correctionPath({ examKey: 'P1', applicationId: 'app-1' })).toBe('/resultados/correcao?examKey=P1&applicationId=app-1')
+    expect(correctionPath({ id: 's1', examKey: 'P1' })).toBe('/resultados/correcao?submissionId=s1&examKey=P1')
   })
 
   it('[UC-CORRECAO-001] sem nada para corrigir, nenhum aviso', () => {

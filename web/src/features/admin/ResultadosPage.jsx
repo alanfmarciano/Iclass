@@ -107,12 +107,14 @@ const fmtNota = (s) => fmtGrade(s, '-')
 // ou a original da anulada), o que ela é (A18).
 const ANULADA_SHORT = { zero: 'Anulada (zero)', desconsiderar: 'Anulada (não conta)' }
 const attemptPendingLabel = (s) => (s?.integrityDecision && ANULADA_SHORT[s.integrityDecision]) || (s?.awaitingCorrection ? 'Aguardando correção' : '')
-// Endereço da tela Corrigir (CorrecaoPage): com a entrega ou só com a prova.
+// Endereço da tela Corrigir (CorrecaoPage): com a entrega, só com a prova ou só com a
+// aplicação escolhida no filtro de Resultados (?applicationId=, como no desenho).
 const CORRECTION_ROUTE = '/resultados/correcao'
-export function correctionPath({ id, examKey } = {}) {
+export function correctionPath({ id, examKey, applicationId } = {}) {
   const query = new URLSearchParams()
   if (id) query.set('submissionId', id)
   if (examKey) query.set('examKey', examKey)
+  if (applicationId) query.set('applicationId', applicationId)
   const text = query.toString()
   return text ? CORRECTION_ROUTE + '?' + text : CORRECTION_ROUTE
 }
@@ -313,6 +315,10 @@ export default function ResultadosPage() {
   const [filterClass] = useState(activeClassName)
   const [filterExam, setFilterExam] = useState('')
   const [filterApplication, setFilterApplication] = useState('')
+  // O botão do aviso abre a correção com os filtros de prova e de aplicação de Resultados,
+  // quando há entrega esperando neles; senão, a fila da turma inteira (nunca uma vazia).
+  const pendingInFilter = (Array.isArray(correctionsApi.data?.pendentes) ? correctionsApi.data.pendentes : [])
+    .filter((entry) => (!filterExam || entry.examKey === filterExam) && (!filterApplication || entry.applicationId === filterApplication)).length
   const [resultActionId, setResultActionId] = useState(null)
   const [openModules, setOpenModules] = useState(() => new Set())
   const [openExams, setOpenExams] = useState(() => new Set())
@@ -1022,10 +1028,16 @@ export default function ResultadosPage() {
       {pendingCorrections > 0 && (
         <div role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-warning/30 bg-warning-soft px-4 py-3">
           <p className="text-sm text-text">
-            <b>{pendingCorrections === 1 ? '1 entrega aguarda' : `${pendingCorrections} entregas aguardam`} a sua correção.</b>{' '}
-            A nota delas só sai quando você concluir a correção.
+            {canWrite ? (
+              <><b>{pendingCorrections === 1 ? '1 entrega aguarda' : `${pendingCorrections} entregas aguardam`} a sua correção.</b>{' '}
+              A nota delas só sai quando você concluir a correção.</>
+            ) : (
+              // Coordenação (só consulta): ela não corrige; quem conclui é o professor da turma.
+              <><b>{pendingCorrections === 1 ? '1 entrega aguarda' : `${pendingCorrections} entregas aguardam`} a correção do professor.</b>{' '}
+              A nota delas só sai quando ele concluir a correção.</>
+            )}
           </p>
-          <Button size="sm" icon={PenLine} onClick={() => navigate(correctionPath({ examKey: filterExam }))}>
+          <Button size="sm" icon={PenLine} onClick={() => navigate(correctionPath(pendingInFilter > 0 ? { examKey: filterExam, applicationId: filterApplication } : {}))}>
             {canWrite ? `Corrigir provas (${pendingCorrections})` : `Ver correções (${pendingCorrections})`}
           </Button>
         </div>

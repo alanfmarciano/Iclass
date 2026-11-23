@@ -178,15 +178,17 @@ Prova com questão dissertativa, ou com resposta curta e numérica em que você 
 
 A prova impressa lançada pelo cartão-resposta também espera a sua correção quando tem dissertativa (ou outra questão sem letra para marcar): a letra marcada vale nas questões de escolha, e as outras ficam com você.
 
-Para corrigir, toque em **Corrigir provas** no aviso de **Resultados** (ou em **Corrigir**, na tentativa do aluno). A tela mostra uma entrega por vez, da mais antiga para a mais nova, com **Anterior** e **Próxima**; escolha a prova no filtro para corrigir uma só. Marque **Corrigir sem ver o nome** para ver "Aluno 1", "Aluno 2"... no lugar dos nomes (a escolha fica guardada neste navegador).
+Para corrigir, toque em **Corrigir provas** no aviso de **Resultados** (ou em **Corrigir**, na tentativa do aluno). A tela mostra uma entrega por vez, da mais antiga para a mais nova, com **Anterior** e **Próxima**; escolha a prova no filtro para corrigir uma só. Marque **Corrigir sem ver o nome** para ver "Aluno 1", "Aluno 2"... no lugar dos nomes (a escolha fica guardada neste navegador; o número de cada entrega não muda enquanto a tela está aberta). Com uma aplicação escolhida no filtro de Resultados, a tela mostra só as entregas dela, com **Ver todas** para voltar à turma inteira.
 
 Em cada questão aparecem a resposta do aluno, a resposta esperada e a explicação. Lance os pontos (aceita vírgula: 1,5) ou os pontos de cada critério da rubrica, que somam os pontos da questão, e escreva, se quiser, um comentário para o aluno. No fim, há o comentário geral da prova. **Salvar** guarda sem concluir; **Concluir correção** pede os pontos de todas as questões que esperam você, recalcula a nota e mostra a nota antes e depois, com **Corrigir a próxima**. A nota só aparece para o aluno depois que você a liberar em Resultados.
 
-Para mudar os pontos de uma questão que o sistema corrigiu pelo gabarito, toque em **Ajustar pontos** e informe o motivo; para mudar uma nota já liberada, o IClass também pede o motivo. Se outra pessoa (ou outra aba sua) gravou a mesma correção enquanto você corrigia, o IClass avisa e oferece **Recarregar**: nada do que você digitou é gravado por cima. A Coordenação vê a correção, sem os campos.
+Se você sair da tela (por outra entrega, pelo menu, pelo voltar do navegador ou fechando a aba) com pontos ou comentários ainda não salvos, o IClass pergunta antes de descartar.
+
+Para mudar os pontos de uma questão que o sistema corrigiu pelo gabarito, toque em **Ajustar pontos** e informe o motivo (**Cancelar ajuste** volta à conta do sistema antes de salvar); para mudar uma nota já liberada, o IClass também pede o motivo. Se outra pessoa (ou outra aba sua) gravou a mesma correção enquanto você corrigia, o IClass avisa e oferece **Recarregar**: nada do que você digitou é gravado por cima. A Coordenação vê a correção, sem os campos.
 
 Se você apagar os pontos de uma questão que espera você depois de concluir, a prova volta a **Aguardando correção** até você concluir de novo.
 
-O comentário geral e os pontos de cada questão aparecem para o aluno com a nota liberada; a explicação, o comentário de cada questão e os pontos de cada critério da rubrica, com o gabarito liberado. A resposta esperada da dissertativa nunca vai para o aluno.
+Com a nota liberada, o aluno vê a nota e o comentário geral. Os pontos de cada questão, a explicação, o comentário de cada questão e os pontos de cada critério da rubrica só aparecem quando o gabarito também é liberado (antes disso, os pontos de cada questão mostrariam quais ele acertou). A resposta esperada da dissertativa nunca vai para o aluno.
 
 Para anular a tentativa de um aluno por cola, use **Anular tentativa** no Monitor (veja Monitor). Para corrigir uma resposta certa que estava errada no gabarito, use **Corrigir gabarito** em Provas, na aplicação anterior. Se a preparação da prova foi excluída de **Aplicações anteriores**, a aplicação aparece em **Aplicações online sem preparação salva**, com o mesmo botão.
 

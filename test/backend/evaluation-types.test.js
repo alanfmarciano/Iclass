@@ -365,6 +365,15 @@ test('[UC-PROVA-004] entrega corrigida por pontos; dissertativa aguarda; Monitor
     assert.equal(listed.includes('pointsEarned'), false);
     assert.equal(listed.includes('correctAnswers'), false);
     assert.equal(listed.includes('"score"'), false);
+    // A18: sem gabarito, a numérica leva a unidade e o tipo (a tabela do aluno mostra
+    // "3,6 ms", não "3,6"); nada do gabarito vem junto.
+    const anaSubmission = (Array.isArray(mine.body) ? mine.body : (mine.body.submissions || [])).find(item => Array.isArray(item.gradedAnswers) && item.gradedAnswers.some(answer => answer.questionNumber === 4));
+    assert.ok(anaSubmission, listed.slice(0, 1000));
+    const numericAnswer = anaSubmission.gradedAnswers.find(answer => answer.questionNumber === 4);
+    assert.deepEqual(numericAnswer, { questionNumber: 4, type: 'numeric', unit: 'ms', studentChoice: null, studentResponse: '3,6 ms' });
+    assert.equal(anaSubmission.gradedAnswers.find(answer => answer.questionNumber === 6).type, 'essay');
+    assert.equal(listed.includes('"tolerance"'), false);
+    assert.equal(listed.includes('3.5'), false, 'o valor do gabarito não vai');
 });
 
 test('[UC-PROVA-004] entrega de antes do A2 (sem pontos guardados) aparece na revisão como questões de 1 ponto (D1)', async () => {

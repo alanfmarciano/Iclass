@@ -1,6 +1,6 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { act, cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
+import { Link, RouterProvider, createMemoryRouter, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import CorrecaoPage from './CorrecaoPage'
 import { correctionBody, initialDraft, missingQuestions, parsePoints, queueLabel, validateDraft } from './correctionForm'
@@ -50,15 +50,16 @@ function Where() {
   return <output data-testid="where">{location.pathname}{location.search}</output>
 }
 
-function renderPage(entry = '/resultados/correcao') {
-  return render(
-    <MemoryRouter initialEntries={[entry]}>
-      <Routes>
-        <Route path="/resultados/correcao" element={<><CorrecaoPage /><Where /></>} />
-        <Route path="/resultados" element={<Where />} />
-      </Routes>
-    </MemoryRouter>,
-  )
+// Roteador de dados como o do app (main.jsx): o useBlocker da tela só funciona nele. O
+// link "Chamada" faz o papel do menu lateral.
+let router
+function renderPage(entry = '/resultados/correcao', { history = [] } = {}) {
+  router = createMemoryRouter([
+    { path: '/resultados/correcao', element: <><Link to="/chamada">Chamada</Link><CorrecaoPage /><Where /></> },
+    { path: '/resultados', element: <Where /> },
+    { path: '/chamada', element: <Where /> },
+  ], { initialEntries: [...history, entry], initialIndex: history.length })
+  return render(<RouterProvider router={router} />)
 }
 
 beforeEach(() => {
@@ -192,6 +193,120 @@ describe('Corrigir provas (A18)', () => {
     expect(await screen.findByRole('heading', { name: 'Bia Lima' })).toBeInTheDocument()
     expect(screen.getByText('2 de 2')).toBeInTheDocument()
     expect(screen.getByRole('combobox', { name: 'Prova' })).toHaveValue('P1')
+  })
+
+  it('[UC-CORRECAO-001] sair pelo menu, pelo voltar do navegador ou por Próxima com mudanças pede confirmação', async () => {
+    const user = userEvent.setup()
+    renderPage('/resultados/correcao', { history: ['/resultados'] })
+    await screen.findByRole('heading', { name: 'Ana Souza' })
+    // Sem mudanças, nada pergunta.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    await user.type(screen.getByLabelText(/Comentário geral/), 'Bom trabalho.')
+
+    // Menu lateral: antes, ia para /chamada sem perguntar e o texto se perdia.
+    await user.click(screen.getByRole('link', { name: 'Chamada' }))
+    let dialog = await screen.findByRole('dialog')
+    expect(within(dialog).getByText('Sair sem salvar?')).toBeInTheDocument()
+    expect(screen.getByTestId('where')).toHaveTextContent('/resultados/correcao')
+    await user.click(within(dialog).getByRole('button', { name: 'Continuar corrigindo' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(screen.getByLabelText(/Comentário geral/)).toHaveValue('Bom trabalho.')
+
+    // Voltar do navegador.
+    await act(async () => { await router.navigate(-1) })
+    dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Continuar corrigindo' }))
+    await waitFor(() => expect(screen.queryByRole('dialog')).not.toBeInTheDocument())
+    expect(screen.getByTestId('where')).toHaveTextContent('/resultados/correcao')
+
+    // Próxima da fila (troca só o endereço de busca) também pergunta; confirmar sai.
+    await user.click(screen.getByRole('button', { name: /Próxima/ }))
+    dialog = await screen.findByRole('dialog')
+    await user.click(within(dialog).getByRole('button', { name: 'Sair sem salvar' }))
+    expect(await screen.findByRole('heading', { name: 'Bia Lima' })).toBeInTheDocument()
+    expect(screen.getByTestId('where')).toHaveTextContent('submissionId=s2')
+    // Na entrega nova, sem mudanças, o menu sai direto.
+    await user.click(screen.getByRole('link', { name: 'Chamada' }))
+    await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent('/chamada'))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('[UC-CORRECAO-001] fechar ou recarregar a aba com mudanças pede a confirmação do navegador', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByRole('heading', { name: 'Ana Souza' })
+    const clean = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(clean)
+    expect(clean.defaultPrevented).toBe(false)
+    await user.type(screen.getByLabelText(/Ideia central/), '1')
+    const dirty = new Event('beforeunload', { cancelable: true })
+    window.dispatchEvent(dirty)
+    expect(dirty.defaultPrevented).toBe(true)
+  })
+
+  it('[UC-CORRECAO-001] "Cancelar ajuste" volta à conta do sistema sem deixar mudança pendente', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await screen.findByRole('heading', { name: 'Ana Souza' })
+    const objective = screen.getByText('Porta do HTTP?').closest('li')
+    await user.click(within(objective).getByRole('button', { name: 'Ajustar pontos' }))
+    expect(within(objective).getByLabelText(/^Pontos/)).toHaveValue('1')
+    expect(screen.getByRole('button', { name: 'Salvar' })).toBeEnabled()
+    await user.click(within(objective).getByRole('button', { name: 'Cancelar ajuste' }))
+    expect(within(objective).queryByLabelText(/^Pontos/)).not.toBeInTheDocument()
+    expect(within(objective).getByRole('button', { name: 'Ajustar pontos' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Salvar' })).toBeDisabled()
+    await user.click(screen.getByRole('link', { name: 'Chamada' }))
+    await waitFor(() => expect(screen.getByTestId('where')).toHaveTextContent('/chamada'))
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+  })
+
+  it('[UC-CORRECAO-001] sem ver o nome, o número de cada entrega não muda quando outra sai da fila', async () => {
+    const user = userEvent.setup()
+    try { window.localStorage.setItem('iclass.correcao.semNome', '1') } catch { /* sem armazenamento */ }
+    let queue = QUEUE
+    mocks.get.mockImplementation(async (path) => {
+      if (path.startsWith('/api/admin/corrections')) return queue
+      const match = path.match(/submissions\/([^/]+)\/correction/)
+      if (match) return correction(decodeURIComponent(match[1]))
+      return {}
+    })
+    mocks.post.mockImplementation(async () => {
+      // Concluir a Ana tira a entrega dela da fila.
+      queue = { ...QUEUE, total: 1, pendentes: QUEUE.pendentes.slice(1) }
+      return { success: true, submissionId: 's1', score: 100, scoreBefore: 50, gradePublished: false, situacao: 'concluida', versao: 1, comentarioGeral: '', questoes: correction('s1').questoes }
+    })
+    renderPage()
+    expect(await screen.findByRole('heading', { name: 'Aluno 1' })).toBeInTheDocument()
+    await user.type(screen.getByLabelText(/Ideia central/), '1')
+    await user.type(screen.getByLabelText(/Clareza/), '1')
+    await user.click(screen.getByRole('button', { name: 'Concluir correção' }))
+    await screen.findByText('Correção concluída.')
+    // O resultado continua no endereço da Ana, sem pedir confirmação.
+    expect(screen.queryByRole('dialog')).not.toBeInTheDocument()
+    expect(screen.getByTestId('where')).toHaveTextContent('submissionId=s1')
+    await user.click(await screen.findByRole('button', { name: 'Corrigir a próxima' }))
+    // A Bia continua "Aluno 2" (antes, virava "Aluno 1" quando a Ana saía da fila).
+    expect(await screen.findByRole('heading', { name: 'Aluno 2' })).toBeInTheDocument()
+    expect(screen.queryByText('Bia Lima')).not.toBeInTheDocument()
+  })
+
+  it('[UC-CORRECAO-001] ?applicationId= (o filtro de Resultados) mostra só as entregas daquela aplicação', async () => {
+    const user = userEvent.setup()
+    const queue = { ...QUEUE, pendentes: [{ ...QUEUE.pendentes[0], applicationId: 'app-1' }, { ...QUEUE.pendentes[1], applicationId: 'app-2' }] }
+    mocks.get.mockImplementation(async (path) => {
+      if (path.startsWith('/api/admin/corrections')) return queue
+      const match = path.match(/submissions\/([^/]+)\/correction/)
+      if (match) return correction(decodeURIComponent(match[1]))
+      return {}
+    })
+    renderPage('/resultados/correcao?applicationId=app-2')
+    expect(await screen.findByRole('heading', { name: 'Bia Lima' })).toBeInTheDocument()
+    expect(screen.getByText('1 de 1')).toBeInTheDocument()
+    expect(screen.getByText('Só a aplicação escolhida em Resultados.')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Ver todas' }))
+    expect(await screen.findByRole('heading', { name: 'Ana Souza' })).toBeInTheDocument()
+    expect(screen.getByText('1 de 2')).toBeInTheDocument()
   })
 
   it('[UC-CORRECAO-001] fila vazia: diz que não há prova aguardando', async () => {

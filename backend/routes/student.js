@@ -1560,9 +1560,10 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
         return res.status(409).json({ error: 'A prova está pausada pelo professor.', paused: true });
     }
     // Encerrada ou cancelada: a prova já foi aplicada (link salvo, aba antiga). Antes a
-    // mensagem dizia que ela "ainda não foi iniciada".
+    // mensagem dizia que ela "ainda não foi iniciada"; a encerrada pela agenda fala do
+    // horário marcado, e não do professor (A18).
     if (['finished', 'cancelled'].includes(application.status)) {
-        return res.status(409).json({ error: 'Esta aplicação já foi encerrada pelo professor.', applicationClosed: true });
+        return res.status(409).json(examSchedule.closedResponse(application, { now }));
     }
     if (!mayStart || !config?.onlineActive) {
         // Agendada (P3-S12) ou na sala de espera: a mensagem fala do horário marcado, e não

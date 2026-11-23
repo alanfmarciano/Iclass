@@ -1038,7 +1038,7 @@ export default function ProvasPage() {
                         return (
                           <tr key={i} className="border-t border-border">
                             <td className="px-3 py-2">{a.questionNumber}</td>
-                            <td className="max-w-[16rem] break-words px-3 py-2">{clip(a.type === 'essay' && a.studentResponse ? String(a.studentResponse) : studentAnswerText(a, null, { blank: '-' }), 120)}</td>
+                            <td className="max-w-[16rem] break-words px-3 py-2">{clip(a.type === 'essay' && a.studentResponse ? String(a.studentResponse) : studentAnswerText(a, { unit: a.unit }, { blank: '-' }), 120)}</td>
                             {detail.answerKeyReleased && <><td className="px-3 py-2">{correct || '-'}</td><td className="px-3 py-2"><Badge tone={status.tone}>{status.text}</Badge></td></>}
                           </tr>
                         )

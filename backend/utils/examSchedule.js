@@ -185,6 +185,26 @@ function notStartedResponse(application, { now = Date.now(), timezone } = {}) {
     return { error: 'A prova ainda não foi iniciada pelo professor.', notStarted: true };
 }
 
+// Começar uma prova já encerrada (link salvo, aba antiga): quem encerrou foi a agenda
+// (fechou no horário marcado) ou o professor. Antes a agenda também dizia "pelo
+// professor" (A18, revisão da J2).
+function closedResponse(application, { timezone } = {}) {
+    const agenda = applicationAgenda(application);
+    const encerradaEm = agenda && application.status === 'finished' ? positive(agenda.encerradaEm) : null;
+    if (encerradaEm) {
+        const fechaEm = positive(agenda.fechaEm);
+        const late = fechaEm && encerradaEm - fechaEm > MINUTE_MS;
+        return {
+            error: late
+                ? `Esta prova já foi encerrada pela agenda: o horário de fechar (${formatWhen(fechaEm, timezone)}) passou e ela fechou em ${formatWhen(encerradaEm, timezone)}.`
+                : `Esta prova já foi encerrada no horário marcado (${formatWhen(fechaEm || encerradaEm, timezone)}).`,
+            applicationClosed: true,
+            closedBySchedule: true,
+        };
+    }
+    return { error: 'Esta aplicação já foi encerrada pelo professor.', applicationClosed: true };
+}
+
 function createAgenda({ abreEm, fechaEm }, { actor, now = Date.now() } = {}) {
     return { abreEm, fechaEm, criadoPor: actor || null, criadoEm: now };
 }
@@ -832,6 +852,7 @@ module.exports = {
     releaseClassItem,
     releaseScheduleAllowed,
     releaseScheduleView,
+    closedResponse,
     notStartedResponse,
     releaseItemTitle,
     scheduleView,

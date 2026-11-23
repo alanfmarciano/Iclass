@@ -224,6 +224,8 @@ test('[UC-CORRECAO-001] fila, leitura com gabarito, gravação parcial e conclus
     assert.equal(item.somenteQuemAltera, true);
     // O item abre a tela Corrigir já na prova (A18); antes, a lista de Resultados.
     assert.equal(item.href, `/resultados/correcao?examKey=${encodeURIComponent(stored().examKey)}`);
+    // O detalhe diz a tela para onde o link leva (antes, "· Resultados").
+    assert.match(item.detalhe, /· Corrigir provas$/);
 });
 
 test('[UC-CORRECAO-001] recusas: acima do possível, rubrica fora do máximo, ajuste sem motivo, concluir incompleto', async () => {

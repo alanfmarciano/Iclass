@@ -147,7 +147,7 @@ function queueItems(ctx) {
         id: 'provas_aguardando_correcao',
         tipo: 'provas_aguardando_correcao',
         titulo: pending.length === 1 ? 'Prova aguardando correção' : 'Provas aguardando correção',
-        detalhe: exams.size === 1 ? `em "${title}" · Resultados` : `em ${exams.size} provas · Resultados`,
+        detalhe: exams.size === 1 ? `em "${title}" · Corrigir provas` : `em ${exams.size} provas · Corrigir provas`,
         count: pending.length,
         tone: 'warning',
         // A tela Corrigir (A18), com a prova da fila quando é uma só.

@@ -425,6 +425,22 @@ describe('Provas do aluno · revisão corrigida (A18)', () => {
     expect(within(dialog).getByText('Texto do aluno')).toBeInTheDocument()
   })
 
+  it('[UC-CORRECAO-001] nota publicada sem gabarito: a numérica aparece com a unidade e sem repetir a digitada', async () => {
+    // Antes, sem o gabarito, a tabela mostrava "3,5" (a unidade vinha só com as questões).
+    const dialog = await openDetail(reviewed({
+      answerKeyReleased: false, examQuestions: undefined, comentarioGeral: 'Bom trabalho.',
+      gradedAnswers: [
+        { questionNumber: 1, type: 'numeric', unit: 'ms', studentChoice: null, studentResponse: '3.5' },
+        { questionNumber: 2, type: 'numeric', unit: 'ms', studentChoice: null, studentResponse: '4 ms' },
+      ],
+    }))
+    const rows = within(dialog).getAllByRole('row')
+    expect(rows[1]).toHaveTextContent('3,5 ms')
+    expect(rows[2]).toHaveTextContent('4 ms')
+    expect(rows[2]).not.toHaveTextContent('ms ms')
+    expect(within(dialog).getByText('Bom trabalho.')).toBeInTheDocument()
+  })
+
   it('[UC-CORRECAO-001] tentativa anulada diz que foi anulada, e o comentário geral do professor aparece', async () => {
     const dialog = await openDetail(reviewed({ anulada: 'zero', comentarioGeral: 'Conversamos na aula sobre a consulta.' }))
     expect(within(dialog).getByText(/O professor anulou esta tentativa e ela vale zero/)).toBeInTheDocument()

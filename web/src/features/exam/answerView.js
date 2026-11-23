@@ -65,7 +65,9 @@ export function studentAnswerText(answer, question, { blank = '' } = {}) {
     if (type === 'numeric') {
       const unit = String(question?.unit || question?.numeric?.unit || '').trim()
       const shown = String(response).trim().replace('.', ',')
-      return unit ? `${shown} ${unit}` : shown
+      // O aluno que digitou a unidade ("3,6 ms") não ganha "ms ms".
+      const typedUnit = unit && shown.toLowerCase().endsWith(unit.toLowerCase())
+      return unit && !typedUnit ? `${shown} ${unit}` : shown
     }
     return String(response)
   }

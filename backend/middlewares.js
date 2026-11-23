@@ -1144,6 +1144,9 @@ function sanitizeEvaluationForStudent(evaluation) {
 
 // Sanitização de Submissão para Aluno
 // Campos da questão que vão para a revisão do aluno com o gabarito liberado (D12 do P3).
+// Tipos de questão com resposta digitada (fase 3, P3-S1).
+const TYPED_ANSWER_TYPES = new Set(['numeric', 'short_answer', 'essay']);
+
 function studentReviewQuestionFields(question) {
     const out = {};
     if (!question || typeof question !== 'object') return out;
@@ -1274,11 +1277,21 @@ function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
         return safeGrade;
     }
 
+    // Sem gabarito, a unidade da numérica (o aluno já a via na prova) acompanha a resposta
+    // dele: "3,5 ms", e não só "3,5" (A18). O tipo vai só nas questões digitadas, para a
+    // tela mostrar a resposta escrita; as de letra continuam só com a letra.
+    const unitByNumber = new Map();
+    (Array.isArray(examSnapshot?.questions) ? examSnapshot.questions : []).forEach(question => {
+        const unit = question?.numeric && typeof question.numeric.unit === 'string' ? question.numeric.unit.trim() : '';
+        if (unit) unitByNumber.set(Number(question?.originalNumber ?? question?.number), unit);
+    });
     return {
         ...safeGrade,
         gradedAnswers: Array.isArray(submission.gradedAnswers)
             ? submission.gradedAnswers.map(ans => ({
                 questionNumber: ans.questionNumber,
+                ...(TYPED_ANSWER_TYPES.has(ans.type) ? { type: ans.type } : {}),
+                ...(ans.type === 'numeric' && unitByNumber.has(Number(ans.questionNumber)) ? { unit: unitByNumber.get(Number(ans.questionNumber)) } : {}),
                 studentChoice: ans.studentChoice || null,
                 // Tipos da fase 3 (P3-S1): a resposta do próprio aluno (várias corretas e
                 // digitada), sem gabarito nem pontos.

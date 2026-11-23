@@ -740,6 +740,35 @@ test('[UC-PROVA-008] A18: start-attempt sem a prova aberta fala do horário marc
     assert.doesNotMatch(room.body.error, /professor/);
 });
 
+test('[UC-PROVA-008] A18: start-attempt na prova encerrada pela agenda fala do horário, não do professor', async () => {
+    const now = Date.now();
+    const application = await preparedWithAgenda(now - 30 * MINUTE, now + 30 * MINUTE);
+    examSchedule.sweepSchedules(db.memory, { now: now - 29 * MINUTE });
+    assert.equal(application.status, 'running');
+    // Fechou no horário (a volta de 10 s logo depois do fechaEm).
+    examSchedule.sweepSchedules(db.memory, { now: now + 30 * MINUTE + 5000 });
+    assert.equal(application.status, 'finished');
+    const refused = await asStudent(request(app).post(`/api/student/exam-applications/${application.id}/start-attempt`), ALICE).send({}).expect(409);
+    assert.equal(refused.body.applicationClosed, true);
+    assert.equal(refused.body.closedBySchedule, true);
+    assert.equal(refused.body.error, `Esta prova já foi encerrada no horário marcado (${examSchedule.formatWhen(now + 30 * MINUTE)}).`);
+    assert.doesNotMatch(refused.body.error, /professor/);
+    // Fechou atrasada (servidor desligado no horário): diz as duas horas.
+    const late = examSchedule.closedResponse({ status: 'finished', agenda: { abreEm: now - 90 * MINUTE, fechaEm: now - 60 * MINUTE, encerradaEm: now } });
+    assert.equal(late.closedBySchedule, true);
+    assert.equal(late.error, `Esta prova já foi encerrada pela agenda: o horário de fechar (${examSchedule.formatWhen(now - 60 * MINUTE)}) passou e ela fechou em ${examSchedule.formatWhen(now)}.`);
+    // Encerrada pelo professor (com ou sem agenda) e cancelada: o texto de sempre.
+    for (const closed of [
+        { status: 'finished' },
+        { status: 'finished', agenda: { abreEm: now - 90 * MINUTE, fechaEm: now + 60 * MINUTE, abertaEm: now - 90 * MINUTE } },
+        { status: 'cancelled', agenda: { abreEm: now - 90 * MINUTE, fechaEm: now - 60 * MINUTE, encerradaEm: now } },
+    ]) {
+        const body = examSchedule.closedResponse(closed);
+        assert.equal(body.error, 'Esta aplicação já foi encerrada pelo professor.');
+        assert.equal(body.closedBySchedule, undefined);
+    }
+});
+
 test('[UC-PROVA-008] A18: liberação e encerramento atrasados no boot ficam com a hora real no log e no registro', async () => {
     const now = Date.now();
     const at = Math.ceil((now + 10 * MINUTE) / MINUTE) * MINUTE;

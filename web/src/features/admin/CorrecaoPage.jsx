@@ -1,5 +1,5 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
-import { useNavigate, useSearchParams } from 'react-router-dom'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useBlocker, useNavigate, useSearchParams } from 'react-router-dom'
 import { AlertTriangle, ArrowLeft, CheckCircle2, ChevronLeft, ChevronRight, EyeOff, Loader2, PenLine, RotateCcw, Save } from 'lucide-react'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
@@ -35,19 +35,25 @@ import {
 
 // Tela "Corrigir" (fase 3, P3-S4b / A18: AVA-07, UXA-17; D7 e D8 do desenho P3; API do
 // A9 em backend/routes/adminCorrections.js). Endereço: /resultados/correcao, com
-// ?examKey= (só uma prova da fila), ?submissionId= (abre esta entrega, mesmo fora da
-// fila: a correção já concluída pode ser revista).
+// ?examKey= (só uma prova da fila), ?applicationId= (só uma aplicação, o filtro de
+// Resultados), ?submissionId= (abre esta entrega, mesmo fora da fila: a correção já
+// concluída pode ser revista).
 //
 // - A fila (GET /api/admin/corrections) é a das entregas da turma que esperam o
 //   professor, da mais antiga para a mais nova; "Anterior" e "Próxima" andam por ela.
 // - "Corrigir sem ver o nome": a fila e a entrega mostram "Aluno N" (a ordem de envio),
-//   para corrigir sem saber de quem é. Fica lembrado neste navegador.
+//   para corrigir sem saber de quem é. Fica lembrado neste navegador. O número de cada
+//   entrega não muda enquanto a tela está aberta, mesmo quando outra sai da fila.
 // - Cada questão que espera o professor tem os pontos (ou a rubrica, que soma os
 //   pontos), o comentário para o aluno e, quando há, a resposta esperada e a
 //   explicação. A questão que o sistema corrigiu pelo gabarito mostra a conta dele e um
-//   "Ajustar pontos", que pede o motivo (o servidor recusa sem ele).
+//   "Ajustar pontos", que pede o motivo (o servidor recusa sem ele); "Cancelar ajuste"
+//   volta à conta do sistema antes de gravar.
 // - Salvar guarda sem concluir; "Concluir correção" pede os pontos de todas as questões
 //   que esperam o professor e mostra a nota antes e depois (a conta é do servidor).
+// - Sair com mudanças não gravadas pede confirmação em qualquer caminho: Anterior e
+//   Próxima, o filtro, o menu lateral, o sino, o voltar do navegador (useBlocker) e
+//   fechar ou recarregar a aba (beforeunload). Antes, só os botões da própria tela.
 // - Conflito (409 correction_conflict: outra aba gravou antes): aviso com "Recarregar".
 // - Nota já publicada que muda: o GradeReasonDialog pede o motivo (reason_required).
 // - A Coordenação (só consulta) vê a correção sem os campos.
@@ -153,7 +159,7 @@ function AnswerKey({ question }) {
   )
 }
 
-function QuestionGrading({ question, entry, errors, readOnly, onChange }) {
+function QuestionGrading({ question, entry, initialEntry, errors, readOnly, onChange }) {
   const key = questionKey(question)
   const teacher = needsTeacher(question)
   const possible = Number(question.points ?? question.automatico?.pointsPossible ?? 1)
@@ -184,6 +190,10 @@ function QuestionGrading({ question, entry, errors, readOnly, onChange }) {
         <div className="flex flex-wrap items-center gap-2">
           <Badge tone={auto.tone}>Sistema: {auto.text}</Badge>
           {!entry.ajustando && <Button size="sm" variant="secondary" className="h-11 sm:h-8" onClick={() => set({ ajustando: true, pontos: pointsText(question.automatico?.pointsEarned) })}>Ajustar pontos</Button>}
+          {/* Ajuste ainda não gravado: volta à conta do sistema (o comentário fica). */}
+          {entry.ajustando && !initialEntry?.ajustando && (
+            <Button size="sm" variant="ghost" className="h-11 sm:h-8" onClick={() => set({ ajustando: false, pontos: initialEntry?.pontos ?? '', motivo: initialEntry?.motivo ?? '', rubrica: initialEntry?.rubrica || {} })}>Cancelar ajuste</Button>
+          )}
         </div>
       )}
       {(teacher || entry.ajustando) && (
@@ -253,6 +263,7 @@ export default function CorrecaoPage() {
   const auth = useAuth()?.auth
   const canWrite = canWriteAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_RESULTS)
   const examKey = params.get('examKey') || ''
+  const applicationId = params.get('applicationId') || ''
   const submissionId = params.get('submissionId') || ''
   const contextQuery = new URLSearchParams({ courseId: courseId || '', studentClass: className || '' }).toString()
   const queueApi = useApi(courseId && className ? `/api/admin/corrections?${contextQuery}` : null, [courseId, className])
@@ -262,7 +273,8 @@ export default function CorrecaoPage() {
     allPending.forEach((entry) => map.set(entry.examKey, { examKey: entry.examKey, prova: entry.prova || entry.examKey, count: (map.get(entry.examKey)?.count || 0) + 1 }))
     return [...map.values()]
   }, [allPending])
-  const queue = useMemo(() => allPending.filter((entry) => !examKey || entry.examKey === examKey), [allPending, examKey])
+  const queue = useMemo(() => allPending.filter((entry) => (!examKey || entry.examKey === examKey)
+    && (!applicationId || String(entry.applicationId || '') === applicationId)), [allPending, examKey, applicationId])
   const selectedId = submissionId || queue[0]?.submissionId || ''
   const position = queue.findIndex((entry) => String(entry.submissionId) === String(selectedId))
 
@@ -279,10 +291,15 @@ export default function CorrecaoPage() {
   const [saving, setSaving] = useState(false)
   const [done, setDone] = useState(null)
   const [reasonFor, setReasonFor] = useState(null) // { concluir }
-  const [leaving, setLeaving] = useState(null) // destino com mudanças não salvas
   const loadRef = useRef(0)
+  // Há mudanças não gravadas? Lido pelo useBlocker na hora da navegação; applyDetail zera
+  // na hora (o endereço muda logo depois de concluir, antes de a tela redesenhar).
+  const unsavedRef = useRef(false)
+  // Número de cada entrega em "Corrigir sem ver o nome", fixo enquanto a tela está aberta.
+  const anonNumbersRef = useRef(new Map())
 
   function applyDetail(data) {
+    unsavedRef.current = false
     const start = initialDraft(data?.questoes)
     setDetail(data)
     setDraft(start)
@@ -323,11 +340,31 @@ export default function CorrecaoPage() {
   const missing = missingQuestions(questoes, draft)
   const teacherCount = questoes.filter((question) => needsTeacher(question) && !question.annulled).length
   const readOnly = !canWrite
+  unsavedRef.current = dirty && !readOnly
+
+  // Qualquer troca de endereço (outra entrega, outra prova, o menu, o sino, o voltar do
+  // navegador) com mudanças não gravadas para no diálogo "Sair sem salvar?".
+  const blocker = useBlocker(useCallback(({ currentLocation, nextLocation }) => (
+    unsavedRef.current
+      && (currentLocation.pathname !== nextLocation.pathname || currentLocation.search !== nextLocation.search)
+  ), []))
+  const leaving = blocker.state === 'blocked'
+
+  // Fechar ou recarregar a aba: o navegador pergunta (o texto é dele).
+  useEffect(() => {
+    if (!dirty || readOnly) return undefined
+    const warn = (event) => {
+      event.preventDefault()
+      event.returnValue = ''
+      return ''
+    }
+    window.addEventListener('beforeunload', warn)
+    return () => window.removeEventListener('beforeunload', warn)
+  }, [dirty, readOnly])
 
   function go(next) {
-    const target = typeof next === 'function' ? next : () => setParams(next)
-    if (dirty && !readOnly) { setLeaving(() => target); return }
-    target()
+    if (typeof next === 'function') next()
+    else setParams(next)
   }
 
   function selectSubmission(id) {
@@ -420,9 +457,18 @@ export default function CorrecaoPage() {
     const after = queue.slice(Math.max(position, 0) + 1).find((entry) => String(entry.submissionId) !== String(detail?.submissionId))
     return after || rest[0] || null
   }
-  const label = (entry, index) => queueLabel(entry, index, { anonymous })
+  // "Aluno N" pela ordem de envio da primeira vez que a entrega apareceu na fila: concluir
+  // uma não renumera as outras (antes, a próxima virava "Aluno 1" de novo).
+  const anonNumbers = anonNumbersRef.current
+  allPending.forEach((entry) => {
+    const id = String(entry.submissionId)
+    if (!anonNumbers.has(id)) anonNumbers.set(id, anonNumbers.size + 1)
+  })
+  const anonIndex = (id) => (anonNumbers.has(String(id)) ? anonNumbers.get(String(id)) - 1 : -1)
+  const label = (entry) => queueLabel(entry, anonIndex(entry.submissionId), { anonymous })
+  const detailIndex = anonIndex(detail?.submissionId ?? selectedId)
   const studentName = anonymous
-    ? (position >= 0 ? `Aluno ${position + 1}` : 'Aluno')
+    ? (detailIndex >= 0 ? `Aluno ${detailIndex + 1}` : 'Aluno')
     : (detail?.aluno?.name || detail?.aluno?.email || 'Aluno')
 
   return (
@@ -451,6 +497,12 @@ export default function CorrecaoPage() {
           <input type="checkbox" className="h-5 w-5" checked={anonymous} onChange={(event) => toggleAnonymous(event.target.checked)} />
           <EyeOff size={15} className="text-muted" aria-hidden /> Corrigir sem ver o nome
         </label>
+        {applicationId && (
+          <p className="flex min-h-11 flex-wrap items-center gap-2 text-sm text-muted">
+            Só a aplicação escolhida em Resultados.
+            <Button size="sm" variant="ghost" className="h-11 sm:h-8" onClick={() => selectExam(examKey)}>Ver todas</Button>
+          </p>
+        )}
       </div>
 
       {queueApi.loading && !queueApi.data ? (
@@ -464,12 +516,12 @@ export default function CorrecaoPage() {
           {queue.length > 0 && (
             <nav aria-label="Fila da correção" className="hidden lg:block">
               <ol className="space-y-1">
-                {queue.map((entry, index) => {
+                {queue.map((entry) => {
                   const active = String(entry.submissionId) === String(selectedId)
                   return (
                     <li key={entry.submissionId}>
                       <button type="button" onClick={() => selectSubmission(entry.submissionId)} aria-current={active ? 'true' : undefined} className={`w-full rounded-lg px-3 py-2 text-left text-sm ${active ? 'bg-primary-soft font-semibold text-primary' : 'text-text hover:bg-surface-2'}`}>
-                        <span className="block truncate">{label(entry, index)}</span>
+                        <span className="block truncate">{label(entry)}</span>
                         <span className="block truncate text-xs font-normal text-muted">{entry.prova} · questão {entry.questoesPendentes?.join(', ')}</span>
                       </button>
                     </li>
@@ -534,7 +586,7 @@ export default function CorrecaoPage() {
                         <div className="space-y-3">
                           <StudentAnswer question={question} />
                           <AnswerKey question={question} />
-                          <QuestionGrading question={question} entry={draft[key] || {}} errors={errors} readOnly={readOnly} onChange={updateEntry} />
+                          <QuestionGrading question={question} entry={draft[key] || {}} initialEntry={initial[key]} errors={errors} readOnly={readOnly} onChange={updateEntry} />
                         </div>
                       </li>
                     )
@@ -584,14 +636,14 @@ export default function CorrecaoPage() {
       />
 
       <ConfirmDialog
-        open={!!leaving}
-        onClose={() => setLeaving(null)}
+        open={leaving}
+        onClose={() => { if (blocker.state === 'blocked') blocker.reset() }}
         title="Sair sem salvar?"
         message="Os pontos e comentários que você digitou nesta entrega ainda não foram gravados."
         confirmLabel="Sair sem salvar"
         cancelLabel="Continuar corrigindo"
         tone="danger"
-        onConfirm={() => { const target = leaving; setLeaving(null); target?.() }}
+        onConfirm={() => { if (blocker.state === 'blocked') blocker.proceed() }}
       />
     </div>
   )
