@@ -457,14 +457,29 @@ function archivedBundleChanges(memory, aluno, { mode, pseudonimo, at }) {
     });
     if (!jobs.length) return { ids, effect: null };
     const accepted = () => jobs.forEach(job => addPendingBundleChange(job.folder, job.change));
-    const afterSave = ({ deletedBy } = {}) => {
-        jobs.forEach(job => {
-            try {
-                rewriteBundleWithChange(job.folder, job.file, job.change);
-            } catch (error) {
-                logError(`assignmentLifecycle: pacote do curso excluído não foi regravado (${job.folder})`, error);
+    // A regravação que falha (disco cheio, antivírus segurando o arquivo) deixa a mudança
+    // na lista do que espera: restaurar o curso nesse meio-tempo continua trazendo a entrega
+    // como ficaria (D14/LGPD), e a regravação tenta de novo depois do próximo COMMIT
+    // (afterNextCommit, quando quem chama passa). A mudança só sai da lista quando a
+    // regravação deu certo ou o pacote já saiu (J2, pendência do C10).
+    const rewriteOrKeep = (job, afterNextCommit, attempt = 1) => {
+        try {
+            rewriteBundleWithChange(job.folder, job.file, job.change);
+        } catch (error) {
+            if (attempt === 1) logError(`assignmentLifecycle: pacote do curso excluído não foi regravado (${job.folder}); a mudança continua pendente e a regravação tenta de novo depois da próxima gravação`, error);
+            let waiting = false;
+            if (typeof afterNextCommit === 'function') {
+                try { waiting = afterNextCommit(() => rewriteOrKeep(job, afterNextCommit, attempt + 1)) !== false; } catch (e) { waiting = false; }
             }
-            dropPendingBundleChange(job.folder, job.change);
+            if (!waiting && attempt === 1) logError(`assignmentLifecycle: a regravação do pacote (${job.folder}) fica pendente até reiniciar o servidor`, error);
+            return false;
+        }
+        dropPendingBundleChange(job.folder, job.change);
+        return true;
+    };
+    const afterSave = ({ deletedBy, afterNextCommit = null } = {}) => {
+        jobs.forEach(job => {
+            rewriteOrKeep(job, afterNextCommit);
             moveFilesToTrash(job.files, { deletedBy, resolve: item => archivedAbsFor(job.folder, item.storedRel) });
             // O que ficou em data/entregas (o arquivamento não tinha conseguido mover, ou o
             // curso foi restaurado antes desta hora).
@@ -831,13 +846,43 @@ async function restoreCourseAssignmentFiles(folderName, { rename = renameWithRet
 // (archivedRel), para o espelho apagar as duas cópias. O que ainda estava em
 // data/entregas (o rename tinha falhado) também vai. Devolve { arquivos, lapides }.
 function trashArchivedCourseAssignmentFiles(memory, folderName, bundleSubmissions, { deletedBy, at = Date.now() } = {}) {
-    const out = { arquivos: 0, lapides: 0 };
+    const out = { arquivos: 0, lapides: 0, ativos: 0, devolvidos: 0 };
     let base;
     try { base = courseArchiveFolder(folderName); } catch (e) { return out; }
-    const files = [];
-    list(bundleSubmissions).forEach(sub => { if (isObject(sub)) files.push(...submissionFiles(sub)); });
+    // Arquivo de entrega viva (o curso foi restaurado e o pacote ficou para trás: a remoção
+    // da pasta falhou ou a gravação deu 503) não é do pacote: fica, sem lápide, e a cópia
+    // que ainda estava só no pacote volta para data/entregas antes de a pasta ir para a
+    // lixeira (J2, pendência do C10).
+    const liveIds = new Set();
+    const liveRels = new Set();
+    list(memory && memory.assignmentSubmissions).forEach(sub => submissionFiles(sub).forEach(file => {
+        if (file.id) liveIds.add(file.id);
+        if (file.storedRel) liveRels.add(file.storedRel.split('\\').join('/'));
+    }));
+    const isLive = file => (!!file.id && liveIds.has(file.id)) || (!!file.storedRel && liveRels.has(file.storedRel.split('\\').join('/')));
+    const all = [];
+    list(bundleSubmissions).forEach(sub => { if (isObject(sub)) all.push(...submissionFiles(sub)); });
+    const files = all.filter(file => !isLive(file));
+    const live = all.filter(isLive);
+    out.ativos = live.length;
     out.lapides = addFileTombstones(memory, files, { reason: 'excluir_curso', at, extra: file => ({ archivedRel: archivedRelFor(folderName, file.storedRel) }) });
     if (fs.existsSync(base)) {
+        live.forEach(file => {
+            let from;
+            let to;
+            try {
+                from = archivedAbsFor(folderName, file.storedRel);
+                to = assignmentFiles.absFromStoredRel(file.storedRel);
+            } catch (e) { return; }
+            if (!fs.existsSync(from) || fs.existsSync(to)) return;
+            try {
+                fs.mkdirSync(path.dirname(to), { recursive: true });
+                fs.renameSync(from, to);
+                out.devolvidos += 1;
+            } catch (error) {
+                logError(`assignmentLifecycle: arquivo de entrega ativa não voltou do pacote do curso excluído (${folderName}); vai para a lixeira de arquivos junto com o pacote`, error);
+            }
+        });
         const { files: count } = countFiles(base);
         if (fileStore.moveDirToTrash(base, { deletedBy })) out.arquivos += count;
         removeEmptyDirs(COURSE_ARCHIVE_DIR, runtimePaths.ASSIGNMENT_FILES_DIR);

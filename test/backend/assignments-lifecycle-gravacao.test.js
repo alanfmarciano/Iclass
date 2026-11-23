@@ -28,6 +28,7 @@ const runtimePaths = require('../../backend/runtimePaths.js');
 const assignments = require('../../backend/utils/assignments.js');
 const assignmentFiles = require('../../backend/utils/assignmentFiles.js');
 const fileStore = require('../../backend/utils/storage.js');
+const assignmentLifecycle = require('../../backend/utils/assignmentLifecycle.js');
 const { createAdminSession } = require('../../backend/utils/authSessions.js');
 const { createApp } = require('../../backend/server.js');
 
@@ -165,3 +166,131 @@ for (const mode of ['anonymize', 'purge']) {
         ['TXT_ARQUIVADA', 'ARQ_ARQUIVADA', 'TXT_VIVA', 'ARQ_VIVA', 'duda@trava.local'].forEach(piece => assert.equal(back.includes(piece), false, piece));
     });
 }
+
+// J2 (pendência do C10): o disco do pacote falhando e o pacote que sobra depois de restaurar.
+function seedCourse() {
+    db.memory.courses = [{ id: COURSE, name: 'Curso travado', structure: [] }, { id: OTHER, name: 'Curso que fica', structure: [] }];
+    db.memory.classes = [{ name: '1TRV', courseId: COURSE, period: 'Manhã' }, { name: '2FIC', courseId: OTHER, period: 'Tarde' }];
+    db.memory.students = [
+        { id: 'alu_000000000000e5e5', name: 'Eva Prado', email: 'eva@trava.local', matricula: 'MT-2', status: 'Ativo', password: db.hashPassword('Senha-forte-123'), classes: [{ name: '1TRV', courseId: COURSE }, { name: '2FIC', courseId: OTHER }] },
+    ];
+    db.memory.admins = [{ email: 'adm@trava.local', name: 'Adm', role: 'admin', password: db.hashPassword('Senha-forte-2026') }];
+    db.memory.assignments = [];
+    db.memory.assignmentSubmissions = [];
+    db.memory.assignmentFileTombstones = [];
+    db.memory.auditLogs = [];
+    adminToken = createAdminSession(db.memory, 'adm@trava.local');
+    fs.rmSync(runtimePaths.ASSIGNMENT_FILES_DIR, { recursive: true, force: true });
+    fs.rmSync(fileStore.LIXEIRA_DIR, { recursive: true, force: true });
+    fs.rmSync(runtimePaths.ARCHIVE_DIR, { recursive: true, force: true });
+}
+
+async function archiveCourse() {
+    const archived = await asAdmin(request(app).post(`/api/admin/courses/${COURSE}/purge`)).send({});
+    assert.equal(archived.status, 200, JSON.stringify(archived.body));
+    return archived.body.folder;
+}
+
+test('[UC-ENCERRADOS-002] regravação do pacote do curso excluído falha: a mudança continua pendente, restaurar traz a entrega anonimizada e a regravação sai depois da próxima gravação', async () => {
+    seedCourse();
+    const sub = addSubmission(newTask(COURSE, '1TRV'), 'eva@trava.local', 'EVA');
+    await db.save();
+    const folder = await archiveCourse();
+    const student = db.memory.students[0];
+    student.status = 'Transferido';
+    student.statusChangedAt = Date.now() - HOUR;
+    await db.save();
+    const bundleFile = path.join(runtimePaths.ARCHIVE_DIR, folder, 'curso.json');
+    const realWrite = fs.writeFileSync;
+    fs.writeFileSync = function (target, ...rest) {
+        if (String(target).startsWith(bundleFile)) { const error = new Error('EBUSY simulado'); error.code = 'EBUSY'; throw error; }
+        return realWrite.call(this, target, ...rest);
+    };
+    const originalError = console.error;
+    console.error = () => {};
+    let res;
+    try {
+        res = await asAdmin(request(app).post('/api/admin/students/anonymize')).send({ email: 'eva@trava.local', confirm: 'ANONIMIZAR', reason: 'Pedido da família' });
+    } finally {
+        fs.writeFileSync = realWrite;
+        console.error = originalError;
+    }
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    // O pacote continua com o dado (a regravação falhou), mas a mudança está pendente:
+    // restaurar nesse meio-tempo traz a entrega como ficaria.
+    assert.equal(fs.readFileSync(bundleFile, 'utf8').includes('TXT_EVA'), true);
+    const pending = assignmentLifecycle.pendingBundleChangesApplied(folder, JSON.parse(fs.readFileSync(bundleFile, 'utf8')).assignmentSubmissions);
+    assert.equal(JSON.stringify(pending).includes('TXT_EVA'), false);
+    assert.equal(pending.find(item => item.id === sub.id).anonymized, true);
+    // A próxima gravação (de qualquer rota) leva a regravação do pacote.
+    await db.save();
+    await waitFor(() => !fs.readFileSync(bundleFile, 'utf8').includes('TXT_EVA'), 5000, 'regravação do pacote');
+    ['TXT_EVA', 'ARQ_EVA', 'eva@trava.local'].forEach(piece => assert.equal(fs.readFileSync(bundleFile, 'utf8').includes(piece), false, piece));
+    const restored = await asAdmin(request(app).post('/api/admin/archived-courses/restore')).send({ folder });
+    assert.equal(restored.status, 200, JSON.stringify(restored.body));
+    const back = db.memory.assignmentSubmissions.find(item => item.id === sub.id);
+    assert.equal(back.anonymized, true);
+    assert.equal(JSON.stringify(back).includes('TXT_EVA'), false);
+});
+
+test('[UC-ENCERRADOS-002] pacote que ficou depois de restaurar o curso: excluir o pacote não leva os arquivos das entregas ativas nem grava lápide', async () => {
+    seedCourse();
+    const sub = addSubmission(newTask(COURSE, '1TRV'), 'eva@trava.local', 'EVA');
+    await db.save();
+    const folder = await archiveCourse();
+    const file = sub.versions[0].files[0];
+    assert.equal(onDisk(file), false, 'o arquivo foi para o pacote');
+    const dir = path.join(runtimePaths.ARCHIVE_DIR, folder);
+    const realRm = fs.rmSync;
+    fs.rmSync = function (target, ...rest) {
+        if (path.resolve(String(target)) === path.resolve(dir)) { const error = new Error('EPERM simulado'); error.code = 'EPERM'; throw error; }
+        return realRm.call(this, target, ...rest);
+    };
+    const originalError = console.error;
+    console.error = () => {};
+    let restored;
+    try {
+        restored = await asAdmin(request(app).post('/api/admin/archived-courses/restore')).send({ folder });
+    } finally {
+        fs.rmSync = realRm;
+        console.error = originalError;
+    }
+    assert.equal(restored.status, 200, JSON.stringify(restored.body));
+    assert.equal(onDisk(file), true, 'o arquivo voltou');
+    assert.equal(fs.existsSync(dir), true, 'o pacote ficou (a remoção falhou)');
+    // Arquivo que só ficou no pacote (a volta não o levou): excluir o pacote o devolve.
+    const abs = assignmentFiles.absFromStoredRel(file.storedRel);
+    const archivedAbs = abs.replace(`${path.sep}entregas${path.sep}`, `${path.sep}entregas${path.sep}${assignmentLifecycle.COURSE_ARCHIVE_SEGMENT}${path.sep}${folder}${path.sep}`);
+    fs.mkdirSync(path.dirname(archivedAbs), { recursive: true });
+    fs.renameSync(abs, archivedAbs);
+    assert.equal(onDisk(file), false);
+    const deleted = await asAdmin(request(app).post('/api/admin/archived-courses/delete')).send({ folder });
+    assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
+    assert.ok(db.memory.assignmentSubmissions.find(item => item.id === sub.id), 'a entrega continua ativa');
+    assert.equal(onDisk(file), true, 'o arquivo da entrega ativa não foi para a lixeira');
+    assert.equal(db.memory.assignmentFileTombstones.some(item => item.fileId === file.id), false, 'sem lápide para arquivo de entrega ativa');
+    assert.equal(fileStore.listTrash().some(item => item.name === file.id || String(item.originalRel || '').includes(file.id)), false);
+    const audit = db.memory.auditLogs.find(item => item.action === 'course_archive_deleted');
+    assert.equal(audit.details.arquivosEntregasAtivasMantidos, 1);
+});
+
+test('[UC-ENCERRADOS-002] restaurar o curso com o banco travado: 503 e os arquivos ficam no pacote; quando a gravação sai, voltam e o pacote sai', async () => {
+    seedCourse();
+    const sub = addSubmission(newTask(COURSE, '1TRV'), 'eva@trava.local', 'EVA');
+    await db.save();
+    const folder = await archiveCourse();
+    const file = sub.versions[0].files[0];
+    const dir = path.join(runtimePaths.ARCHIVE_DIR, folder);
+    const release = await holdWriteLock();
+    try {
+        const res = await asAdmin(request(app).post('/api/admin/archived-courses/restore')).timeout(8000).send({ folder });
+        assert.equal(res.status, 503, JSON.stringify(res.body));
+        // Na hora, nada saiu do pacote (o banco do disco ainda não tem o curso).
+        assert.equal(onDisk(file), false);
+        assert.equal(fs.existsSync(dir), true);
+    } finally {
+        await release();
+    }
+    await waitFor(() => db.storageStatus().pendingRetry === false && onDisk(file) && !fs.existsSync(dir), 12000, 'arquivos de volta depois da gravação');
+    assert.ok(db.memory.assignmentSubmissions.find(item => item.id === sub.id));
+});

@@ -626,7 +626,7 @@ function afterCommitEffects(db, saved, effects, { mode, deletedBy }) {
         if (ran) return;
         ran = true;
         effects.forEach(effect => {
-            try { effect.afterSave({ deletedBy }); } catch (error) { logError(`studentLifecycle: efeito em disco de coleção nova falhou (${mode})`, error); }
+            try { effect.afterSave({ deletedBy, afterNextCommit: typeof db.afterNextCommit === 'function' ? db.afterNextCommit : null }); } catch (error) { logError(`studentLifecycle: efeito em disco de coleção nova falhou (${mode})`, error); }
         });
     };
     return saved.then(run, error => {

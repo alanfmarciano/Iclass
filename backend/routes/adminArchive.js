@@ -13,6 +13,7 @@ const { relinkRecordsByEmail } = require('../utils/studentDataHandlers.js');
 // Tarefas e entregas do curso (fase 3, C10 / P1-h, D14): os registros vão no pacote e os
 // arquivos para data/entregas/_cursos_arquivados/<pasta> (fora do ZIP de backup).
 const assignmentLifecycle = require('../utils/assignmentLifecycle.js');
+const { logError } = require('../utils/errorLog.js');
 
 const ARCHIVE_DIR = runtimePaths.ARCHIVE_DIR;
 
@@ -272,11 +273,37 @@ function createAdminArchiveRouter({ studentClassNames }) {
                     },
                 },
             });
-            await db.save();
-            // Os arquivos das entregas voltam para data/entregas (sem sobrescrever). O que não
-            // voltar vai para a lixeira de arquivos antes de o pacote sair (não fica perdido).
-            await assignmentLifecycle.restoreCourseAssignmentFiles(path.basename(directory), { deletedBy: matchedAdmin.email || 'admin' });
-            try { fs.rmSync(directory, { recursive: true, force: true }); } catch (error) {}
+            // Os arquivos das entregas voltam para data/entregas (sem sobrescrever) e o pacote
+            // sai só depois de o banco gravar o curso de volta: se a gravação falhar (503), o
+            // disco continua igual ao banco do disco, e o passo roda depois do COMMIT da
+            // regravação em segundo plano (J2, pendência do C10). O que não voltar vai para a
+            // lixeira de arquivos antes de o pacote sair (não fica perdido). A falha ao tirar a
+            // pasta do pacote vai para o crash.log (excluir o pacote depois não leva os
+            // arquivos das entregas vivas: trashArchivedCourseAssignmentFiles os pula).
+            const folderName = path.basename(directory);
+            const deletedBy = matchedAdmin.email || 'admin';
+            const finishOnDisk = async () => {
+                await assignmentLifecycle.restoreCourseAssignmentFiles(folderName, { deletedBy });
+                try { fs.rmSync(directory, { recursive: true, force: true }); } catch (error) {
+                    logError(`adminArchive: o pacote do curso restaurado ficou em cursos_arquivados (${folderName})`, error);
+                }
+            };
+            try {
+                await db.save();
+            } catch (error) {
+                const closed = error && error.sqliteCode === 'CLOSED';
+                let waiting = false;
+                if (!closed && typeof db.afterNextCommit === 'function') {
+                    try {
+                        waiting = db.afterNextCommit(() => {
+                            finishOnDisk().catch(err => logError(`adminArchive: arquivos do curso restaurado não voltaram depois da gravação (${folderName})`, err));
+                        }) !== false;
+                    } catch (e) { waiting = false; }
+                }
+                if (!waiting) logError(`adminArchive: a gravação do curso restaurado falhou e os arquivos ficaram no pacote (${folderName})`, error);
+                throw error;
+            }
+            await finishOnDisk();
             res.json({ success: true, course });
         });
     });
@@ -310,6 +337,7 @@ function createAdminArchiveRouter({ studentClassNames }) {
                     archivedAt: manifest.archivedAt || null,
                     counts: manifest.counts && typeof manifest.counts === 'object' ? manifest.counts : null,
                     arquivosEntregasNaLixeira: deliveryFiles.arquivos,
+                    ...(deliveryFiles.ativos ? { arquivosEntregasAtivasMantidos: deliveryFiles.ativos } : {}),
                 },
             });
             await db.save();
