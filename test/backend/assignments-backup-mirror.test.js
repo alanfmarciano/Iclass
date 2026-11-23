@@ -838,3 +838,39 @@ test('[UC-ARMAZENAMENTO-002] arquivo sem registro que mudou continua sendo refei
     assert.equal(second.resumo.diferentesDoRegistro, 0);
     assert.equal(fs.readFileSync(path.join(mirror.mirrorDirFor(destino), 'asg_9_zzzzzz', 'asub_9_zzzzzz', 'orfao.txt'), 'utf8'), 'segunda versão, maior');
 });
+
+test('[UC-ARMAZENAMENTO-002] arquivo daqui estragado com o mesmo tamanho continua "Diferente do registro" nos backups seguintes, mesmo fora do rodízio (J2, pendência do C11)', async () => {
+    const destino = await resetState();
+    const ana = addSubmission(ANA, ['conteúdo entregue pela Ana 0123456789']);
+    addSubmission(BIA, ['conteúdo entregue pela Bia 0123456789', 'segundo arquivo da Bia 0123456789']);
+    await db.save();
+    const base = Date.parse('2026-11-01T02:00:00Z');
+    const DAY = 24 * 60 * 60 * 1000;
+    // Rodízio de 1 byte: cada espelhamento relê uma cópia só (a conferida há mais tempo).
+    const run = (i) => mirror.runMirrorStep({ destino, memory: db.memory, now: new Date(base + i * DAY), failureMessage: e => e.message, rollingVerifyBytes: 1 });
+    const first = await run(0);
+    assert.equal(first.ok, true);
+    const [file] = ana.files;
+    const buffer = fs.readFileSync(localPath(file.storedRel));
+    buffer[4] ^= 0xff;
+    fs.writeFileSync(localPath(file.storedRel), buffer);
+    const seen = [];
+    for (let i = 1; i <= 6; i += 1) {
+        const outcome = await run(i);
+        assert.equal(outcome.ok, true);
+        seen.push(outcome.resumo.diferentesDoRegistro);
+    }
+    const firstSeen = seen.indexOf(1);
+    assert.ok(firstSeen >= 0 && firstSeen <= 2, `o rodízio percebe o arquivo estragado: ${seen.join(' ')}`);
+    assert.deepEqual(seen.slice(firstSeen), seen.slice(firstSeen).map(() => 1), `o aviso não some nos backups seguintes: ${seen.join(' ')}`);
+    const card = await as()('get', '/api/admin/storage');
+    assert.equal(card.body.entregas.diferentes, 1);
+    // A cópia boa do destino ficou e "Trazer arquivos" troca o daqui por ela.
+    assert.equal(sha(fs.readFileSync(mirrorPath(destino, file.storedRel))), file.sha256);
+    const res = await as()('post', '/api/admin/backup/entregas/recuperar').send({});
+    assert.equal(res.status, 200, res.body.error);
+    assert.equal(res.body.trocados, 1);
+    assert.equal(sha(fs.readFileSync(localPath(file.storedRel))), file.sha256);
+    const after = await run(7);
+    assert.equal(after.resumo.diferentesDoRegistro, 0);
+});

@@ -339,7 +339,12 @@ async function removeEmptyParents(dir, stopAt) {
 // o estado: devolve { resumo, lapidesFeitas } (fileIds das lápides que já valem neste
 // destino; quem chama marca mirroredRemovalAt e grava). Lança com a mensagem para o
 // estado (status 400 nas previstas: destino fora, sem espaço).
-async function mirrorAssignmentFiles({ destino, memory, signal = null, now = new Date() } = {}) {
+// previousDifferent: os arquivos daqui que o espelhamento de antes achou diferentes do
+// registro (estado.json -> espelho.diferentes): são relidos por SHA-256 em todo
+// espelhamento, fora do rodízio, para o aviso não sumir enquanto o arquivo daqui continua
+// estragado (J2, pendência do C11). rollingVerifyBytes: o tamanho da releitura de rodízio.
+async function mirrorAssignmentFiles({ destino, memory, signal = null, now = new Date(), previousDifferent = null, rollingVerifyBytes = ROLLING_VERIFY_BYTES } = {}) {
+    const recheck = new Set(list(previousDifferent instanceof Set ? [...previousDifferent] : previousDifferent).map(String));
     if (!(await destinationReachable(destino))) throw Object.assign(new Error(UNREACHABLE_MESSAGE), { status: 400, code: 'destination_unavailable' });
     const mirrorDir = mirrorDirFor(destino);
     const localFiles = await listLocalFiles();
@@ -412,8 +417,13 @@ async function mirrorAssignmentFiles({ destino, memory, signal = null, now = new
         const sameSize = isFile && stat.size === item.size;
         const knownOk = isFile && known && known.sha256 && known.mtimeMs !== null && Math.floor(stat.mtimeMs) === known.mtimeMs
             && stat.size === known.tamanho && (regSha ? known.sha256 === regSha : known.tamanho === item.size);
-        if (knownOk) {
+        if (knownOk && !(regSha && recheck.has(item.rel))) {
             settled.push({ ...item, target, known, regSha });
+            continue;
+        }
+        if (knownOk) {
+            // Já estava diferente do registro: relê o daqui (fora do rodízio).
+            plan.push({ ...item, target, exists: true, sameSize: item.size === known.tamanho, known, regSha, rolling: true });
             continue;
         }
         plan.push({ ...item, target, exists: isFile, sameSize, known, regSha });
@@ -422,7 +432,7 @@ async function mirrorAssignmentFiles({ destino, memory, signal = null, now = new
     // conferidas há mais tempo são relidas do destino (pendrive que estraga aos poucos) e,
     // com registro, o arquivo daqui também (o que mudou aqui com o mesmo tamanho).
     settled.sort((a, b) => String(a.known.conferidoEm || a.known.copiadoEm || '').localeCompare(String(b.known.conferidoEm || b.known.copiadoEm || '')) || a.rel.localeCompare(b.rel));
-    let rollingBudget = ROLLING_VERIFY_BYTES;
+    let rollingBudget = Math.max(0, Number(rollingVerifyBytes) || 0);
     for (const item of settled) {
         if (rollingBudget > 0) {
             rollingBudget -= Math.max(1, item.size);
@@ -438,7 +448,7 @@ async function mirrorAssignmentFiles({ destino, memory, signal = null, now = new
     const toCopy = [];
     for (const item of plan) {
         throwIfAborted(signal);
-        if (item.rolling && item.regSha && !differs.has(item.rel)) {
+        if ((item.rolling || recheck.has(item.rel)) && item.regSha && !differs.has(item.rel)) {
             try {
                 if ((await hashFile(localAbs(item.rel), signal)).sha256 !== item.regSha) differs.add(item.rel);
             } catch (err) {
@@ -455,10 +465,13 @@ async function mirrorAssignmentFiles({ destino, memory, signal = null, now = new
             const there = await hashFile(item.target, signal);
             if (there.sha256 === expected) {
                 const stat = await fs.promises.stat(item.target);
+                // A cópia de lá confere, mas o arquivo daqui não: a data da conferência não
+                // é renovada (a cópia volta ao começo do rodízio).
+                const keepCheckedAt = item.regSha && differs.has(item.rel) && item.known && item.known.conferidoEm;
                 manifest.arquivos[item.rel] = {
                     tamanho: there.size, sha256: expected,
                     copiadoEm: (item.known && item.known.copiadoEm) || now.toISOString(),
-                    conferidoEm: now.toISOString(), mtimeMs: Math.floor(stat.mtimeMs),
+                    conferidoEm: keepCheckedAt ? item.known.conferidoEm : now.toISOString(), mtimeMs: Math.floor(stat.mtimeMs),
                 };
                 resumo.conferidos += 1;
                 resumo.arquivos += 1;
@@ -557,10 +570,16 @@ function differentListed(state) {
 // não ser a interrupção pelo desligamento, que quem chama trata como a da cópia externa.
 // failureMessage: a mesma frase das falhas do backup (contrato H9a: sem caminho nem texto
 // cru do erro). Devolve { ok, resumo } ou { ok: false, mensagem }.
-async function runMirrorStep({ job = null, destino, memory, now = new Date(), failureMessage, onChanged } = {}) {
+async function runMirrorStep({ job = null, destino, memory, now = new Date(), failureMessage, onChanged, rollingVerifyBytes } = {}) {
     const signal = job && job.controller ? job.controller.signal : null;
     try {
-        const outcome = await mirrorAssignmentFiles({ destino, memory, signal, now });
+        let previousDifferent = null;
+        try {
+            const state = store.readState();
+            const espelho = isObject(state && state.espelho) ? state.espelho : {};
+            if (espelho.destino === destino) previousDifferent = differentListed(state);
+        } catch (e) { previousDifferent = null; }
+        const outcome = await mirrorAssignmentFiles({ destino, memory, signal, now, previousDifferent, ...(rollingVerifyBytes !== undefined ? { rollingVerifyBytes } : {}) });
         await store.updateState(state => ({
             ...state,
             espelho: {
