@@ -120,6 +120,12 @@ button { -webkit-tap-highlight-color: transparent; }
 .prose-iclass th,.prose-iclass td { border: 1px solid var(--border); padding: .5em .7em; text-align: left; }
 .prose-iclass img { max-width: 100%; height: auto; border-radius: 12px; display: block; margin: 1em auto; border: 1px solid var(--border); }
 
+/* Termo achado pela Busca do aluno (fase 3, C16 / P5-S2): no resultado e no leitor
+   (?busca=). color-mix com recuo para o tom suave nos navegadores antigos; o trecho para
+   onde o leitor rolou ganha contorno. */
+mark.busca-marca { background: var(--warning-soft); background: color-mix(in srgb, var(--warning) 30%, transparent); color: inherit; border-radius: 3px; padding: 0 .08em; }
+mark.busca-marca-atual { outline: 2px solid var(--warning); outline-offset: 1px; }
+
 /* Questão de prova em Markdown (fase 3, P3-S2: QuestionMarkdown.jsx). Nada passa da
    largura do cartão no celular de 375 px: imagem com max-width 100%, tabela e bloco de
    código com rolagem própria, palavra longa quebra. */

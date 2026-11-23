@@ -48,6 +48,9 @@ export function LumenShell({
   logoutLabel = 'Sair',
   // Faixa acima do cabeçalho, no fluxo da página (pré-visualização como aluno, C15).
   banner = null,
+  // { to, label, text, icon }: botão de busca no cabeçalho, ao lado do sino, visível
+  // também no celular (Busca do aluno, C16 / P5-S2). text é o nome da tela no topo.
+  searchAction = null,
   children,
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
@@ -63,6 +66,8 @@ export function LumenShell({
   const activeItem = [...allItems]
     .sort((a, b) => b.to.length - a.to.length)
     .find((item) => item.end ? pathname === item.to : pathname === item.to || pathname.startsWith(`${item.to}/`))
+  const onSearchPage = !!(searchAction && pathname === searchAction.to)
+  const activeLabel = onSearchPage ? searchAction.text : activeItem?.text
 
   const closeMenu = (restoreFocus = true) => {
     setMenuOpen(false)
@@ -139,6 +144,11 @@ export function LumenShell({
               <span>{contextAction.label}</span>
             </button>
           )}
+          {searchAction && (
+            <NavLink to={searchAction.to} aria-label={searchAction.label} title={searchAction.label} className={({ isActive }) => cn('lumen-icon-button lumen-search-action', isActive && 'is-active')}>
+              {searchAction.icon && <searchAction.icon size={19} aria-hidden="true" />}
+            </NavLink>
+          )}
           {notifications}
           <ThemeToggle />
           {accountMenu ? (
@@ -179,7 +189,7 @@ export function LumenShell({
           <button type="button" className="lumen-menu-backdrop" onClick={() => closeMenu()} aria-hidden="true" tabIndex="-1" />
           <aside ref={menuPanelRef} id="lumen-navigation-panel" className="lumen-menu-panel" role="dialog" aria-modal="true" aria-label="Todos os módulos">
             <div className="lumen-menu-head">
-              <div><span>Menu completo</span><strong>{activeItem?.text || conceptLabel}</strong></div>
+              <div><span>Menu completo</span><strong>{activeLabel || conceptLabel}</strong></div>
               <button ref={closeButtonRef} type="button" className="lumen-icon-button" onClick={() => closeMenu()} aria-label="Fechar menu"><X size={20} /></button>
             </div>
             <nav className="lumen-menu-groups" aria-label="Todos os módulos">
@@ -213,7 +223,7 @@ export function LumenShell({
       <main id="lumen-main" className="lumen-main" tabIndex="-1" aria-hidden={menuOpen ? 'true' : undefined} inert={menuOpen ? '' : undefined}>
         <div className="lumen-page-context" aria-hidden="true">
           <span>{conceptLabel}</span>
-          <strong>{activeItem?.text || 'Visão geral'}</strong>
+          <strong>{activeLabel || 'Visão geral'}</strong>
         </div>
         {children}
       </main>

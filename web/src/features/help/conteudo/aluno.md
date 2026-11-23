@@ -44,7 +44,15 @@ Quando a escola usa a conexão segura (o endereço começa com `https`), o naveg
 
 ## Busca {#busca}
 
-<!-- P5 (C16) escreve aqui: busca no portal e abrir a unidade pelo endereço. -->
+Toque na **lupa** no alto da tela (ao lado do sino) para procurar uma palavra nas **apostilas** liberadas para a sua turma, na **Biblioteca** e nos **Avisos**.
+
+- Não precisa de acento nem de maiúscula: "acao" acha "Ação" e "joao" acha "João".
+- Com duas palavras ou mais, aparece o que tem todas elas.
+- O resultado mostra a unidade, a parte da apostila e um pedaço do texto com a palavra marcada. Toque nele para abrir a apostila já nessa parte, com a palavra marcada. Para tirar a marca, toque em **Tirar destaque**.
+- Apostila que o professor ainda não liberou não aparece na busca.
+- Aparecem no máximo 50 resultados. Se forem muitos, use mais uma palavra.
+
+**Link de uma unidade.** Quando a apostila está aberta, o endereço da página leva direto a ela (termina em `?unidade=` e o nome da unidade). Recarregar a página ou tocar em **Voltar** do navegador mantém você na mesma unidade. Se o link for de uma unidade bloqueada para a sua turma, a tela avisa e mostra a lista de módulos.
 
 ## Biblioteca {#biblioteca}
 

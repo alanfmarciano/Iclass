@@ -241,3 +241,28 @@ describe('[UC-MENSAGEM-006] portal do aluno · Mensagens no menu', () => {
     expect(mensagensLink()).toHaveTextContent('2 conversas com mensagem nova')
   })
 })
+
+// Fase 3, C16 (P5-S2; CRIT-07): a lupa do cabeçalho leva à Busca, nos dois visuais, e o
+// topo diz "Busca" na tela dela.
+describe('[UC-BUSCA-003] portal do aluno · lupa da Busca no cabeçalho', () => {
+  for (const preset of ['classic', 'lumen']) {
+    it(`no visual ${preset}, a lupa abre /aluno/busca`, () => {
+      branding.interfacePreset = preset
+      render(
+        <MemoryRouter initialEntries={['/aluno']}>
+          <Routes>
+            <Route path="/aluno" element={<StudentShell />}>
+              <Route index element={<p>Início do aluno</p>} />
+              <Route path="busca" element={<p>Tela da busca</p>} />
+            </Route>
+          </Routes>
+        </MemoryRouter>,
+      )
+      const lupa = screen.getByRole('link', { name: 'Buscar' })
+      expect(lupa).toHaveAttribute('href', '/aluno/busca')
+      fireEvent.click(lupa)
+      expect(screen.getByText('Tela da busca')).toBeInTheDocument()
+      expect(screen.getAllByText('Busca').length).toBeGreaterThan(0)
+    })
+  }
+})

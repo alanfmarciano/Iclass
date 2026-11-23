@@ -294,6 +294,8 @@
   transform: translateY(-1px);
 }
 
+/* Lupa da Busca do aluno (C16 / P5-S2): botão de ícone, marcado na tela da busca. */
+[data-interface='lumen'] .lumen-search-action.is-active { border-color: var(--border); background: var(--surface); color: var(--text); box-shadow: var(--shadow-card); }
 [data-interface='lumen'] .lumen-menu-trigger.is-active { background: var(--lumen-ink); color: var(--surface); }
 [data-interface='lumen'][data-theme='dark'] .lumen-menu-trigger.is-active { color: #171a24; }
 [data-interface='lumen'] .lumen-menu-trigger { position: relative; }

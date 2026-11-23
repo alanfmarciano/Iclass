@@ -45,10 +45,12 @@ describe('[UC-AJUDA-001] textos da ajuda', () => {
     ;['atividades', 'mensagens', 'busca', 'frequencia', 'certificados', 'provas'].forEach((id) => expect(ids).toContain(id))
     const visible = visibleSections(doc).map((section) => section.id)
     expect(visible).toEqual(expect.arrayContaining(['endereco', 'esqueci-a-senha', 'troca-de-senha', 'prova-e-conexao', 'conexao-segura']))
-    // Atividades ganhou texto na fase 3 C9 e Mensagens no C14; Busca ainda é só o comentário.
+    // Atividades ganhou texto na fase 3 C9, Mensagens no C14 e Busca no C16; Dúvidas ainda
+    // não tem texto.
     expect(visible).toContain('atividades')
     expect(visible).toContain('mensagens')
-    expect(visible).not.toContain('busca')
+    expect(visible).toContain('busca')
+    expect(visible).not.toContain('duvidas')
   })
 
   it('lê título, abertura e temas; tema sem texto (só comentário) fica escondido; ## dentro de código não abre tema', () => {

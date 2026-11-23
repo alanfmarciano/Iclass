@@ -116,3 +116,21 @@ describe('Início do aluno · Meus grupos', () => {
     expect(screen.queryByRole('heading', { name: 'Meus grupos' })).not.toBeInTheDocument()
   })
 })
+
+// Fase 3, C16 (P5-S2; contrato C8 do P5): "Continue de onde parou" abre direto a unidade
+// pelo endereço (?unidade=); sem unidade, a lista de módulos.
+describe('Início do aluno · Continue de onde parou', () => {
+  it('[UC-BUSCA-003] leva à unidade pelo endereço do leitor', () => {
+    mocks.dashboard = { modules: [], announcements: [], calendar: [], continueItem: { key: 'Apostila_DES 2', title: 'Redes', moduleName: 'Módulo 1' } }
+    mocks.assignments = { serverNow: Date.now(), timezone: 'America/Sao_Paulo', assignments: [] }
+    render(<MemoryRouter><InicioPage /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: /Redes\s*Módulo 1/ }))
+    expect(navigate).toHaveBeenCalledWith('/aluno/modulos?unidade=Apostila_DES+2')
+    cleanup()
+    navigate.mockClear()
+    mocks.dashboard = { modules: [], announcements: [], calendar: [], continueItem: null }
+    render(<MemoryRouter><InicioPage /></MemoryRouter>)
+    fireEvent.click(screen.getByRole('button', { name: /Acesse seus módulos/ }))
+    expect(navigate).toHaveBeenCalledWith('/aluno/modulos')
+  })
+})

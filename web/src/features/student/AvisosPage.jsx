@@ -1,4 +1,5 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useRef } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { Megaphone, AlertTriangle, Pin } from 'lucide-react'
 import { Card } from '../../components/ui/Card'
 import { EmptyState } from '../../components/ui/EmptyState'
@@ -16,6 +17,11 @@ export default function AvisosPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [opened, setOpened] = useState(null)
+  // ?aviso=<id> (resultado da Busca, C16 / P5-S2): abre esse aviso (conta como lido, como
+  // o toque nele) e rola até ele, uma vez.
+  const [params] = useSearchParams()
+  const wantedAnnouncement = params.get('aviso') || ''
+  const openedFromAddress = useRef('')
 
   async function load() {
     setLoading(true); setError(null)
@@ -25,6 +31,19 @@ export default function AvisosPage() {
     } catch (loadError) { setError(loadError) } finally { setLoading(false) }
   }
   useEffect(() => { if (email && courseId && studentClass) load() /* eslint-disable-next-line */ }, [email, courseId, studentClass])
+
+  useEffect(() => {
+    if (!wantedAnnouncement || loading || openedFromAddress.current === wantedAnnouncement) return
+    const found = list.find((item) => String(item.id) === wantedAnnouncement)
+    if (!found) return
+    openedFromAddress.current = wantedAnnouncement
+    if (opened !== found.id) openAnnouncement(found)
+    setTimeout(() => {
+      const element = typeof document !== 'undefined' ? document.getElementById(`aviso-${found.id}`) : null
+      if (element && typeof element.scrollIntoView === 'function') element.scrollIntoView({ block: 'center' })
+    }, 0)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantedAnnouncement, list, loading])
 
   function openAnnouncement(announcement) {
     setOpened((current) => current === announcement.id ? null : announcement.id)
@@ -44,7 +63,7 @@ export default function AvisosPage() {
         ) : (
           <div className="space-y-2">
             {list.map((announcement) => (
-              <Card key={announcement.id} className={`p-4 ${!announcement.read ? 'border-primary/40' : ''}`}>
+              <Card key={announcement.id} id={`aviso-${announcement.id}`} className={`p-4 ${!announcement.read ? 'border-primary/40' : ''}`}>
                 <button type="button" className="w-full text-left" aria-expanded={opened === announcement.id} onClick={() => openAnnouncement(announcement)}>
                   <div className="flex items-start gap-3">
                     <span className={`w-8 h-8 rounded-md grid place-items-center shrink-0 ${announcement.priority === 'alta' ? 'bg-danger/15 text-danger' : 'bg-primary-soft text-primary'}`}>

@@ -4,6 +4,12 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 
 ## Não publicado
 
+### Busca no portal do aluno e link direto da unidade
+- Lupa nova no alto do portal do aluno (ao lado do sino, também no celular e no visual Lumen): a tela **Busca** procura uma palavra nas apostilas liberadas para a turma, na Biblioteca e nos avisos, sem diferenciar acento nem maiúscula ("acao" acha "Ação"). Cada resultado mostra a unidade, a parte da apostila e um pedaço do texto com a palavra marcada; no máximo 50 resultados. Apostila que o professor não liberou nunca aparece. A busca roda no próprio aparelho, sem pesar no computador do professor.
+- Tocar num resultado abre a apostila já na parte encontrada, com a palavra marcada e a faixa "Destacando ..." com **Tirar destaque**; o resultado da Biblioteca abre o material e o do aviso abre o aviso (que conta como lido).
+- A apostila aberta tem endereço próprio (`/aluno/modulos?unidade=...`): recarregar a página ou o Voltar do navegador mantêm a unidade, e "Continue de onde parou" da Início abre direto a unidade. Link de unidade bloqueada para a turma mostra um aviso e a lista de módulos.
+- As apostilas da turma são baixadas uma vez ao abrir Módulos ou Busca e de novo só quando o professor libera ou bloqueia uma unidade (antes, cada abertura de Módulos baixava tudo de novo).
+
 ### Ver como aluno
 - Botão **Ver como aluno** em Turmas (na linha da turma), em Materiais (com a turma escolhida) e no cartão da turma ao escolher a turma no Dashboard. O diálogo "Ver o portal como um aluno de 1DES" avisa "Nada do que você fizer na pré-visualização é gravado. A prova não começa." e deixa escolher, se quiser, um grupo ativo da turma. A Coordenação, que só consulta, não tem o botão.
 - O portal do aluno abre na mesma aba, sem sair do painel, com a faixa "Pré-visualização como aluno de 1DES · nada é gravado" e o botão "Sair da pré-visualização", que volta para a tela do painel de onde a prévia saiu (o Sair do menu do portal faz o mesmo). Recarregar a página mantém a prévia daquela aba.

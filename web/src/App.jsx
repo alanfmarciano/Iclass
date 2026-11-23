@@ -69,6 +69,8 @@ const AjudaAlunoPage = lazyPage(() => import('./features/help/AjudaAlunoPage'))
 // Aluno
 const InicioPage = lazyPage(() => import('./features/student/InicioPage'))
 const ModulosPage = lazyPage(() => import('./features/student/ModulosPage'))
+// Busca do aluno nas apostilas liberadas, na Biblioteca e nos avisos (fase 3, C16 / P5-S2; CRIT-07).
+const BuscaPage = lazyPage(() => import('./features/student/BuscaPage'))
 const ProvasStudentPage = lazyPage(() => import('./features/student/ProvasPage'))
 // Atividades (tarefas com envio) do aluno (fase 3, C9 / P1-g; FUN-01).
 const AtividadesPage = lazyPage(() => import('./features/student/AtividadesPage'))
@@ -176,6 +178,7 @@ export default function App() {
       <Route path="/aluno" element={<RequireRole role="student"><StudentShell /></RequireRole>}>
         <Route index element={<InicioPage />} />
         <Route path="modulos" element={<ModulosPage />} />
+        <Route path="busca" element={<BuscaPage />} />
         <Route path="provas" element={<ProvasStudentPage />} />
         <Route path="atividades" element={<AtividadesPage />} />
         <Route path="atividades/:id" element={<AtividadeDetalhePage />} />

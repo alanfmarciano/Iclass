@@ -8,6 +8,7 @@ import { useStudent } from './useStudent'
 import { fmtGradeValue } from '../../lib/grades'
 import { ASSIGNMENTS_POLL_MS, assignmentsPath, atividadeHref } from './AtividadesPage'
 import { deadlineLine, isToDo, situationTone } from './atividades/atividadeText'
+import { unitHref } from './unitLinks'
 
 // Quantas atividades a fazer a Início mostra (as de prazo mais perto; o resto em "Ver todas").
 export const HOME_TODO_LIMIT = 5
@@ -169,7 +170,8 @@ export default function InicioPage() {
           <div className="space-y-4">
             <Card>
               <div className="flex items-center justify-between border-b border-border px-5 py-4"><h2 className="font-semibold text-text">Continue de onde parou</h2><span className="text-xs text-muted">Seu último conteúdo</span></div>
-              <button type="button" onClick={() => nav('/aluno/modulos')} className="group flex w-full items-center gap-4 p-5 text-left transition-all duration-300 hover:bg-surface-2/40">
+              {/* Abre direto a unidade (?unidade=, C16 / P5-S2); sem unidade, a lista. */}
+              <button type="button" onClick={() => nav(data.continueItem?.key ? unitHref(data.continueItem.key) : '/aluno/modulos')} className="group flex w-full items-center gap-4 p-5 text-left transition-all duration-300 hover:bg-surface-2/40">
                 <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-primary-soft text-primary transition-transform duration-300 group-hover:scale-105"><BookOpen size={21} /></span>
                 <span className="min-w-0 flex-1"><strong className="block truncate text-sm text-text">{data.continueItem?.title || 'Acesse seus módulos'}</strong><span className="mt-1 block truncate text-xs text-muted">{data.continueItem?.moduleName || 'Continue avançando no curso'}</span></span>
                 <span className="grid h-9 w-9 place-items-center rounded-full border border-border text-subtle transition-all duration-300 group-hover:border-primary/30 group-hover:bg-primary-soft group-hover:text-primary"><ArrowRight size={15} /></span>

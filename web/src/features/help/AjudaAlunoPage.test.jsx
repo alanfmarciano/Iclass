@@ -25,9 +25,11 @@ describe('[UC-AJUDA-001] ajuda do aluno', () => {
     ;['Como achar o endereço do IClass', 'Esqueci a senha', 'Troca de senha obrigatória', 'A prova travou ou a conexão caiu'].forEach((name) => {
       expect(screen.getByText(name, { selector: 'summary span' })).toBeInTheDocument()
     })
-    // Tema ainda sem texto não aparece (Busca); Mensagens ganhou texto na fase 3 C14.
-    expect(screen.queryByText('Busca', { selector: 'summary span' })).not.toBeInTheDocument()
+    // Tema ainda sem texto não aparece (Dúvidas); Mensagens ganhou texto na fase 3 C14 e
+    // Busca no C16.
+    expect(screen.queryByText('Dúvidas', { selector: 'summary span' })).not.toBeInTheDocument()
     expect(screen.getByText('Mensagens', { selector: 'summary span' })).toBeInTheDocument()
+    expect(screen.getByText('Busca', { selector: 'summary span' })).toBeInTheDocument()
     const details = document.getElementById('esqueci-a-senha')
     expect(details.open).toBe(false)
     await userEvent.setup().click(screen.getByText('Esqueci a senha', { selector: 'summary span' }))
@@ -47,7 +49,7 @@ describe('[UC-AJUDA-001] ajuda do aluno', () => {
   })
 
   it('âncora de tema ainda sem texto avisa e mostra os outros temas', async () => {
-    renderAt('/ajuda/aluno#busca')
+    renderAt('/ajuda/aluno#duvidas')
     const notice = await screen.findByText('O texto sobre este assunto ainda está sendo escrito. Veja os outros temas abaixo.', {}, { timeout: 5000 })
     expect(notice).toHaveAttribute('role', 'status')
     expect(screen.getByText('Esqueci a senha', { selector: 'summary span' })).toBeInTheDocument()

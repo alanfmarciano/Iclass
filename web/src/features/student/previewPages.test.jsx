@@ -22,6 +22,8 @@ import MeusDadosPage from './MeusDadosPage'
 import ContaPage from './ContaPage'
 import DuvidasPage from './DuvidasPage'
 import ExamRunner from './exam/ExamRunner'
+import BuscaPage from './BuscaPage'
+import { clearCourseContentCache } from './useCourseContent'
 
 const PREVIEW = { token: 'tok-previa', rotulo: 'Pré-visualização como aluno de 1DES', origem: '/turmas', expiraEm: Date.now() + 3600000 }
 const courseData = {
@@ -30,6 +32,7 @@ const courseData = {
 }
 
 beforeEach(() => {
+  clearCourseContentCache()
   mocks.preview = PREVIEW
   mocks.get.mockImplementation(async (url) => {
     if (url.startsWith('/api/data.js')) return `const courseData = ${JSON.stringify(courseData)};`
@@ -103,6 +106,19 @@ describe('[UC-PREVIA-004] telas do portal na pré-visualização', () => {
     expect(screen.getByRole('button', { name: /Baixar meus dados/ })).toBeDisabled()
     expect(screen.getByRole('button', { name: /Ver para imprimir/ })).toBeDisabled()
     expect(mocks.get.mock.calls.some(([url]) => url.startsWith('/api/student/my-data'))).toBe(false)
+  })
+
+  it('[UC-BUSCA-003] Busca na prévia: acha na apostila da turma e não grava nada', async () => {
+    render(<MemoryRouter initialEntries={['/aluno/busca?q=apostila']}><BuscaPage /></MemoryRouter>)
+    expect(await screen.findByRole('link', { name: /Introdução/ })).toHaveAttribute('href', '/aluno/modulos?unidade=Apostila_DES_1&busca=apostila&secao=1')
+    expect(mocks.post).not.toHaveBeenCalled()
+  })
+
+  it('[UC-BUSCA-003] Avisos aberto pelo resultado da Busca (?aviso=) na prévia: mostra e não marca como lido', async () => {
+    render(<MemoryRouter initialEntries={['/aluno/avisos?aviso=a1']}><AvisosPage /></MemoryRouter>)
+    expect(await screen.findByRole('button', { name: /Prova sexta/ })).toHaveAttribute('aria-expanded', 'true')
+    await act(async () => {})
+    expect(mocks.post).not.toHaveBeenCalled()
   })
 
   it('a tela da prova, se montada na prévia, só mostra o aviso e não pede nada', async () => {

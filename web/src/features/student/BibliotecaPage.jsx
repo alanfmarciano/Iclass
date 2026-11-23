@@ -1,4 +1,5 @@
 import { useState, useEffect, useMemo } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { FolderOpen, ExternalLink, FileText, Image as ImageIcon, Film, FileArchive, File, Globe, Play } from 'lucide-react'
 import { Card } from '../../components/ui/Card'
 import { Badge } from '../../components/ui/Badge'
@@ -64,6 +65,10 @@ export default function BibliotecaPage() {
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const [selected, setSelected] = useState(null)
+  // ?material=<id> (resultado da Busca, C16 / P5-S2): abre esse material assim que a lista
+  // chega; fechar tira o parâmetro (o voltar não reabre).
+  const [params, setParams] = useSearchParams()
+  const wantedMaterial = params.get('material') || ''
 
   async function load() {
     setLoading(true); setError(null)
@@ -71,6 +76,21 @@ export default function BibliotecaPage() {
     catch (e) { setError(e) } finally { setLoading(false) }
   }
   useEffect(() => { if (email && courseId && studentClass) load() /* eslint-disable-next-line */ }, [email, courseId, studentClass])
+
+  useEffect(() => {
+    if (!wantedMaterial || loading) return
+    const found = list.find((item) => String(item.id) === wantedMaterial)
+    if (found) setSelected(found)
+  }, [wantedMaterial, list, loading])
+
+  function closeSelected() {
+    setSelected(null)
+    if (wantedMaterial) {
+      const next = new URLSearchParams(params)
+      next.delete('material')
+      setParams(next, { replace: true })
+    }
+  }
 
   const groups = useMemo(() => {
     const map = new Map()
@@ -107,7 +127,7 @@ export default function BibliotecaPage() {
 
       <Modal
         open={Boolean(selected)}
-        onClose={() => setSelected(null)}
+        onClose={closeSelected}
         title={selected?.name || 'Material'}
         description={selected?.description}
         size="xl"

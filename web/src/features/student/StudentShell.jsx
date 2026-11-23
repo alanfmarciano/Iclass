@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Home, BookOpen, ClipboardList, FileUp, NotebookPen, MessagesSquare, Megaphone, FolderOpen, GraduationCap, Menu, LogOut, CalendarDays, Sparkles, UserRound, ShieldCheck, CircleHelp, Mail } from 'lucide-react'
+import { Home, BookOpen, ClipboardList, FileUp, NotebookPen, MessagesSquare, Megaphone, FolderOpen, GraduationCap, Menu, LogOut, CalendarDays, Sparkles, UserRound, ShieldCheck, CircleHelp, Mail, Search } from 'lucide-react'
 import { ThemeToggle } from '../../components/ui/ThemeToggle'
 import { useAuth } from '../../context/AuthProvider'
 import { usePreview } from '../../hooks/usePreview'
@@ -40,6 +40,9 @@ const NAV = [
   // a barra de baixo do visual Lumen).
   { to: '/ajuda/aluno', icon: CircleHelp, text: 'Ajuda' },
 ]
+// Busca do aluno (fase 3, C16 / P5-S2; CRIT-07): fora do menu, pela lupa do cabeçalho
+// (nos dois visuais), ao lado do sino.
+export const SEARCH_ACTION = { to: '/aluno/busca', label: 'Buscar', text: 'Busca', icon: Search }
 // A tela da prova chega sob demanda (lib/lazyPage.js). Dois segundos depois de o portal
 // abrir, o navegador já busca o arquivo dela, uma vez: quando o professor libera a
 // prova, a turma inteira não baixa o mesmo arquivo no mesmo instante, e quem perder a
@@ -86,7 +89,7 @@ export function StudentShell() {
   const brandName = branding?.displayName || 'IClass'
   // Título da página: o item do menu do endereço ou do começo dele (/aluno/atividades/<id>
   // continua "Atividades").
-  const pageTitle = (NAV.find((item) => item.to === pathname) || NAV.find((item) => !item.end && pathname.startsWith(`${item.to}/`)))?.text || 'Portal do Aluno'
+  const pageTitle = pathname === SEARCH_ACTION.to ? SEARCH_ACTION.text : (NAV.find((item) => item.to === pathname) || NAV.find((item) => !item.end && pathname.startsWith(`${item.to}/`)))?.text || 'Portal do Aluno'
   const notificationsContext = cls && activeClass.courseId ? `courseId=${encodeURIComponent(activeClass.courseId)}&studentClass=${encodeURIComponent(cls)}` : ''
   const notificationsEndpoint = notificationsContext ? `/api/student/notifications?${notificationsContext}` : null
   // "Marcar como lidas" vale só para o sino desta turma/curso (aluno em duas turmas).
@@ -145,6 +148,7 @@ export function StudentShell() {
           onLogout={leavePortal}
           logoutLabel={preview ? 'Sair da pré-visualização' : undefined}
           notifications={notifications}
+          searchAction={SEARCH_ACTION}
           banner={preview ? <PreviewBanner className="mb-3 shrink-0 rounded-xl border" /> : null}
         >
           <div key={pathname} className="app-enter" style={{ paddingBottom: 'var(--exam-banner-space, 0px)' }}><AppErrorBoundary area="aluno" description={STUDENT_ERROR_DESCRIPTION}><Suspense fallback={<PageLoading />}><StudentPasswordChangeGate><StudentPrivacyGate><StudentCourseGate><Outlet /></StudentCourseGate></StudentPrivacyGate></StudentPasswordChangeGate></Suspense></AppErrorBoundary></div>
@@ -203,8 +207,10 @@ export function StudentShell() {
         {preview && <PreviewBanner />}
         <header className="glass-panel z-20 flex h-[72px] items-center gap-2 border-x-0 border-t-0 px-4 md:px-7">
           <button onClick={() => setOpen((o) => !o)} className="grid h-10 w-10 place-items-center rounded-lg text-muted hover:bg-surface-2 md:hidden" aria-label="Menu"><Menu size={21} /></button>
-          <div className="flex items-center gap-2 text-[13px]"><Sparkles size={14} className="text-primary" /><span className="text-subtle">Portal do Aluno</span><span className="text-subtle">/</span><strong className="font-semibold text-text">{pageTitle}</strong></div>
+          {/* No celular fica só o nome da tela (com a lupa no cabeçalho, "Portal do Aluno /" quebrava em duas linhas). */}
+          <div className="flex min-w-0 items-center gap-2 text-[13px]"><Sparkles size={14} className="shrink-0 text-primary" /><span className="hidden text-subtle sm:inline">Portal do Aluno</span><span className="hidden text-subtle sm:inline">/</span><strong className="truncate font-semibold text-text">{pageTitle}</strong></div>
           <div className="flex-1" />
+          <NavLink to={SEARCH_ACTION.to} aria-label={SEARCH_ACTION.label} title={SEARCH_ACTION.label} className={({ isActive }) => cn('grid h-10 w-10 place-items-center rounded-lg transition-colors hover:bg-surface-2 hover:text-text', isActive ? 'bg-primary-soft text-primary' : 'text-muted')}><Search size={19} aria-hidden="true" /></NavLink>
           {notifications}
         </header>
         <main className="flex-1 overflow-y-auto px-4 py-6 md:px-8 md:py-8 xl:px-10">

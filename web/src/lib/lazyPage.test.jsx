@@ -337,8 +337,9 @@ describe('[UC-DESEMPENHO-001] lazyPage: telas sob demanda e recarga depois de um
     // a lista e o formulário de Tarefas do professor (fase 3 C7) e o detalhe com as
     // entregas e a correção (fase 3 C8), e as Atividades do aluno, a lista e a página de
     // uma atividade (fase 3 C9), os Grupos da turma (fase 3 C12) e as duas telas de
-    // Mensagens, a do painel e a do aluno (fase 3 C14).
-    expect(lazyScreens.length).toBe(55)
+    // Mensagens, a do painel e a do aluno (fase 3 C14), e a Busca do aluno (fase 3 C16).
+    expect(lazyScreens.length).toBe(56)
+    expect(lazyScreens).toContain('./features/student/BuscaPage')
     expect(lazyScreens).toContain('./features/admin/MensagensPage')
     expect(lazyScreens).toContain('./features/student/MensagensPage')
     expect(lazyScreens).toContain('./features/admin/GruposPage')
