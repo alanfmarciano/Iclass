@@ -256,7 +256,7 @@ function buildStudentGradesSummary(memory, { email, course = null, cls = null, h
             // De qual etapa é a recuperação ('etapa:N' ou 'final'): Minhas notas mostra a
             // avaliação dentro da etapa que ela recupera.
             recuperacaoDe: ativo && exam.recuperacaoDe ? exam.recuperacaoDe : null,
-            foraDaMedia: ativo && exam.fora === true,
+            foraDaMedia: (ativo && exam.fora === true) || exam.foraDaMedia === true,
             nota: exam.grade,
             publicada: exam.grade !== null,
         });

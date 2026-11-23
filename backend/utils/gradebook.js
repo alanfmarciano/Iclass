@@ -816,6 +816,23 @@ function isArchivedItemGroup(grading, group) {
     return !!(item && item.arquivado);
 }
 
+// Regra antiga (sem critérios): o item de provedor (tarefa, C2) fora da média pelo plano
+// efetivo (o padrão do provedor ou "Conta na média" desmarcado) não entra na média simples.
+// Com critérios, quem decide é o plano dentro de computeStudentResult (B6/J2).
+function isLegacyProviderOut(grading, group) {
+    if (!grading || grading.criterios || !grading.planoEfetivo) return false;
+    const item = gradingItemOf(grading, group && group.examKey);
+    if (!item || item.origem === 'prova' || item.origem === 'manual') return false;
+    const raw = grading.planoEfetivo.itens[item.id];
+    return !!(raw && raw.fora === true);
+}
+
+// O grupo sai da média (fica na tela)? A avaliação manual arquivada e, na regra antiga, o
+// item de provedor fora da média.
+function isOutOfAverageGroup(grading, group) {
+    return isArchivedItemGroup(grading, group) || isLegacyProviderOut(grading, group);
+}
+
 // Plano efetivo de um item (com os padrões e a etapa única do curso).
 function planItemView(grading, id) {
     const raw = grading.planoEfetivo.itens[id];
@@ -853,10 +870,15 @@ function planWarnings(grading) {
 function studentGradeResult(grading, { groups = [], frequencia = null } = {}) {
     let arquivadas = 0;
     const grupos = [];
+    const ativo = !!(grading && grading.criterios);
     (groups || []).forEach(group => {
         if (!group || group.score === null || group.score === undefined) return;
         if (isArchivedItemGroup(grading, group)) { arquivadas += 1; return; }
         const item = gradingItemOf(grading, group.examKey);
+        // Regra antiga (sem critérios): o plano não entra na conta, mas o item de provedor
+        // (tarefa, C2) com "Conta na média" desmarcado (fora, o padrão) também fica fora da
+        // média simples; provas e avaliações manuais seguem iguais às de antes (D1).
+        if (isLegacyProviderOut(grading, group)) return;
         const meta = grading && grading.examIndex ? grading.examIndex.get(group.examKey) : null;
         const application = group.applicationId && grading ? grading.applicationsById.get(String(group.applicationId)) : null;
         grupos.push({
@@ -866,7 +888,6 @@ function studentGradeResult(grading, { groups = [], frequencia = null } = {}) {
             moduloId: item ? item.moduloId : (meta ? meta.moduleId : null),
         });
     });
-    const ativo = !!(grading && grading.criterios);
     const result = gradingRules.computeStudentResult({
         criterios: ativo ? grading.criterios : null,
         plano: ativo ? grading.planoEfetivo : null,
@@ -1038,6 +1059,8 @@ function buildStudentReportModules({ submissions, allSubmissions = submissions, 
         };
         if (isArchivedItemGroup(grading, group)) {
             entry.arquivada = true;
+        } else if (isLegacyProviderOut(grading, group)) {
+            entry.foraDaMedia = true;
         } else {
             target.scores.push(group.score);
             counted.push(group);
@@ -1230,7 +1253,7 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
             : { score: group.score, groups: 1, pending: group.pendingCount + (existing ? existing.pending : 0), aguardandoCorrecao: awaiting || !!(existing && existing.aguardandoCorrecao) };
         row.groups.push(group);
         // A nota de avaliação manual arquivada fica na célula e sai da média.
-        if (!isArchivedItemGroup(grading, group)) {
+        if (!isOutOfAverageGroup(grading, group)) {
             row.scores.push(group.score);
             row.countedGroups.push(group);
         }

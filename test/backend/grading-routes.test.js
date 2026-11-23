@@ -769,11 +769,22 @@ test('[UC-NOTAS-005] provedor de itens (C2): os itens entram no plano e no quadr
         assert.equal(plan.body.itens.filter(item => item.id === 'Av_P1').length, 1);
         assert.equal(plan.body.itens.find(item => item.id === 'Av_P1').origem, 'prova');
 
-        // Sem critérios: a nota do provedor entra na média simples, a "fora" também (o
-        // padrão só vale com critérios).
+        // Sem critérios: a nota do provedor entra na média simples; a "fora" (o padrão do
+        // provedor ou "Conta na média" desmarcado) fica na célula e sai da média também na
+        // regra antiga (pendência do B6 na J2: antes, tar_2 com 0 entrava e a média caía).
         const gb = await gradebookOf();
         assert.ok(gb.body.columns.some(column => (column.examKey || column.id) === 'tar_1' && column.origem === 'tarefa_teste'));
         assert.equal(rowOf(gb, 'ana@grading.local').cells.tar_1.grade, 10);
+        assert.equal(rowOf(gb, 'ana@grading.local').cells.tar_2.grade, 0);
+        // (40 + 80 + 70 + 100) / 4 = 72,5 -> 7,3; com a tar_2 seria 5,8.
+        assert.equal(rowOf(gb, 'ana@grading.local').average, 7.3);
+        const legacySummary = await asStudent('ana@grading.local', `/api/student/grades-summary?courseId=${COURSE}&studentClass=1DES`);
+        assert.equal(legacySummary.body.regraAntiga, true);
+        assert.equal(legacySummary.body.mediaFinal, 7.3);
+        assert.equal(legacySummary.body.itens.find(item => item.id === 'tar_2').foraDaMedia, true);
+        assert.equal(legacySummary.body.itens.find(item => item.id === 'tar_1').foraDaMedia, false);
+        const legacyReport = await as('admin', 'get', `/api/admin/student/report?email=ana@grading.local&courseId=${COURSE}&studentClass=1DES`);
+        assert.equal(legacyReport.body.overallAverage, 7.3);
 
         // Com critérios: tar_2 fica fora da média; tar_1 entra na etapa do plano.
         assert.equal((await saveCriteria()).status, 200);
