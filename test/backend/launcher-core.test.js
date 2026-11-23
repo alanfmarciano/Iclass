@@ -79,7 +79,7 @@ function createWorld({ prefix = 'mundo-', port = 4321, answers = [] } = {}) {
         answers: answers.slice(),
         handlers: {},
     };
-    world.launcher = launcherCore.createLauncher({
+    world.options = {
         projectRoot: root,
         folders,
         port,
@@ -128,7 +128,8 @@ function createWorld({ prefix = 'mundo-', port = 4321, answers = [] } = {}) {
             return world.answers.length ? world.answers.shift() : '';
         },
         timeouts: { pollMs: 500 },
-    });
+    };
+    world.launcher = launcherCore.createLauncher(world.options);
     world.text = () => world.lines.join('\n');
     return world;
 }
@@ -542,6 +543,217 @@ test('[UC-LAUNCHER-002] sem como conferir as provas (servidor de versão anterio
     assert.equal(launcherCore.examsUnknown(await known.launcher.locate()), false);
 });
 
+test('[UC-LAUNCHER-001] control.token que sobrou (281029f parado à força) e outro programa na porta: não conta como ligado; o iniciar sobe o supervisor e dá a mensagem de porta ocupada', async () => {
+    // Antes: o ligarIclassV3.bat para o 281029f com taskkill /f, o runtime/control.token fica
+    // na pasta, e qualquer programa que respondesse HTTP na porta virava "IClass ligado,
+    // servidor de uma versão anterior": o iniciar saía com 0 e abria o navegador nele.
+    for (const other of [
+        { name: '404-sem-corpo', health: () => ({ status: 404, body: null, text: 'Not Found' }) },
+        { name: 'outro-281029f', health: () => ({ status: 200, body: { status: 'ok', instanceId: 'de-outra-pasta', startedAt: new Date(Date.now() + 60000).toISOString() } }) },
+        { name: 'outro-281029f-ligando', health: () => ({ status: 503, body: { status: 'starting', starting: true, phase: 'loading', instanceId: 'de-outra-pasta', startedAt: new Date(Date.now() + 60000).toISOString() } }) },
+    ]) {
+        const world = createWorld({ prefix: `token-velho-${other.name}-` });
+        writeRuntime(world.dataDir, 'control.token', TOKEN);
+        // O heartbeat do nosso 281029f que foi parado: outro instanceId, processo morto.
+        writeRuntime(world.dataDir, 'heartbeat.json', { at: Date.now() - 3600000, clean: false, instanceId: 'nosso-antigo', pid: 6100 });
+        world.handlers['GET /api/system/control/status'] = () => ({ status: 404, body: null, text: 'Not Found' });
+        let spawnedChild = null;
+        world.handlers['GET /api/health'] = params => {
+            if (spawnedChild) {
+                // O servidor novo não consegue abrir a porta e sai com 2.
+                appendLog(world.dataDir, '⛔ A porta 4321 já está em uso por outro programa (talvez outra janela do IClass ou o modo demonstração). Feche-o e abra de novo.');
+                spawnedChild.emit('exit', 2, null);
+                spawnedChild = null;
+            }
+            return other.health(params);
+        };
+        const found = await world.launcher.locate();
+        assert.equal(found.state, 'desligado', `${other.name}: ${JSON.stringify(found)}`);
+        assert.equal(found.portBusy, true);
+        assert.equal(found.legacy, undefined);
+        await world.launcher.status();
+        assert.match(world.text(), /IClass desligado\./);
+        assert.match(world.text(), /A porta 4321 está sendo usada por outro programa/);
+        assert.doesNotMatch(world.text(), /versão anterior/);
+        const stop = await world.launcher.parar();
+        assert.equal(stop.already, true, 'nada a desligar');
+        assert.deepEqual(world.kills, []);
+        // A backup-cli recusaria ("O IClass está ligado"): o launcher já diz que é outro programa.
+        const backup = await world.launcher.backup({ sim: true });
+        assert.equal(backup.code, 2);
+        assert.match(world.text(), /A porta 4321 está sendo usada por outro programa, e o backup pela linha de comando só roda com essa porta livre \(o IClass está desligado\)/);
+        const restore = await world.launcher.restaurar({ ultimo: true, sim: true });
+        assert.equal(restore.code, 2);
+        assert.deepEqual(world.runs, [], 'a backup-cli não roda');
+        world.handlers.spawn = (params, child) => { spawnedChild = child; };
+        const result = await world.launcher.iniciar();
+        assert.equal(result.code, 2, `${other.name}: ${world.text()}`);
+        assert.equal(world.spawns.length, 1, 'subiu o supervisor (o servidor é quem confere a porta)');
+        assert.doesNotMatch(world.text(), /já está ligado/);
+        assert.match(world.text(), /O que fazer: Outro programa \(ou outra janela do IClass\) está usando a porta/);
+        assert.deepEqual(world.browser, [], 'o navegador não abre no outro programa');
+    }
+});
+
+test('[UC-LAUNCHER-001] servidor de uma versão anterior desta pasta: reconhecido pelo heartbeat (instanceId e Node vivo) ou, enquanto liga, pelo control.token gravado depois que ele começou', async () => {
+    // Ligado: o /api/health traz o instanceId do runtime/heartbeat.json desta pasta.
+    const ready = createWorld({ prefix: 'antigo-heartbeat-', answers: ['n'] });
+    writeRuntime(ready.dataDir, 'control.token', TOKEN);
+    writeRuntime(ready.dataDir, 'heartbeat.json', { at: Date.now(), clean: false, instanceId: 'antigo-vivo', pid: 6200 });
+    ready.alive.add(6200);
+    ready.handlers['GET /api/system/control/status'] = () => ({ status: 404, body: null });
+    ready.handlers['GET /api/health'] = () => ({ status: 200, body: { status: 'ok', instanceId: 'antigo-vivo', startedAt: new Date(Date.now() - 3600000).toISOString() } });
+    const found = await ready.launcher.locate();
+    assert.equal(found.state, 'ligado');
+    assert.equal(found.legacy, true);
+    assert.equal(found.serverPid, 6200, 'o pid do heartbeat, para conferir quando ele sai');
+    const stop = await ready.launcher.parar();
+    assert.equal(stop.cancelled, true);
+    assert.match(ready.text(), /servidor é de uma versão anterior do IClass/);
+    // O heartbeat é de outro processo (o número hoje é de outro programa): não vale (com o
+    // token de antes de o servidor começar, que não é dele).
+    const tokenBefore = new Date(Date.now() - 2 * 3600000);
+    fs.utimesSync(path.join(ready.dataDir, 'runtime', 'control.token'), tokenBefore, tokenBefore);
+    ready.notNode = new Set([6200]);
+    assert.equal((await ready.launcher.locate()).state, 'desligado');
+    ready.notNode = null;
+    ready.alive.delete(6200);
+    assert.equal((await ready.launcher.locate()).portBusy, true, 'pid morto: o heartbeat é velho');
+
+    // Ligando: o heartbeat ainda é da execução anterior, mas o token é desta.
+    const booting = createWorld({ prefix: 'antigo-ligando-' });
+    writeRuntime(booting.dataDir, 'heartbeat.json', { at: Date.now() - 600000, clean: true, instanceId: 'execucao-anterior', pid: 6300 });
+    const startedAt = new Date(Date.now() - 1000).toISOString();
+    writeRuntime(booting.dataDir, 'control.token', TOKEN);
+    booting.handlers['GET /api/system/control/status'] = () => ({ status: 503, body: { starting: true } });
+    booting.handlers['GET /api/health'] = () => ({ status: 503, body: { status: 'starting', starting: true, phase: 'loading', instanceId: 'ligando-agora', startedAt } });
+    const starting = await booting.launcher.locate();
+    assert.equal(starting.state, 'iniciando');
+    assert.equal(starting.legacy, true);
+    // O mesmo token, se for de antes de o servidor começar, é de outro processo.
+    const old = new Date(Date.now() - 3600000);
+    fs.utimesSync(path.join(booting.dataDir, 'runtime', 'control.token'), old, old);
+    assert.equal((await booting.launcher.locate()).portBusy, true);
+});
+
+test('[UC-LAUNCHER-002] IClass ligando (boot ou o supervisor religando depois de uma queda): desligar e reiniciar avisam das provas e perguntam', async () => {
+    // Antes: com o servidor morto e o supervisor esperando para religar, "parar" desligava
+    // sem perguntar, embora o banco tivesse provas em andamento.
+    const world = createWorld({ prefix: 'ligando-provas-', answers: ['n', 'n'] });
+    writeRuntime(world.dataDir, 'supervisor.pid', '5000');
+    world.alive.add(5000);
+    const found = await world.launcher.locate();
+    assert.equal(found.state, 'iniciando');
+    assert.equal(launcherCore.examsUnknown(found), true);
+    const stop = await world.launcher.parar();
+    assert.equal(stop.cancelled, true, world.text());
+    assert.match(world.text(), /Não deu para conferir se há prova em andamento: o IClass ainda está ligando/);
+    assert.match(world.asks[0], /Desligar mesmo assim\?/);
+    assert.deepEqual(world.kills, []);
+    const restart = await world.launcher.reiniciar();
+    assert.equal(restart.cancelled, true);
+    assert.match(world.asks[1], /Reiniciar mesmo assim\?/);
+    // Com "sim", desliga (taskkill /T sem /f na árvore do supervisor).
+    world.answers.push('s');
+    world.handlers.kill = () => world.alive.delete(5000);
+    const confirmed = await world.launcher.parar();
+    assert.equal(confirmed.code, 0, world.text());
+    assert.deepEqual(world.kills.map(item => [item.pid, item.force]), [[5000, false]]);
+});
+
+test('[UC-LAUNCHER-003] endereço com servidor de uma versão anterior não diz que o computador está sem rede; os textos da demonstração não falam do IClass de verdade', async () => {
+    const legacy = createWorld({ prefix: 'endereco-antigo-' });
+    writeRuntime(legacy.dataDir, 'control.token', TOKEN);
+    writeRuntime(legacy.dataDir, 'heartbeat.json', { at: Date.now(), clean: false, instanceId: 'antigo', pid: 6400 });
+    legacy.alive.add(6400);
+    legacy.handlers['GET /api/system/control/status'] = () => ({ status: 404, body: null });
+    legacy.handlers['GET /api/health'] = () => ({ status: 200, body: { status: 'ok', instanceId: 'antigo' } });
+    const result = await legacy.launcher.endereco();
+    assert.equal(result.code, 0);
+    assert.doesNotMatch(legacy.text(), /não está em nenhuma rede/);
+    assert.match(legacy.text(), /Não deu para ler o endereço dos alunos pelo launcher \(o servidor é de uma versão anterior do IClass\): veja na página que vai abrir no navegador\./);
+    assert.deepEqual(legacy.browser.map(item => item.url), ['http://localhost:4321/endereco']);
+    // Sem rede de verdade (a rota respondeu sem endereço), continua dizendo isso.
+    const offline = createWorld({ prefix: 'endereco-sem-rede-' });
+    runningServer(offline, { status: serverStatus({ enderecoAlunos: null }) });
+    await offline.launcher.endereco({ abrirNavegador: false });
+    assert.match(offline.text(), /não está em nenhuma rede agora/);
+
+    // Demonstração ligada: backup, senha e reiniciar falam da demonstração.
+    const world = createWorld({ prefix: 'demo-textos-', port: 3000 });
+    const demo = world.launcher.demoInstance();
+    let demoPid = 7100;
+    let instance = 'demo-1';
+    const demoUp = () => {
+        writeRuntime(demo.dataDir, 'servidor.json', { formato: 1, pid: demoPid, porta: 3100, instanceId: instance });
+        writeRuntime(demo.dataDir, 'control.token', TOKEN);
+        writeRuntime(demo.dataDir, 'supervisor.pid', '7000');
+        world.alive.add(demoPid);
+        world.alive.add(7000);
+    };
+    demoUp();
+    world.handlers['GET /api/system/control/status'] = params => (params.port === 3100 && world.alive.has(demoPid) ? serverStatus({ instanceId: instance, pid: demoPid, porta: 3100 }) : refused());
+    world.handlers['GET /api/health'] = params => (params.port === 3100 && world.alive.has(demoPid) ? { status: 200, body: { status: 'ok', instanceId: instance } } : refused());
+    world.handlers['POST /api/system/control'] = params => {
+        assert.equal(params.port, 3100, 'só a demonstração');
+        world.alive.delete(demoPid);
+        world.alive.delete(7000);
+        if (params.body.action === 'restart') {
+            demoPid += 1;
+            instance = `demo-${demoPid}`;
+            demoUp();
+        }
+        return { status: 202, body: { success: true } };
+    };
+    world.handlers.spawn = () => { demoPid += 1; instance = `demo-${demoPid}`; demoUp(); };
+    assert.equal((await world.launcher.backup({ instance: demo, sim: true })).code, 0, world.text());
+    assert.equal((await world.launcher.senha({ instance: demo, sim: true })).code, 0, world.text());
+    assert.equal((await world.launcher.reiniciar({ instance: demo, sim: true })).code, 0, world.text());
+    assert.match(world.text(), /Ligando a demonstração de novo\.\.\./);
+    assert.match(world.text(), /Reiniciando a demonstração \(gravando os dados\)\.\.\./);
+    assert.doesNotMatch(world.text(), /Ligando o IClass|Reiniciando o IClass|desliga o IClass/);
+});
+
+test('[UC-LAUNCHER-002] entrada que acabou (echo s | launcher.js parar): a segunda pergunta responde "não" na hora, sem ficar pendurada', async () => {
+    const { PassThrough } = require('node:stream');
+    const input = new PassThrough();
+    const output = new PassThrough();
+    output.resume();
+    const io = launcherScript.createConsoleIo({ input, output });
+    input.end('s\n');
+    assert.equal(await io.ask('Desligar mesmo assim? (s/N) '), 's');
+    await new Promise(resolve => setImmediate(resolve));
+    const second = await Promise.race([
+        io.ask('Forçar o encerramento? (s/N) '),
+        new Promise(resolve => setTimeout(() => resolve('pendurada'), 2000)),
+    ]);
+    assert.equal(second, null);
+    assert.equal(io.inputEnded, true);
+    io.close();
+    // suspend (um script filho usando o console) não conta como fim da entrada.
+    const input2 = new PassThrough();
+    const io2 = launcherScript.createConsoleIo({ input: input2, output });
+    const pending = io2.ask('Primeira? ');
+    input2.write('x\n');
+    assert.equal(await pending, 'x');
+    io2.suspend();
+    assert.equal(io2.inputEnded, false);
+    const again = io2.ask('Segunda? ');
+    input2.write('y\n');
+    assert.equal(await again, 'y');
+    io2.close();
+
+    // No launcher: sem resposta (null) na pergunta do forçado vale "não".
+    const world = createWorld({ prefix: 'forcar-sem-entrada-' });
+    runningServer(world);
+    world.handlers['POST /api/system/control'] = () => ({ status: 202, body: { success: true } });
+    world.launcher = launcherCore.createLauncher({ ...world.options, ask: async question => { world.asks.push(question); return null; } });
+    const result = await world.launcher.parar();
+    assert.equal(result.code, 1);
+    assert.match(world.text(), /O servidor continua ligado/);
+    assert.deepEqual(world.kills.map(item => item.force), [false], 'nunca força sem resposta');
+});
+
 test('[UC-LAUNCHER-002] backup com o IClass ligado: desliga pela rota de controle, roda a backup-cli com a porta certa e liga de novo', async () => {
     const world = createWorld({ prefix: 'backup-' });
     const { pid, supervisorPid } = runningServer(world);
@@ -842,5 +1054,34 @@ test('[UC-LAUNCHER-001] servidor de verdade com a porta ocupada: o launcher diz 
         // Sem esperar o close: a conexão do /api/health que ficou sem resposta é encerrada
         // pelo launcher, e o callback do close pode nunca vir.
         blocker.close();
+    }
+});
+
+test('[UC-LAUNCHER-001] servidor de verdade: control.token que sobrou e outro programa respondendo HTTP na porta: status diz desligado e porta ocupada, o iniciar sai com 2', { timeout: 60000 }, async () => {
+    const dataDir = fs.mkdtempSync(path.join(tempRoot, 'token-velho-real-'));
+    const port = await proc.freePort();
+    spawnedSupervisors.add(dataDir);
+    // O que o ligarIclassV3.bat deixa ao parar o 281029f com taskkill /f.
+    writeRuntime(dataDir, 'control.token', crypto.randomBytes(32).toString('hex'));
+    const other = require('node:http').createServer((req, res) => { res.statusCode = 404; res.end(); });
+    await new Promise(resolve => other.listen(port, '127.0.0.1', resolve));
+    const lines = [];
+    try {
+        const launcher = launcherCore.createLauncher({
+            env: proc.processEnv(dataDir, port),
+            supervisorScript: path.join(__dirname, 'fixtures', 'supervisor-child.js'),
+            openBrowser: () => { throw new Error('não devia abrir o navegador no outro programa'); },
+            out: line => lines.push(line),
+        });
+        const found = await launcher.locate();
+        assert.equal(found.state, 'desligado');
+        assert.equal(found.portBusy, true);
+        const result = await launcher.iniciar();
+        assert.equal(result.code, 2, lines.join('\n'));
+        assert.doesNotMatch(lines.join('\n'), /já está ligado/);
+        assert.match(lines.join('\n'), new RegExp(`A porta ${port} já está em uso`));
+    } finally {
+        other.closeAllConnections();
+        other.close();
     }
 });

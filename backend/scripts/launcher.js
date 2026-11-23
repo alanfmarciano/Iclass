@@ -83,23 +83,38 @@ function parseArgs(argv) {
 
 // Entrada pelo readline, que sai do caminho enquanto um script filho (backup-cli, redefinir
 // senha) usa o mesmo console: o filho lê a confirmação dele sem disputar o teclado.
-function createConsoleIo() {
+// A entrada acabou (entrada por pipe, como "echo s | launcher.js parar", ou o console
+// fechado): o readline fecha sozinho, e um readline novo sobre a entrada que já acabou
+// nunca responderia nem fecharia (a pergunta ficaria pendurada e o processo sairia com 0,
+// sem mensagem). Daí em diante toda pergunta resolve null na hora, que vale "não".
+function createConsoleIo({ input = process.stdin, output = process.stdout } = {}) {
     let rl = null;
     let closedByUser = false;
+    let inputEnded = false;
+    let suspending = false;
     function open() {
         if (rl) return rl;
-        rl = readline.createInterface({ input: process.stdin, output: process.stdout });
-        rl.on('SIGINT', () => {
+        const current = readline.createInterface({ input, output });
+        rl = current;
+        current.on('SIGINT', () => {
             closedByUser = true;
-            process.stdout.write('\n');
-            rl.close();
+            output.write('\n');
+            current.close();
         });
-        rl.on('close', () => { rl = null; });
-        return rl;
+        current.on('close', () => {
+            if (!suspending) inputEnded = true;
+            if (rl === current) rl = null;
+        });
+        return current;
     }
     return {
         ask(question) {
             if (closedByUser) return Promise.resolve(null);
+            if (inputEnded || input.readableEnded) {
+                // A pergunta aparece, para quem lê o registro saber o que ficou sem resposta.
+                output.write(`${question}\n`);
+                return Promise.resolve(null);
+            }
             const current = open();
             return new Promise(resolve => {
                 const onClose = () => resolve(null);
@@ -114,13 +129,15 @@ function createConsoleIo() {
             if (rl) {
                 const current = rl;
                 rl = null;
-                current.close();
+                suspending = true;
+                try { current.close(); } finally { suspending = false; }
             }
         },
         close() {
             this.suspend();
         },
         get closedByUser() { return closedByUser; },
+        get inputEnded() { return inputEnded; },
     };
 }
 
@@ -233,4 +250,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { MENU, USAGE, main, parseArgs };
+module.exports = { MENU, USAGE, createConsoleIo, main, parseArgs };

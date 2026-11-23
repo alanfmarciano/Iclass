@@ -67,6 +67,9 @@ const DEFAULT_TIMEOUTS = Object.freeze({
     requestMs: 3000,
 });
 const LOG_TAIL_LINES = 25;
+// Folga entre a hora em que o servidor de uma versão anterior diz que começou e a hora do
+// control.token que ele grava logo depois de abrir a porta (relógio do mesmo computador).
+const TOKEN_CLOCK_SLACK_MS = 2000;
 const DEMO_MARKER = '.iclass-demonstracao';
 const WINDOW_TITLE = 'Servidor do IClass (não feche esta janela)';
 const DEMO_WINDOW_TITLE = 'Demonstração do IClass (porta 3100)';
@@ -181,6 +184,10 @@ function fileSize(file) {
     try { return fs.statSync(file).size; } catch (e) { return 0; }
 }
 
+function fileMtimeMs(file) {
+    try { return fs.statSync(file).mtimeMs; } catch (e) { return null; }
+}
+
 // As últimas linhas do servidor.log escritas depois de `offset` (o tamanho antes de ligar).
 // O log girou (ficou menor que o offset): vale o arquivo todo.
 function readLogTail(file, offset = 0, maxLines = LOG_TAIL_LINES) {
@@ -241,13 +248,15 @@ function exitCodeFor(code) {
 // O servidor está no ar, mas o launcher não sabe se há prova em andamento: servidor de uma
 // versão anterior (sem a rota de situação), sem resposta, sem o arquivo de controle, ou a
 // rota respondeu sem a contagem (a leitura das provas falhou: provasEmAndamento null).
-// Ligando (o boot ainda não atende os alunos), não conta.
+// Ligando também conta: no boot o banco ainda não foi lido, e entre uma queda e o servidor
+// voltar (o supervisor religando) as provas que estavam em andamento continuam no banco.
 function examsUnknown(found) {
-    if (!found || !['ligado', 'sem-resposta', 'sem-controle'].includes(found.state)) return false;
+    if (!found || !['ligado', 'iniciando', 'sem-resposta', 'sem-controle'].includes(found.state)) return false;
     return !(found.status && Number.isInteger(found.status.provasEmAndamento));
 }
 
 function unknownExamsSentence(found) {
+    if (found.state === 'iniciando') return 'Não deu para conferir se há prova em andamento: o IClass ainda está ligando (ou voltando depois de uma queda).';
     if (found.legacy) return 'Não deu para conferir se há prova em andamento: o servidor é de uma versão anterior do IClass.';
     if (found.state === 'ligado' && found.status) return 'Não deu para conferir se há prova em andamento: o servidor não conseguiu ler as provas agora.';
     return 'Não deu para conferir se há prova em andamento: o servidor não responde ao launcher.';
@@ -479,8 +488,12 @@ function createLauncher(options = {}) {
         return env;
     }
 
+    // Sem resposta possível (a entrada acabou, como num "echo s | launcher.js parar" que
+    // chega à segunda pergunta, ou Ctrl+C na pergunta): ask resolve null, e vale "não".
     async function confirm(question, { defaultYes = false } = {}) {
-        const answer = String((await ask(`${question} ${defaultYes ? '(S/n)' : '(s/N)'} `)) || '').trim().toLowerCase();
+        const raw = await ask(`${question} ${defaultYes ? '(S/n)' : '(s/N)'} `);
+        if (raw === null || raw === undefined) return false;
+        const answer = String(raw).trim().toLowerCase();
         if (!answer) return defaultYes;
         return ['s', 'sim', 'y', 'yes'].includes(answer);
     }
@@ -500,6 +513,32 @@ function createLauncher(options = {}) {
         } catch (err) {
             return { status: 0, error: err && err.code ? err.code : String(err) };
         }
+    }
+
+    // Um servidor de uma versão anterior (281029f: sem a rota de situação nem o
+    // runtime/servidor.json) responde na porta: é o desta pasta de dados? O control.token
+    // pode ter sobrado de um servidor parado à força (o ligarIclassV3.bat para o 281029f
+    // com taskkill /f, que não deixa o servidor apagar o token), e qualquer outro programa
+    // (outro IClass, a demonstração do .bat, outro servidor) pode estar na mesma porta. É o
+    // nosso se o /api/health traz o instanceId do runtime/heartbeat.json desta pasta, gravado
+    // por um Node ainda vivo (o 281029f grava { instanceId, pid } a cada 5 s), ou, enquanto
+    // ele liga e ainda não gravou o heartbeat, se o control.token desta pasta foi gravado
+    // depois que ele começou (o 281029f grava o token logo depois de abrir a porta). Com o
+    // runtime/servidor.json de um Node vivo (o locate já conferiu), pelo instanceId dele.
+    function legacyServerIsOurs(instance, health, info) {
+        const body = health && health.body;
+        const instanceId = body && typeof body.instanceId === 'string' ? body.instanceId : '';
+        if (!instanceId) return { ours: false };
+        if (info && info.instanceId === instanceId) return { ours: true, pid: info.pid };
+        const heartbeat = readJson(runtimeFile(instance.dataDir, 'heartbeat.json'));
+        const heartbeatPid = heartbeat ? Number(heartbeat.pid) : 0;
+        if (heartbeat && heartbeat.instanceId === instanceId && Number.isInteger(heartbeatPid) && heartbeatPid > 0 && runningNode(heartbeatPid)) {
+            return { ours: true, pid: heartbeatPid };
+        }
+        const startedAt = Date.parse(body.startedAt);
+        const tokenAt = fileMtimeMs(runtimeFile(instance.dataDir, 'control.token'));
+        if (Number.isFinite(startedAt) && tokenAt !== null && tokenAt >= startedAt - TOKEN_CLOCK_SLACK_MS) return { ours: true, pid: null };
+        return { ours: false };
     }
 
     // Onde está o servidor desta pasta de dados e em que estado:
@@ -527,11 +566,20 @@ function createLauncher(options = {}) {
             return { ...base, state: res.body.pronto ? 'ligado' : 'iniciando', status: res.body, serverPid: base.serverPid || Number(res.body.pid) || null };
         }
         if (res.status === 404 || (res.status === 503 && !info)) {
-            // Servidor de uma versão anterior (sem a rota de situação): só o /api/health.
+            // Servidor de uma versão anterior (sem a rota de situação): só o /api/health, e só
+            // se ele for o desta pasta de dados. Senão é outro programa na porta, e o token é
+            // de um servidor que já terminou.
             const health = await getHealth(base.port);
-            if (health.status === 200) return { ...base, state: 'ligado', legacy: true };
-            if (health.status === 503 && health.body && health.body.status === 'starting') return { ...base, state: 'iniciando', legacy: true };
-            if (health.status) return { ...base, state: 'ligado', legacy: true, degraded: true };
+            const legacy = health.status ? legacyServerIsOurs(instance, health, info) : { ours: false };
+            if (!legacy.ours) {
+                if (health.status) return { ...base, state: 'desligado', stale: true, portBusy: true };
+                if (supervisorAlive) return { ...base, state: 'iniciando' };
+                return { ...base, state: 'desligado', stale: true };
+            }
+            const legacyBase = { ...base, legacy: true, serverPid: legacy.pid || null };
+            if (health.status === 200) return { ...legacyBase, state: 'ligado' };
+            if (health.status === 503 && health.body && health.body.status === 'starting') return { ...legacyBase, state: 'iniciando' };
+            return { ...legacyBase, state: 'ligado', degraded: true };
         }
         if (res.status === 403) {
             // O token não vale nesta porta: outro programa (ou outro IClass) responde ali.
@@ -544,6 +592,16 @@ function createLauncher(options = {}) {
             return { ...base, state: 'desligado', stale: true };
         }
         return { ...base, state: info ? 'sem-resposta' : 'desligado' };
+    }
+
+    // "o IClass" ou "a demonstração", nos textos das ações que valem para as duas.
+    function nameOf(instance, { capital = false } = {}) {
+        const text = instance && instance.demo ? 'a demonstração' : 'o IClass';
+        return capital ? `${text.charAt(0).toUpperCase()}${text.slice(1)}` : text;
+    }
+
+    function windowOf(instance) {
+        return instance && instance.demo ? 'da demonstração do IClass' : 'do servidor do IClass';
     }
 
     function localUrl(port, pathname = '/') {
@@ -665,13 +723,13 @@ function createLauncher(options = {}) {
             return { code: EXIT.OK, already: true, port: found.port };
         }
         if (found.state === 'iniciando') {
-            out('O IClass já está ligando. Esperando ficar pronto...');
+            out(`${nameOf(instance, { capital: true })} já está ligando. Esperando ficar pronto...`);
             const ready = await waitReady(instance, { port: found.port });
             if (ready.code === EXIT.OK && abrirNavegador) openBrowser(localUrl(ready.port, caminho));
             return ready;
         }
         if (found.state === 'sem-resposta' || found.state === 'sem-controle') {
-            out(`Já há um servidor do IClass com esta pasta de dados (processo ${found.serverPid || '?'}), mas ele não responde ao launcher. Use a opção [2] (Desligar) e ligue de novo.`);
+            out(`Já há um servidor ${instance.demo ? 'da demonstração' : 'do IClass'} com esta pasta de dados (processo ${found.serverPid || '?'}), mas ele não responde ao launcher. ${instance.demo ? 'Desligue a demonstração pela opção [8]' : 'Use a opção [2] (Desligar)'} e ligue de novo.`);
             return { code: EXIT.ERROR };
         }
         clearStaleRuntime(instance);
@@ -761,12 +819,12 @@ function createLauncher(options = {}) {
         }
         const target = found.supervisorPid || found.serverPid;
         if (!target) {
-            out('Não foi possível desligar pelo launcher. Feche a janela do servidor do IClass.');
+            out(`Não foi possível desligar pelo launcher. Feche a janela ${windowOf(instance)}.`);
             return { code: EXIT.ERROR };
         }
         if (!isNode(target)) {
             // Número que sobrou de antes e hoje é de outro programa: não fecha nada.
-            out(`O processo ${target} não é mais o IClass (o arquivo em runtime ficou de antes). Nada foi fechado. Se a janela do servidor do IClass estiver aberta, feche-a.`);
+            out(`O processo ${target} não é mais o IClass (o arquivo em runtime ficou de antes). Nada foi fechado. Se a janela ${windowOf(instance)} estiver aberta, feche-a.`);
             return { code: EXIT.ERROR };
         }
         out(asked ? `O servidor não desligou em ${Math.round(timeouts.stopMs / 1000)} s. Pedindo para a janela dele fechar...` : 'O servidor não respondeu. Pedindo para a janela dele fechar...');
@@ -777,7 +835,7 @@ function createLauncher(options = {}) {
         }
         const force = !sim && await confirm('O servidor continua ligado. Forçar o encerramento? O que estava sendo gravado pode se perder.');
         if (!force) {
-            out('O servidor continua ligado. Feche a janela do servidor do IClass ou tente de novo.');
+            out(`O servidor continua ligado. Feche a janela ${windowOf(instance)} ou tente de novo.`);
             return { code: EXIT.ERROR };
         }
         killTree(target, { force: true });
@@ -806,7 +864,7 @@ function createLauncher(options = {}) {
                 asked = false;
             }
             if (asked) {
-                out('Reiniciando o IClass (gravando os dados)...');
+                out(`Reiniciando ${nameOf(instance)} (gravando os dados)...`);
                 const logOffset = fileSize(logFile(instance.dataDir));
                 const ready = await waitReady(instance, { port: found.port, logOffset, previousInstanceId: found.status.instanceId });
                 if (ready.code === EXIT.OK && abrirNavegador) openBrowser(localUrl(ready.port));
@@ -820,24 +878,33 @@ function createLauncher(options = {}) {
         return iniciar({ instance, abrirNavegador });
     }
 
-    function refuseWithExams(found, what) {
+    function refuseWithExams(found, what, instance = realInstance) {
         const provas = found.status && Array.isArray(found.status.provas) ? found.status.provas : [];
         if (!provas.length) {
             // Sem como saber das provas: não recusa (o servidor pode ser de uma versão
             // anterior), mas avisa antes da pergunta de desligar.
             if (examsUnknown(found)) {
                 out(unknownExamsSentence(found));
-                out(`${what} desliga o IClass por alguns instantes: se houver prova em andamento, espere ela terminar.`);
+                out(`${what} desliga ${nameOf(instance)} por alguns instantes: se houver prova em andamento, espere ela terminar.`);
             }
             return false;
         }
         out(examsSentence(provas));
-        out(`${what} desliga o IClass por alguns instantes: espere a prova terminar.`);
+        out(`${what} desliga ${nameOf(instance)} por alguns instantes: espere a prova terminar.`);
         return true;
     }
 
     function isRunning(found) {
         return found.state !== 'desligado';
+    }
+
+    // Outro programa responde na porta (o IClass desta pasta está desligado): a backup-cli
+    // recusa enquanto qualquer coisa responder ali ("O IClass está ligado"), sem saber que é
+    // outro programa. O launcher já sabe e diz o que fazer.
+    function refusePortBusy(found, what, instance) {
+        if (!found.portBusy) return false;
+        out(`A porta ${found.port} está sendo usada por outro programa, e ${what} só roda com essa porta livre (${nameOf(instance)} está desligad${instance.demo ? 'a' : 'o'}). Feche o outro programa e tente de novo.`);
+        return true;
     }
 
     async function stopForMaintenance(found, instance, { sim, pergunta }) {
@@ -853,17 +920,17 @@ function createLauncher(options = {}) {
         const found = await locate(instance);
         const wasRunning = isRunning(found);
         if (wasRunning) {
-            if (refuseWithExams(found, 'O backup pela linha de comando')) {
+            if (refuseWithExams(found, 'O backup pela linha de comando', instance)) {
                 out('Ou faça o backup pela tela Sistema ("Fazer backup agora"), que não desliga nada.');
                 return { code: EXIT.ERROR, refused: true };
             }
-            const ok = await stopForMaintenance(found, instance, { sim, pergunta: 'Para fazer o backup, o IClass fica desligado por alguns segundos e liga de novo sozinho. Continuar?' });
+            const ok = await stopForMaintenance(found, instance, { sim, pergunta: `Para fazer o backup, ${nameOf(instance)} fica desligad${instance.demo ? 'a' : 'o'} por alguns segundos e liga de novo sozinh${instance.demo ? 'a' : 'o'}. Continuar?` });
             if (!ok) return { code: EXIT.ERROR, cancelled: true };
-        }
+        } else if (refusePortBusy(found, 'o backup pela linha de comando', instance)) return { code: EXIT.CONFIG, portBusy: true };
         const args = ['criar', ...(dados ? ['--dados'] : []), ...(destino ? ['--destino', destino] : [])];
         const code = await run({ nodePath, script: scripts.backupCli, args, cwd: projectRoot, env: instanceEnv({ ...instance, port: found.port }) });
         if (wasRunning) {
-            out('Ligando o IClass de novo...');
+            out(`Ligando ${nameOf(instance)} de novo...`);
             await iniciar({ instance, abrirNavegador: false });
         }
         return { code };
@@ -885,16 +952,16 @@ function createLauncher(options = {}) {
         const found = await locate(instance);
         const wasRunning = isRunning(found);
         if (wasRunning) {
-            if (refuseWithExams(found, 'Restaurar um backup')) return { code: EXIT.ERROR, refused: true };
-            const ok = await stopForMaintenance(found, instance, { sim, pergunta: 'Para restaurar, o IClass precisa ser desligado. Desligar agora?' });
+            if (refuseWithExams(found, 'Restaurar um backup', instance)) return { code: EXIT.ERROR, refused: true };
+            const ok = await stopForMaintenance(found, instance, { sim, pergunta: `Para restaurar, ${nameOf(instance)} precisa ser desligad${instance.demo ? 'a' : 'o'}. Desligar agora?` });
             if (!ok) return { code: EXIT.ERROR, cancelled: true };
-        }
+        } else if (refusePortBusy(found, 'a restauração pela linha de comando', instance)) return { code: EXIT.CONFIG, portBusy: true };
         const args = ['restaurar', ...(target ? [target] : ['--ultimo']), ...(sim ? ['--sim'] : [])];
         const code = await run({ nodePath, script: scripts.backupCli, args, cwd: projectRoot, env: instanceEnv({ ...instance, port: found.port }) });
         if (code === EXIT.OK) {
-            if (sim || await confirm('Ligar o IClass agora?', { defaultYes: true })) await iniciar({ instance, abrirNavegador: !sim });
+            if (sim || await confirm(`Ligar ${nameOf(instance)} agora?`, { defaultYes: true })) await iniciar({ instance, abrirNavegador: !sim });
         } else if (wasRunning) {
-            out('Nada foi restaurado. Ligando o IClass de novo...');
+            out(`Nada foi restaurado. Ligando ${nameOf(instance)} de novo...`);
             await iniciar({ instance, abrirNavegador: false });
         }
         return { code };
@@ -906,17 +973,17 @@ function createLauncher(options = {}) {
         const found = await locate(instance);
         const wasRunning = isRunning(found);
         if (wasRunning) {
-            if (refuseWithExams(found, 'Redefinir a senha')) return { code: EXIT.ERROR, refused: true };
-            const ok = await stopForMaintenance(found, instance, { sim, pergunta: 'Para redefinir a senha, o IClass fica desligado por alguns segundos e liga de novo. Continuar?' });
+            if (refuseWithExams(found, 'Redefinir a senha', instance)) return { code: EXIT.ERROR, refused: true };
+            const ok = await stopForMaintenance(found, instance, { sim, pergunta: `Para redefinir a senha, ${nameOf(instance)} fica desligad${instance.demo ? 'a' : 'o'} por alguns segundos e liga de novo. Continuar?` });
             if (!ok) return { code: EXIT.ERROR, cancelled: true };
         }
         const code = await run({ nodePath, script: scripts.resetPassword, args: account ? [account] : [], cwd: projectRoot, env: instanceEnv({ ...instance, port: found.port }) });
         if (code !== EXIT.OK) out('Não foi possível redefinir a senha. Veja a mensagem acima.');
         if (wasRunning) {
-            out('Ligando o IClass de novo...');
+            out(`Ligando ${nameOf(instance)} de novo...`);
             await iniciar({ instance, abrirNavegador: code === EXIT.OK && !sim, caminho: '/login' });
         } else if (code === EXIT.OK) {
-            out('Ligue o IClass pela opção [1] e entre com a senha temporária.');
+            out(instance.demo ? 'Ligue a demonstração pela opção [8] e entre com a senha temporária.' : 'Ligue o IClass pela opção [1] e entre com a senha temporária.');
         }
         return { code };
     }
@@ -924,11 +991,16 @@ function createLauncher(options = {}) {
     async function endereco({ instance = realInstance, abrirNavegador = true } = {}) {
         const found = await locate(instance);
         if (found.state !== 'ligado') {
-            out('O IClass está desligado. Ligue pela opção [1] (Ligar o IClass) e tente de novo.');
+            if (found.state === 'iniciando') out(`${nameOf(instance, { capital: true })} ainda está ligando. Espere ficar pronto e tente de novo.`);
+            else out(instance.demo ? 'A demonstração está desligada. Ligue pela opção [8] (Modo demonstração) e tente de novo.' : 'O IClass está desligado. Ligue pela opção [1] (Ligar o IClass) e tente de novo.');
             return { code: EXIT.ERROR };
         }
         const address = found.status && found.status.enderecoAlunos;
-        out(address ? `Endereço para os alunos: ${address}` : 'Este computador não está em nenhuma rede agora (ligue o Wi-Fi ou o cabo).');
+        if (address) out(`Endereço para os alunos: ${address}`);
+        else if (found.status && found.status.pronto) out('Este computador não está em nenhuma rede agora (ligue o Wi-Fi ou o cabo).');
+        // Servidor de uma versão anterior (sem a rota de situação) ou sem a leitura agora: o
+        // launcher não sabe o endereço, mas a página /endereco do próprio servidor mostra.
+        else out(`Não deu para ler o endereço dos alunos pelo launcher${found.legacy ? ' (o servidor é de uma versão anterior do IClass)' : ''}: ${abrirNavegador ? 'veja na página que vai abrir no navegador' : `veja em ${localUrl(found.port, '/endereco')}`}.`);
         if (abrirNavegador) openBrowser(localUrl(found.port, '/endereco'));
         return { code: EXIT.OK, enderecoAlunos: address || null };
     }
@@ -953,7 +1025,9 @@ function createLauncher(options = {}) {
         }
         if (found.state === 'sem-resposta') return [`${name}: o servidor (processo ${found.serverPid}) não responde. Use a opção [2] (Desligar).`];
         if (found.state === 'sem-controle') return [`${name}: há um servidor no ar com esta pasta de dados, mas sem o arquivo de controle. Feche a janela dele.`];
-        return [`${name} desligad${suffix}.`];
+        const lines = [`${name} desligad${suffix}.`];
+        if (found.portBusy) lines.push(`A porta ${found.port} está sendo usada por outro programa: ${instance.demo ? 'a demonstração' : 'o IClass'} não liga nela enquanto ele estiver aberto.`);
+        return lines;
     }
 
     async function status({ instance = realInstance, json = false } = {}) {
@@ -970,6 +1044,7 @@ function createLauncher(options = {}) {
                 provas: found.status ? found.status.provas : [],
                 alunosConectados: found.status ? found.status.alunosConectados : null,
                 enderecoAlunos: found.status ? found.status.enderecoAlunos : null,
+                portaOcupada: found.portBusy === true,
                 pastaDeDados: instance.dataDir,
             }));
         } else {
