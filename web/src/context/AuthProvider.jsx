@@ -1,7 +1,7 @@
 import { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react'
 import { api, setAdminAccessDeniedHandler, setAuthProvider, setPasswordChangeRequiredHandler } from '../lib/api'
 import { revokedLogoutFromError } from '../lib/sessionRevoked'
-import { isStudentExamPath, shouldExpireForIdle } from '../lib/sessionActivity'
+import { clearExamTabAlive, examTabAliveElsewhere, isStudentExamPath, markExamTabAlive, shouldExpireForIdle } from '../lib/sessionActivity'
 import { clearAllExamDrafts } from '../lib/examDrafts'
 import { usePolling } from '../hooks/usePolling'
 import { useOnReconnect } from '../hooks/useServerConnection'
@@ -17,6 +17,11 @@ const ABSOLUTE_MS = 8 * 60 * 60 * 1000 // 8 h desde o login -> logout
 const REVALIDATE_MS = 60 * 1000        // checagem periódica de instância/servidor
 const NET_FAIL_TOLERANCE = 3           // falhas de rede toleradas antes de considerar offline
 const SETTINGS_REFRESH_MS = 30 * 1000  // configurações públicas (tempo de sessão, manutenção)
+
+// localStorage, ou null quando o navegador o bloqueia (janela privada com dados bloqueados).
+function safeLocalStorage() {
+  try { return typeof window === 'undefined' ? null : window.localStorage } catch { return null }
+}
 
 export function AuthProvider({ children }) {
   // A sessão do aluno guardada por uma versão anterior trazia o cadastro inteiro: fica só
@@ -61,6 +66,7 @@ export function AuthProvider({ children }) {
     } catch {}
     try { sessionStorage.removeItem('iclass-workspace-switch') } catch {}
     clearAllExamDrafts() // cópia local das respostas da prova não fica para o próximo usuário
+    clearExamTabAlive(safeLocalStorage())
     try {
       const cur = JSON.parse(localStorage.getItem(LS)) || {}
       if (cur.role === 'admin' && cur.adminSession) {
@@ -188,7 +194,15 @@ export function AuthProvider({ children }) {
       // Ler uma questão por vários minutos continua sendo atividade válida.
       // Mantém a sessão enquanto a rota protegida da prova estiver aberta.
       lastActivityRef.current = now
-    } else if (shouldExpireForIdle({ role: auth.role, pathname, idleForMs: now - lastActivityRef.current, idleLimitMs: idleMsRef.current })) {
+      // Outras abas do portal neste navegador não encerram a sessão da prova por inatividade.
+      markExamTabAlive(safeLocalStorage(), now)
+    } else if (shouldExpireForIdle({
+      role: auth.role,
+      pathname,
+      idleForMs: now - lastActivityRef.current,
+      idleLimitMs: idleMsRef.current,
+      examOpenElsewhere: auth.role === 'student' && examTabAliveElsewhere(safeLocalStorage(), now),
+    })) {
       doLogout('idle'); return true
     }
     if (auth.loginAt && now - auth.loginAt > absMsRef.current) { doLogout('expired'); return true }

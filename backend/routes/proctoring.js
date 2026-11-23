@@ -25,7 +25,7 @@ const { SERVER_FINALIZE_DELAY_MS, attemptOverdueMs, settleExpiredAttempts } = re
 const { OPEN_APPLICATION_STATUSES } = require('../utils/examFinish.js');
 const { stateWithoutSecrets } = require('../utils/examLocalCopy.js');
 const { answerIdScope, decodeAttemptAnswers, stateForStudent } = require('../utils/examAnswerIds.js');
-const { keepPageExitOnLock, markPageExit } = require('../utils/examFocusRules.js');
+const { keepPageExitOnLock, lockedByOtherDevice, markPageExit } = require('../utils/examFocusRules.js');
 const { lockedAttemptMessage, noteAttemptIp, requestUserAgent } = require('../utils/examSessionIntegrity.js');
 const { FIELD_LIMITS: KEYSTROKE_FIELD_LIMITS } = require('../utils/keystrokeStore.js');
 const { body, bool, either, list, num, shape, str } = require('../utils/inputSchema.js');
@@ -242,18 +242,25 @@ router.post('/api/student/log-activity', validateStudentSession, PROCTORING_SCHE
         if (FOCUS_LOCK_EVENTS.has(normalizedEventType) && context.key && context.state) {
             const stateKey = context.key;
             const existing = context.state;
-            // Saída da PÁGINA (recarregar, fechar): a mesma sessão que volta logo à
-            // tentativa destrava sozinha (regra única em utils/examFocusRules.js).
-            if (normalizedEventType === 'exam_left' && req.body.pageExit === true) {
-                markPageExit(existing, { sessionToken: req.studentSessionToken, now: logEntry.timestamp });
+            if (lockedByOtherDevice(existing)) {
+                // Já travada porque a conta entrou em outro aparelho (P3-S13): o evento fica
+                // só no registro. A trava continua a do outro aparelho (motivo, hora e
+                // evento): a saída da página não vira volta que destrava sozinha, e a
+                // recusa e o Monitor não passam a dizer "perda de foco".
             } else {
-                keepPageExitOnLock(existing, logEntry.timestamp);
+                // Saída da PÁGINA (recarregar, fechar): a mesma sessão que volta logo à
+                // tentativa destrava sozinha (regra única em utils/examFocusRules.js).
+                if (normalizedEventType === 'exam_left' && req.body.pageExit === true) {
+                    markPageExit(existing, { sessionToken: req.studentSessionToken, now: logEntry.timestamp });
+                } else {
+                    keepPageExitOnLock(existing, logEntry.timestamp);
+                }
+                existing.focusLocked = true;
+                existing.focusLockedAt = logEntry.timestamp;
+                existing.focusLockReason = logEntry.details || normalizedEventType;
+                existing.focusLockEventId = logEntry.id;
+                existing.focusUnlockedAt = null;
             }
-            existing.focusLocked = true;
-            existing.focusLockedAt = logEntry.timestamp;
-            existing.focusLockReason = logEntry.details || normalizedEventType;
-            existing.focusLockEventId = logEntry.id;
-            existing.focusUnlockedAt = null;
             db.memory.studentExamState[stateKey] = existing;
         }
         // Rota quente (H1-c, DES-01): grava só o log novo e o estado da tentativa. As
@@ -436,7 +443,11 @@ router.post('/api/student/autosave-progress', validateStudentSession, PROCTORING
         if (overdueMs !== null && overdueMs > 0) {
             return res.status(408).json({ error: 'O prazo da prova terminou.', deadlineExceeded: true });
         }
-        if (existing.focusLocked === true && Date.now() - Number(existing.focusLockedAt || 0) > FOCUS_LOCK_SAVE_GRACE_MS) {
+        // A folga cobre o rascunho do MESMO aparelho que já estava a caminho quando a prova
+        // travou. Na trava pelo outro aparelho (P3-S13) não há folga: o aparelho antigo já
+        // não tem sessão, e a folga só abriria a escrita para o aparelho novo.
+        if (existing.focusLocked === true && (lockedByOtherDevice(existing)
+            || Date.now() - Number(existing.focusLockedAt || 0) > FOCUS_LOCK_SAVE_GRACE_MS)) {
             return res.status(423).json({
                 error: lockedAttemptMessage(existing, 'autosave'),
                 focusLocked: true,

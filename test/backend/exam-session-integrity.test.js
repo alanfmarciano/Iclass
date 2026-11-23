@@ -192,14 +192,12 @@ test('[UC-TENTATIVA-005] outro login com a prova em andamento grava session_repl
     const fresh = await sync(ALICE, application.id).expect(200);
     assert.equal(fresh.body.state.focusLocked, true);
     assert.equal(fresh.body.state.focusLockReason, 'session_replaced');
+    assert.equal(fresh.body.questions, null, 'o aparelho novo não recebe as questões com a prova travada');
+    // Sem a folga de 15 s da perda de foco: o aparelho antigo já não tem sessão, e a folga
+    // só abriria a escrita para o aparelho novo (ajuste 2 do A10).
     const autosave = await asStudent(request(app).post('/api/student/autosave-progress'), ALICE)
         .send({ email: ALICE, studentClass, courseId, examKey, applicationId: application.id, answers: {} });
-    // O rascunho que já estava a caminho ainda entra logo depois da trava (15 s); depois, 423.
-    assert.ok([200, 423].includes(autosave.status), JSON.stringify(autosave.body));
-    openState(ALICE, application.id).focusLockedAt = Date.now() - 60 * 1000;
-    const lateAutosave = await asStudent(request(app).post('/api/student/autosave-progress'), ALICE)
-        .send({ email: ALICE, studentClass, courseId, examKey, applicationId: application.id, answers: {} });
-    assert.equal(lateAutosave.status, 423);
+    assert.equal(autosave.status, 423, JSON.stringify(autosave.body));
 
     // Monitor: travado pelo outro aparelho, com o selo e a hora.
     const row = (await monitorRows(application.id)).find(item => item.email === ALICE);
@@ -213,6 +211,8 @@ test('[UC-TENTATIVA-005] outro login com a prova em andamento grava session_repl
     // O professor libera pelo Monitor e a prova continua no aparelho novo.
     await admin(request(app).post('/api/admin/unlock-student-focus')).send({ studentEmail: ALICE, studentClass, courseId, examKey, applicationId: application.id }).expect(200);
     assert.equal(openState(ALICE, application.id).focusLocked, false);
+    const released = await sync(ALICE, application.id).expect(200);
+    assert.equal(released.body.questions.length, 2, 'liberada, as questões chegam ao aparelho novo');
     await asStudent(request(app).post('/api/student/autosave-progress'), ALICE)
         .send({ email: ALICE, studentClass, courseId, examKey, applicationId: application.id, answers: {} }).expect(200);
 
@@ -521,4 +521,82 @@ test('[UC-TENTATIVA-005] prova travada pelo outro aparelho: o 423 e o registro d
     // As instruções recebem a política da aplicação.
     const fresh = await sync(BRUNO, application.id).expect(200);
     assert.equal(fresh.body.onlineExamConfigs[examKey].sessionPolicy, 'travar');
+});
+
+test('[UC-TENTATIVA-005] a trava pelo outro aparelho só sai pelo professor: saída da página colada ao login, rascunho logo depois e evento de foco não a mudam', async () => {
+    const failuresBefore = db.saveVerifyFailures.length;
+    const focusRules = require('../../backend/utils/examFocusRules.js');
+    const application = await running();
+    await begin(ALICE, application.id);
+    await loginAgain();
+    const lockedState = openState(ALICE, application.id);
+    const lockedAt = lockedState.focusLockedAt;
+    const lockEventId = lockedState.focusLockEventId;
+    assert.equal(lockedState.focusLockReason, 'session_replaced');
+
+    // (1) O aparelho novo manda a saída da página logo depois do login (menos de 1 s, dentro
+    // da folga da saída colada à trava) e sincroniza: antes, a regra dos 60 s da volta à
+    // página destravava a prova.
+    const exit = await asStudent(request(app).post('/api/student/log-activity'), ALICE).send({
+        email: ALICE, studentClass, courseId, examKey, applicationId: application.id, attemptId: lockedState.attemptId,
+        eventType: 'exam_left', details: 'Saiu da página da prova', pageExit: true,
+    }).expect(200);
+    assert.equal(exit.body.success, true);
+    assert.equal(openState(ALICE, application.id).pageExit, undefined, 'a saída da página não fica marcada');
+    const afterReturn = await sync(ALICE, application.id).expect(200);
+    assert.equal(afterReturn.body.state.focusLocked, true, 'a volta à página não destrava a trava do outro aparelho');
+    assert.equal(afterReturn.body.state.focusLockReason, 'session_replaced');
+    assert.equal(afterReturn.body.questions, null);
+    assert.equal(logsOf('page_return').length, 0, 'nada de "prova destravada sozinha"');
+    assert.ok(logsOf('exam_left').length === 1, 'a saída da página fica no registro');
+
+    // (2) Rascunho do aparelho novo logo depois da trava: recusado, e nada é gravado.
+    const autosave = await asStudent(request(app).post('/api/student/autosave-progress'), ALICE)
+        .send({ email: ALICE, studentClass, courseId, examKey, applicationId: application.id, attemptId: lockedState.attemptId, answers: { 1: 'A' } });
+    assert.equal(autosave.status, 423, JSON.stringify(autosave.body));
+    assert.equal(autosave.body.focusLockReason, 'session_replaced');
+    assert.deepEqual(openState(ALICE, application.id).answers || {}, {}, 'a resposta não fica gravada');
+
+    // (3) Evento de foco depois da trava: fica no registro, mas o motivo continua o do outro
+    // aparelho (a recusa e o Monitor não passam a dizer "perda de foco").
+    await asStudent(request(app).post('/api/student/log-activity'), ALICE).send({
+        email: ALICE, studentClass, courseId, examKey, applicationId: application.id, attemptId: lockedState.attemptId,
+        eventType: 'tab_blur', details: 'Janela perdeu o foco',
+    }).expect(200);
+    const state = openState(ALICE, application.id);
+    assert.equal(state.focusLocked, true);
+    assert.equal(state.focusLockReason, 'session_replaced');
+    assert.equal(state.focusLockedAt, lockedAt, 'a hora da trava continua a do outro login');
+    assert.equal(state.focusLockEventId, lockEventId);
+    assert.equal(logsOf('tab_blur').length, 1);
+    const submit = await asStudent(request(app).post('/api/student/submit'), ALICE).send({
+        studentClass, courseId, examKey, applicationId: application.id, attemptId: state.attemptId,
+        answers: {}, questionNumbers: [1, 2], examConfigVersion: afterReturn.body.examConfigVersion,
+    });
+    assert.equal(submit.status, 423);
+    assert.match(submit.body.error, /entrou em outro aparelho/);
+    assert.equal(submit.body.focusLockReason, 'session_replaced');
+    const row = (await monitorRows(application.id)).find(item => item.email === ALICE);
+    assert.equal(row.status, 'focus_locked');
+    assert.equal(row.focusLockReason, 'session_replaced');
+
+    // A regra pura: trava pelo outro aparelho nunca vira saída da página nem volta que destrava.
+    const pure = { focusLocked: true, focusLockReason: 'session_replaced', focusLockedAt: 1000 };
+    assert.equal(focusRules.markPageExit(pure, { sessionToken: 'abc', now: 1200 }), false);
+    assert.equal(pure.pageExit, undefined);
+    const withExit = { ...pure, pageExit: { at: 1100, session: focusRules.sessionFingerprint('abc') } };
+    assert.equal(focusRules.pageExitReturnDecision(withExit, { sessionToken: 'abc', now: 1300 }).unlock, false);
+    const focusOnly = { focusLocked: true, focusLockReason: 'Saiu da aba', focusLockedAt: 1000 };
+    assert.equal(focusRules.markPageExit(focusOnly, { sessionToken: 'abc', now: 1200 }), true, 'a perda de foco colada continua como antes');
+
+    // Depois da liberação do professor, a perda de foco volta a travar com o motivo dela.
+    await admin(request(app).post('/api/admin/unlock-student-focus')).send({ studentEmail: ALICE, studentClass, courseId, examKey, applicationId: application.id }).expect(200);
+    await new Promise(resolve => setTimeout(resolve, 1100)); // fora da deduplicação de 1 s do mesmo evento
+    await asStudent(request(app).post('/api/student/log-activity'), ALICE).send({
+        email: ALICE, studentClass, courseId, examKey, applicationId: application.id, attemptId: state.attemptId,
+        eventType: 'tab_blur', details: 'Janela perdeu o foco',
+    }).expect(200);
+    assert.equal(openState(ALICE, application.id).focusLockReason, 'Janela perdeu o foco');
+
+    assert.deepEqual(db.saveVerifyFailures.slice(failuresBefore).map(item => `${item.path} ${item.collection}`), []);
 });

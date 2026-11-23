@@ -32,7 +32,8 @@ const SESSION_POLICIES = Object.freeze(['travar', 'avisar']);
 const DEFAULT_SESSION_POLICY = 'travar';
 const SESSION_REPLACED_EVENT = 'session_replaced';
 const IP_CHANGED_EVENT = 'ip_changed';
-const SESSION_REPLACED_LOCK_REASON = 'session_replaced';
+// O motivo da trava mora nas regras de foco (examFocusRules.js), que também o respeitam.
+const { SESSION_REPLACED_LOCK_REASON } = require('./examFocusRules.js');
 const USER_AGENT_MAX = 120;
 const SESSION_IPS_MAX = 5;
 const IP_MAX = 64;

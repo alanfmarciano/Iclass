@@ -11,6 +11,7 @@ const crypto = require('crypto');
 const { questionNumber, questionsForAttempt } = require('./examGrading.js');
 const { answerIdScope, studentAlternatives } = require('./examAnswerIds.js');
 const { ANSWER_LIMITS, isChoiceType, questionPoints, questionType } = require('./examScoring.js');
+const { lockedByOtherDevice } = require('./examFocusRules.js');
 
 const CLOSED_ATTEMPT_STATUSES = new Set(['submitted', 'expired', 'invalidated']);
 const LEGACY_BLOCKED_CONFIG_STATUSES = new Set(['draft', 'prepared', 'paused', 'finished', 'cancelled']);
@@ -19,6 +20,9 @@ function attemptQuestionsAvailable({ application, onlineConfig, state, now = Dat
     if (!state || !Number(state.startedAt)) return false;
     if (CLOSED_ATTEMPT_STATUSES.has(state.status)) return false;
     if (Number(state.deadlineAt) > 0 && now > Number(state.deadlineAt)) return false;
+    // Travada porque a conta entrou em outro aparelho (P3-S13): o aparelho novo só recebe
+    // as questões (e as imagens delas) depois que o professor liberar.
+    if (lockedByOtherDevice(state)) return false;
 
     if (application) {
         if (state.applicationId && state.applicationId !== application.id) return false;

@@ -20,6 +20,16 @@ const PAGE_EXIT_RETURN_WINDOW_MS = 60 * 1000;
 // tela da prova também já fica pausada na troca de aba e nem registra a saída da página).
 const PAGE_EXIT_BURST_MS = 1000;
 const PAGE_RETURN_EVENT = 'page_return';
+// Trava pelo outro aparelho (P3-S13, D28: a conta entrou em outro aparelho com a prova em
+// andamento). Só o professor libera: a volta à página não destrava, um evento de foco
+// depois dela não troca o motivo, e o aparelho novo não recebe as questões nem grava
+// respostas enquanto ela vale (o aparelho antigo já não tem sessão).
+const SESSION_REPLACED_LOCK_REASON = 'session_replaced';
+
+function lockedByOtherDevice(state) {
+    return !!state && typeof state === 'object' && state.focusLocked === true
+        && state.focusLockReason === SESSION_REPLACED_LOCK_REASON;
+}
 
 // Identifica a sessão sem guardar o token no estado da tentativa.
 function sessionFingerprint(sessionToken) {
@@ -33,6 +43,10 @@ function sessionFingerprint(sessionToken) {
 // pelo botão) continua travada: a saída da página não muda isso e o retorno não destrava.
 function markPageExit(state, { sessionToken, now = Date.now() } = {}) {
     if (!state || typeof state !== 'object') return false;
+    // Travada pelo outro aparelho: a saída da página (mesmo colada à trava) não vira volta
+    // que destrava. Antes, o aparelho novo mandava a saída da página logo depois do login e
+    // o sync seguinte destravava a prova pela regra dos 60 s.
+    if (lockedByOtherDevice(state)) return false;
     const lockedBefore = state.focusLocked === true && !state.pageExit
         && Number(state.focusLockedAt) > 0 && now - Number(state.focusLockedAt) > PAGE_EXIT_BURST_MS;
     if (lockedBefore) return false;
@@ -76,6 +90,7 @@ function outageOverlapMs(outages, from, to) {
 function pageExitReturnDecision(state, { sessionToken, now = Date.now(), outages = null } = {}) {
     const exit = state?.pageExit;
     if (!exit || state.focusLocked !== true) return { unlock: false };
+    if (lockedByOtherDevice(state)) return { unlock: false };
     const exitAt = Number(exit.at);
     const elapsedMs = now - exitAt - outageOverlapMs(outages, exitAt, now);
     if (!(PAGE_EXIT_RETURN_WINDOW_MS > 0) || !(elapsedMs >= 0) || elapsedMs > PAGE_EXIT_RETURN_WINDOW_MS) {
@@ -93,7 +108,9 @@ module.exports = {
     PAGE_EXIT_BURST_MS,
     PAGE_EXIT_RETURN_WINDOW_MS,
     PAGE_RETURN_EVENT,
+    SESSION_REPLACED_LOCK_REASON,
     keepPageExitOnLock,
+    lockedByOtherDevice,
     markPageExit,
     outageOverlapMs,
     pageExitReturnDecision,
