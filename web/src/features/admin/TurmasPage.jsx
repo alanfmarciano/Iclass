@@ -1,12 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Archive, BookCopy, BookOpen, Building2, ClipboardList, Pencil, Plus, RotateCcw, Search, School, Trash2, UserPlus, Users, Wand2 } from 'lucide-react'
+import { Archive, BookCopy, BookOpen, Building2, ClipboardList, Pencil, Plus, RotateCcw, Search, School, Trash2, UserPlus, Users, UsersRound, Wand2 } from 'lucide-react'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { Card, CardBody } from '../../components/ui/Card'
 import { ConfirmDialog, Modal } from '../../components/ui/Modal'
 import { Input } from '../../components/ui/Input'
 import { Select } from '../../components/ui/Select'
+import { Switch } from '../../components/ui/Switch'
 import { PageState } from '../../components/ui/PageState'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { useApi } from '../../hooks/useApi'
@@ -19,6 +20,8 @@ import { DisciplinasModal, GradeEditor } from './TurmaPresencaConfig'
 import { ADMIN_PERMISSIONS, canAccessAdminPermission, isFullAdmin, isProfessorRoleAccount } from '../../lib/adminPermissions'
 import { GradingCriteriaDialog } from './GradingCriteriaDialog'
 import { AcademicTermsSection, brDate, termOptionLabel, termOptionsForCourse } from './AcademicTermsSection'
+import { groupsPath } from './grupos/groupsPath'
+import { PreviewButton, canPreviewAsStudent } from './PreviewLauncher'
 
 const CLASS_PERIODS = ['Manhã', 'Tarde', 'Noite']
 
@@ -89,6 +92,10 @@ export default function TurmasPage() {
   // e /grading/preview no servidor; quem também gerencia cursos (course.manage) altera, e
   // o resto (professor, Coordenação) vê sem alterar (o diálogo segue o podeAlterar).
   const canSeeCriteria = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_RESULTS)
+  // Grupos da turma (fase 3, P5-S4): quem tem a tela Alunos (o professor também).
+  const canGroups = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_STUDENTS)
+  // Ver como aluno (fase 3, C15 / P5-S6b): quem tem o conteúdo das turmas (page.materials).
+  const canPreview = canPreviewAsStudent(auth)
   const coursesApi = useApi('/api/admin/course-summaries?includeDeleted=1')
   const classesApi = useApi('/api/admin/classes')
   const schoolsApi = useApi('/api/admin/schools')
@@ -160,8 +167,10 @@ export default function TurmasPage() {
     }
   }
 
-  const openNewCourse = () => setCourseForm({ mode: 'create', id: '', name: '', description: '', schoolId: schools[0]?.id || '' })
-  const openEditCourse = () => setCourseForm({ mode: 'edit', id: selectedCourse.id, name: selectedCourse.name || '', description: selectedCourse.description || '', schoolId: selectedCourse.schoolId || '' })
+  // permitirImpressao (fase 3, C17 / P5-S3; D25 do P5): o aluno imprime ou salva em PDF a
+  // apostila no leitor. Ausente no curso (de antes desta versão) vale ligado.
+  const openNewCourse = () => setCourseForm({ mode: 'create', id: '', name: '', description: '', schoolId: schools[0]?.id || '', permitirImpressao: true })
+  const openEditCourse = () => setCourseForm({ mode: 'edit', id: selectedCourse.id, name: selectedCourse.name || '', description: selectedCourse.description || '', schoolId: selectedCourse.schoolId || '', permitirImpressao: selectedCourse.permitirImpressao !== false })
   const openCloneCourse = () => setCourseForm({ mode: 'clone', sourceId: selectedCourse.id, id: `${selectedCourse.id}_COPIA`, name: `${selectedCourse.name} (cópia)`, description: selectedCourse.description || '', schoolId: selectedCourse.schoolId || '' })
 
   async function saveCourse() {
@@ -169,10 +178,10 @@ export default function TurmasPage() {
     if (!form.name?.trim() || !form.schoolId || (form.mode !== 'edit' && !form.id?.trim())) return toast.error('Informe os dados obrigatórios do curso.')
     const ok = await run(async () => {
       if (form.mode === 'create') {
-        const result = await api.post('/api/admin/courses', { id: form.id.trim().toUpperCase(), name: form.name.trim(), description: form.description?.trim(), schoolId: form.schoolId })
+        const result = await api.post('/api/admin/courses', { id: form.id.trim().toUpperCase(), name: form.name.trim(), description: form.description?.trim(), schoolId: form.schoolId, permitirImpressao: form.permitirImpressao !== false })
         setSelectedCourseId(result.course.id)
       } else if (form.mode === 'edit') {
-        await api.put(`/api/admin/courses/${encodeURIComponent(form.id)}`, { name: form.name.trim(), description: form.description?.trim(), schoolId: form.schoolId })
+        await api.put(`/api/admin/courses/${encodeURIComponent(form.id)}`, { name: form.name.trim(), description: form.description?.trim(), schoolId: form.schoolId, permitirImpressao: form.permitirImpressao !== false })
       } else {
         const result = await api.post(`/api/admin/courses/${encodeURIComponent(form.sourceId)}/clone`, { newId: form.id.trim().toUpperCase(), newName: form.name.trim(), schoolId: form.schoolId }, { timeoutMs: 0 })
         setSelectedCourseId(result.course.id)
@@ -328,7 +337,7 @@ export default function TurmasPage() {
                   return <div key={`${cls.courseId}-${cls.name}`} className="rounded-lg border border-border p-4">
                     <div className="flex flex-wrap items-start justify-between gap-3"><div><h4 className="font-semibold text-text">{cls.name}</h4><p className="text-sm text-muted">{cls.period ? canonicalClassPeriod(cls.period) : 'Sem turno'}</p></div><div className="flex flex-wrap items-center gap-2">{term ? <Badge tone={term.situacao === 'encerrado' ? 'neutral' : 'info'}>{term.situacao === 'encerrado' ? `${term.nome} · encerrado` : term.nome}</Badge> : <Badge tone={canLink ? 'warning' : 'neutral'}>Sem período letivo</Badge>}<Badge tone={cls.registrationEnabled ? 'success' : 'neutral'}>{cls.registrationEnabled ? 'Matrícula aberta' : 'Matrícula fechada'}</Badge><Badge tone="neutral">{cls.studentCount || 0} aluno(s)</Badge><Badge tone={professorTotal ? 'info' : 'warning'}>{professorTotal} professor(es)</Badge></div></div>
                     <div className="mt-3 flex flex-wrap gap-2">{professorTotal === 0 ? <span className="text-xs text-warning">Sem professor</span> : classProfessors.map(professor => <span key={professor.email} className="inline-flex items-center gap-1.5 rounded-full bg-surface-2 px-2.5 py-1 text-xs text-text">{professor.name}<span className="text-subtle">· {teacherSources(professor, selectedCourse, cls.name)[0]}</span></span>)}</div>
-                    {isAdmin && !isDeleted(selectedCourse) && <div className="mt-3 flex flex-wrap gap-2 border-t border-border pt-3"><Button size="sm" variant="secondary" className="border-primary/60 bg-primary/10 text-primary hover:bg-primary/20 hover:border-primary" icon={Wand2} aria-label={`Abrir assistente de horários da turma ${cls.name}`} onClick={() => navigate(`/turmas/${encodeURIComponent(selectedCourse.id)}/${encodeURIComponent(cls.name)}/assistente`)}>Assistente de horários</Button><Button size="sm" variant="secondary" icon={Users} aria-label={`Atribuir professor à turma ${cls.name}`} onClick={() => openAssignments()}>Atribuir</Button><Button size="sm" variant="ghost" icon={Pencil} aria-label={`Editar turma ${cls.name}`} onClick={() => setClassForm({ mode: 'edit', name: cls.name, period: canonicalClassPeriod(cls.period), registrationEnabled: cls.registrationEnabled !== false, periodoLetivoId: cls.periodoLetivoId || '', periodoLetivoInicial: cls.periodoLetivoId || '', attendanceConfig: cls.attendanceConfig || { toleranciaMin: 10, limiarRiscoPct: 75, grade: {} } })}>Editar</Button><Button size="sm" variant="ghost" icon={Trash2} aria-label={`Excluir turma ${cls.name}`} onClick={() => setConfirm({ type: 'class', target: cls })}>Excluir</Button></div>}
+                    {(isAdmin || canGroups || canPreview) && !isDeleted(selectedCourse) && <div className="mt-3 flex flex-wrap gap-2 border-t border-border pt-3">{canGroups && <Button size="sm" variant="secondary" icon={UsersRound} aria-label={`Grupos da turma ${cls.name}`} onClick={() => navigate(groupsPath(selectedCourse.id, cls.name), { state: { voltar: '/turmas' } })}>Grupos</Button>}<PreviewButton courseId={selectedCourse.id} studentClass={cls.name} courseName={selectedCourse.name} />{isAdmin && <><Button size="sm" variant="secondary" className="border-primary/60 bg-primary/10 text-primary hover:bg-primary/20 hover:border-primary" icon={Wand2} aria-label={`Abrir assistente de horários da turma ${cls.name}`} onClick={() => navigate(`/turmas/${encodeURIComponent(selectedCourse.id)}/${encodeURIComponent(cls.name)}/assistente`)}>Assistente de horários</Button><Button size="sm" variant="secondary" icon={Users} aria-label={`Atribuir professor à turma ${cls.name}`} onClick={() => openAssignments()}>Atribuir</Button><Button size="sm" variant="ghost" icon={Pencil} aria-label={`Editar turma ${cls.name}`} onClick={() => setClassForm({ mode: 'edit', name: cls.name, period: canonicalClassPeriod(cls.period), registrationEnabled: cls.registrationEnabled !== false, periodoLetivoId: cls.periodoLetivoId || '', periodoLetivoInicial: cls.periodoLetivoId || '', attendanceConfig: cls.attendanceConfig || { toleranciaMin: 10, limiarRiscoPct: 75, grade: {} } })}>Editar</Button><Button size="sm" variant="ghost" icon={Trash2} aria-label={`Excluir turma ${cls.name}`} onClick={() => setConfirm({ type: 'class', target: cls })}>Excluir</Button></>}</div>}
                   </div>
                 })}</div>}
               </CardBody></Card>
@@ -342,7 +351,7 @@ export default function TurmasPage() {
       </PageState>
 
       <Modal open={!!courseForm} onClose={() => setCourseForm(null)} title={courseForm?.mode === 'edit' ? 'Editar curso' : courseForm?.mode === 'clone' ? 'Duplicar curso' : 'Novo curso'} description="Defina a escola responsável e os dados do curso." footer={<><Button variant="ghost" onClick={() => setCourseForm(null)}>Cancelar</Button><Button loading={saving} onClick={saveCourse}>Salvar</Button></>}>
-        {courseForm && <div className="space-y-4">{courseForm.mode !== 'edit' && <Input label="Código do curso" value={courseForm.id} onChange={event => setCourseForm({ ...courseForm, id: event.target.value })} placeholder="EX.: DES" />}<Input label="Nome" value={courseForm.name} onChange={event => setCourseForm({ ...courseForm, name: event.target.value })} /><Input label="Descrição" value={courseForm.description} onChange={event => setCourseForm({ ...courseForm, description: event.target.value })} /><Select label="Escola" value={courseForm.schoolId} onChange={event => setCourseForm({ ...courseForm, schoolId: event.target.value })}><option value="">Selecione</option>{schools.map(school => <option key={school.id} value={school.id}>{school.name}</option>)}</Select></div>}
+        {courseForm && <div className="space-y-4">{courseForm.mode !== 'edit' && <Input label="Código do curso" value={courseForm.id} onChange={event => setCourseForm({ ...courseForm, id: event.target.value })} placeholder="EX.: DES" />}<Input label="Nome" value={courseForm.name} onChange={event => setCourseForm({ ...courseForm, name: event.target.value })} /><Input label="Descrição" value={courseForm.description} onChange={event => setCourseForm({ ...courseForm, description: event.target.value })} /><Select label="Escola" value={courseForm.schoolId} onChange={event => setCourseForm({ ...courseForm, schoolId: event.target.value })}><option value="">Selecione</option>{schools.map(school => <option key={school.id} value={school.id}>{school.name}</option>)}</Select>{courseForm.mode !== 'clone' && <div className="space-y-1"><Switch id="curso-permitir-impressao" checked={courseForm.permitirImpressao !== false} onChange={value => setCourseForm({ ...courseForm, permitirImpressao: value })} label="Alunos podem imprimir ou salvar a apostila em PDF" /><p className="text-xs text-muted">Desligado, o botão "Imprimir ou salvar em PDF" some do leitor e a impressão da apostila sai só com "Impressão desativada pela escola.". A folha impressa leva o nome da escola e do curso.</p></div>}</div>}
       </Modal>
 
       <Modal open={!!classForm} onClose={() => setClassForm(null)} size="lg" title={classForm?.mode === 'edit' ? 'Editar turma' : 'Nova turma'} description={selectedCourse?.name} footer={<><Button variant="ghost" onClick={() => setClassForm(null)}>Cancelar</Button><Button loading={saving} onClick={saveClass}>Salvar</Button></>}>
@@ -368,7 +377,7 @@ export default function TurmasPage() {
         {assignmentForm && <div className="space-y-5"><Select label="Professor" value={assignmentForm.professorEmail} onChange={event => changeAssignmentProfessor(event.target.value)}>{professors.map(professor => <option key={professor.email} value={professor.email}>{professor.name} — {professor.email}</option>)}</Select><div className="grid gap-3 md:grid-cols-2"><label className="rounded-lg border border-border p-4"><span className="flex items-center gap-2 font-medium text-text"><input type="checkbox" checked={assignmentForm.school} onChange={event => setAssignmentForm({ ...assignmentForm, school: event.target.checked })} /> Escola inteira</span><span className="mt-1 block text-xs text-subtle">Todos os cursos e turmas atuais e futuros de {selectedSchool?.name}.</span></label><label className="rounded-lg border border-border p-4"><span className="flex items-center gap-2 font-medium text-text"><input type="checkbox" checked={assignmentForm.course} onChange={event => setAssignmentForm({ ...assignmentForm, course: event.target.checked })} /> Curso inteiro</span><span className="mt-1 block text-xs text-subtle">Todas as turmas atuais e futuras de {selectedCourse?.name}.</span></label></div><div><h3 className="font-medium text-text">Turmas específicas</h3><p className="mb-3 text-xs text-subtle">As marcações diretas são preservadas mesmo ao adicionar ou remover um vínculo amplo.</p><div className="grid gap-2 md:grid-cols-2">{selectedClasses.map(cls => { const inherited = assignmentForm.school || assignmentForm.course; const checked = assignmentForm.classes.includes(cls.name); return <label key={cls.name} className={`flex items-center justify-between rounded-lg border border-border p-3 ${inherited ? 'opacity-70' : ''}`}><span className="flex items-center gap-2 text-sm text-text"><input type="checkbox" disabled={inherited} checked={checked} onChange={event => setAssignmentForm({ ...assignmentForm, classes: event.target.checked ? [...assignmentForm.classes, cls.name] : assignmentForm.classes.filter(name => name !== cls.name) })} /> {cls.name}</span>{inherited && <Badge tone="info">Acesso herdado</Badge>}</label>})}{selectedClasses.length === 0 && <p className="text-sm text-muted">O curso ainda não possui turmas.</p>}</div></div></div>}
       </Modal>
 
-      <ConfirmDialog open={!!confirm} onClose={() => setConfirm(null)} onConfirm={executeConfirm} danger={confirm?.type !== 'archive'} title={confirm?.type === 'class' ? 'Excluir turma?' : confirm?.type === 'archive' ? 'Arquivar curso?' : confirm?.type === 'archive-delete' ? 'Excluir arquivo definitivamente?' : 'Excluir curso?'} description={confirm?.type === 'archive' ? 'Será criado um pacote restaurável com curso, turmas e dados relacionados.' : confirm?.type === 'course' ? undefined : 'Confirme a operação.'} note={confirm?.type === 'course' ? 'O curso ficará desativado e poderá ser restaurado.' : undefined} confirmLabel={confirm?.type === 'archive' ? 'Arquivar' : 'Excluir'} />
+      <ConfirmDialog open={!!confirm} onClose={() => setConfirm(null)} onConfirm={executeConfirm} danger={confirm?.type !== 'archive'} title={confirm?.type === 'class' ? 'Excluir turma?' : confirm?.type === 'archive' ? 'Arquivar curso?' : confirm?.type === 'archive-delete' ? 'Excluir arquivo definitivamente?' : 'Excluir curso?'} description={confirm?.type === 'archive' ? 'Será criado um pacote restaurável com curso, turmas, tarefas, entregas e dados relacionados. Os arquivos das entregas continuam neste computador e voltam com o curso.' : confirm?.type === 'course' ? undefined : confirm?.type === 'archive-delete' ? 'O pacote do curso é apagado. Os arquivos dos trabalhos entregues vão para a lixeira de arquivos (Sistema, cartão Lixeira).' : 'Confirme a operação.'} note={confirm?.type === 'course' ? 'O curso ficará desativado e poderá ser restaurado.' : undefined} confirmLabel={confirm?.type === 'archive' ? 'Arquivar' : 'Excluir'} />
     </div>
   )
 }

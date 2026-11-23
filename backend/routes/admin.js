@@ -221,7 +221,9 @@ const { createAdminAcademicRouter, resolveClassTermInput, CLASS_TERM_SCHEMA } = 
 const { createAdminCorrectionsRouter } = require('./adminCorrections.js');
 const { nonSchoolDayCalendarItems } = require('../utils/calendarFeed.js');
 const { createAdminQuestionBankRouter } = require('./adminQuestionBank.js');
+const { createAdminGroupsRouter } = require('./adminGroups.js');
 const { createAdminPreviewRouter } = require('./adminPreview.js');
+const { createAdminMessagesRouter } = require('./adminMessages.js');
 const { createAdminAssignmentsRouter } = require('./adminAssignments.js');
 const { createAdminCoursePackageRouter } = require('./adminCoursePackage.js');
 const { remapCourseKeys } = require('../utils/coursePackage.js');
@@ -3857,15 +3859,17 @@ router.use(createAdminStudentRecordsRouter());
 router.use(createAdminCoursesRouter());
 // Rotas novas da fase 3 (ordem_no_createApp do plano), depois do router de cursos:
 // calendário acadêmico (P2), correção do professor (P3-S4a), banco de questões (P3-S9a),
-// tarefas com envio de arquivo (P1-b e P1-d), pacote de curso (P4-S14) e
-// pré-visualização como aluno (P5-S6a).
+// tarefas com envio de arquivo (P1-b e P1-d), pacote de curso (P4-S14), grupos de alunos
+// (P5-S4), pré-visualização como aluno (P5-S6a) e conversas com os alunos (P5-S7a).
 router.use(createAdminAcademicRouter());
 router.use(createAdminCorrectionsRouter());
 router.use(createAdminQuestionBankRouter());
 router.use(createAdminAssignmentsRouter());
 // Pacote de curso (P4-S14): exportar e importar entre instalações.
 router.use(createAdminCoursePackageRouter({ uploadErrorMessage, isUploadRequestError }));
+router.use(createAdminGroupsRouter());
 router.use(createAdminPreviewRouter());
+router.use(createAdminMessagesRouter());
 
 
 // Upload de comprovante/atestado de justificativa (PDF ou imagem)
@@ -5717,6 +5721,23 @@ function _backupQueueBlock(matchedAdmin, now = Date.now()) {
     }
 }
 
+// Bloco das entregas de tarefa na fila (C11 / P1-i, D3 e D17 do P1): trabalhos dos alunos
+// sem cópia fora deste computador, falha da cópia deles no destino externo e pouco espaço
+// no disco para receber envios. Só para administrador e fora do TEST_MODE, como o do
+// backup. backupAlerts: o bloco do backup (a falha da cópia externa já fala do destino;
+// a do espelho não repete o mesmo aviso).
+async function _assignmentStorageQueueBlock(matchedAdmin, backupAlerts) {
+    if (process.env.TEST_MODE === '1') return null;
+    if (!matchedAdmin || !isFullAdmin(matchedAdmin)) return null;
+    try {
+        const backupFailingExternal = !!(backupAlerts && backupAlerts.falha && backupAlerts.falha.alvo === 'externo');
+        return await require('../utils/assignmentMirror.js').queueAlerts(db.memory, { backupFailingExternal });
+    } catch (error) {
+        logError('fila: arquivos das entregas', error);
+        return null;
+    }
+}
+
 // Bloco de segurança da fila (H5b; SEG-06, decisão 6 do Alan), já no escopo de quem vê:
 // - alunos da lista (os do escopo) que pediram nova senha ou estão com o login em espera
 //   por senhas erradas (utils/loginGuard.js, só na memória);
@@ -5764,11 +5785,13 @@ router.get('/api/admin/dashboard/queue', (req, res) => {
         const pendingEnrollments = canSeeMatriculas && !isFullAdmin(matchedAdmin)
             ? enrollmentRows(scope.courseId, scope.studentClass, matchedAdmin).filter(item => item.status === 'pending').length
             : undefined;
+        const backupBlock = _backupQueueBlock(matchedAdmin, now);
         let items = computeQueue({
             memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
-            today: settingsUtil.today(), now, canSeeMatriculas, pendingEnrollments,
+            today: settingsUtil.today(), now, canSeeMatriculas, pendingEnrollments, viewer: matchedAdmin,
         }, {
-            storage: await _storageQueueBlock(matchedAdmin), security: _securityQueueBlock(matchedAdmin, scope.students, { now }), backup: _backupQueueBlock(matchedAdmin, now),
+            storage: await _storageQueueBlock(matchedAdmin), security: _securityQueueBlock(matchedAdmin, scope.students, { now }), backup: backupBlock,
+            entregas: await _assignmentStorageQueueBlock(matchedAdmin, backupBlock),
             // Pendências dos provedores da fase 3: só as que a permissão de quem vê alcança.
             // O item que pede uma ação (somenteQuemAltera) fica fora da conta só de consulta.
             canAccess: (permissao, item) => canAccessAdminPermission(matchedAdmin, permissao)
@@ -5853,7 +5876,7 @@ router.get('/api/admin/notifications', (req, res) => {
             // No sino, só o que é da turma (os alertas da escola ficam na fila do painel).
             const queue = computeQueue({
                 memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
-                today, now, canSeeMatriculas: false,
+                today, now, canSeeMatriculas: false, viewer: matchedAdmin,
             }, { security: _securityQueueBlock(matchedAdmin, scope.students, { adminOnly: false, now }) });
             if (canSeeMatriculas && scope.cls) {
                 const pending = _pendingEnrollmentsForClass(scope.cls);
@@ -5890,7 +5913,12 @@ router.get('/api/admin/notifications', (req, res) => {
         });
         const limited = items.slice(0, 40);
         res.set('Cache-Control', 'no-store');
-        res.json({ success: true, items: limited, unread: limited.filter(item => item.unread).length });
+        // mensagensNovas: conversas com mensagem nova de aluno somadas em todas as turmas,
+        // antes do corte de 40 itens (no modo instituição, com muitas turmas, o item
+        // 'mensagens' de uma turma podia sair da lista e o menu mostrar menos; revisão do C14).
+        const mensagensNovas = items.filter(item => item.type === 'mensagens')
+            .reduce((sum, item) => sum + Math.max(0, Math.trunc(Number(item.count) || 0)), 0);
+        res.json({ success: true, items: limited, unread: limited.filter(item => item.unread).length, mensagensNovas });
     });
 });
 

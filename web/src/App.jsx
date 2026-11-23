@@ -1,6 +1,7 @@
 import { Suspense } from 'react'
-import { Routes, Route, Navigate, useLocation } from 'react-router-dom'
+import { Routes, Route, Navigate } from 'react-router-dom'
 import { useAuth } from './context/AuthProvider'
+import { PreviewNotice, RequireRole, SessionLoading } from './components/RouteGuards'
 import { canAccessAdminPath, isFullAdmin } from './lib/adminPermissions'
 import { lazyPage } from './lib/lazyPage'
 import { PasswordChangeForm } from './components/PasswordChangeForm'
@@ -21,6 +22,11 @@ const DashboardPage = lazyPage(() => import('./features/admin/DashboardPage'))
 const ProvasPage = lazyPage(() => import('./features/admin/ProvasPage'))
 const MonitorPage = lazyPage(() => import('./features/admin/MonitorPage'))
 const ResultadosPage = lazyPage(() => import('./features/admin/ResultadosPage'))
+// Tarefas (fase 3, C7 / P1-e): a lista e o formulário (nova e editar); C8 / P1-f: o
+// detalhe com as entregas da turma e a correção.
+const TarefasPage = lazyPage(() => import('./features/admin/TarefasPage'))
+const TarefaForm = lazyPage(() => import('./features/admin/tarefas/TarefaForm'))
+const TarefaDetalhePage = lazyPage(() => import('./features/admin/TarefaDetalhePage'))
 const MateriaisPage = lazyPage(() => import('./features/admin/MateriaisPage'))
 const ChamadaPage = lazyPage(() => import('./features/admin/ChamadaPage'))
 const AvisosPage = lazyPage(() => import('./features/admin/AvisosPage'))
@@ -29,6 +35,7 @@ const BibliotecaPage = lazyPage(() => import('./features/admin/BibliotecaPage'))
 const EditorPage = lazyPage(() => import('./features/admin/EditorPage'))
 const TurmasPage = lazyPage(() => import('./features/admin/TurmasPage'))
 const AssistenteHorariosPage = lazyPage(() => import('./features/admin/AssistenteHorariosPage'))
+const GruposPage = lazyPage(() => import('./features/admin/GruposPage'))
 const AlunosPage = lazyPage(() => import('./features/admin/AlunosPage'))
 const MatriculasPage = lazyPage(() => import('./features/admin/MatriculasPage'))
 const AlunosGlobalPage = lazyPage(() => import('./features/admin/AlunosGlobalPage'))
@@ -37,6 +44,8 @@ const AlunoDetailPage = lazyPage(() => import('./features/admin/AlunoDetailPage'
 const AdminsPage = lazyPage(() => import('./features/admin/AdminsPage'))
 const AdminEditPage = lazyPage(() => import('./features/admin/AdminEditPage'))
 const ForumPage = lazyPage(() => import('./features/admin/ForumPage'))
+// Mensagens com os alunos (fase 3, C14 / P5-S7b; FUN-14): page.messages.
+const MensagensPage = lazyPage(() => import('./features/admin/MensagensPage'))
 const IdentidadePage = lazyPage(() => import('./features/admin/IdentidadePage'))
 const EscolasPage = lazyPage(() => import('./features/admin/EscolasPage'))
 const EscolaEditPage = lazyPage(() => import('./features/admin/EscolaEditPage'))
@@ -60,24 +69,22 @@ const AjudaAlunoPage = lazyPage(() => import('./features/help/AjudaAlunoPage'))
 // Aluno
 const InicioPage = lazyPage(() => import('./features/student/InicioPage'))
 const ModulosPage = lazyPage(() => import('./features/student/ModulosPage'))
+// Busca do aluno nas apostilas liberadas, na Biblioteca e nos avisos (fase 3, C16 / P5-S2; CRIT-07).
+const BuscaPage = lazyPage(() => import('./features/student/BuscaPage'))
 const ProvasStudentPage = lazyPage(() => import('./features/student/ProvasPage'))
+// Atividades (tarefas com envio) do aluno (fase 3, C9 / P1-g; FUN-01).
+const AtividadesPage = lazyPage(() => import('./features/student/AtividadesPage'))
+const AtividadeDetalhePage = lazyPage(() => import('./features/student/AtividadeDetalhePage'))
 const ExamRunner = lazyPage(() => import('./features/student/exam/ExamRunner'))
 const CadernoPage = lazyPage(() => import('./features/student/CadernoPage'))
 const DuvidasPage = lazyPage(() => import('./features/student/DuvidasPage'))
+// Mensagens do aluno com os professores (fase 3, C14 / P5-S7b; FUN-14).
+const MensagensStudentPage = lazyPage(() => import('./features/student/MensagensPage'))
 const AvisosStudentPage = lazyPage(() => import('./features/student/AvisosPage'))
 const CalendarioStudentPage = lazyPage(() => import('./features/student/CalendarioPage'))
 const BibliotecaStudentPage = lazyPage(() => import('./features/student/BibliotecaPage'))
 const ContaStudentPage = lazyPage(() => import('./features/student/ContaPage'))
 const MeusDadosStudentPage = lazyPage(() => import('./features/student/MeusDadosPage'))
-
-function RequireRole({ role, children }) {
-  const { auth, authReady } = useAuth()
-  const loc = useLocation()
-  if (!authReady) return <SessionLoading />
-  if (!auth.role) return <Navigate to="/login" state={{ from: loc }} replace />
-  if (role && auth.role !== role) return <Navigate to={auth.role === 'admin' ? '/' : '/aluno'} replace />
-  return children
-}
 
 function RequireAdminPath({ path, children }) {
   const { auth } = useAuth()
@@ -92,14 +99,6 @@ function RequireAdminPath({ path, children }) {
 function RequireAdministrator({ children }) {
   const { auth } = useAuth()
   return isFullAdmin(auth) ? children : <Navigate to="/" replace />
-}
-
-function SessionLoading() {
-  return (
-    <div className="min-h-screen grid place-items-center bg-bg text-text">
-      <div className="text-sm text-muted">Validando sessão...</div>
-    </div>
-  )
 }
 
 function LayoutLoading() {
@@ -120,6 +119,7 @@ export default function App() {
   // "Carregando..." (PageLoading), com o menu à vista.
   return (
     <Suspense fallback={<SessionLoading />}>
+      <PreviewNotice />
       <Routes>
       <Route path="/login" element={auth.role ? <Navigate to={auth.role === 'admin' ? '/' : '/aluno'} replace /> : <LoginPage />} />
 
@@ -128,6 +128,10 @@ export default function App() {
         <Route index element={<RequireAdminPath path="/"><DashboardPage /></RequireAdminPath>} />
         <Route path="provas" element={<RequireAdminPath path="/provas"><ProvasPage /></RequireAdminPath>} />
         <Route path="monitor" element={<RequireAdminPath path="/monitor"><MonitorPage /></RequireAdminPath>} />
+        <Route path="tarefas" element={<RequireAdminPath path="/tarefas"><TarefasPage /></RequireAdminPath>} />
+        <Route path="tarefas/nova" element={<RequireAdminPath path="/tarefas"><TarefaForm /></RequireAdminPath>} />
+        <Route path="tarefas/:id" element={<RequireAdminPath path="/tarefas"><TarefaDetalhePage /></RequireAdminPath>} />
+        <Route path="tarefas/:id/editar" element={<RequireAdminPath path="/tarefas"><TarefaForm /></RequireAdminPath>} />
         <Route path="resultados" element={<RequireAdminPath path="/resultados"><ResultadosPage /></RequireAdminPath>} />
         <Route path="resultados/aluno/:studentId" element={<RequireAdminPath path="/resultados"><ResultadosPage /></RequireAdminPath>} />
         <Route path="resultados/aluno/:studentId/prova/:submissionId" element={<RequireAdminPath path="/resultados"><ResultadosPage /></RequireAdminPath>} />
@@ -139,6 +143,8 @@ export default function App() {
         <Route path="biblioteca" element={<RequireAdminPath path="/biblioteca"><BibliotecaPage /></RequireAdminPath>} />
         <Route path="turmas" element={<RequireAdminPath path="/turmas"><TurmasPage /></RequireAdminPath>} />
         <Route path="turmas/:courseId/:className/assistente" element={<RequireAdminPath path="/turmas"><AssistenteHorariosPage /></RequireAdminPath>} />
+        {/* Grupos da turma (fase 3, P5-S4): a permissão é a da tela Alunos (page.students). */}
+        <Route path="turmas/:courseId/:className/grupos" element={<RequireAdminPath path="/alunos"><GruposPage /></RequireAdminPath>} />
         <Route path="alunos" element={<RequireAdminPath path="/alunos"><AlunosPage /></RequireAdminPath>} />
         {/* Aprovar matrícula: enrollments.approve (administrador e Secretaria). */}
         <Route path="matriculas" element={<RequireAdminPath path="/matriculas"><MatriculasPage /></RequireAdminPath>} />
@@ -148,6 +154,7 @@ export default function App() {
         <Route path="admins" element={<RequireAdminPath path="/admins"><AdminsPage /></RequireAdminPath>} />
         <Route path="admins/:email" element={<RequireAdminPath path="/admins"><AdminEditPage /></RequireAdminPath>} />
         <Route path="forum" element={<RequireAdminPath path="/forum"><ForumPage /></RequireAdminPath>} />
+        <Route path="mensagens" element={<RequireAdminPath path="/mensagens"><MensagensPage /></RequireAdminPath>} />
         <Route path="escolas" element={<RequireAdminPath path="/escolas"><EscolasPage /></RequireAdminPath>} />
         <Route path="escolas/:id" element={<RequireAdminPath path="/escolas"><EscolaEditPage /></RequireAdminPath>} />
         <Route path="identidade" element={<RequireAdminPath path="/identidade"><IdentidadePage /></RequireAdminPath>} />
@@ -171,9 +178,13 @@ export default function App() {
       <Route path="/aluno" element={<RequireRole role="student"><StudentShell /></RequireRole>}>
         <Route index element={<InicioPage />} />
         <Route path="modulos" element={<ModulosPage />} />
+        <Route path="busca" element={<BuscaPage />} />
         <Route path="provas" element={<ProvasStudentPage />} />
+        <Route path="atividades" element={<AtividadesPage />} />
+        <Route path="atividades/:id" element={<AtividadeDetalhePage />} />
         <Route path="caderno" element={<CadernoPage />} />
         <Route path="duvidas" element={<DuvidasPage />} />
+        <Route path="mensagens" element={<MensagensStudentPage />} />
         <Route path="avisos" element={<AvisosStudentPage />} />
         <Route path="calendario" element={<CalendarioStudentPage />} />
         <Route path="biblioteca" element={<BibliotecaStudentPage />} />

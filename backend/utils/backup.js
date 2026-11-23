@@ -519,7 +519,7 @@ async function writeExternalCopy(job, { dbInfo, origem, now, settings }) {
 // Execução do backup (automático ou "Fazer backup agora"). Devolve { local, externo,
 // externoErro } (externoErro: a mensagem quando só a cópia externa falhou). Rejeita
 // quando a parte local falha (ou com 409 se outro backup está em andamento).
-async function runBackupJob({ origem = 'automatico', now = new Date() } = {}) {
+async function runBackupJob({ origem = 'automatico', now = new Date(), req = null, actor = 'sistema' } = {}) {
     return withBackupLock(origem, async job => {
         const settings = settingsUtil.backupSettings();
         const workDir = await newWorkDir();
@@ -570,12 +570,63 @@ async function runBackupJob({ origem = 'automatico', now = new Date() } = {}) {
                     result.externoErro = failureMessage(failed);
                     result.externoEtapa = failed.backupEtapa;
                 }
+                // Espelho dos arquivos das entregas (C11 / P1-i, D3 do P1): depois da cópia
+                // externa (deu certo ou não: o espaço que faltou ao ZIP completo pode sobrar
+                // para os arquivos novos), com a mesma trava. A falha dele nunca derruba o
+                // backup: vai para o estado próprio ('espelho') e para a fila.
+                result.espelho = await mirrorAssignmentsStep(job, { destino: settings.destino, now, req, actor });
             }
             return result;
         } finally {
             await fs.promises.rm(workDir, { recursive: true, force: true }).catch(() => {});
         }
     });
+}
+
+// Etapa do espelho das entregas no runBackupJob: copia, marca as lápides que já valem no
+// destino (mirroredRemovalAt) e, quando algo mudou lá, grava 'assignment_files_mirrored'
+// (categoria backup; ator 'sistema' no automático, quem pediu no "Fazer backup agora").
+// Devolve { ok, copiados, bytes, removidosPorLapide } ou { ok: false, mensagem }.
+async function mirrorAssignmentsStep(job, { destino, now, req = null, actor = 'sistema' }) {
+    const mirror = require('./assignmentMirror.js');
+    const outcome = await mirror.runMirrorStep({ job, destino, memory: db.memory, now, failureMessage: mirrorFailureMessage });
+    if (!outcome.ok) return { ok: false, mensagem: outcome.mensagem, ...(outcome.interrompido ? { interrompido: true } : {}), ...(outcome.destinoFora ? { destinoFora: true } : {}) };
+    const { resumo } = outcome;
+    const marked = mirror.markTombstonesMirrored(db.memory, outcome.lapidesFeitas, now.getTime());
+    const copiados = resumo.copiados + resumo.corrigidos;
+    const changed = copiados > 0 || resumo.removidosPorLapide > 0;
+    if (changed) {
+        recordAudit(db.memory, {
+            req,
+            actor,
+            action: 'assignment_files_mirrored',
+            category: 'backup',
+            details: { copiados, bytes: resumo.bytes, removidosPorLapide: resumo.removidosPorLapide },
+        });
+    }
+    if (changed || marked.length) {
+        await db.save({ only: ['auditLogs'], changed: { assignmentFileTombstones: marked }, detached: true })
+            .catch(e => logError('espelho das entregas: gravação das lápides e da auditoria', e));
+    }
+    return { ok: true, copiados, bytes: resumo.bytes, removidosPorLapide: resumo.removidosPorLapide, arquivos: resumo.arquivos, diferentesDoRegistro: resumo.diferentesDoRegistro || 0 };
+}
+
+// Mensagem da falha do espelho: as recusas previstas (destino fora, sem espaço) com o
+// texto próprio; o resto como as do backup (sem caminho nem texto cru, contrato H9a).
+function mirrorFailureMessage(err) {
+    if (err && err.code === 'EMIRROR_VERIFY') return 'Uma cópia de trabalho gravada no destino externo não conferiu (SHA-256 diferente) e foi descartada; ela é refeita no próximo backup. Confira o pendrive ou HD.';
+    if (err && err.code === 'ENOSPC') return 'O destino externo ficou sem espaço durante a cópia dos trabalhos dos alunos.';
+    const message = failureMessage(err);
+    return message.replace('Falha inesperada ao gravar o backup', 'Falha inesperada ao copiar os trabalhos dos alunos').replace('Sem permissão para gravar o backup', 'Sem permissão para gravar a cópia dos trabalhos').replace('A pasta do backup não está acessível', 'A pasta da cópia dos trabalhos não está acessível');
+}
+
+// "Trazer arquivos do destino externo" (Sistema > Armazenamento, só administrador): com a
+// trava do backup (um backup ou restauração em andamento responde 409).
+// actor: quem pediu (deletedBy do arquivo daqui diferente do registro que vai para a lixeira).
+async function recoverAssignmentFilesFromDestination({ actor = '' } = {}) {
+    const { destino } = settingsUtil.backupSettings();
+    if (!destino) throw Object.assign(new Error('Configure o destino externo no cartão Backup antes de trazer arquivos de lá.'), { status: 409, code: 'no_destination' });
+    return withBackupLock('recuperar-entregas', job => require('./assignmentMirror.js').recoverAssignmentFiles({ destino, memory: db.memory, signal: job.controller.signal, actor }));
 }
 
 // Backup automático, conferido no boot e de hora em hora (server.js). Está devido quando
@@ -620,6 +671,12 @@ async function runAutomaticIfDue({ now = Date.now() } = {}) {
     });
     if (result.externoErro) {
         recordAudit(db.memory, { actor: 'sistema', action: 'backup_auto_failed', category: 'backup', details: { etapa: result.externoEtapa || 'externo', error: result.externoErro } });
+    }
+    // Destino desligado: a falha da cópia externa já registrou o motivo; o espelho, que
+    // falhou pela mesma causa, não repete a entrada (fica no estado e no cartão).
+    const sameCause = Boolean(result.externoErro && result.espelho && result.espelho.destinoFora);
+    if (result.espelho && !result.espelho.ok && !result.espelho.interrompido && !sameCause) {
+        recordAudit(db.memory, { actor: 'sistema', action: 'backup_auto_failed', category: 'backup', details: { etapa: 'espelho', error: result.espelho.mensagem } });
     }
     await db.save({ detached: true }).catch(() => {});
     return { ran: true, reason: 'due', result };
@@ -1625,6 +1682,9 @@ function buildPreview(prepared, snapshot) {
     const backupAccounts = Array.isArray(data.admins) ? data.admins : [];
     const anonymized = anonymizedReturning(data.students);
     const legacy = hasLegacyApplications(snapshot);
+    // Tarefas e entregas de hoje que o backup não tem (C11 / P1-i): os registros saem; os
+    // arquivos ficam em data/entregas, que a restauração nunca toca (contrato C7 do P1).
+    const entregas = require('./assignmentMirror.js').restorePreviewNotice(data, db.memory);
     return {
         formato: prepared.formato,
         variante: prepared.variante || null,
@@ -1642,7 +1702,8 @@ function buildPreview(prepared, snapshot) {
         },
         provasEmAndamento: activeApplicationsNow(),
         anonimizados: { quantidade: anonymized, aviso: anonymizedNotice(anonymized) },
-        avisos: [...prepared.warnings, ...(anonymized ? [anonymizedNotice(anonymized)] : [])],
+        entregas,
+        avisos: [...prepared.warnings, ...(anonymized ? [anonymizedNotice(anonymized)] : []), ...(entregas ? [entregas.aviso] : [])],
         integridade: prepared.formato === 'zip-2'
             ? { verificada: true, texto: 'Soma de verificação (SHA-256), integridade do banco e contagens conferidas.' }
             : { verificada: false, texto: 'sem soma de verificação (formato antigo)' },
@@ -2098,7 +2159,7 @@ module.exports = {
     RESTORE_DIR, WORK_DIR, RESTORE_TOKEN_TTL_MS, hasLegacyApplications,
     buildDataSnapshot, buildFullDataSnapshot, validateDataSnapshot, restoreDataSnapshot,
     runAutomaticBackup, lastAutomaticBackupAt, createBackup, createSafetyBackup, pruneBackups, backupInProgress,
-    runBackupJob, runAutomaticIfDue, backupStatus, backupAlerts, listStoredBackups, resolveStoredBackup,
+    runBackupJob, runAutomaticIfDue, backupStatus, backupAlerts, listStoredBackups, resolveStoredBackup, recoverAssignmentFilesFromDestination,
     noteDestinationConfigured, settleForShutdown, removeActivePartialsSync, failureMessage, recoverInterruptedRestore, UNDO_DIR, UNDO_MARKER,
     clearUndoMarker, undoPending, RESTORE_UNDO_PENDING_MESSAGE, cleanStaleLeftovers, BOOT_LEFTOVER_RECHECK_MS, RESTORE_ABORTED_MESSAGE, EXTERNAL_ABORTED_MESSAGE,
     AUTO_DUE_MS, AUTO_DEFER_MAX_MS, ALERT_LATE_MS, ALERT_GRACE_UPTIME_MS,

@@ -333,9 +333,22 @@ describe('[UC-DESEMPENHO-001] lazyPage: telas sob demanda e recarga depois de um
     // instrutor no B1 da fase 3, UXI-07), 10 do aluno (com
     // Minha conta, H5a, e Meus dados, H8c), a prova, a página pública dos Termos e da
     // Privacidade (H8a-1), o guia público do certificado (/certificado, H6c), os 3 layouts
-    // e as duas telas da Ajuda (/ajuda no painel e /ajuda/aluno pública, fase 3 A1).
-    expect(lazyScreens.length).toBe(47)
+    // e as duas telas da Ajuda (/ajuda no painel e /ajuda/aluno pública, fase 3 A1), mais
+    // a lista e o formulário de Tarefas do professor (fase 3 C7) e o detalhe com as
+    // entregas e a correção (fase 3 C8), e as Atividades do aluno, a lista e a página de
+    // uma atividade (fase 3 C9), os Grupos da turma (fase 3 C12) e as duas telas de
+    // Mensagens, a do painel e a do aluno (fase 3 C14), e a Busca do aluno (fase 3 C16).
+    expect(lazyScreens.length).toBe(56)
+    expect(lazyScreens).toContain('./features/student/BuscaPage')
+    expect(lazyScreens).toContain('./features/admin/MensagensPage')
+    expect(lazyScreens).toContain('./features/student/MensagensPage')
+    expect(lazyScreens).toContain('./features/admin/GruposPage')
+    expect(lazyScreens).toContain('./features/student/AtividadesPage')
+    expect(lazyScreens).toContain('./features/student/AtividadeDetalhePage')
     expect(lazyScreens).toContain('./features/help/AjudaPage')
+    expect(lazyScreens).toContain('./features/admin/TarefasPage')
+    expect(lazyScreens).toContain('./features/admin/tarefas/TarefaForm')
+    expect(lazyScreens).toContain('./features/admin/TarefaDetalhePage')
     expect(lazyScreens).toContain('./features/help/AjudaAlunoPage')
     expect(lazyScreens).toContain('./features/admin/MinhaContaPage')
     expect(lazyScreens).toContain('./features/CertificadoPage')

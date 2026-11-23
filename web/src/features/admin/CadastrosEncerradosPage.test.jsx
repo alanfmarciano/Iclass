@@ -112,7 +112,10 @@ describe('[UC-ENCERRADOS-003] Cadastros encerrados (/encerrados)', () => {
     await userEvent.click(within(cards()[0]).getByRole('button', { name: 'Anonimizar' }))
     const dialog = screen.getByRole('dialog')
     expect(within(dialog).getByText(/ainda têm os dados deste aluno/)).toBeTruthy()
-    expect(within(dialog).getByText(/documentos e atestados enviados vão para a lixeira de arquivos com o código no lugar do nome/)).toBeTruthy()
+    // C10: o texto passou a citar os trabalhos entregues nas tarefas (o que fica e o que
+    // vai para a lixeira); antes, "com o código no lugar do nome" valia só para a pasta.
+    expect(within(dialog).getByText(/documentos e atestados enviados e os arquivos dos trabalhos entregues vão para a lixeira de arquivos sem o nome dele/)).toBeTruthy()
+    expect(within(dialog).getByText(/trabalhos entregues nas tarefas \(situação, datas, atraso e nota, sem o texto, o link, o comentário do professor e os arquivos\)/)).toBeTruthy()
     expect(within(dialog).getByText(/até ser compactado/)).toBeTruthy()
     const confirm = within(dialog).getByRole('button', { name: 'Anonimizar' })
     expect(confirm).toBeDisabled()
@@ -129,6 +132,8 @@ describe('[UC-ENCERRADOS-003] Cadastros encerrados (/encerrados)', () => {
     renderPage()
     await userEvent.click(within(cards()[2]).getByRole('button', { name: 'Apagar de vez' }))
     let dialog = screen.getByRole('dialog')
+    expect(within(dialog).getByText(/os trabalhos entregues nas tarefas, a presença/)).toBeTruthy()
+    expect(within(dialog).getByText(/os arquivos dos trabalhos entregues vão para a lixeira de arquivos/)).toBeTruthy()
     await userEvent.type(within(dialog).getByLabelText('Motivo'), 'Cadastro duplicado')
     await userEvent.type(within(dialog).getByLabelText('Digite APAGAR para confirmar'), 'APAGAR')
     await userEvent.click(within(dialog).getByRole('button', { name: 'Apagar de vez' }))

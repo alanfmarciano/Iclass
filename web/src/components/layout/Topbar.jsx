@@ -5,6 +5,7 @@ import { useAuth } from '../../context/AuthProvider'
 import { NotificationBell } from '../ui/NotificationBell'
 import { useAdminNotificationOpener } from './useAdminNotificationOpener'
 import { AccountMenu } from './AccountMenu'
+import { adminMessageCount, setMessageCount, useMessageCountScope } from '../../lib/messageCounter'
 import { accountRoleLabel, isFullAdmin } from '../../lib/adminPermissions'
 
 export function Topbar({ onMenu, breadcrumb }) {
@@ -12,6 +13,7 @@ export function Topbar({ onMenu, breadcrumb }) {
   const workspace = auth.activeWorkspace
   const openNotification = useAdminNotificationOpener()
   const courseLabel = workspace ? `${workspace.courseName || workspace.courseId} · ${workspace.className}` : ''
+  useMessageCountScope(`${auth.email || ''}::${workspace?.courseId || ''}::${workspace?.className || ''}`)
 
   return (
     <header className="glass-panel z-20 flex h-[72px] shrink-0 items-center gap-2 border-x-0 border-t-0 px-4 md:px-7">
@@ -39,6 +41,8 @@ export function Topbar({ onMenu, breadcrumb }) {
         endpoint={workspace ? `/api/admin/notifications?courseId=${encodeURIComponent(workspace.courseId)}&studentClass=${encodeURIComponent(workspace.className)}` : '/api/admin/notifications'}
         seenEndpoint="/api/admin/notifications/seen"
         onOpenItem={openNotification}
+        // Contador de Mensagens no menu (Sidebar): lido do sino (lib/messageCounter.js).
+        onData={(data) => setMessageCount(adminMessageCount(data))}
       />
       <ThemeToggle />
       {/* Selo do papel com o rótulo do servidor (Professor, Secretaria, Coordenação...). */}

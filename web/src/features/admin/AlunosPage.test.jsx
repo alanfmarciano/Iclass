@@ -97,3 +97,16 @@ describe('[UC-PAPEIS-001] Alunos da turma: Liberações e observações só para
     expect(screen.queryByText('Sua conta consulta as observações, sem registrar.')).toBeNull()
   })
 })
+
+// Fase 3, C12 (P5-S4, CRIT-11): atalho para os grupos da turma ativa, também para a
+// Coordenação (a tela de grupos é só de consulta para ela).
+describe('[UC-GRUPO-001] Alunos da turma: atalho Grupos', () => {
+  it('o botão Grupos abre /turmas/<curso>/<turma>/grupos', async () => {
+    const { Routes, Route, useLocation } = await import('react-router-dom')
+    function Where() { return <p data-testid="where">{useLocation().pathname}</p> }
+    mocks.auth = COORDENACAO
+    render(<MemoryRouter initialEntries={['/alunos']}><Routes><Route path="/alunos" element={<AlunosPage />} /><Route path="*" element={<Where />} /></Routes></MemoryRouter>)
+    await userEvent.click(screen.getByRole('button', { name: 'Grupos' }))
+    expect(screen.getByTestId('where')).toHaveTextContent('/turmas/C1/1DES/grupos')
+  })
+})

@@ -61,6 +61,11 @@ button { -webkit-tap-highlight-color: transparent; }
 .premium-card-interactive:hover { transform: translateY(-3px); border-color: var(--border-strong); }
 .soft-divider { border-color: var(--border); }
 .app-enter { animation: app-enter .55s cubic-bezier(.2,.8,.2,1) both; }
+/* Botão "Enviar" da atividade do aluno (fase 3, C9): fica preso embaixo da tela enquanto o
+   aluno rola o formulário no celular, acima da faixa "Prova disponível" quando ela aparece. */
+.atividade-envio-barra { position: sticky; bottom: calc(var(--exam-banner-space, 0px) + 8px); z-index: 10; }
+/* Campo de escrita das Mensagens (fase 3, C14): preso ao fim da tela, também com o teclado do celular aberto. */
+.mensagens-composer { position: sticky; bottom: calc(var(--exam-banner-space, 0px) + 8px); z-index: 10; }
 .stagger-grid > * { animation: app-enter .55s cubic-bezier(.2,.8,.2,1) both; }
 .stagger-grid > *:nth-child(2) { animation-delay: .06s; }
 .stagger-grid > *:nth-child(3) { animation-delay: .12s; }
@@ -100,6 +105,10 @@ button { -webkit-tap-highlight-color: transparent; }
 .prose-iclass { color: var(--text); line-height: 1.75; }
 .prose-iclass h1,.prose-iclass h2,.prose-iclass h3 { color: var(--text); font-weight: 700; letter-spacing: -.02em; margin: 1.2em 0 .5em; }
 .prose-iclass h1 { font-size: 1.6rem; } .prose-iclass h2 { font-size: 1.3rem; } .prose-iclass h3 { font-size: 1.1rem; }
+/* Título descido de nível (shiftHeadingLevels, instruções da atividade do aluno): o nível
+   muda para a leitura de tela, o tamanho fica o de antes. */
+.prose-iclass h4,.prose-iclass h5,.prose-iclass h6 { color: var(--text); font-weight: 700; letter-spacing: -.02em; margin: 1.2em 0 .5em; }
+.prose-iclass .prose-nivel-1 { font-size: 1.6rem; } .prose-iclass .prose-nivel-2 { font-size: 1.3rem; } .prose-iclass .prose-nivel-3 { font-size: 1.1rem; }
 .prose-iclass p { margin: .7em 0; }
 .prose-iclass a { color: var(--primary); text-decoration: underline; }
 .prose-iclass code { background: var(--surface-2); padding: .1em .4em; border-radius: 6px; font-family: ui-monospace, "Cascadia Code", Consolas, monospace; font-size: .9em; }
@@ -110,6 +119,12 @@ button { -webkit-tap-highlight-color: transparent; }
 .prose-iclass table { border-collapse: collapse; width: 100%; margin: 1em 0; }
 .prose-iclass th,.prose-iclass td { border: 1px solid var(--border); padding: .5em .7em; text-align: left; }
 .prose-iclass img { max-width: 100%; height: auto; border-radius: 12px; display: block; margin: 1em auto; border: 1px solid var(--border); }
+
+/* Termo achado pela Busca do aluno (fase 3, C16 / P5-S2): no resultado e no leitor
+   (?busca=). color-mix com recuo para o tom suave nos navegadores antigos; o trecho para
+   onde o leitor rolou ganha contorno. */
+mark.busca-marca { background: var(--warning-soft); background: color-mix(in srgb, var(--warning) 30%, transparent); color: inherit; border-radius: 3px; padding: 0 .08em; }
+mark.busca-marca-atual { outline: 2px solid var(--warning); outline-offset: 1px; }
 
 /* Questão de prova em Markdown (fase 3, P3-S2: QuestionMarkdown.jsx). Nada passa da
    largura do cartão no celular de 375 px: imagem com max-width 100%, tabela e bloco de
@@ -139,3 +154,36 @@ button { -webkit-tap-highlight-color: transparent; }
 .wysiwyg-editor:empty::before { content: 'Digite o conteúdo da apostila...'; color: var(--text-subtle); }
 .wysiwyg-editor:focus { min-height: 520px; }
 .wysiwyg-editor img { cursor: default; }
+
+/* Folha de impressão da apostila (fase 3, C17 / P5-S3; UXA-14, D25 do P5;
+   features/student/ApostilaImpressao.jsx). Na tela ela não aparece. Na impressão, com o
+   leitor aberto (<html data-impressao>), só ela sai: o resto do <body> (o #root inteiro:
+   menu, faixas, caderno, fórum, anotações, avisos) some. Cores fixas de papel (o tema
+   escuro não vai para a folha), margens de 15 mm, tabela e código quebrando linha,
+   imagem no máximo a largura da página. */
+.folha-impressao { display: none; }
+@media print {
+  @page { margin: 15mm; }
+  html[data-impressao], html[data-impressao] body { background: #fff !important; height: auto; min-height: 0; }
+  html[data-impressao] body > *:not(.folha-impressao) { display: none !important; }
+  html[data-impressao] .folha-impressao {
+    display: block;
+    --text: #111; --text-muted: #444; --text-subtle: #666; --surface-2: #f1f1f1; --border: #b8b8b8; --primary: #1d4ed8;
+    color: #111; background: #fff; font-size: 11pt; line-height: 1.5;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
+  .folha-impressao-cabecalho { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid #999; padding-bottom: 4px; margin-bottom: 10px; font-size: 9pt; color: #444; }
+  .folha-impressao-titulo { font-size: 18pt; font-weight: 700; margin: 0 0 6px; break-after: avoid; page-break-after: avoid; }
+  .folha-impressao-rodape { margin-top: 18px; border-top: 1px solid #999; padding-top: 4px; font-size: 9pt; color: #444; }
+  .folha-impressao-bloqueada { font-size: 14pt; text-align: center; margin: 0; padding-top: 40mm; }
+  .folha-impressao .prose-iclass { line-height: 1.5; overflow-wrap: anywhere; }
+  .folha-impressao .prose-iclass h1, .folha-impressao .prose-iclass h2, .folha-impressao .prose-iclass h3,
+  .folha-impressao .prose-iclass h4 { break-after: avoid; page-break-after: avoid; }
+  .folha-impressao .prose-iclass pre { white-space: pre-wrap; overflow: visible; overflow-wrap: anywhere; border: 1px solid #ccc; border-radius: 6px; break-inside: avoid; }
+  .folha-impressao .prose-iclass code { overflow-wrap: anywhere; }
+  .folha-impressao .prose-iclass table { table-layout: auto; width: 100%; max-width: 100%; }
+  .folha-impressao .prose-iclass th, .folha-impressao .prose-iclass td { overflow-wrap: anywhere; word-break: break-word; }
+  .folha-impressao .prose-iclass tr, .folha-impressao .prose-iclass img, .folha-impressao .prose-iclass blockquote { break-inside: avoid; page-break-inside: avoid; }
+  .folha-impressao .prose-iclass img { max-width: 100% !important; max-height: 240mm; height: auto; border-radius: 0; }
+  .folha-impressao .prose-iclass a { color: #1d4ed8; }
+}

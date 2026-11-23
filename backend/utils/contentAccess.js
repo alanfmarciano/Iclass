@@ -17,6 +17,12 @@ function isCourseDeleted(course) {
     return !!course && (course.deleted === true || course.status === 'deleted' || course.status === 'inactive' || !!course.deletedAt);
 }
 
+// Impressão da apostila pelo aluno (fase 3, C17 / P5-S3; D25 do P5): courses[].permitirImpressao
+// ausente (curso de antes desta versão) ou qualquer valor que não seja false vale true.
+function coursePrintAllowed(course) {
+    return !course || course.permitirImpressao !== false;
+}
+
 // Chaves que nunca podem ser servidas como material, em qualquer grafia.
 function isRestrictedContentKey(key) {
     const normalized = String(key || '').trim().toLowerCase();
@@ -147,6 +153,7 @@ async function readApostila(key, { ownHosts = [] } = {}) {
 module.exports = {
     SAFE_CONTENT_KEY,
     classStructure,
+    coursePrintAllowed,
     findContentFile,
     isCourseDeleted,
     isRestrictedContentKey,

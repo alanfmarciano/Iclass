@@ -1,5 +1,6 @@
 import { Marked, marked } from 'marked'
 import DOMPurify from 'dompurify'
+import { currentPreviewToken } from './previewSession'
 
 const SAFE_URL_RE = /^(https?:|mailto:|tel:|#|\/)/i
 const SAFE_IMAGE_DATA_RE = /^data:image\/(png|jpe?g|gif|webp);base64,/i
@@ -15,12 +16,14 @@ export function stripFileAccess(value) {
   return `${match[1]}${kept.length ? `?${kept.join('&')}` : ''}${match[3] || ''}`
 }
 
+// Na pré-visualização como aluno (C15 / P5-S6b), a figura da apostila abre com o token da
+// prévia: o servidor serve o que o aluno virtual da turma abriria, não o que o painel abre.
 function withFileAccess(value) {
   const url = stripFileAccess(value)
   if (!/^\/(uploads|imagens)\//.test(url) || typeof localStorage === 'undefined') return url
   try {
     const auth = JSON.parse(localStorage.getItem('iclass-v3-auth')) || {}
-    const access = auth.adminSession || auth.sessionToken
+    const access = currentPreviewToken() || auth.adminSession || auth.sessionToken
     if (!access) return url
     const separator = url.includes('?') ? '&' : '?'
     return `${url}${separator}access=${encodeURIComponent(access)}`
@@ -80,6 +83,28 @@ function cleanGeneratedHtml(html) {
     FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'style', 'svg', 'math'],
     ALLOW_DATA_ATTR: false,
   })
+}
+
+// Desce os títulos de um HTML já limpo (markdownToHtml) em `offset` níveis, para o texto
+// caber debaixo dos títulos da página: as instruções da atividade do aluno (C9, ajuste 2)
+// ficam debaixo do <h1> da atividade e do <h2> "Instruções", e um '# Parte 1' virava um
+// segundo <h1> na página. O título vira h(N + offset), no máximo h6, com a classe
+// 'prose-nivel-N', que mantém o tamanho que ele tinha (index.css).
+export function shiftHeadingLevels(html, offset = 2) {
+  const step = Math.max(0, Math.floor(Number(offset) || 0))
+  if (!html || !step || typeof DOMParser === 'undefined') return html || ''
+  const doc = new DOMParser().parseFromString(`<main>${html}</main>`, 'text/html')
+  const root = doc.body.firstElementChild
+  if (!root) return html
+  root.querySelectorAll('h1, h2, h3, h4, h5, h6').forEach((heading) => {
+    const level = Number(heading.tagName.slice(1))
+    const next = doc.createElement(`h${Math.min(6, level + step)}`)
+    for (const attr of Array.from(heading.attributes)) next.setAttribute(attr.name, attr.value)
+    next.classList.add(`prose-nivel-${level}`)
+    while (heading.firstChild) next.appendChild(heading.firstChild)
+    heading.replaceWith(next)
+  })
+  return root.innerHTML
 }
 
 function escapeHtmlText(value) {

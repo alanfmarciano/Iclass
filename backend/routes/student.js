@@ -2287,7 +2287,14 @@ router.get('/api/student/notifications', validateStudentSession, (req, res) => {
     res.set('Cache-Control', 'no-store');
     // legalVersion: os documentos publicados agora ("<termos>|<política>"); o portão de
     // primeiro acesso do portal compara com o que guardou (decisões §12, sobra do H8a-2).
-    res.json({ success: true, items: limited, unread: limited.filter(item => item.unread).length, legalVersion: legalAcceptance.publishedLegalVersion(db.memory) });
+    // mensagensNovas: conversas com mensagem nova do professor, contadas ANTES do corte de
+    // 30 itens (o número do menu Mensagens não pode baixar porque avisos e notas mais novos
+    // empurraram a conversa antiga para fora da lista do sino; revisão do C14).
+    res.json({
+        success: true, items: limited, unread: limited.filter(item => item.unread).length,
+        mensagensNovas: items.filter(item => item && item.type === 'mensagem').length,
+        legalVersion: legalAcceptance.publishedLegalVersion(db.memory),
+    });
 });
 
 // "Marcar como lidas" (UXA-X3): carimbo para dúvidas, notas e provas e leitura dos

@@ -17,7 +17,7 @@
 //     para entrega em grupo, contrato C2), status 'pendente'|'enviada'|'refazer'|
 //     'corrigida'|'devolvida'|'entregue_em_maos', versions [{ n, requestAt, receivedAt,
 //     late, lateMs, text, link, files [{ id, originalName, storedRel, size, sha256, mime,
-//     ext, category }], ip, device }], extension { dueAt, closeAt, by, at, reason } | null,
+//     ext, category }], ip, device, envioId (opcional, C9 ajuste 1) }], extension { dueAt, closeAt, by, at, reason } | null,
 //     grade { score, penaltyPct, finalScore, comment, versionGraded, gradedBy, gradedAt,
 //     penaltyWaived } | null, returnedAt, returnedBy, manualEntry { note, by, at } | null,
 //     anonymized, createdAt, updatedAt }
@@ -837,6 +837,25 @@ function versionReceiptCode(submission, version) {
     return crypto.createHash('sha256').update(payload).digest('hex').slice(0, 8).toUpperCase();
 }
 
+// Identificador do envio (fase 3, C9 ajuste 1): o celular gera um por envio e o repete no
+// "Tentar de novo" (cabeçalho x-envio-id). Se a resposta do primeiro se perdeu mas ele
+// chegou, o segundo devolve a versão que já existe em vez de criar outra (que poderia sair
+// atrasada, ou ser recusada pelo prazo, quando a primeira chegou a tempo). Gravado na
+// versão (envioId); versão antiga não tem.
+const ENVIO_ID_PATTERN = /^[A-Za-z0-9_-]{16,64}$/;
+
+function normalizeEnvioId(value) {
+    return typeof value === 'string' && ENVIO_ID_PATTERN.test(value) ? value : '';
+}
+
+// A versão da entrega mandada com esse identificador, ou null.
+function versionByEnvioId(submission, envioId) {
+    const key = normalizeEnvioId(envioId);
+    if (!key || !submission) return null;
+    const sub = asSubmission(submission);
+    return sub.versions.find(version => version.envioId === key) || null;
+}
+
 function formatPct(value) {
     return `${String(value).replace('.', ',')}%`;
 }
@@ -983,6 +1002,8 @@ module.exports = {
     statusAfterNewVersion,
     fileReceiptCode,
     versionReceiptCode,
+    normalizeEnvioId,
+    versionByEnvioId,
     latePolicyText,
     classAcceptsSubmissions,
     situationForClass,
@@ -992,3 +1013,8 @@ module.exports = {
     waitingSince,
     gradingQueueSummary,
 };
+
+// O ciclo de vida das entregas (anonimizar, apagar, troca de e-mail, Meus dados...; C10)
+// registra o handler de 'assignmentSubmissions' ao carregar: quem usa as regras das
+// tarefas já tem o handler. Depois do module.exports (o módulo lê estas regras).
+require('./assignmentLifecycle.js');

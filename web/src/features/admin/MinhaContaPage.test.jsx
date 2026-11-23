@@ -8,10 +8,15 @@ const state = vi.hoisted(() => ({
   toast: { success: vi.fn(), error: vi.fn() },
   auth: null,
   setAuth: vi.fn(),
+  prefs: {},
+  setPref: vi.fn(),
 }))
 vi.mock('../../lib/api', () => ({ api: { post: state.post, get: vi.fn() } }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => state.toast }))
 vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: state.auth, setAuth: state.setAuth }) }))
+vi.mock('../../context/PreferencesProvider', () => ({
+  usePreferences: () => ({ prefs: state.prefs, pref: (key, def) => (state.prefs[key] !== undefined ? state.prefs[key] : def), setPref: state.setPref }),
+}))
 vi.mock('../../components/PasswordChangeForm', () => ({
   PasswordChangeForm: (props) => (
     <div data-testid="password-form" data-endpoint={props.endpoint} data-ask-current={String(!!props.askCurrent)} data-kind={props.kind}>
@@ -20,13 +25,16 @@ vi.mock('../../components/PasswordChangeForm', () => ({
   ),
 }))
 
-import MinhaContaPage, { END_OTHER_SESSIONS_TEXT } from './MinhaContaPage'
+import MinhaContaPage, { END_OTHER_SESSIONS_TEXT, RECEIVE_MESSAGES_PREF } from './MinhaContaPage'
 
 beforeEach(() => {
   state.auth = { role: 'admin', accountRole: 'professor', name: 'Paula Souza', email: 'paula@escola.local', roleLabel: 'Professor', readOnly: false }
   state.post.mockReset()
   state.setAuth.mockReset()
   state.toast.success.mockReset()
+  state.prefs = {}
+  state.setPref.mockReset()
+  state.setPref.mockResolvedValue(true)
 })
 afterEach(() => { cleanup() })
 
@@ -100,5 +108,40 @@ describe('[UC-CONTA-001] Minha conta', () => {
     render(<MinhaContaPage />)
     expect(screen.getByText('Coordenação (só consulta)')).toBeInTheDocument()
     expect(screen.getByLabelText('Nome')).not.toBeDisabled()
+  })
+})
+
+// Fase 3, C14 (P5-S7b; D8 do P5): "Receber mensagens de alunos" na Minha conta de quem
+// tem a tela Mensagens. Antes do C14 a preferência existia no servidor sem lugar na tela.
+describe('[UC-MENSAGEM-006] Minha conta · receber mensagens de alunos', () => {
+  it('o professor vê a chave ligada (padrão) e desligar grava messages.receive = false', async () => {
+    const user = userEvent.setup()
+    render(<MinhaContaPage />)
+    const toggle = screen.getByRole('switch', { name: 'Receber mensagens de alunos' })
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByText(/os alunos não conseguem começar conversa nova com você/)).toBeInTheDocument()
+    await user.click(toggle)
+    expect(state.setPref).toHaveBeenCalledWith(RECEIVE_MESSAGES_PREF, false)
+    expect(RECEIVE_MESSAGES_PREF).toBe('messages.receive')
+  })
+
+  it('desligada antes, aparece desligada e liga de novo', async () => {
+    state.prefs = { 'messages.receive': false }
+    const user = userEvent.setup()
+    render(<MinhaContaPage />)
+    const toggle = screen.getByRole('switch', { name: 'Receber mensagens de alunos' })
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    await user.click(toggle)
+    expect(state.setPref).toHaveBeenCalledWith('messages.receive', true)
+  })
+
+  it('não aparece para quem não tem a tela Mensagens (Secretaria) nem para a conta só de consulta', () => {
+    state.auth = { ...state.auth, accountRole: 'secretaria', roleLabel: 'Secretaria', effectivePermissions: ['page.dashboard', 'page.students'] }
+    const view = render(<MinhaContaPage />)
+    expect(screen.queryByRole('switch', { name: 'Receber mensagens de alunos' })).toBeNull()
+    view.unmount()
+    state.auth = { ...state.auth, accountRole: 'professor', effectivePermissions: ['page.messages'], readOnly: true }
+    render(<MinhaContaPage />)
+    expect(screen.queryByRole('switch', { name: 'Receber mensagens de alunos' })).toBeNull()
   })
 })

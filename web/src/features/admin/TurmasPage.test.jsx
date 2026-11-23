@@ -55,8 +55,24 @@ describe('TurmasPage · cursos', () => {
     await user.type(within(dialog).getByLabelText('Nome'), 'Curso novo')
     await user.selectOptions(within(dialog).getByLabelText('Escola'), 'escola-b')
     await user.click(within(dialog).getByRole('button', { name: 'Salvar' }))
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/courses', { id: 'NOVO', name: 'Curso novo', description: '', schoolId: 'escola-b' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/courses', { id: 'NOVO', name: 'Curso novo', description: '', schoolId: 'escola-b', permitirImpressao: true }))
     expect(mocks.post.mock.calls.some(([path]) => path === '/api/courses')).toBe(false)
+  })
+
+  // Fase 3, C17 / P5-S3 (D25 do P5): o curso sem o campo (de antes desta versão) abre com
+  // a impressão ligada; desligar manda permitirImpressao false no PUT.
+  it('[UC-CONTEUDO-002] "Editar" mostra "Alunos podem imprimir..." ligado no curso antigo e desligar manda false', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: 'Editar' }))
+    const dialog = screen.getByRole('dialog', { name: 'Editar curso' })
+    const toggle = within(dialog).getByRole('switch')
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    expect(dialog).toHaveTextContent('Alunos podem imprimir ou salvar a apostila em PDF')
+    await user.click(toggle)
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    await user.click(within(dialog).getByRole('button', { name: 'Salvar' }))
+    await waitFor(() => expect(mocks.put).toHaveBeenCalledWith('/api/admin/courses/DES', expect.objectContaining({ permitirImpressao: false })))
   })
 
   it('[UC-CURSO-001] "Editar" e "Excluir" usam PUT e DELETE em /api/admin/courses/:id', async () => {
@@ -68,7 +84,7 @@ describe('TurmasPage · cursos', () => {
     await user.clear(name)
     await user.type(name, 'Técnico em Informática')
     await user.click(within(dialog).getByRole('button', { name: 'Salvar' }))
-    await waitFor(() => expect(mocks.put).toHaveBeenCalledWith('/api/admin/courses/DES', { name: 'Técnico em Informática', description: 'Desenvolvimento', schoolId: 'escola-a' }))
+    await waitFor(() => expect(mocks.put).toHaveBeenCalledWith('/api/admin/courses/DES', { name: 'Técnico em Informática', description: 'Desenvolvimento', schoolId: 'escola-a', permitirImpressao: true }))
 
     await user.click(screen.getByRole('button', { name: 'Excluir' }))
     const confirm = screen.getByRole('dialog', { name: 'Excluir curso?' })
@@ -103,6 +119,36 @@ describe('TurmasPage · cursos', () => {
     expect(screen.getByText('2 professor(es)')).toBeInTheDocument()
     expect(screen.getByText('0 professor(es)')).toBeInTheDocument()
     expect(screen.getAllByText('Sem professor')).toHaveLength(1)
+  })
+
+  // Fase 3, C12 (P5-S4, CRIT-11): "Grupos" na turma para quem tem a tela Alunos, também o
+  // professor (que não vê as ações de administração da turma).
+  it('[UC-GRUPO-001] o professor vê "Grupos" na turma e abre a tela da turma', async () => {
+    const { Routes, Route, useLocation } = await import('react-router-dom')
+    function Where() { return <p data-testid="where">{useLocation().pathname}</p> }
+    mocks.auth = { role: 'professor', accountRole: 'professor' }
+    render(<MemoryRouter initialEntries={['/turmas']}><Routes><Route path="/turmas" element={<TurmasPage />} /><Route path="*" element={<Where />} /></Routes></MemoryRouter>)
+    expect(screen.queryByRole('button', { name: /Editar turma 1DES/ })).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Grupos da turma 1DES' }))
+    expect(screen.getByTestId('where')).toHaveTextContent('/turmas/DES/1DES/grupos')
+  })
+
+  // Fase 3, C15 (P5-S6b, CRIT-08): "Ver como aluno" na turma para quem tem o conteúdo das
+  // turmas; a Coordenação (só consulta) e quem não vê conteúdo não têm o botão.
+  it('[UC-PREVIA-004] "Ver como aluno" na turma abre o diálogo da pré-visualização', async () => {
+    mocks.auth = { role: 'admin', accountRole: 'professor', effectivePermissions: ['page.classes', 'page.materials', 'page.students'] }
+    mocks.get.mockResolvedValue({ success: true, grupos: [] })
+    renderPage()
+    await userEvent.click(screen.getByRole('button', { name: 'Ver como aluno da turma 1DES' }))
+    expect(screen.getByRole('dialog', { name: 'Ver o portal como um aluno de 1DES' })).toHaveTextContent('Nada do que você fizer na pré-visualização é gravado. A prova não começa.')
+    cleanup()
+    mocks.auth = { role: 'admin', accountRole: 'coordenacao', readOnly: true, effectivePermissions: ['page.classes', 'page.materials', 'page.students'] }
+    renderPage()
+    expect(screen.queryByRole('button', { name: /Ver como aluno/ })).toBeNull()
+    cleanup()
+    mocks.auth = { role: 'admin', accountRole: 'secretaria', effectivePermissions: ['page.classes', 'page.students'] }
+    renderPage()
+    expect(screen.queryByRole('button', { name: /Ver como aluno/ })).toBeNull()
   })
 })
 

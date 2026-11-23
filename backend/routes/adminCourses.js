@@ -8,6 +8,10 @@
 // - só os campos permitidos são gravados: nome, descrição, escola (que o professor não
 //   muda), identidade visual e restaurar um curso excluído. A estrutura continua só pela
 //   rota /api/admin/courses/:id/structure;
+// - permitirImpressao (fase 3, C17 / P5-S3; UXA-14, D25 do P5): o aluno pode imprimir ou
+//   salvar em PDF a apostila no leitor. Ausente vale true (curso de antes desta versão,
+//   pergunta P-C4 com a resposta recomendada); false esconde o botão e a folha de
+//   impressão do leitor mostra só "Impressão desativada pela escola.";
 // - cada mudança fica na trilha de auditoria (course_created, course_updated,
 //   course_deleted; o curso duplicado é course_cloned, na rota /clone de admin.js).
 // As rotas antigas de escrita em /api/courses respondem 410 (common.js). Os campos que a
@@ -22,7 +26,7 @@ const {
 const { isFullAdmin, accountScopeKind, outOfScopeMessage } = require('../utils/adminRoles.js');
 const { recordAudit } = require('../utils/audit.js');
 const { extractBranding, validateBrandingPatch } = require('../utils/branding.js');
-const { isCourseDeleted } = require('../utils/contentAccess.js');
+const { coursePrintAllowed, isCourseDeleted } = require('../utils/contentAccess.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
 
 // O código do curso entra em nomes de arquivo do conteúdo duplicado
@@ -64,6 +68,11 @@ function parseSchoolId(value) {
     return { value: value.trim() };
 }
 
+function parsePrintAllowed(value) {
+    if (typeof value !== 'boolean') return { error: 'Informe se o aluno pode imprimir a apostila (sim ou não).' };
+    return { value };
+}
+
 function schoolExists(schoolId) {
     return (db.memory.schools || []).some(school => school && String(school.id) === schoolId);
 }
@@ -93,6 +102,7 @@ function courseAuditView(course) {
         status: course.status || 'active',
         deleted: course.deleted === true,
         deletedAt: course.deletedAt || null,
+        permitirImpressao: coursePrintAllowed(course),
     };
 }
 
@@ -128,6 +138,8 @@ function createAdminCoursesRouter() {
                 return sendFieldError(res, 'Você só pode criar curso numa escola atribuída à sua conta.', 'schoolId', 403);
             }
             if (school.value && !schoolExists(school.value)) return sendFieldError(res, 'Escola não encontrada.', 'schoolId');
+            const printAllowed = body.permitirImpressao === undefined ? null : parsePrintAllowed(body.permitirImpressao);
+            if (printAllowed && printAllowed.error) return sendFieldError(res, printAllowed.error, 'permitirImpressao');
             if (body.branding !== undefined && rejectInvalidCourseBranding(res, body.branding)) return;
             if (!Array.isArray(db.memory.courses)) db.memory.courses = [];
             if (findCourseIndex(id) !== -1) return sendFieldError(res, 'Já existe um curso com esse código.', 'id');
@@ -143,6 +155,7 @@ function createAdminCoursesRouter() {
                 deleted: false,
                 deletedAt: null,
             };
+            if (printAllowed) course.permitirImpressao = printAllowed.value;
             if (body.branding !== undefined) course.branding = extractBranding(body.branding);
             db.memory.courses.push(course);
             const brandingKeys = changedBrandingKeys({}, course.branding);
@@ -193,6 +206,11 @@ function createAdminCoursesRouter() {
                     if (!schoolExists(school.value)) return sendFieldError(res, 'Escola não encontrada.', 'schoolId');
                     patch.schoolId = school.value;
                 }
+            }
+            if (body.permitirImpressao !== undefined) {
+                const printAllowed = parsePrintAllowed(body.permitirImpressao);
+                if (printAllowed.error) return sendFieldError(res, printAllowed.error, 'permitirImpressao');
+                patch.permitirImpressao = printAllowed.value;
             }
             if (body.branding !== undefined && rejectInvalidCourseBranding(res, body.branding)) return;
             // Restaurar um curso excluído ("Restaurar" em Cursos e turmas).

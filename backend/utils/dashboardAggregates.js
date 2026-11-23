@@ -171,6 +171,8 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
 
 // ---------------------------------------------------------------------------
 // PRECISA DE VOCÊ — cada item é uma pendência com destino clicável.
+// `viewer` (fase 3, P5-S7a): a conta de quem vê, para os provedores cujo item é da conta
+// (as conversas com mensagem nova são do instrutor da conversa); sem ele, eles não entram.
 // `canSeeMatriculas` vem da rota (quem aprova matrícula); `pendingEnrollments`, quando
 // vem, é a contagem já filtrada pelo escopo de quem vê (Secretaria: só os cursos das
 // escolas dela) e substitui a soma dos pedidos de `students`; snooze é aplicado na rota.
@@ -184,8 +186,10 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
 // mesmo IP, esses dois só para administrador.
 // backup (H4b, OPS-03): { falha, atrasado, externoAtrasado, semDestino } de
 // utils/backup.js backupAlerts, só para administrador com system.manage.
+// entregas (C11 / P1-i): { semCopia, diferentes, espelhoFalhou, discoBaixo } de
+// utils/assignmentMirror.js queueAlerts, só para administrador.
 // ---------------------------------------------------------------------------
-function computeQueue({ memory, cls, course, students, today, now, canSeeMatriculas, pendingEnrollments }, extras = {}) {
+function computeQueue({ memory, cls, course, students, today, now, canSeeMatriculas, pendingEnrollments, viewer = null }, extras = {}) {
     const emails = emailSet(students);
     const items = [];
 
@@ -329,7 +333,15 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
 
     // 9. Backup (H4b, OPS-03): falha, atraso, cópia externa atrasada e destino externo não
     // configurado. Só administrador (a rota manda null para os outros).
-    backupQueueItems(extras && extras.backup).forEach(item => items.push(item));
+    // Sem destino externo, o "Backup só neste computador" fala também dos trabalhos dos
+    // alunos (a mesma causa não vira dois itens).
+    const entregasExtras = extras && extras.entregas;
+    const semCopiaJunto = !!(entregasExtras && entregasExtras.semCopia && extras.backup && extras.backup.semDestino);
+    backupQueueItems(extras && extras.backup, { semCopia: semCopiaJunto ? entregasExtras.semCopia : null }).forEach(item => items.push(item));
+
+    // 9b. Arquivos das entregas de tarefa (C11 / P1-i): sem cópia fora deste computador,
+    // falha da cópia no destino externo e pouco espaço no disco para os envios.
+    assignmentStorageQueueItems(semCopiaJunto ? { ...entregasExtras, semCopia: null } : entregasExtras).forEach(item => items.push(item));
 
     // 10. Pendências dos provedores da fase 3 (entregas para corrigir, correção
     // pendente, revisão aberta, chamada não cobrada...), depois das de hoje
@@ -338,7 +350,7 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
     // passam a de quem vê), fica de fora o item de quem não a tem. Os itens de hoje
     // continuam como eram (cada bloco acima já decide quem os vê).
     const canAccess = extras && typeof extras.canAccess === 'function' ? extras.canAccess : null;
-    collectInstructorQueue({ memory, cls, course, students, emails, today, now, canSeeMatriculas: !!canSeeMatriculas })
+    collectInstructorQueue({ memory, cls, course, students, emails, today, now, canSeeMatriculas: !!canSeeMatriculas, viewer })
         .filter(item => !canAccess || canAccess(item.permissao, item))
         .forEach(item => items.push(item));
 
@@ -350,8 +362,9 @@ function plural(count, one, many) {
 }
 
 // Itens do backup. count: dias desde o último sucesso (mínimo 1). Falha e atraso não se
-// adiam (adiavel: false); "sem destino" adia 24 h, como os outros.
-function backupQueueItems(backup) {
+// adiam (adiavel: false); "sem destino" adia 24 h, como os outros. semCopia (C11 / P1-i):
+// os trabalhos dos alunos que também estão só aqui, no texto do "sem destino".
+function backupQueueItems(backup, { semCopia = null } = {}) {
     if (!backup || typeof backup !== 'object') return [];
     const items = [];
     const common = { href: '/sistema', permissao: 'system.manage' };
@@ -384,11 +397,73 @@ function backupQueueItems(backup) {
         });
     }
     if (backup.semDestino) {
+        const arquivos = semCopia ? Math.max(1, Number(semCopia.arquivos) || 1) : 0;
         items.push({
             id: 'backup_sem_destino', tipo: 'backup_sem_destino',
-            titulo: 'Backup só neste computador',
-            detalhe: 'Escolha um pendrive, HD externo ou pasta de rede para uma cópia fora daqui · Sistema → Backup',
+            titulo: arquivos ? 'Backup e trabalhos dos alunos só neste computador' : 'Backup só neste computador',
+            detalhe: arquivos
+                ? `Os trabalhos dos alunos (${plural(arquivos, 'arquivo', 'arquivos')}, ${sizeText(semCopia.bytes)}) também não têm cópia fora daqui; o backup não os leva. Escolha um pendrive, HD externo ou pasta de rede · Sistema → Backup`
+                : 'Escolha um pendrive, HD externo ou pasta de rede para uma cópia fora daqui · Sistema → Backup',
             count: Math.max(1, Number(backup.semDestino.dias) || 1), tone: 'warning', ...common,
+        });
+    }
+    return items;
+}
+
+// Tamanho para o texto da fila: 1 KB, 640 KB, 12,4 MB, 3,2 GB (o mesmo arredondamento do
+// cartão Armazenamento; 272 bytes não viram "1 MB").
+function sizeText(bytes) {
+    const value = Math.max(0, Number(bytes) || 0);
+    const decimal = n => n.toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+    if (Math.round(value / 1024) < 1000) return `${Math.max(1, Math.round(value / 1024)).toLocaleString('pt-BR')} KB`;
+    if (Math.round((value / (1024 * 1024)) * 10) / 10 < 1000) return `${decimal(value / (1024 * 1024))} MB`;
+    return `${decimal(value / (1024 * 1024 * 1024))} GB`;
+}
+
+// Itens das entregas de tarefa. A falha da cópia e o disco que já recusa envios não se
+// adiam; "sem cópia" e "pouco espaço" adiam 24 h, como os outros.
+function assignmentStorageQueueItems(entregas) {
+    if (!entregas || typeof entregas !== 'object') return [];
+    const items = [];
+    const common = { href: '/sistema', permissao: 'system.manage' };
+    if (entregas.semCopia) {
+        const arquivos = Math.max(1, Number(entregas.semCopia.arquivos) || 1);
+        items.push({
+            id: 'entregas_sem_copia', tipo: 'entregas_sem_copia',
+            titulo: 'Trabalhos dos alunos sem cópia fora deste computador',
+            detalhe: `${plural(arquivos, 'arquivo', 'arquivos')} (${sizeText(entregas.semCopia.bytes)}) só neste computador; o backup não leva os trabalhos. Escolha um pendrive ou HD externo · Sistema → Backup`,
+            count: arquivos, tone: 'warning', ...common,
+        });
+    }
+    if (entregas.diferentes) {
+        // Arquivo deste computador que não confere com o registro da entrega (disco
+        // estragado, programa que regravou, ransomware): o espelho não o copia e mantém a
+        // cópia boa no destino; "Trazer arquivos" troca o daqui por ela.
+        const arquivos = Math.max(1, Number(entregas.diferentes.arquivos) || 1);
+        items.push({
+            id: 'entregas_arquivo_diferente', tipo: 'entregas_arquivo_diferente',
+            titulo: arquivos === 1 ? 'Trabalho de aluno diferente do que foi enviado' : 'Trabalhos de alunos diferentes do que foi enviado',
+            detalhe: `${plural(arquivos, 'arquivo', 'arquivos')} deste computador não ${arquivos === 1 ? 'confere' : 'conferem'} com o registro da entrega (disco com defeito ou programa que alterou ${arquivos === 1 ? 'o arquivo' : 'os arquivos'}). ${entregas.diferentes.podeTrazer ? 'A cópia do pendrive ou HD não foi trocada; use "Trazer arquivos do destino externo"' : 'Confira o disco deste computador'} · Sistema → Armazenamento`,
+            count: arquivos, tone: 'danger', ...common,
+        });
+    }
+    if (entregas.espelhoFalhou) {
+        const message = String(entregas.espelhoFalhou.mensagem || '').trim();
+        items.push({
+            id: 'entregas_espelho_falhou', tipo: 'entregas_espelho_falhou',
+            titulo: 'A cópia dos trabalhos dos alunos no destino externo falhou',
+            detalhe: `${message || 'Veja o motivo no cartão Armazenamento'} · Sistema → Armazenamento`,
+            count: 1, tone: 'danger', adiavel: false, ...common,
+        });
+    }
+    if (entregas.discoBaixo) {
+        const recusando = entregas.discoBaixo.recusando === true;
+        const freeMb = Math.max(0, Math.floor((Number(entregas.discoBaixo.freeBytes) || 0) / (1024 * 1024)));
+        items.push({
+            id: 'entregas_disco_baixo', tipo: 'entregas_disco_baixo',
+            titulo: recusando ? 'Disco cheio: os alunos não conseguem enviar trabalhos' : 'Pouco espaço no disco para os trabalhos dos alunos',
+            detalhe: `${sizeText(entregas.discoBaixo.freeBytes)} livres; abaixo de ${sizeText(entregas.discoBaixo.minFreeBytes)} os envios são recusados. Libere espaço no disco deste computador · Sistema → Armazenamento`,
+            count: freeMb, tone: recusando ? 'danger' : 'warning', ...(recusando ? { adiavel: false } : {}), ...common,
         });
     }
     return items;

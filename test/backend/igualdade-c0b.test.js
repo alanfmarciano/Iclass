@@ -40,6 +40,53 @@ const DIFERENCAS_ESPERADAS = [
         motivo: 'A10 (P3-S13): o texto do modelo dos Termos e da Política mudou (IP e aparelho do login '
             + 'durante a prova), e o identificador do modelo muda junto (MODEL_ID em legalTemplates.js).',
     },
+    // C10 (P1-h): as entregas de tarefa registram o handler 'assignmentSubmissions' com
+    // contagem ("Trabalhos entregues"). Cadastros encerrados, a resposta e a auditoria do
+    // anonimizar e do apagar ganham a contagem nova (0 aqui: o gerador não tem tarefa) e a
+    // rota de Cadastros encerrados ganha countLabels com o nome dela. O teste de baixo
+    // confere os valores.
+    ...[
+        'encerrados.*.counts.assignmentSubmissions',
+        'encerradosRota.body.items.*.counts.assignmentSubmissions',
+        'encerradosRota.body.countLabels',
+        'anonimizar.body.kept.assignmentSubmissions',
+        'memoriaDepoisDeAnonimizar.auditLogs.*.details.kept.assignmentSubmissions',
+        'apagar.body.removed.assignmentSubmissions',
+        'memoriaDepoisDeApagar.auditLogs.*.details.kept.assignmentSubmissions',
+        'memoriaDepoisDeApagar.auditLogs.*.details.removed.assignmentSubmissions',
+        'encerradosDepois.*.counts.assignmentSubmissions',
+    ].map(caminho => ({ caminho, motivo: 'C10 (P1-h): contagem "Trabalhos entregues" do handler das entregas de tarefa.' })),
+    // C12 (P5-S4): os grupos de alunos registram o handler 'classGroups' com contagem
+    // ("Grupos de alunos"), nos mesmos lugares (0 aqui: o gerador não tem grupo).
+    ...[
+        'encerrados.*.counts.classGroups',
+        'encerradosRota.body.items.*.counts.classGroups',
+        'anonimizar.body.kept.classGroups',
+        'memoriaDepoisDeAnonimizar.auditLogs.*.details.kept.classGroups',
+        'apagar.body.removed.classGroups',
+        'memoriaDepoisDeApagar.auditLogs.*.details.kept.classGroups',
+        'memoriaDepoisDeApagar.auditLogs.*.details.removed.classGroups',
+        'encerradosDepois.*.counts.classGroups',
+    ].map(caminho => ({ caminho, motivo: 'C12 (P5-S4): contagem "Grupos de alunos" do handler dos grupos.' })),
+    // C13 (P5-S7a): as conversas com professores registram o handler 'conversations' com
+    // contagem ("Conversas com professores"), nos mesmos lugares (0 aqui: o gerador não
+    // tem conversa).
+    ...[
+        'encerrados.*.counts.conversations',
+        'encerradosRota.body.items.*.counts.conversations',
+        'anonimizar.body.kept.conversations',
+        'memoriaDepoisDeAnonimizar.auditLogs.*.details.kept.conversations',
+        'apagar.body.removed.conversations',
+        'memoriaDepoisDeApagar.auditLogs.*.details.kept.conversations',
+        'memoriaDepoisDeApagar.auditLogs.*.details.removed.conversations',
+        'encerradosDepois.*.counts.conversations',
+    ].map(caminho => ({ caminho, motivo: 'C13 (P5-S7a): contagem "Conversas com professores" do handler das conversas.' })),
+    // C14 (P5-S7b, revisão): o sino do aluno e o do painel mandam mensagensNovas (conversas
+    // com mensagem nova, contadas antes do corte da lista), para o número do menu
+    // Mensagens. Campo novo; os itens e o unread continuam os de antes (0 aqui: o gerador
+    // não tem conversa).
+    ...['sinoAluno.body.mensagensNovas', 'sinoInstrutor.body.mensagensNovas']
+        .map(caminho => ({ caminho, motivo: 'C14 (P5-S7b): mensagensNovas no sino para o contador do menu Mensagens.' })),
 ];
 
 function run(env = {}) {
@@ -120,6 +167,66 @@ test('[UC-FUNDACAO-002] fila: a única diferença da de antes é o texto do item
     assert.deepEqual(differences(BEFORE.fila, output.fila), ['2.detalhe']);
     assert.equal(expected('fila.1.detalhe'), false);
     assert.equal(expected('fila.2.titulo'), false);
+});
+
+test('[UC-FUNDACAO-002] C10: a contagem nova das entregas de tarefa é 0 sem tarefa e tem o nome "Trabalhos entregues"', () => {
+    const { output } = run();
+    const values = [];
+    const walk = (value, pathText) => {
+        if (!value || typeof value !== 'object') return;
+        Object.keys(value).forEach(key => {
+            const next = pathText ? `${pathText}.${key}` : key;
+            if (key === 'assignmentSubmissions' && /\.(counts|kept|removed)\.assignmentSubmissions$/.test(next)) values.push([next, value[key]]);
+            else walk(value[key], next);
+        });
+    };
+    walk(output, '');
+    assert.ok(values.length >= 9, JSON.stringify(values));
+    values.forEach(([where, value]) => assert.equal(value, 0, where));
+    assert.equal(output.encerradosRota.body.countLabels.assignmentSubmissions, 'Trabalhos entregues');
+    // Fora da contagem, Meus dados continua o de antes (sem entrega, sem seção nova).
+    assert.equal('tarefas' in output.meusDadosAluno, false);
+    assert.equal('tarefas' in output.meusDadosAdmin, false);
+});
+
+test('[UC-FUNDACAO-002] C12: a contagem nova dos grupos de alunos é 0 sem grupo e tem o nome "Grupos de alunos"', () => {
+    const { output } = run();
+    const values = [];
+    const walk = (value, pathText) => {
+        if (!value || typeof value !== 'object') return;
+        Object.keys(value).forEach(key => {
+            const next = pathText ? `${pathText}.${key}` : key;
+            if (key === 'classGroups' && /\.(counts|kept|removed)\.classGroups$/.test(next)) values.push([next, value[key]]);
+            else walk(value[key], next);
+        });
+    };
+    walk(output, '');
+    assert.ok(values.length >= 9, JSON.stringify(values));
+    values.forEach(([where, value]) => assert.equal(value, 0, where));
+    assert.equal(output.encerradosRota.body.countLabels.classGroups, 'Grupos de alunos');
+    // Sem grupo, Meus dados continua o de antes (sem seção nova).
+    assert.equal('grupos' in output.meusDadosAluno, false);
+    assert.equal('grupos' in output.meusDadosAdmin, false);
+});
+
+test('[UC-FUNDACAO-002] C13: a contagem nova das conversas é 0 sem conversa e tem o nome "Conversas com professores"', () => {
+    const { output } = run();
+    const values = [];
+    const walk = (value, pathText) => {
+        if (!value || typeof value !== 'object') return;
+        Object.keys(value).forEach(key => {
+            const next = pathText ? `${pathText}.${key}` : key;
+            if (key === 'conversations' && /\.(counts|kept|removed)\.conversations$/.test(next)) values.push([next, value[key]]);
+            else walk(value[key], next);
+        });
+    };
+    walk(output, '');
+    assert.ok(values.length >= 9, JSON.stringify(values));
+    values.forEach(([where, value]) => assert.equal(value, 0, where));
+    assert.deepEqual(output.encerradosRota.body.countLabels, { assignmentSubmissions: 'Trabalhos entregues', classGroups: 'Grupos de alunos', conversations: 'Conversas com professores' });
+    // Sem conversa, Meus dados continua o de antes (sem seção nova).
+    assert.equal('conversas' in output.meusDadosAluno, false);
+    assert.equal('conversas' in output.meusDadosAdmin, false);
 });
 
 test('o comparador acha diferença de valor, de chave e de ordem (não ficou cego)', () => {

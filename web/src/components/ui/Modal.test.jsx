@@ -130,4 +130,18 @@ describe('Modal', () => {
     expect(plain.parentElement.className).toContain('p-4')
     expect(screen.getByRole('button', { name: 'OK' }).parentElement.className).not.toContain('flex-wrap')
   })
+  it('drawer (painel de correção, fase 3 C8): à direita com a altura toda, rola por dentro, rodapé fixo e Esc fecha', async () => {
+    const user = userEvent.setup()
+    let closed = 0
+    render(<Modal open drawer size="lg" title="Ana Lima" description="Aluno 1 de 3" onClose={() => { closed += 1 }} footer={<button>Salvar</button>}><p>Entrega</p></Modal>)
+    const dialog = screen.getByRole('dialog', { name: 'Ana Lima' })
+    expect(dialog).toHaveAccessibleDescription('Aluno 1 de 3')
+    expect(dialog.className).toContain('h-full')
+    expect(dialog.parentElement.className).toContain('justify-end')
+    expect(screen.getByText('Entrega').parentElement.className).toContain('overflow-y-auto')
+    expect(screen.getByRole('button', { name: 'Salvar' }).parentElement.className).toContain('border-t')
+    expect(screen.getByRole('button', { name: 'Fechar' }).className).toContain('min-h-[44px]')
+    await user.keyboard('{Escape}')
+    expect(closed).toBe(1)
+  })
 });

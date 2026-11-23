@@ -322,10 +322,11 @@ app.use(commonRoutes);
 // Termos e Privacidade (H8a-1): rotas públicas e, no H8a-2, as do aluno; antes das do aluno.
 app.use(require('./routes/privacy.js'));
 // Rotas novas do aluno da fase 3 (ordem_no_createApp do plano), antes de student.js:
-// tarefas do aluno (C5 / P1-c; router próprio, com multer e os limites da tarefa) e parte
-// acadêmica (P2).
+// tarefas do aluno (C5 / P1-c; router próprio, com multer e os limites da tarefa), parte
+// acadêmica (P2) e comunicação e turma (P5: os grupos do aluno no P5-S4).
 app.use(require('./routes/studentAssignments.js').createStudentAssignmentsRouter());
 app.use(require('./routes/studentAcademic.js'));
+app.use(require('./routes/studentMessages.js'));
 app.use(studentRoutes);
 app.use(adminRoutes);
 

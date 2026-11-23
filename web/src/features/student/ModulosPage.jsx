@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { ArrowLeft, BookOpen, CheckCircle2, Highlighter, Lock, MessageSquare, NotebookPen, Reply, Save, Trash2 } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { AlertTriangle, ArrowLeft, BookOpen, CheckCircle2, Highlighter, Lock, MessageSquare, NotebookPen, Printer, Reply, Save, Search, Trash2, X } from 'lucide-react'
 import { Card, CardBody, CardHeader } from '../../components/ui/Card'
 import { Button } from '../../components/ui/Button'
 import { Badge } from '../../components/ui/Badge'
@@ -12,25 +13,27 @@ import { markdownToHtml } from '../../lib/contentMarkdown'
 import { useApi } from '../../hooks/useApi'
 import { useToast } from '../../context/ToastProvider'
 import { useStudent } from './useStudent'
+import { usePreview } from '../../hooks/usePreview'
+import { PREVIEW_DISABLED_TEXT } from '../../lib/previewSession'
+import { PreviewDisabledNote } from './PreviewBanner'
 import { ANNOTATION_NOTE_MAX_CHARS, FORUM_TEXT_MAX_CHARS, NOTE_COUNTER_FROM, NOTE_MAX_CHARS, SHORT_TEXT_COUNTER_FROM } from '../../lib/textLimits'
+import { normalizeUnit, readerModules, unitKey, useCourseContent } from './useCourseContent'
+import { SEARCH_PARAM, SECTION_PARAM, UNIT_PARAM } from './unitLinks'
+import { MARK_CURRENT_CLASS, firstMarkFrom, markTerm, sectionHeading, unmarkTerm } from './busca/contentText'
+import { ApostilaPrintSheet, useApostilaPrint } from './ApostilaImpressao'
+import { useBranding } from '../../context/BrandingProvider'
+import { schoolFromBranding } from '../../lib/printDocument'
 
-function parseDataJs(source) {
-  const text = String(source || '').trim().replace(/^const\s+courseData\s*=\s*/, '').replace(/;?\s*$/, '')
-  try { return JSON.parse(text) } catch { return {} }
+// Unidade do endereço (?unidade=): a chave exata ou, se não houver, a mesma sem diferenciar
+// maiúsculas (link digitado ou copiado de outro jeito).
+export function findUnitByKey(units, key) {
+  const wanted = String(key || '')
+  if (!wanted) return null
+  return units.find((unit) => unit.key === wanted) || units.find((unit) => String(unit.key).toLowerCase() === wanted.toLowerCase()) || null
 }
 
-function normalizeUnit(mod, unit, index) {
-  return {
-    key: unit.apostilaKey || unit.key,
-    examKey: unit.avaliacaoKey,
-    title: unit.name || unit.title || `Unidade ${index + 1}`,
-    moduleKey: mod.id || mod.key || mod.title || mod.name || 'module',
-    moduleTitle: mod.title || mod.name || mod.id || 'Módulo',
-  }
-}
-
-function unitKey(unit) {
-  return unit.apostilaKey || unit.key
+function scrollToElement(element) {
+  if (element && typeof element.scrollIntoView === 'function') element.scrollIntoView({ block: 'center', behavior: 'smooth' })
 }
 
 function moduleUnitKeys(mod) {
@@ -47,12 +50,30 @@ function moduleProgress(mod, completed) {
 export default function ModulosPage() {
   const { email, name, studentClass, courseId } = useStudent()
   const toast = useToast()
+  // Pré-visualização como aluno (C15 / P5-S6b): lê tudo e não grava nada (sem registro de
+  // acesso; caderno, conclusão, anotação e fórum desativados).
+  const preview = usePreview()
   const articleRef = useRef(null)
+  // Endereço próprio da unidade (fase 3, C16 / P5-S2; contrato C8 do P5): ?unidade=<chave>
+  // abre o leitor (o sino, a Início e a Busca levam direto à apostila; recarregar a página
+  // ou o voltar do navegador mantêm a unidade); ?busca=<termo> marca o termo e rola até o
+  // primeiro trecho (a partir da seção ?secao=, quando veio da Busca).
+  const [searchParams, setSearchParams] = useSearchParams()
+  const wantedUnit = searchParams.get(UNIT_PARAM) || ''
+  const highlightTerm = (searchParams.get(SEARCH_PARAM) || '').trim()
+  const highlightSection = searchParams.get(SECTION_PARAM) || ''
   const status = useApi(`/api/status?studentClass=${encodeURIComponent(studentClass)}&courseId=${encodeURIComponent(courseId)}&email=${encodeURIComponent(email)}`, [], { pollMs: 5000 })
   const progress = useApi(`/api/student/progress?email=${encodeURIComponent(email)}`, [email])
-  const [courseData, setCourseData] = useState({})
-  const [dataError, setDataError] = useState(null)
+  const released = (status.data && status.data.releasedItems) || {}
+  // data.js uma vez por turma (useCourseContent), o mesmo da Busca; a liberação nova (pelo
+  // /api/status de 5 em 5 s) faz ele vir de novo.
+  const content = useCourseContent({ releasedItems: status.data ? status.data.releasedItems : null })
+  const courseData = content.data
+  const dataError = content.error
   const [openUnit, setOpenUnit] = useState(null)
+  const [blockedUnit, setBlockedUnit] = useState('')
+  const [highlightCount, setHighlightCount] = useState(null)
+  const openKeyRef = useRef('')
   const [html, setHtml] = useState('')
   const [note, setNote] = useState('')
   const [comments, setComments] = useState([])
@@ -62,55 +83,110 @@ export default function ModulosPage() {
   const [deleteTarget, setDeleteTarget] = useState(null)
   const [saving, setSaving] = useState(false)
 
-  useEffect(() => {
-    if (!courseId) return
-    // Passa pelo cliente de API para enviar o token do aluno (a rota agora exige sessão).
-    api.get(`/api/data.js?courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(studentClass)}`, { raw: true })
-      .then((text) => setCourseData(parseDataJs(text)))
-      .catch((e) => setDataError(e))
-  }, [courseId, studentClass])
-
-  const released = (status.data && status.data.releasedItems) || {}
   const completed = (progress.data && progress.data.completedUnits) || {}
-  const rawModules = (courseData.courses && courseData.courses[0]?.structure) || courseData.courseStructure || []
-  const baseModules = Array.isArray(rawModules) ? rawModules : []
-  const fallbackUnits = Object.keys(released)
-    .filter((key) => released[key] && key.startsWith('Apostila_'))
-    .map((key, index) => ({ id: String(index + 1), name: key.replace(/_/g, ' '), apostilaKey: key }))
-  const modules = baseModules.length > 0 ? baseModules : (fallbackUnits.length > 0 ? [{ id: 'released', name: 'Materiais liberados', units: fallbackUnits }] : [])
+  const modules = readerModules(courseData, released)
   const units = useMemo(() => modules.flatMap((mod) => (mod.units || mod.items || []).map((unit, i) => normalizeUnit(mod, unit, i))).filter((u) => u.key), [modules])
+  // A unidade do endereço só abre com o data.js e a liberação na mão (senão "não liberada"
+  // apareceria por um instante).
+  const unitsReady = content.loaded && !!status.data
   const openModuleUnits = useMemo(() => openUnit ? units.filter((unit) => unit.moduleKey === openUnit.moduleKey) : [], [openUnit, units])
   const openModuleDone = openModuleUnits.filter((unit) => completed[unit.key]).length
   const openModuleTotal = openModuleUnits.length
   const openModulePct = openModuleTotal ? Math.round((openModuleDone / openModuleTotal) * 100) : 0
+  // Imprimir ou salvar em PDF (fase 3, C17 / P5-S3; D25 do P5): só a apostila sai no papel
+  // (ApostilaImpressao.jsx). O curso que desliga a impressão (permitirImpressao false no
+  // data.js) não tem o botão, e o Ctrl+P sai só com o aviso.
+  const { branding } = useBranding()
+  const course = (courseData && Array.isArray(courseData.courses) && courseData.courses[0]) || null
+  const printAllowed = !course || course.permitirImpressao !== false
+  const printer = useApostilaPrint({ open: !!openUnit, allowed: printAllowed })
 
   async function openReader(unit) {
+    openKeyRef.current = unit.key
     setOpenUnit(unit)
+    setBlockedUnit('')
     let text = courseData[unit.key]
     if (typeof text !== 'string') {
+      setHtml('')
       // O data.js só traz apostilas já liberadas; se o professor liberou esta unidade
       // depois que a página abriu, busca só ela (o servidor confere a liberação).
       text = await api.get(`/${encodeURIComponent(unit.key)}.md`, { raw: true }).catch(() => '')
-      if (text) setCourseData((current) => ({ ...current, [unit.key]: text }))
+      if (text) content.putUnitText(unit.key, text)
     }
+    // Outra unidade aberta enquanto esta carregava: o resultado desta não vale mais.
+    if (openKeyRef.current !== unit.key) return
     setHtml(markdownToHtml(text || ''))
-    api.post('/api/student/track-access', { email, key: unit.key, moduleKey: unit.moduleKey || '', courseId }).catch(() => {})
+    if (!preview) api.post('/api/student/track-access', { email, key: unit.key, moduleKey: unit.moduleKey || '', courseId }).catch(() => {})
     await Promise.all([loadNote(unit.key), loadComments(unit.key), loadAnnotations(unit.key)])
   }
+
+  // Abrir pelo clique muda o endereço (o voltar do navegador volta para a lista); o efeito
+  // abaixo abre o leitor.
+  function openUnitAddress(unit) {
+    setSearchParams({ [UNIT_PARAM]: unit.key })
+  }
+
+  function backToModules() {
+    setSearchParams({})
+  }
+
+  function clearHighlight() {
+    if (!openUnit) return
+    setSearchParams({ [UNIT_PARAM]: openUnit.key }, { replace: true })
+  }
+
+  // O endereço manda: ?unidade= abre (ou troca) a unidade; sem ele, volta para a lista.
+  useEffect(() => {
+    if (!wantedUnit) {
+      openKeyRef.current = ''
+      setBlockedUnit('')
+      if (openUnit) { setOpenUnit(null); setHtml('') }
+      return
+    }
+    if (!unitsReady) return
+    const unit = findUnitByKey(units, wantedUnit)
+    if (!unit || !released[unit.key]) {
+      openKeyRef.current = ''
+      if (openUnit) { setOpenUnit(null); setHtml('') }
+      setBlockedUnit(wantedUnit)
+      return
+    }
+    if (openKeyRef.current === unit.key) return
+    openReader(unit)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [wantedUnit, unitsReady, units, released[findUnitByKey(units, wantedUnit)?.key || '']])
+
+  // Termo da busca marcado no texto (nós de texto, sem innerHTML) e o primeiro trecho à
+  // vista; sai junto com o ?busca= (Tirar destaque) ou com outra unidade.
+  useEffect(() => {
+    setHighlightCount(null)
+    const root = articleRef.current
+    if (!root || !html || !highlightTerm) return undefined
+    const marks = markTerm(root, highlightTerm)
+    setHighlightCount(marks.length)
+    const first = firstMarkFrom(root, marks, highlightSection)
+    if (first) {
+      first.classList.add(MARK_CURRENT_CLASS)
+      scrollToElement(first)
+    } else {
+      scrollToElement(sectionHeading(root, highlightSection))
+    }
+    return () => unmarkTerm(marks)
+  }, [html, highlightTerm, highlightSection])
 
   async function loadNote(key) {
     try { setNote((await api.post('/api/student/notes/get', { email, moduleKey: key })).note || '') } catch { setNote('') }
   }
 
   async function saveNote() {
-    if (!openUnit) return
+    if (!openUnit || preview) return
     setSaving(true)
     try { await api.post('/api/student/notes/save', { email, moduleKey: openUnit.key, note }); toast.success('Caderno salvo') }
     catch (e) { toast.error(e.message) } finally { setSaving(false) }
   }
 
   async function markDone(done) {
-    if (!openUnit) return
+    if (!openUnit || preview) return
     const next = { ...completed, [openUnit.key]: done }
     try {
       await api.post('/api/student/progress', { email, completedUnits: next })
@@ -146,7 +222,7 @@ export default function ModulosPage() {
   }
 
   async function saveAnnotation() {
-    if (!openUnit || !annotation) return
+    if (!openUnit || !annotation || preview) return
     try {
       await api.post('/api/student/annotation', { email, key: openUnit.key, ...annotation })
       setAnnotation(null)
@@ -158,7 +234,7 @@ export default function ModulosPage() {
   }
 
   async function deleteAnnotation() {
-    if (!openUnit || !annotation) return
+    if (!openUnit || !annotation || preview) return
     try {
       await api.post('/api/student/annotation', { email, key: openUnit.key, paragraphId: annotation.paragraphId, highlightedText: null, note: null })
       setAnnotation(null)
@@ -173,7 +249,7 @@ export default function ModulosPage() {
   }
 
   async function postComment() {
-    if (!openUnit || !commentText.trim()) return
+    if (!openUnit || !commentText.trim() || preview) return
     try {
       await api.post('/api/forum/comment', { key: openUnit.key, studentName: name, studentEmail: email, courseId, studentClass, text: commentText })
       setCommentText('')
@@ -185,7 +261,7 @@ export default function ModulosPage() {
 
   async function postReply(commentId) {
     const text = replyDrafts[commentId]
-    if (!text?.trim()) return
+    if (!text?.trim() || preview) return
     try {
       await api.post('/api/forum/reply', { commentId, courseId, studentClass, authorName: name, authorRole: 'Aluno', authorEmail: email, text })
       setReplyDrafts((d) => ({ ...d, [commentId]: '' }))
@@ -210,10 +286,37 @@ export default function ModulosPage() {
   if (openUnit) return (
     <div className="max-w-6xl mx-auto space-y-4">
       <div className="flex flex-wrap items-center gap-2">
-        <Button variant="ghost" icon={ArrowLeft} onClick={() => setOpenUnit(null)}>Voltar aos módulos</Button>
+        <Button variant="ghost" icon={ArrowLeft} onClick={backToModules}>Voltar aos módulos</Button>
         <Badge tone={completed[openUnit.key] ? 'success' : 'neutral'}>{completed[openUnit.key] ? 'Concluída' : 'Em estudo'}</Badge>
-        <Button size="sm" variant="secondary" icon={CheckCircle2} onClick={() => markDone(!completed[openUnit.key])}>{completed[openUnit.key] ? 'Desmarcar' : 'Concluir unidade'}</Button>
+        <Button size="sm" variant="secondary" icon={CheckCircle2} disabled={!!preview} title={preview ? PREVIEW_DISABLED_TEXT : undefined} onClick={() => markDone(!completed[openUnit.key])}>{completed[openUnit.key] ? 'Desmarcar' : 'Concluir unidade'}</Button>
+        {printAllowed && (
+          <Button size="sm" variant="secondary" icon={Printer} className="ml-auto" aria-label="Imprimir ou salvar em PDF" title="Imprimir ou salvar em PDF" onClick={printer.print}>
+            <span className="hidden sm:inline">Imprimir ou salvar em PDF</span>
+          </Button>
+        )}
+        <PreviewDisabledNote />
       </div>
+      <ApostilaPrintSheet
+        open={!!openUnit}
+        allowed={printAllowed}
+        printing={printer.printing}
+        sheetRef={printer.sheetRef}
+        html={html}
+        unitTitle={openUnit.title}
+        moduleTitle={openUnit.moduleTitle}
+        courseName={(course && course.name) || ''}
+        schoolName={schoolFromBranding(branding).nome}
+      />
+
+      {highlightTerm && html && (
+        <div role="status" className="flex flex-wrap items-center gap-2 rounded-lg border border-warning bg-warning-soft px-3 py-2 text-sm text-text">
+          <Search size={15} aria-hidden="true" className="shrink-0 text-warning" />
+          <span className="min-w-0 flex-1 break-words">
+            {highlightCount === 0 ? `“${highlightTerm}” não aparece no texto desta unidade.` : `Destacando “${highlightTerm}” nesta unidade${highlightCount ? ` (${highlightCount === 1 ? '1 trecho' : `${highlightCount} trechos`})` : ''}.`}
+          </span>
+          <Button size="sm" variant="ghost" icon={X} onClick={clearHighlight}>Tirar destaque</Button>
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-[minmax(0,1fr)_360px] gap-4">
         <Card className="p-6">
@@ -230,7 +333,7 @@ export default function ModulosPage() {
               <div className="h-full bg-primary transition-all" style={{ width: `${openModulePct}%` }} />
             </div>
             <div className="mt-4 flex justify-end">
-              <Button icon={CheckCircle2} onClick={() => markDone(!completed[openUnit.key])}>
+              <Button icon={CheckCircle2} disabled={!!preview} title={preview ? PREVIEW_DISABLED_TEXT : undefined} onClick={() => markDone(!completed[openUnit.key])}>
                 {completed[openUnit.key] ? 'Desmarcar tópico' : 'Marcar tópico como concluído'}
               </Button>
             </div>
@@ -240,14 +343,15 @@ export default function ModulosPage() {
 
         <div className="space-y-4">
           <Card>
-            <CardHeader title="Caderno desta unidade" action={<Button size="sm" icon={Save} loading={saving} onClick={saveNote}>Salvar</Button>} />
-            <CardBody><Textarea id="unit-note" value={note} onChange={(e) => setNote(e.target.value)} maxLength={NOTE_MAX_CHARS} counterFrom={NOTE_COUNTER_FROM} className="min-h-[180px]" placeholder="Suas anotações..." /></CardBody>
+            <CardHeader title="Caderno desta unidade" action={<Button size="sm" icon={Save} loading={saving} disabled={!!preview} title={preview ? PREVIEW_DISABLED_TEXT : undefined} onClick={saveNote}>Salvar</Button>} />
+            <CardBody><Textarea id="unit-note" value={note} onChange={(e) => setNote(e.target.value)} maxLength={NOTE_MAX_CHARS} counterFrom={NOTE_COUNTER_FROM} className="min-h-[180px]" placeholder="Suas anotações..." /><PreviewDisabledNote className="mt-2" /></CardBody>
           </Card>
           <Card>
             <CardHeader title="Fórum da unidade" />
             <CardBody className="space-y-3">
               <Textarea id="unit-comment" value={commentText} onChange={(e) => setCommentText(e.target.value)} maxLength={FORUM_TEXT_MAX_CHARS} counterFrom={SHORT_TEXT_COUNTER_FROM} placeholder="Escreva sua dúvida..." />
-              <Button size="sm" icon={MessageSquare} onClick={postComment}>Postar</Button>
+              <Button size="sm" icon={MessageSquare} disabled={!!preview} title={preview ? PREVIEW_DISABLED_TEXT : undefined} onClick={postComment}>Postar</Button>
+              <PreviewDisabledNote />
               {comments.map((c) => (
                 <div key={c.id} className="rounded-md border border-border p-3 text-sm">
                   <div className="flex items-center justify-between gap-2">
@@ -265,7 +369,7 @@ export default function ModulosPage() {
                   ))}
                   <div className="mt-2 flex gap-2">
                     <input value={replyDrafts[c.id] || ''} onChange={(e) => setReplyDrafts((d) => ({ ...d, [c.id]: e.target.value }))} maxLength={FORUM_TEXT_MAX_CHARS} placeholder="Responder..." className="min-w-0 flex-1 h-8 px-2 rounded-md bg-surface border border-border text-text text-xs" />
-                    <Button size="sm" variant="secondary" icon={Reply} onClick={() => postReply(c.id)}>Responder</Button>
+                    <Button size="sm" variant="secondary" icon={Reply} disabled={!!preview} title={preview ? PREVIEW_DISABLED_TEXT : undefined} onClick={() => postReply(c.id)}>Responder</Button>
                   </div>
                 </div>
               ))}
@@ -276,9 +380,10 @@ export default function ModulosPage() {
 
       <Modal open={!!annotation} onClose={() => setAnnotation(null)} title="Anotação do parágrafo" description={annotation?.highlightedText?.slice(0, 120)}>
         <Textarea id="ann" value={annotation?.note || ''} onChange={(e) => setAnnotation((a) => ({ ...a, note: e.target.value }))} maxLength={ANNOTATION_NOTE_MAX_CHARS} counterFrom={SHORT_TEXT_COUNTER_FROM} className="min-h-[140px]" />
-        <div className="mt-3 flex justify-end gap-2">
-          <Button variant="destructive" icon={Trash2} onClick={deleteAnnotation}>Excluir</Button>
-          <Button icon={NotebookPen} onClick={saveAnnotation}>Salvar</Button>
+        <div className="mt-3 flex flex-wrap items-center justify-end gap-2">
+          <PreviewDisabledNote className="mr-auto" />
+          <Button variant="destructive" icon={Trash2} disabled={!!preview} onClick={deleteAnnotation}>Excluir</Button>
+          <Button icon={NotebookPen} disabled={!!preview} onClick={saveAnnotation}>Salvar</Button>
         </div>
       </Modal>
       <ConfirmDialog open={!!deleteTarget} onClose={() => setDeleteTarget(null)} onConfirm={removeForumItem} danger title="Excluir mensagem?" description="A mensagem será removida do fórum desta unidade." confirmLabel="Excluir" />
@@ -291,7 +396,14 @@ export default function ModulosPage() {
         <h1 className="text-2xl font-bold text-text">Módulos</h1>
         <p className="text-sm text-muted">Apostilas, progresso e atividades liberadas para sua turma.</p>
       </div>
-      <PageState loading={status.loading} error={status.error || dataError} onRetry={() => { status.refetch(); progress.refetch() }}>
+      {blockedUnit && (
+        <div role="alert" className="flex items-start gap-2 rounded-lg border border-warning bg-warning-soft px-3 py-2 text-sm text-text">
+          <AlertTriangle size={16} aria-hidden="true" className="mt-0.5 shrink-0 text-warning" />
+          <span className="min-w-0 flex-1 break-words">A unidade do link não está liberada para a sua turma (ou não existe mais neste curso). Escolha uma unidade abaixo.</span>
+          <button type="button" onClick={backToModules} className="shrink-0 rounded p-1 text-muted hover:text-text" aria-label="Fechar aviso"><X size={15} /></button>
+        </div>
+      )}
+      <PageState loading={status.loading || (content.loading && !status.error)} error={status.error || dataError} onRetry={() => { status.refetch(); progress.refetch(); content.reload() }}>
         {modules.length === 0 ? (
           <Card><EmptyState icon={BookOpen} title="Curso sem estrutura" description="Nenhum módulo foi encontrado para seu curso." /></Card>
         ) : modules.map((mod, mi) => {
@@ -311,7 +423,7 @@ export default function ModulosPage() {
                     return (
                       // Título em até duas linhas: o nome do tópico era cortado ("Sistemas Opera…")
                       // e a chave técnica (Apostila_FUTEC_1) ocupava o lugar do status.
-                      <button type="button" key={u.key} disabled={!on} onClick={() => openReader(u)} title={u.title} className="w-full flex items-center gap-3 p-3 rounded-lg border border-border text-left transition hover:border-primary/50 disabled:cursor-default disabled:hover:border-border">
+                      <button type="button" key={u.key} disabled={!on} onClick={() => openUnitAddress(u)} title={u.title} className="w-full flex items-center gap-3 p-3 rounded-lg border border-border text-left transition hover:border-primary/50 disabled:cursor-default disabled:hover:border-border">
                         <span className={`w-10 h-10 shrink-0 grid place-items-center rounded-md ${done ? 'bg-success-soft text-success' : on ? 'bg-primary-soft text-primary' : 'bg-surface-2 text-subtle'}`}>{done ? <CheckCircle2 size={18} /> : on ? <BookOpen size={18} /> : <Lock size={18} />}</span>
                         <div className="flex-1 min-w-0">
                           <p className="text-sm font-medium leading-snug text-text line-clamp-2">{u.title}</p>

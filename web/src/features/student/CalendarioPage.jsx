@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
-import { CalendarOff, Clock, Download, Users } from 'lucide-react'
+import { ArrowRight, CalendarOff, Clock, Download, Users } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { MonthCalendar, firstOfMonth, dateKey, parseDateKey, NON_SCHOOL_EVENT_TYPE } from '../../components/calendar/MonthCalendar'
 import { PageState } from '../../components/ui/PageState'
 import { Modal } from '../../components/ui/Modal'
@@ -10,6 +11,13 @@ import { useApi } from '../../hooks/useApi'
 import { useAuth } from '../../context/AuthProvider'
 import { useToast } from '../../context/ToastProvider'
 import { downloadFile } from '../../lib/api'
+
+// Prazo de atividade (fase 3, C9): o evento leva à atividade, onde o aluno envia. Só o
+// endereço da própria tela de atividades vira link.
+export function eventActivityHref(event) {
+  const href = String(event?.href || '')
+  return /^\/aluno\/atividades\/[^/?#]+$/.test(href) ? href : ''
+}
 
 // Calendário do aluno: eventos do curso e da turma e os dias sem aula (feriado, recesso,
 // ponto facultativo; B3 e B7 / P2-S6, FUN-15), que aparecem como "Sem aula" e pintam o
@@ -86,6 +94,7 @@ export default function CalendarioPage() {
             {detail.endTime && <p className="flex items-center gap-2 text-sm text-muted"><Clock size={15} /> Termina às {detail.endTime}</p>}
             <p className="flex items-center gap-2 text-sm text-muted"><Users size={15} /> {detail.target === 'turma' ? `Turma ${detail.targetValue}` : 'Todos os alunos do curso'}</p>
             {detail.description ? <p className="whitespace-pre-wrap text-sm text-text">{detail.description}</p> : <p className="text-sm text-muted">Sem informações adicionais.</p>}
+            {eventActivityHref(detail) && <Link to={eventActivityHref(detail)} className="inline-flex min-h-[44px] items-center gap-2 rounded-lg bg-primary px-4 text-sm font-semibold text-primary-fg hover:bg-primary-hover">Abrir a atividade <ArrowRight aria-hidden="true" size={15} /></Link>}
           </div>
         ))}
       </Modal>

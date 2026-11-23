@@ -335,6 +335,24 @@ const DOWNLOADS = {
   dados: { path: '/api/admin/backup/full?variante=dados', fallback: 'iclass-backup-dados.zip', label: 'Só os dados (ZIP)' },
 }
 
+// Aviso do "Fazer backup agora": a cópia externa e, desde a fase 3 (C11), a cópia dos
+// trabalhos dos alunos no destino externo (espelho das entregas), que pode falhar sozinha.
+export function serverBackupMessage(r) {
+  if (!r) return { tone: 'success', text: '' }
+  if (r.externoErro) return { tone: 'warning', text: `Backup feito neste computador (${r.fileName}), mas a cópia externa falhou: ${r.externoErro}` }
+  if (r.espelho && r.espelho.ok === false) return { tone: 'warning', text: `Backup feito neste computador e no destino externo, mas a cópia dos trabalhos dos alunos falhou: ${r.espelho.erro || 'veja o cartão Armazenamento'}` }
+  if (r.externo) {
+    const copied = r.espelho && r.espelho.copiados > 0 ? ` ${r.espelho.copiados === 1 ? '1 arquivo novo de trabalho copiado' : `${r.espelho.copiados.toLocaleString('pt-BR')} arquivos novos de trabalhos copiados`} para lá.` : ''
+    // Arquivo daqui diferente do registro da entrega: não foi copiado (a cópia de lá é a boa).
+    const different = Number(r.espelho && r.espelho.diferentes) || 0
+    if (different) {
+      return { tone: 'warning', text: `Backup feito neste computador e no destino externo (${r.externo.fileName}).${copied} ${different === 1 ? '1 arquivo de trabalho deste computador não confere' : `${different.toLocaleString('pt-BR')} arquivos de trabalhos deste computador não conferem`} com o registro da entrega e ficou de fora da cópia; veja o cartão Armazenamento.` }
+    }
+    return { tone: 'success', text: `Backup feito neste computador e no destino externo (${r.externo.fileName}).${copied}` }
+  }
+  return { tone: 'success', text: `Backup feito neste computador (${r.fileName}). Ficam os ${r.kept || 20} backups manuais mais recentes.` }
+}
+
 export function BackupCard({ isAdmin }) {
   const toast = useToast()
   const status = useApi('/api/admin/backup/status')
@@ -357,8 +375,9 @@ export function BackupCard({ isAdmin }) {
     setServerBusy(true)
     try {
       const r = await api.post('/api/admin/backup/server', {}, { timeoutMs: 0 })
-      if (r.externoErro) toast.warning(`Backup feito neste computador (${r.fileName}), mas a cópia externa falhou: ${r.externoErro}`)
-      else toast.success(r.externo ? `Backup feito neste computador e no destino externo (${r.externo.fileName}).` : `Backup feito neste computador (${r.fileName}). Ficam os ${r.kept || 20} backups manuais mais recentes.`)
+      const message = serverBackupMessage(r)
+      if (message.tone === 'warning') toast.warning(message.text)
+      else toast.success(message.text)
     } catch (e) { toast.error(e.message) } finally { setServerBusy(false); refreshAll() }
   }
   function askDownload(kind) {

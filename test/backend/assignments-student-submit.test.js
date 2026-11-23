@@ -766,3 +766,118 @@ test('formulário com defeito (corpo JSON, nome de arquivo com caractere de cont
     assert.deepEqual(storedFiles(), []);
     assert.deepEqual(receivingFiles(), []);
 });
+
+// ------------------------------------------------------------ C9 ajuste 1
+// "Tentar de novo" depois de uma resposta perdida: o celular repete o x-envio-id e o
+// servidor devolve a versão que já chegou em vez de criar outra (antes, a repetição
+// virava a versão 2 e, depois do prazo, saía atrasada ou recusada).
+const ENVIO = 'envio_teste_0000000001';
+
+function submitWithId(email, id, envioId, { files = [], text } = {}) {
+    let req = as(email, request(app).post(`/api/student/assignments/${id}/submit`)).set('x-envio-id', envioId);
+    files.forEach(([name, buffer]) => { req = req.attach('files', buffer, name); });
+    if (text !== undefined) req = req.field('text', text);
+    return req;
+}
+
+test('C9: envio repetido com o mesmo x-envio-id devolve a versão que já chegou (200 repetido), sem criar outra nem auditar de novo', async () => {
+    const item = task();
+    db.memory.assignments = [item];
+    const first = await submitWithId(ANA, item.id, ENVIO, { files: [['relatorio.pdf', PDF]] });
+    assert.equal(first.status, 201, JSON.stringify(first.body));
+    assert.equal(first.body.version.n, 1);
+    assert.equal(first.body.version.envioId, ENVIO);
+    assert.equal(db.memory.assignmentSubmissions[0].versions[0].envioId, ENVIO);
+
+    const again = await submitWithId(ANA, item.id, ENVIO, { files: [['relatorio.pdf', PDF]] });
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+    assert.equal(again.body.success, true);
+    assert.equal(again.body.repetido, true);
+    assert.equal(again.body.version.n, 1);
+    assert.equal(again.body.version.comprovante, first.body.version.comprovante);
+    assert.equal(db.memory.assignmentSubmissions[0].versions.length, 1);
+    assert.equal(audits('assignment_submitted').length, 1);
+    assert.equal(storedFiles().length, 1, 'o arquivo da repetição não foi guardado');
+    assert.deepEqual(receivingFiles(), []);
+
+    // O detalhe mostra o identificador (a tela confere antes de mandar de novo).
+    const detail = await as(ANA, request(app).get(`/api/student/assignments/${item.id}?${Q}`));
+    assert.equal(detail.body.minhaEntrega.versoes[0].envioId, ENVIO);
+
+    // Outro identificador (escolha nova) é outra versão; identificador estranho é ignorado.
+    const other = await submitWithId(ANA, item.id, 'envio_teste_0000000002', { text: 'segunda' });
+    assert.equal(other.status, 201);
+    assert.equal(other.body.version.n, 2);
+    const odd = await submitWithId(ANA, item.id, 'curto', { text: 'terceira' });
+    assert.equal(odd.status, 201);
+    assert.equal(odd.body.version.envioId, '');
+    const oddAgain = await submitWithId(ANA, item.id, 'curto', { text: 'terceira' });
+    assert.equal(oddAgain.status, 201, 'sem identificador válido, cada pedido é uma versão');
+    assert.equal(db.memory.assignmentSubmissions[0].versions.length, 4);
+    // Outro aluno com o mesmo identificador não pega a versão da Ana.
+    const bia = await submitWithId(BIA, item.id, ENVIO, { text: 'da Bia' });
+    assert.equal(bia.status, 201);
+    assert.equal(bia.body.version.n, 1);
+});
+
+test('C9 / D8: a repetição depois do prazo devolve a versão no prazo (bloquear não recusa, desconto não marca atrasada)', async () => {
+    const block = task({ title: 'Bloqueia', latePolicy: { mode: 'bloquear', penaltyPerDayPct: 0, penaltyMaxPct: 0 } });
+    const discount = task({ title: 'Desconta', latePolicy: { mode: 'desconto', penaltyPerDayPct: 10, penaltyMaxPct: 50 } });
+    db.memory.assignments = [block, discount];
+    const onTimeBlock = await submitWithId(ANA, block.id, ENVIO, { files: [['a.pdf', PDF]] });
+    const onTimeDiscount = await submitWithId(ANA, discount.id, 'envio_teste_desconto01', { files: [['b.pdf', PDF]] });
+    assert.equal(onTimeBlock.status, 201);
+    assert.equal(onTimeDiscount.status, 201);
+    // O prazo passa (a Wi-Fi voltou só depois).
+    db.memory.assignments.forEach(row => { row.dueAt = Date.now() - 2 * HOUR; });
+
+    const retryBlock = await submitWithId(ANA, block.id, ENVIO, { files: [['a.pdf', PDF]] });
+    assert.equal(retryBlock.status, 200, JSON.stringify(retryBlock.body));
+    assert.equal(retryBlock.body.repetido, true);
+    assert.equal(retryBlock.body.version.late, false);
+    const retryDiscount = await submitWithId(ANA, discount.id, 'envio_teste_desconto01', { files: [['b.pdf', PDF]] });
+    assert.equal(retryDiscount.status, 200);
+    assert.equal(retryDiscount.body.version.late, false);
+    assert.equal(retryDiscount.body.version.n, 1);
+    db.memory.assignmentSubmissions.forEach(sub => assert.equal(sub.versions.length, 1));
+
+    // Um envio novo de verdade (outro identificador) segue a regra do prazo.
+    const fresh = await submitWithId(ANA, block.id, 'envio_teste_novo000001', { files: [['c.pdf', PDF]] });
+    assert.equal(fresh.status, 409);
+    assert.equal(fresh.body.code, 'assignment_prazo_encerrado');
+    const freshDiscount = await submitWithId(ANA, discount.id, 'envio_teste_novo000002', { files: [['d.pdf', PDF]] });
+    assert.equal(freshDiscount.status, 201);
+    assert.equal(freshDiscount.body.version.late, true);
+});
+
+test('C9: dois pedidos com o mesmo x-envio-id ao mesmo tempo viram uma versão só (conferido dentro da trava)', async () => {
+    const item = task();
+    db.memory.assignments = [item];
+    const results = await Promise.all([
+        submitWithId(ANA, item.id, ENVIO, { files: [['a.pdf', PDF]] }),
+        submitWithId(ANA, item.id, ENVIO, { files: [['a.pdf', PDF]] }),
+    ]);
+    assert.deepEqual(results.map(res => res.status).sort(), [200, 201], JSON.stringify(results.map(res => res.body)));
+    assert.ok(results.every(res => res.body.version.n === 1));
+    assert.equal(db.memory.assignmentSubmissions[0].versions.length, 1);
+    assert.equal(storedFiles().length, 1);
+    assert.deepEqual(receivingFiles(), []);
+    assert.equal(require('../../backend/routes/studentAssignments.js').pendingLocks(), 0);
+});
+
+test('C9: a lista e o detalhe mandam o nome do módulo e da unidade da tarefa (unidade)', async () => {
+    db.memory.courses = [{ id: COURSE, name: 'Desenvolvimento', structure: [
+        { id: 'm1', name: 'Módulo 1', units: [{ name: 'Redes locais', apostilaKey: 'Apostila_m1_1', avaliacaoKey: 'Avaliacao_m1_1' }] },
+    ] }];
+    const withUnit = task({ title: 'Com unidade', moduleId: 'm1', unitKey: 'Avaliacao_m1_1' });
+    const onlyModule = task({ title: 'Só módulo', moduleId: 'm1', unitKey: null });
+    const none = task({ title: 'Sem vínculo', moduleId: null, unitKey: null });
+    const gone = task({ title: 'Módulo removido', moduleId: 'm9', unitKey: null });
+    db.memory.assignments = [withUnit, onlyModule, none, gone];
+    const list = await as(ANA, request(app).get(`/api/student/assignments?${Q}`));
+    assert.equal(list.status, 200);
+    const byTitle = Object.fromEntries(list.body.assignments.map(item => [item.title, item.unidade]));
+    assert.deepEqual(byTitle, { 'Com unidade': 'Módulo 1 · Redes locais', 'Só módulo': 'Módulo 1', 'Sem vínculo': '', 'Módulo removido': '' });
+    const detail = await as(ANA, request(app).get(`/api/student/assignments/${withUnit.id}?${Q}`));
+    assert.equal(detail.body.assignment.unidade, 'Módulo 1 · Redes locais');
+});

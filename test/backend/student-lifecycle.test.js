@@ -148,7 +148,7 @@ test('[UC-ENCERRADOS-001] desligar grava quando, quem e o motivo; o aluno não e
     assert.equal(row.by, 'admin@vida.local');
     assert.equal(row.reason, 'Mudou de cidade');
     assert.equal(row.anonymized, false);
-    assert.deepEqual(row.counts, { submissions: 1, attendance: 2, certificates: 1 });
+    assert.deepEqual(row.counts, { submissions: 1, attendance: 2, certificates: 1, classGroups: 0, conversations: 0, assignmentSubmissions: 0 } /* C10, C12 e C13: Trabalhos entregues, Grupos de alunos e Conversas com professores sempre contados */);
     assert.deepEqual(row.classes, [{ name: CLASS, courseId: COURSE }]);
     assert.ok('lastBackupAt' in list.body);
 });
@@ -226,7 +226,7 @@ test('[UC-ENCERRADOS-002] anonimizar tira os dados pessoais de tudo e guarda not
     assert.equal(res.status, 200, res.body.error);
     assert.match(res.body.email, /^anonimizado-[0-9a-f]{12}@anonimizado\.invalid$/);
     assert.match(res.body.name, /^Aluno anonimizado [0-9A-F]{6}$/);
-    assert.deepEqual(res.body.kept, { submissions: 1, attendance: 2, certificates: 1 });
+    assert.deepEqual(res.body.kept, { submissions: 1, attendance: 2, certificates: 1, classGroups: 0, conversations: 0, assignmentSubmissions: 0 } /* C10, C12 e C13: Trabalhos entregues, Grupos de alunos e Conversas com professores sempre contados */);
     assert.ok(res.body.anonymizedAt > 0);
     // Memória e teclas numa transação só (um ciclo de gravação).
     assert.equal(db.storageStatus().savesSinceBoot - cyclesBefore, 1);
@@ -287,7 +287,7 @@ test('[UC-ENCERRADOS-002] anonimizar tira os dados pessoais de tudo e guarda not
     assert.equal(row.status, 'Anonimizado');
     assert.equal(row.anonymizedAt, res.body.anonymizedAt);
     assert.equal(row.matricula, '');
-    assert.deepEqual(row.counts, { submissions: 1, attendance: 2, certificates: 1 });
+    assert.deepEqual(row.counts, { submissions: 1, attendance: 2, certificates: 1, classGroups: 0, conversations: 0, assignmentSubmissions: 0 } /* C10, C12 e C13: Trabalhos entregues, Grupos de alunos e Conversas com professores sempre contados */);
 
     // O e-mail antigo fica livre para um cadastro novo.
     const again = await admin(request(app).post('/api/admin/student/create'))
@@ -323,7 +323,7 @@ test('[UC-ENCERRADOS-002] cadastro anonimizado não é editado, reativado, nem a
 
     const gone = await purge({ email: pseudo, confirm: 'APAGAR', reason: 'Fim do prazo legal' });
     assert.equal(gone.status, 200, gone.body.error);
-    assert.deepEqual(gone.body.removed, { submissions: 1, attendance: 2, certificates: 1 });
+    assert.deepEqual(gone.body.removed, { submissions: 1, attendance: 2, certificates: 1, classGroups: 0, conversations: 0, assignmentSubmissions: 0 } /* C10, C12 e C13: Trabalhos entregues, Grupos de alunos e Conversas com professores sempre contados */);
     assert.equal(findStudent(pseudo), undefined);
     assert.equal(db.memory.submissions.filter(item => item.student.email === pseudo).length, 0);
     const entry = db.memory.auditLogs.find(item => item.action === 'student_purged');
@@ -418,7 +418,7 @@ test('[UC-ENCERRADOS-002] apagar de vez remove o cadastro e deixa a auditoria se
     await desligar({ emails: [ANA.email], status: 'Concluído', reason: 'Formou' }).expect(200);
     const res = await purge({ email: ANA.email, confirm: 'APAGAR', reason: `Matrícula da ${ANA.name} feita por engano` });
     assert.equal(res.status, 200, res.body.error);
-    assert.deepEqual(res.body.removed, { submissions: 1, attendance: 2, certificates: 1 });
+    assert.deepEqual(res.body.removed, { submissions: 1, attendance: 2, certificates: 1, classGroups: 0, conversations: 0, assignmentSubmissions: 0 } /* C10, C12 e C13: Trabalhos entregues, Grupos de alunos e Conversas com professores sempre contados */);
     assert.equal(findStudent(ANA.email), undefined);
     assert.equal(db.memory.attendance.length, 1);
     assert.equal(db.memory.certificates.length, 0);
@@ -495,6 +495,14 @@ test('scrubReason tira e-mail, nome e matrícula sem pegar pedaço de palavra', 
     });
     // Decisões §12 (sobra do H7c): sem o "()" que a matrícula deixava.
     assert.equal(out, 'aluno e aluno; Anabela fica');
+});
+
+// Rodada 2 do C13: sem nenhum termo, o texto volta como veio (antes a arrumação juntava
+// espaços, tirava "( )" e a indentação de qualquer texto).
+test('scrubReason sem nome, e-mail nem matrícula no texto devolve o texto sem mudar a forma', () => {
+    const text = 'Lista:\n    1.  primeiro  item\n    2.  segundo ( ) ok ! ';
+    assert.equal(scrubReason(text, { emails: ['ana@x.local'], names: ['Ana Souza'], matriculas: ['MAT-1'] }), text);
+    assert.equal(scrubReason('Falei com Ana Souza ( )', { names: ['Ana Souza'] }), 'Falei com aluno');
 });
 
 // Decisões §12 (sobras do H7c). Antes: a anonimização apagava o antes/depois de toda

@@ -115,14 +115,27 @@ function assertEligible(student, mode) {
     }
 }
 
+function pseudonymNameFromRef(ref) {
+    return `${ANONYMIZED_NAME_PREFIX} ${String(ref).slice(0, 6).toUpperCase()}`;
+}
+
 function newPseudonym(memory) {
     for (;;) {
         const ref = crypto.randomBytes(6).toString('hex');
         const email = `anonimizado-${ref}@${ANONYMIZED_EMAIL_DOMAIN}`;
         if (!findStudent(memory, email)) {
-            return { ref, email, name: `${ANONYMIZED_NAME_PREFIX} ${ref.slice(0, 6).toUpperCase()}` };
+            return { ref, email, name: pseudonymNameFromRef(ref) };
         }
     }
+}
+
+// O nome do pseudônimo a partir do e-mail dele ('Aluno anonimizado <REF>'), para o registro
+// que ficou com o e-mail do pseudônimo sem o cadastro ao lado (ex.: backup de antes da
+// anonimização restaurado: o cadastro volta com o e-mail original e a conversa não).
+// Outro e-mail: ''.
+function pseudonymNameFromEmail(email) {
+    const match = /^anonimizado-([0-9a-f]{6,})@(.+)$/.exec(normalizeEmail(email));
+    return match && match[2] === ANONYMIZED_EMAIL_DOMAIN ? pseudonymNameFromRef(match[1]) : '';
 }
 
 function actorEmail(actor) {
@@ -133,19 +146,37 @@ function escapeRegExp(text) {
     return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// Letras que o nome pode ter com ou sem acento (foldAccents do scrubReason).
+const ACCENT_CLASSES = Object.freeze({ a: 'aàáâãäå', e: 'eèéêë', i: 'iìíîï', o: 'oòóôõö', u: 'uùúûü', c: 'cç', n: 'nñ', y: 'yýÿ' });
+
+// Padrão do nome que casa com e sem acento ("Jose" acha "José" e o contrário), com espaço
+// variável entre as partes e acento decomposto (NFD) no texto.
+function accentInsensitivePattern(value) {
+    const base = String(value).normalize('NFD').replace(/\p{M}/gu, '').replace(/\s+/g, ' ').toLowerCase();
+    return Array.from(base).map(ch => {
+        if (ch === ' ') return '\\s+';
+        if (ACCENT_CLASSES[ch]) return `[${ACCENT_CLASSES[ch]}]\\p{M}*`;
+        return /\p{L}/u.test(ch) ? `${escapeRegExp(ch)}\\p{M}*` : escapeRegExp(ch);
+    }).join('');
+}
+
 // Tira do texto livre o e-mail, o nome e a matrícula do aluno (palavra inteira, sem
-// diferenciar maiúscula), no lugar do nome fica `replacement`.
-function scrubReason(text, { emails = [], names = [], matriculas = [], replacement = 'aluno' } = {}) {
-    let out = String(text || '');
-    const edge = (value, to) => {
-        out = out.replace(new RegExp(`(^|[^\\p{L}\\p{N}@._-])${escapeRegExp(value)}(?=$|[^\\p{L}\\p{N}@_-]|\\.(?![\\p{L}\\p{N}]))`, 'giu'), `$1${to}`);
+// diferenciar maiúscula), no lugar do nome fica `replacement`. foldAccents: o nome casa
+// também escrito com outro acento ou sem acento (mensagens digitadas à mão). Texto sem
+// nenhum termo volta como veio: a arrumação de espaços e parênteses vazios só vale para o
+// que a troca deixou (a mensagem do professor que não cita o aluno não muda de forma).
+function scrubReason(text, { emails = [], names = [], matriculas = [], replacement = 'aluno', foldAccents = false } = {}) {
+    const original = String(text || '');
+    let out = original;
+    const edge = (value, to, pattern = escapeRegExp(value)) => {
+        out = out.replace(new RegExp(`(^|[^\\p{L}\\p{N}@._-])${pattern}(?=$|[^\\p{L}\\p{N}@_-]|\\.(?![\\p{L}\\p{N}]))`, 'giu'), `$1${to}`);
     };
     emails.filter(Boolean).forEach(email => edge(email, replacement));
     names.map(name => String(name || '').trim()).filter(name => name.length >= 3)
         .sort((a, b) => b.length - a.length)
-        .forEach(name => edge(name, replacement));
+        .forEach(name => edge(name, replacement, foldAccents ? accentInsensitivePattern(name) : undefined));
     matriculas.map(value => String(value || '').trim()).filter(value => value.length >= 3).forEach(value => edge(value, ''));
-    return tidyScrubbedText(out, [replacement]);
+    return out === original ? original : tidyScrubbedText(out, [replacement]);
 }
 
 function countBy(list, predicate) {
@@ -517,10 +548,10 @@ function applyCascade(db, { mode, student, ownership, keystrokeRows, actor, reas
     // dela, depois dos blocos de cima (utils/studentDataHandlers.js) e antes da pasta ir
     // para a lixeira. Handler que falha não deixa a memória pela metade: ela volta ao
     // que era antes do passo e o pedido é recusado (nada foi gravado nem movido).
+    let diskEffects = [];
     if (before) {
         try {
-            if (anonymize) studentData.anonymizeStudentData(memory, aluno, pseudonym);
-            else studentData.purgeStudentData(memory, aluno);
+            diskEffects = anonymize ? studentData.anonymizeStudentData(memory, aluno, pseudonym) : studentData.purgeStudentData(memory, aluno);
         } catch (error) {
             restoreMemory(memory, before);
             logError(`studentLifecycle: handler de coleção nova falhou (${mode})`, error);
@@ -566,8 +597,47 @@ function applyCascade(db, { mode, student, ownership, keystrokeRows, actor, reas
         .filter(item => ownedRecord(item, item.studentEmail))
         .map(item => item.id);
     const keystrokesDone = keystrokeIds.length ? db.keystrokes.deleteRows(keystrokeIds) : Promise.resolve({ deleted: 0 });
+    // O passo deu certo (não volta mais atrás): o que os handlers pediram para a hora do
+    // aceite (C10: a lista do que ainda vai ser regravado no pacote do curso excluído,
+    // que a restauração do curso já respeita antes de o pacote ser regravado).
+    diskEffects.forEach(effect => {
+        try { effect.accepted(); } catch (error) { logError(`studentLifecycle: aceite de coleção nova falhou (${mode})`, error); }
+    });
     const saved = db.save();
-    return { pseudonym, counts, keystrokes: keystrokeIds.length, completion: Promise.all([saved, keystrokesDone]) };
+    const effectsDone = afterCommitEffects(db, saved, diskEffects, { mode, deletedBy: actor });
+    return { pseudonym, counts, keystrokes: keystrokeIds.length, completion: Promise.all([effectsDone, keystrokesDone]) };
+}
+
+// O que os handlers deixaram para depois (arquivos das entregas de tarefa e do pacote de
+// curso excluído para a lixeira, pacote regravado; C10): só depois de a gravação dar
+// certo, uma vez. Se ela falhar, nada sai do lugar na hora (o banco no disco ainda aponta
+// para os arquivos) e o pedido recebe o 503; mas a memória já está anonimizada e a
+// regravação em segundo plano (ou a próxima gravação de qualquer rota) a leva ao disco:
+// os efeitos rodam logo depois desse COMMIT (db.afterNextCommit). Antes, eles se perdiam,
+// e a nova tentativa do administrador recebia 'já está anonimizado' com os arquivos fora
+// da lixeira e o pacote do curso com os dados. Banco fechado (a memória nunca vai para o
+// disco): os efeitos não rodam, e o disco continua igual ao banco. Falha num efeito não
+// desfaz o passo (o registro já está sem dado pessoal e a lápide já foi gravada): fica no
+// crash.log. Devolve a promessa da gravação (rejeita como ela).
+function afterCommitEffects(db, saved, effects, { mode, deletedBy }) {
+    if (!effects.length) return saved;
+    let ran = false;
+    const run = () => {
+        if (ran) return;
+        ran = true;
+        effects.forEach(effect => {
+            try { effect.afterSave({ deletedBy }); } catch (error) { logError(`studentLifecycle: efeito em disco de coleção nova falhou (${mode})`, error); }
+        });
+    };
+    return saved.then(run, error => {
+        const closed = error && error.sqliteCode === 'CLOSED';
+        let waiting = false;
+        if (!closed && typeof db.afterNextCommit === 'function') {
+            try { waiting = db.afterNextCommit(run) !== false; } catch (e) { waiting = false; }
+        }
+        if (!waiting) logError(`studentLifecycle: a gravação falhou e os arquivos das entregas ficaram no lugar (${mode}); o banco no disco ainda é o de antes`, error);
+        throw error;
+    });
 }
 
 // Anonimiza (mode 'anonymize') ou apaga de vez (mode 'purge') o cadastro encerrado.
@@ -664,4 +734,5 @@ module.exports = {
     runStudentLifecycle,
     closedStudentRows,
     scrubReason,
+    pseudonymNameFromEmail,
 };

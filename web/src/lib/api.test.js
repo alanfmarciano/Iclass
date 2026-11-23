@@ -5,7 +5,7 @@ const buildMock = vi.hoisted(() => ({ noteServerBuild: vi.fn() }))
 vi.mock('./buildVersion', async (importOriginal) => ({ ...(await importOriginal()), noteServerBuild: buildMock.noteServerBuild }))
 
 import { getConnectionState, resetConnectionForTests } from './connection'
-import { BACKGROUND_HEADER, INSTRUCTOR_TIMEOUT_MS, NETWORK_MESSAGE, RETRYABLE_MESSAGE, POLL_TIMEOUT_MS, TIMEOUT_MESSAGE, api, downloadFile, hasActiveSession, isLongAdminOperation, setAdminAccessDeniedHandler, setAuthProvider, setPasswordChangeRequiredHandler } from './api'
+import { BACKGROUND_HEADER, INSTRUCTOR_TIMEOUT_MS, NETWORK_MESSAGE, RETRYABLE_MESSAGE, POLL_TIMEOUT_MS, TIMEOUT_MESSAGE, api, dispositionFileName, downloadFile, fetchBlob, hasActiveSession, isLongAdminOperation, setAdminAccessDeniedHandler, setAuthProvider, setPasswordChangeRequiredHandler } from './api'
 
 afterEach(() => {
   resetConnectionForTests()
@@ -59,6 +59,36 @@ describe('downloadFile', () => {
   it('[UC-NOTAS-002] mostra a mensagem do servidor quando o download é recusado', async () => {
     vi.stubGlobal('fetch', vi.fn(async () => new Response(JSON.stringify({ error: 'Turma não autorizada para esta conta.' }), { status: 403, headers: { 'content-type': 'application/json' } })))
     await expect(downloadFile('/api/admin/gradebook?format=csv')).rejects.toThrow('Turma não autorizada para esta conta.')
+  })
+})
+
+describe('fetchBlob e o nome do arquivo (fase 3, C8: prévia e ZIP das entregas)', () => {
+  it('[UC-NOTAS-002] nome com acento vem do filename* (o filename simples do servidor troca o acento por ?)', () => {
+    const disposition = "attachment; filename=\"Entregas - Relat?rio - 1DES.zip\"; filename*=UTF-8''Entregas%20-%20Relat%C3%B3rio%20-%201DES.zip"
+    expect(dispositionFileName(disposition, 'x.zip')).toBe('Entregas - Relatório - 1DES.zip')
+    expect(dispositionFileName('attachment; filename="notas.csv"', 'x')).toBe('notas.csv')
+    expect(dispositionFileName("attachment; filename*=UTF-8''%E0%A4%A", 'x.zip')).toBe('x.zip')
+    expect(dispositionFileName('', 'x.zip')).toBe('x.zip')
+  })
+
+  it('[UC-NOTAS-002] lê o arquivo com a sessão, repassa o cancelamento e devolve o Blob', async () => {
+    setAuthProvider(() => ({ adminSession: 'token-123' }))
+    const fetchMock = vi.fn(async () => new Response(new Uint8Array([1, 2, 3]), { status: 200, headers: { 'content-type': 'image/png', 'content-disposition': "inline; filename*=UTF-8''foto%20%C3%A1.png" } }))
+    vi.stubGlobal('fetch', fetchMock)
+    const controller = new AbortController()
+    const result = await fetchBlob('/api/admin/assignments/a/files/f?inline=1', { signal: controller.signal })
+    expect(fetchMock).toHaveBeenCalledWith('/api/admin/assignments/a/files/f?inline=1', { headers: { 'x-admin-session': 'token-123' }, signal: controller.signal })
+    expect(result.name).toBe('foto á.png')
+    expect(result.blob.size).toBe(3)
+  })
+
+  it('[UC-NOTAS-002] cancelado por quem chamou sai como AbortError, sem a mensagem de conexão', async () => {
+    vi.stubGlobal('fetch', vi.fn(async (path, init) => { throw Object.assign(new Error('aborted'), { name: 'AbortError', signal: init.signal }) }))
+    const controller = new AbortController()
+    controller.abort()
+    const error = await fetchBlob('/x', { signal: controller.signal }).catch((caught) => caught)
+    expect(error.name).toBe('AbortError')
+    expect(error.message).not.toBe(NETWORK_MESSAGE)
   })
 })
 
@@ -411,5 +441,191 @@ describe('[UC-AUTH-001] respostas de estado do servidor no cliente', () => {
     expect(getConnectionState()).toBe('online')
     await api.get('/api/x').catch(() => {})
     expect(getConnectionState()).toBe('offline')
+  })
+})
+
+// Fase 3, C9 (P1-g; D12 do P1): envio de arquivo com progresso pelo XMLHttpRequest, com as
+// mesmas mensagens e marcas de erro do request().
+class FakeXhr {
+  static last = null
+  constructor() {
+    FakeXhr.last = this
+    this.headers = {}
+    this.upload = {}
+    this.status = 0
+    this.responseText = ''
+    this.responseHeaders = {}
+    this.aborted = false
+  }
+  open(method, path, async) { this.method = method; this.path = path; this.async = async }
+  setRequestHeader(name, value) { this.headers[name] = value }
+  getResponseHeader(name) { return this.responseHeaders[String(name).toLowerCase()] ?? null }
+  send(body) { this.body = body }
+  abort() { this.aborted = true; if (this.onabort) this.onabort() }
+  // Ajudantes do teste
+  progress(loaded, total) { this.upload.onprogress?.({ lengthComputable: true, loaded, total }) }
+  respond(status, data, headers = {}) {
+    this.upload.onload?.()
+    this.status = status
+    this.responseText = data === undefined ? '' : JSON.stringify(data)
+    this.responseHeaders = { 'content-type': data === undefined ? 'text/plain' : 'application/json; charset=utf-8', ...headers }
+    this.onload?.()
+  }
+  failNetwork() { this.onerror?.() }
+}
+
+describe('uploadWithProgress (envio da atividade com barra de progresso)', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+  async function start(options = {}) {
+    vi.stubGlobal('XMLHttpRequest', FakeXhr)
+    const { uploadWithProgress } = await import('./api')
+    const form = new FormData()
+    form.append('files', new File(['%PDF'], 'relatorio.pdf', { type: 'application/pdf' }))
+    const promise = uploadWithProgress('/api/student/assignments/asg_1/submit', form, options)
+    return { promise, xhr: FakeXhr.last, form }
+  }
+
+  it('manda o FormData com a sessão do aluno, avisa o progresso e devolve o JSON', async () => {
+    setAuthProvider(() => ({ role: 'student', sessionToken: 'token-aluno' }))
+    const seen = []
+    const { promise, xhr, form } = await start({ onProgress: (p) => seen.push(p.percent) })
+    expect(xhr.method).toBe('POST')
+    expect(xhr.path).toBe('/api/student/assignments/asg_1/submit')
+    expect(xhr.headers).toEqual({ 'x-session-token': 'token-aluno' })
+    // Sem Content-Type: o navegador põe o multipart com o separador.
+    expect(xhr.headers['Content-Type']).toBeUndefined()
+    expect(xhr.body).toBe(form)
+    xhr.progress(25, 100)
+    xhr.progress(250, 1000)
+    xhr.progress(1000, 1000)
+    xhr.respond(201, { success: true, version: { n: 1 } }, { 'x-iclass-build': 'abc' })
+    await expect(promise).resolves.toEqual({ success: true, version: { n: 1 } })
+    expect(seen).toEqual([25, 25, 100, 100])
+    expect(buildMock.noteServerBuild).toHaveBeenCalledWith('abc')
+    expect(getConnectionState()).toBe('online')
+  })
+
+  it('C9 ajuste 1: cabeçalhos a mais (x-envio-id) vão junto, e a sessão não é trocada por eles', async () => {
+    setAuthProvider(() => ({ role: 'student', sessionToken: 'token-aluno' }))
+    const { promise, xhr } = await start({ headers: { 'x-envio-id': 'abcdefghijklmnopqrstuvwx', 'x-session-token': 'outro' } })
+    expect(xhr.headers).toEqual({ 'x-envio-id': 'abcdefghijklmnopqrstuvwx', 'x-session-token': 'token-aluno' })
+    xhr.respond(200, { success: true, repetido: true, version: { n: 1 } })
+    await expect(promise).resolves.toEqual({ success: true, repetido: true, version: { n: 1 } })
+  })
+
+  it('recusa do servidor sai com a mensagem dele, o status e o corpo', async () => {
+    setAuthProvider(() => ({ role: 'student', sessionToken: 't' }))
+    const { promise, xhr } = await start()
+    xhr.respond(413, { success: false, error: 'O arquivo "a.pdf" passa do limite de 10 MB por arquivo desta tarefa.', code: 'file_too_large' })
+    await expect(promise).rejects.toMatchObject({ status: 413, message: 'O arquivo "a.pdf" passa do limite de 10 MB por arquivo desta tarefa.', data: { code: 'file_too_large' } })
+  })
+
+  it('503 retryable sai com o texto fixo e a marca retryable (pode tentar de novo)', async () => {
+    const { promise, xhr } = await start()
+    xhr.respond(503, { success: false, error: 'Falha', retryable: true })
+    await expect(promise).rejects.toMatchObject({ status: 503, retryable: true, message: RETRYABLE_MESSAGE })
+  })
+
+  it('rede caída no meio do envio: status 0, err.network e a mensagem de conexão', async () => {
+    const { promise, xhr } = await start()
+    xhr.progress(10, 100)
+    xhr.failNetwork()
+    await expect(promise).rejects.toMatchObject({ status: 0, network: true, message: NETWORK_MESSAGE })
+  })
+
+  it('cancelar pelo signal sai como AbortError, sem mensagem de conexão', async () => {
+    const controller = new AbortController()
+    const { promise, xhr } = await start({ signal: controller.signal })
+    controller.abort()
+    expect(xhr.aborted).toBe(true)
+    const err = await promise.catch((e) => e)
+    expect(err.name).toBe('AbortError')
+    expect(err.network).toBeUndefined()
+  })
+
+  it('prazo estourado aborta e sai com err.timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const { promise, xhr } = await start({ timeoutMs: 1000 })
+      const caught = promise.catch((e) => e)
+      vi.advanceTimersByTime(1001)
+      const err = await caught
+      expect(xhr.aborted).toBe(true)
+      expect(err).toMatchObject({ status: 0, timeout: true, message: TIMEOUT_MESSAGE })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('C9 ajuste 2: rede parada sem cair (nada sobe por stallMs) aborta e sai com err.timeout e err.stalled', async () => {
+    vi.useFakeTimers()
+    try {
+      const { promise, xhr } = await start({ stallMs: 1000 })
+      const caught = promise.catch((e) => e)
+      xhr.progress(10, 100)
+      vi.advanceTimersByTime(999)
+      expect(xhr.aborted).toBe(false)
+      vi.advanceTimersByTime(2)
+      const err = await caught
+      expect(xhr.aborted).toBe(true)
+      expect(err).toMatchObject({ status: 0, timeout: true, stalled: true, message: TIMEOUT_MESSAGE })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('C9 ajuste 2: rede lenta mas andando não é parada (cada pedaço recomeça o prazo)', async () => {
+    vi.useFakeTimers()
+    try {
+      const { promise, xhr } = await start({ stallMs: 1000 })
+      for (let step = 1; step <= 10; step += 1) {
+        vi.advanceTimersByTime(900)
+        xhr.progress(step * 10, 100)
+      }
+      expect(xhr.aborted).toBe(false)
+      xhr.respond(201, { success: true, version: { n: 1 } })
+      await expect(promise).resolves.toEqual({ success: true, version: { n: 1 } })
+      // Depois da resposta, o prazo não dispara mais nada.
+      vi.advanceTimersByTime(5000)
+      expect(xhr.aborted).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('C9 ajuste 2: corpo todo enviado (100%) e a resposta que não vem também estoura o prazo sem novidade', async () => {
+    vi.useFakeTimers()
+    try {
+      const { promise, xhr } = await start({ stallMs: 1000 })
+      const caught = promise.catch((e) => e)
+      xhr.progress(100, 100)
+      xhr.upload.onload?.()
+      vi.advanceTimersByTime(1001)
+      const err = await caught
+      expect(xhr.aborted).toBe(true)
+      expect(err).toMatchObject({ status: 0, timeout: true, stalled: true })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('sem stallMs (padrão) o envio parado espera (quem chama decide o prazo)', async () => {
+    vi.useFakeTimers()
+    try {
+      const { xhr } = await start()
+      vi.advanceTimersByTime(10 * 60 * 1000)
+      expect(xhr.aborted).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('troca de senha obrigatória (403) avisa o AuthProvider, como o request()', async () => {
+    const handler = vi.fn()
+    setPasswordChangeRequiredHandler(handler)
+    const { promise, xhr } = await start()
+    xhr.respond(403, { error: 'Troque a senha.', passwordChangeRequired: true })
+    await expect(promise).rejects.toMatchObject({ status: 403 })
+    expect(handler).toHaveBeenCalledWith({ error: 'Troque a senha.', passwordChangeRequired: true })
   })
 })

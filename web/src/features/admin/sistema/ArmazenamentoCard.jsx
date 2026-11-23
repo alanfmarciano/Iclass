@@ -4,13 +4,19 @@
 // dentro do OneDrive. O botão Compactar (VACUUM) é só do administrador, pede COMPACTAR e
 // o servidor recusa com prova em andamento (GET /api/admin/storage, POST
 // /api/admin/storage/compact).
+// Fase 3 (C11 / P1-i): os trabalhos dos alunos (data/entregas, fora do backup): tamanho,
+// arquivos sem registro, os registrados que faltam aqui, os daqui diferentes do registro
+// e a cópia no destino externo
+// (espelho), com "Trazer arquivos do destino externo" para o administrador (POST
+// /api/admin/backup/entregas/recuperar).
 import { useState } from 'react'
-import { AlertTriangle, HardDrive, Minimize2 } from 'lucide-react'
+import { AlertTriangle, Download, HardDrive, Minimize2 } from 'lucide-react'
 import { Card, CardHeader, CardBody } from '../../../components/ui/Card'
 import { Badge } from '../../../components/ui/Badge'
 import { Button } from '../../../components/ui/Button'
 import { Modal } from '../../../components/ui/Modal'
 import { TypedConfirm, typedConfirmMatches } from '../../../components/ui/TypedConfirm'
+import { ConfirmDialog } from '../../../components/ui/ConfirmDialog'
 import { useApi } from '../../../hooks/useApi'
 import { api } from '../../../lib/api'
 import { useToast } from '../../../context/ToastProvider'
@@ -26,6 +32,7 @@ const COLLECTION_LABELS = {
   broadcastMessages: 'Mensagens de prova', questionBank: 'Banco de questões', auditLogs: 'Auditoria', loginLogs: 'Registros de login',
   pedagogicalObservations: 'Observações pedagógicas', attendance: 'Presenças', certificates: 'Certificados', moduleAccess: 'Acessos às apostilas',
   schools: 'Escolas', announcements: 'Avisos', library: 'Biblioteca', examApplications: 'Aplicações de prova', authSessions: 'Sessões abertas',
+  assignments: 'Tarefas', assignmentSubmissions: 'Trabalhos entregues (registros)', assignmentFileTombstones: 'Arquivos de entregas removidos',
 }
 
 const integer = (n) => (Math.round(Number(n) || 0)).toLocaleString('pt-BR')
@@ -128,6 +135,81 @@ export function writeErrorText(error) {
   return code ? `${text} (código ${code})` : text
 }
 
+function countText(n, one, many) {
+  const value = Math.max(0, Math.round(Number(n) || 0))
+  return `${value.toLocaleString('pt-BR')} ${value === 1 ? one : many}`
+}
+
+// "3,2 GB em 1.240 arquivos" ou "Nenhum trabalho enviado ainda."
+export function assignmentFilesText(entregas) {
+  if (!entregas || !Number(entregas.arquivos)) return 'Nenhum trabalho enviado ainda.'
+  return `${formatBytes(entregas.bytes)} em ${countText(entregas.arquivos, 'arquivo', 'arquivos')}`
+}
+
+// Situação da cópia dos trabalhos no destino externo: { tone, text }. tone 'danger' (a
+// última cópia falhou), 'warning' (sem destino, ou arquivos esperando a próxima cópia
+// com o destino desconectado) ou 'ok'.
+export function mirrorStatusText(entregas) {
+  const espelho = entregas && entregas.espelho
+  if (!espelho || !espelho.configurado) {
+    return { tone: 'warning', text: 'Sem destino externo: os trabalhos dos alunos só estão neste computador (o backup não os leva). Escolha um pendrive ou HD externo no cartão Backup.' }
+  }
+  if (espelho.ultimaFalha) {
+    return { tone: 'danger', text: `A última cópia falhou em ${formatWhen(espelho.ultimaFalha.em)}: ${espelho.ultimaFalha.mensagem}` }
+  }
+  const pending = espelho.pendentes
+  if (!espelho.ultimoSucesso && espelho.acessivel === false) {
+    return { tone: 'warning', text: Number(entregas.arquivos) ? 'O destino externo não está acessível agora (pendrive ou HD desconectado, ou pasta removida): os trabalhos dos alunos ainda não têm cópia fora deste computador.' : 'O destino externo não está acessível agora (pendrive ou HD desconectado, ou pasta removida).' }
+  }
+  if (!espelho.ultimoSucesso) {
+    return { tone: 'warning', text: Number(entregas.arquivos) ? 'Ainda sem cópia: ela sai junto com o próximo backup.' : 'Nada para copiar ainda. Os trabalhos vão para o destino junto com o backup diário.' }
+  }
+  const when = formatWhen(espelho.ultimoSucesso)
+  if (pending === null || pending === undefined) {
+    return { tone: 'warning', text: `Última cópia em ${when}. O destino não está conectado agora.` }
+  }
+  // Arquivo daqui diferente do registro: fica de fora da cópia (a de lá é a boa).
+  const different = Number(entregas.diferentes) || 0
+  const left = different ? ` ${countText(different, 'arquivo deste computador ficou', 'arquivos deste computador ficaram')} de fora por não conferir com o registro; a cópia de lá foi mantida.` : ''
+  if (pending > 0) {
+    return { tone: different ? 'warning' : 'ok', text: `Última cópia em ${when}; ${countText(pending, 'arquivo novo espera', 'arquivos novos esperam')} a próxima, junto com o backup.${left}` }
+  }
+  if (different) return { tone: 'warning', text: `Última cópia em ${when}.${left}` }
+  return { tone: 'ok', text: `Em dia (última cópia em ${when}).` }
+}
+
+// Arquivos deste computador que não conferem com o registro da entrega (disco com defeito,
+// programa que alterou o arquivo): o espelho não os copia e mantém a cópia boa do destino.
+export function differentFilesText(entregas) {
+  const n = Math.max(0, Math.round(Number(entregas && entregas.diferentes) || 0))
+  if (!n) return ''
+  const base = `${countText(n, 'arquivo deste computador não confere', 'arquivos deste computador não conferem')} com o que o aluno enviou (registro da entrega): disco com defeito ou programa que ${n === 1 ? 'alterou o arquivo' : 'alterou os arquivos'}.`
+  return entregas.podeRecuperar
+    ? `${base} A cópia do destino externo não foi trocada; "Trazer arquivos do destino externo" põe a cópia conferida no lugar e manda o daqui para a lixeira.`
+    : `${base} A cópia do destino externo não foi trocada.`
+}
+
+// Resultado de "Trazer arquivos do destino externo".
+export function recoverResultText(r) {
+  if (!r) return ''
+  const parts = []
+  const other = Number(r.deOutroComputador) || 0
+  // No computador trocado, os arquivos vêm da cópia feita pelo computador de antes.
+  const fromOther = !other ? '' : other >= r.copiados
+    ? ', da cópia feita em outro computador'
+    : ` (${countText(other, 'deles veio', 'deles vieram')} da cópia feita em outro computador)`
+  const trocados = Number(r.trocados) || 0
+  if (r.copiados) parts.push(`${countText(r.copiados, 'arquivo trazido', 'arquivos trazidos')} do destino externo${fromOther}.`)
+  if (trocados) parts.push(`${countText(trocados, 'arquivo diferente do registro foi trocado', 'arquivos diferentes do registro foram trocados')} pela cópia conferida (o de antes foi para a lixeira).`)
+  if (!r.copiados && !trocados) parts.push('Nenhum arquivo precisou ser trazido.')
+  if (r.faltando) parts.push(`${countText(r.faltando, 'arquivo não está', 'arquivos não estão')} no destino externo.`)
+  if (r.naoTrocados) parts.push(`${countText(r.naoTrocados, 'arquivo diferente do registro continua', 'arquivos diferentes do registro continuam')} aqui: não há cópia conferida dele no destino externo.`)
+  if (r.divergentes) parts.push(`${countText(r.divergentes, 'cópia não conferiu', 'cópias não conferiram')} com o registro e ${r.divergentes === 1 ? 'ficou' : 'ficaram'} de fora.`)
+  return parts.join(' ')
+}
+
+const MIRROR_TONE_CLASS = { danger: 'text-danger', warning: 'text-text font-medium', ok: 'text-text' }
+
 function Row({ label, children }) {
   return (
     <div className="flex flex-col sm:flex-row sm:items-baseline gap-0.5 sm:gap-3 py-1.5 border-b border-border last:border-b-0">
@@ -144,7 +226,11 @@ export function ArmazenamentoCard() {
   const [confirmText, setConfirmText] = useState('')
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState(null)
+  const [recoverOpen, setRecoverOpen] = useState(false)
+  const [recoverResult, setRecoverResult] = useState(null)
   const storage = data?.storage
+  const entregas = data?.entregas
+  const mirror = entregas ? mirrorStatusText(entregas) : null
   const active = Number(data?.activeApplications) || 0
   const top = topCollections(storage?.rows)
 
@@ -174,11 +260,20 @@ export function ArmazenamentoCard() {
     }
   }
 
+  // O ConfirmDialog mostra o erro e fica aberto para tentar de novo.
+  async function recover() {
+    const r = await api.post('/api/admin/backup/entregas/recuperar', {}, { timeoutMs: 0 })
+    setRecoverResult(r)
+    toast.success(recoverResultText(r))
+    setRecoverOpen(false)
+    refetch(true)
+  }
+
   return (
     <Card>
       <CardHeader
         title={<span className="inline-flex items-center gap-2"><HardDrive size={16} /> Armazenamento</span>}
-        subtitle="Tamanho do banco de dados, espaço recuperável e gravação."
+        subtitle="Tamanho do banco de dados, espaço recuperável, gravação e os trabalhos dos alunos."
         action={storage?.compactSuggested ? <Badge tone="info" dot>Vale compactar</Badge> : null}
       />
       <CardBody className="space-y-3">
@@ -207,8 +302,41 @@ export function ArmazenamentoCard() {
             <Row label="Última gravação completa">{lastFullSaveText(storage)}</Row>
             <Row label="Tempo de gravação (p95)">{formatMs(storage.commitP95Ms) || 'ainda sem medida'}</Row>
             {data.diskFreeBytes !== null && data.diskFreeBytes !== undefined && <Row label="Livre no disco">{formatBytes(data.diskFreeBytes)}</Row>}
+            {entregas && <Row label="Trabalhos dos alunos">{assignmentFilesText(entregas)}</Row>}
+            {entregas && <Row label="Cópia no destino externo"><span className={MIRROR_TONE_CLASS[mirror.tone]}>{mirror.text}</span></Row>}
+            {entregas && Number(entregas.semRegistro) > 0 && (
+              <Row label="Arquivos sem registro">
+                {countText(entregas.semRegistro, 'arquivo', 'arquivos')} ({formatBytes(entregas.semRegistroBytes)}) de trabalhos que nenhuma entrega registra (por exemplo, depois de restaurar um backup antigo). Nada é apagado sozinho.
+              </Row>
+            )}
+            {entregas && Number(entregas.diferentes) > 0 && (
+              <Row label="Diferentes do registro">
+                <span className="text-danger">{differentFilesText(entregas)}</span>
+              </Row>
+            )}
+            {entregas && Number(entregas.faltando) > 0 && (
+              <Row label="Faltando neste computador">
+                <span className="text-danger">{countText(entregas.faltando, 'arquivo de entrega registrada não está', 'arquivos de entregas registradas não estão')} neste computador.</span>
+              </Row>
+            )}
           </dl>
         )}
+        {recoverResult && <p className="text-sm text-success" role="status">{recoverResultText(recoverResult)}</p>}
+        {entregas?.podeRecuperar && (
+          <div className="space-y-2 pt-1">
+            <p className="text-xs text-muted">Arquivo de trabalho que sumiu deste computador volta do pendrive ou HD do backup, conferido pelo registro da entrega. Só é trocado o arquivo daqui que não confere com o registro (ele vai para a lixeira).</p>
+            <Button variant="secondary" icon={Download} onClick={() => setRecoverOpen(true)}>Trazer arquivos do destino externo</Button>
+          </div>
+        )}
+        <ConfirmDialog
+          open={recoverOpen}
+          onClose={() => setRecoverOpen(false)}
+          onConfirm={recover}
+          title="Trazer arquivos do destino externo?"
+          message="O IClass copia de volta para este computador os arquivos de entregas que estão faltando aqui, conferindo cada um pelo registro da entrega. Se este computador substituiu outro, ele procura também na cópia que o computador de antes deixou no mesmo pendrive ou HD. O arquivo daqui que não confere com o registro da entrega vai para a lixeira e a cópia conferida toma o lugar; os outros não são substituídos, e o que foi tirado ao anonimizar ou apagar um aluno não volta."
+          confirmLabel="Trazer arquivos"
+          tone="primary"
+        />
         {result && <p className="text-sm text-success" role="status">{compactResultText(result)}</p>}
         {data?.canCompact && (
           <div className="space-y-2 pt-1">

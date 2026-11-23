@@ -13,6 +13,7 @@ import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { useAuth } from '../../context/AuthProvider'
 import { compareOrdinal } from '../../lib/textSearch'
 import { ReleaseScheduleDialog, cancelReleaseSchedule, releaseScheduleText } from './ReleaseSchedule'
+import { PreviewButton } from './PreviewLauncher'
 
 const TYPE_ICON = { 'Apostila': BookOpen, 'Prova online': ClipboardList, 'Gabarito': FileCheck2 }
 
@@ -212,10 +213,14 @@ export default function MateriaisPage() {
   return (
     <div className="max-w-6xl mx-auto space-y-6">
       <PageHeader title="Materiais e liberação" subtitle={`Libere apostilas, provas e gabaritos · ${courseName || courseId} · ${className}`}>
-        {className && modules.length > 0 && (
-          <div className="flex gap-2">
-            <Button size="sm" variant="secondary" icon={Unlock} onClick={() => setAll(true)}>Liberar todas as apostilas</Button>
-            <Button size="sm" variant="secondary" icon={Lock} onClick={() => setAll(false)}>Bloquear tudo</Button>
+        {className && (
+          <div className="flex flex-wrap gap-2">
+            {/* Ver como aluno (fase 3, C15 / P5-S6b): o portal da turma com a liberação de agora. */}
+            <PreviewButton courseId={courseId} studentClass={className} courseName={courseName} />
+            {modules.length > 0 && <>
+              <Button size="sm" variant="secondary" icon={Unlock} onClick={() => setAll(true)}>Liberar todas as apostilas</Button>
+              <Button size="sm" variant="secondary" icon={Lock} onClick={() => setAll(false)}>Bloquear tudo</Button>
+            </>}
           </div>
         )}
       </PageHeader>

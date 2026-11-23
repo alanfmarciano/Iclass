@@ -748,3 +748,71 @@ test('[UC-AUDITORIA-002] critérios, plano da turma e avaliação manual ficam n
     assert.equal((await professor(request(app).post('/api/admin/grading/preview')).send({ courseId: COURSE, studentClass: '1DES', criterios: { mediaMinima: 7 } })).status, 200);
     assert.equal(db.memory.auditLogs.length, before);
 });
+
+// Grupos de alunos (fase 3, C12 / P5-S4, CRIT-11): criar, alterar (com quem entrou e
+// saiu), arquivar, reativar e sortear ficam na trilha, na categoria 'academic', com o
+// curso e a turma do grupo e o professor como ator. Alterar sem mudar nada não grava.
+test('[UC-GRUPO-001] grupos: criar, alterar, arquivar, reativar e sortear ficam na trilha', async () => {
+    db.memory.classGroups = [];
+    db.memory.students.push({ name: 'Bia', email: 'bia@cobertura.local', status: 'Ativo', password: db.hashPassword('123'), classes: [{ name: '1DES', courseId: COURSE }] });
+    const created = await professor(request(app).post('/api/admin/class-groups')).send({ courseId: COURSE, studentClass: '1DES', nome: 'Equipe 1', membros: ['ana@cobertura.local'] });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const id = created.body.grupo.id;
+    const updated = await professor(request(app).post(`/api/admin/class-groups/${id}/update`)).send({ adicionar: ['bia@cobertura.local'], atualizadoEm: created.body.grupo.atualizadoEm });
+    assert.equal(updated.status, 200, JSON.stringify(updated.body));
+    assert.deepEqual(last('class_group_updated').details.adicionados, ['bia@cobertura.local']);
+    const before = db.memory.auditLogs.length;
+    const same = await professor(request(app).post(`/api/admin/class-groups/${id}/update`)).send({ nome: 'Equipe 1', atualizadoEm: updated.body.grupo.atualizadoEm });
+    assert.equal(same.status, 200, JSON.stringify(same.body));
+    assert.equal(same.body.changed, false);
+    assert.equal(db.memory.auditLogs.length, before, 'sem mudança, sem entrada');
+    assert.equal((await professor(request(app).post(`/api/admin/class-groups/${id}/archive`)).send({ motivo: 'Fim do projeto' })).status, 200);
+    assert.equal(last('class_group_archived').details.motivo, 'Fim do projeto');
+    assert.equal((await professor(request(app).post(`/api/admin/class-groups/${id}/restore`)).send({})).status, 200);
+    const proposal = await professor(request(app).post('/api/admin/class-groups/draw')).send({ courseId: COURSE, studentClass: '1DES', conjunto: 'Seminário', criterio: 'quantidade', valor: 2 });
+    assert.equal(proposal.status, 200, JSON.stringify(proposal.body));
+    const drawn = await professor(request(app).post('/api/admin/class-groups/draw')).send({ courseId: COURSE, studentClass: '1DES', conjunto: 'Seminário', criterio: 'quantidade', valor: 2, semente: proposal.body.semente, assinatura: proposal.body.assinatura, confirmar: true });
+    assert.equal(drawn.status, 201, JSON.stringify(drawn.body));
+    for (const action of ['class_group_created', 'class_group_updated', 'class_group_archived', 'class_group_restored', 'class_groups_drawn']) {
+        const entry = last(action);
+        assert.ok(entry, action);
+        assert.equal(entry.category, 'academic', action);
+        assert.equal(entry.courseId, COURSE, action);
+        assert.equal(entry.studentClass, '1DES', action);
+        assert.equal(entry.actor, 'prof@cobertura.local', action);
+    }
+    assert.equal(last('class_groups_drawn').details.semente, proposal.body.semente);
+});
+
+// Conversas com professores (fase 3, C13 / P5-S7a, FUN-14): encerrar e reabrir ficam na
+// trilha do aluno (categoria 'student', com o curso, a turma e o e-mail dele), e a leitura
+// pela administração de conversa de outro professor fica na de privacidade. Mensagem não
+// entra na trilha (o texto fica só na conversa).
+test('[UC-MENSAGEM-002] mensagens: encerrar, reabrir e a leitura pela administração ficam na trilha; mensagem não', async () => {
+    db.memory.conversations = [];
+    db.memory.conversationMessages = [];
+    const started = await professor(request(app).post('/api/admin/conversations')).send({ courseId: COURSE, studentClass: '1DES', studentEmail: 'ana@cobertura.local', assunto: 'Recuperação', texto: 'Ana, vamos combinar a recuperação?' });
+    assert.equal(started.status, 201, JSON.stringify(started.body));
+    const id = started.body.conversa.id;
+    assert.equal(db.memory.auditLogs.filter(entry => /^conversation_/.test(entry.action)).length, 0, 'mensagem não entra na trilha');
+    assert.equal((await professor(request(app).post(`/api/admin/conversations/${id}/close`)).send({ motivo: 'Combinado em sala' })).status, 200);
+    assert.equal((await professor(request(app).post(`/api/admin/conversations/${id}/reopen`)).send({})).status, 200);
+    for (const action of ['conversation_closed', 'conversation_reopened']) {
+        const entry = last(action);
+        assert.ok(entry, action);
+        assert.equal(entry.category, 'student', action);
+        assert.equal(entry.studentEmail, 'ana@cobertura.local', action);
+        assert.equal(entry.courseId, COURSE, action);
+        assert.equal(entry.studentClass, '1DES', action);
+        assert.equal(entry.actor, 'prof@cobertura.local', action);
+        assert.equal(entry.details.conversationId, id, action);
+    }
+    assert.equal(last('conversation_closed').details.motivo, 'Combinado em sala');
+    assert.equal((await admin(request(app).get(`/api/admin/conversations/${id}/messages`))).status, 403);
+    assert.equal((await admin(request(app).post(`/api/admin/conversations/${id}/admin-open`)).send({})).status, 200);
+    const opened = last('conversation_read_by_admin');
+    assert.equal(opened.category, 'privacy');
+    assert.equal(opened.actor, 'admin@cobertura.local');
+    assert.equal(opened.details.conversationId, id);
+    assert.equal((await admin(request(app).get(`/api/admin/conversations/${id}/messages`))).status, 200);
+});

@@ -5,6 +5,7 @@ import { ThemeToggle } from '../ui/ThemeToggle'
 import { cn } from '../../lib/cn'
 import { ConnectionStatus } from './ConnectionStatus'
 import { AccountMenu } from './AccountMenu'
+import { navBadgeLabel } from '../../lib/messageCounter'
 
 function initials(value = '') {
   return value
@@ -13,6 +14,21 @@ function initials(value = '') {
     .slice(0, 2)
     .map((part) => part[0]?.toUpperCase())
     .join('') || 'IC'
+}
+
+// Número de um item que está na barra de cima ou na de baixo (Mensagens do professor no
+// modo instituição, que fica entre os 4 primeiros). Antes só o menu completo desenhava o
+// número, e o "Mais" só soma os itens escondidos: o aviso não aparecia em lugar nenhum
+// (revisão do C14, rodada 2).
+function NavCount({ item, className }) {
+  const count = Number(item.badge) || 0
+  if (count <= 0) return null
+  return (
+    <>
+      <b aria-hidden="true" className={cn(className, item.badgeTone === 'primary' ? 'bg-primary text-primary-fg' : 'bg-warning text-white')}>{count > 99 ? '99+' : count}</b>
+      <span className="sr-only">{`, ${navBadgeLabel(item)}`}</span>
+    </>
+  )
 }
 
 export function LumenShell({
@@ -28,6 +44,13 @@ export function LumenShell({
   accountMenu = null,
   pathname,
   onLogout,
+  // Texto do botão de sair (a pré-visualização como aluno usa 'Sair da pré-visualização').
+  logoutLabel = 'Sair',
+  // Faixa acima do cabeçalho, no fluxo da página (pré-visualização como aluno, C15).
+  banner = null,
+  // { to, label, text, icon }: botão de busca no cabeçalho, ao lado do sino, visível
+  // também no celular (Busca do aluno, C16 / P5-S2). text é o nome da tela no topo.
+  searchAction = null,
   children,
 }) {
   const [menuOpen, setMenuOpen] = useState(false)
@@ -36,9 +59,15 @@ export function LumenShell({
   const menuPanelRef = useRef(null)
   const allItems = useMemo(() => navGroups.flatMap((group) => group.items), [navGroups])
   const primaryItems = allItems.slice(0, 4)
+  // Número de algum item que só está no menu completo (Mensagens, Matrículas): o botão
+  // "Mais" do celular e o do menu completo no computador ganham um ponto, para o aviso não
+  // ficar escondido.
+  const hiddenBadge = allItems.slice(4).reduce((sum, item) => sum + (Number(item.badge) > 0 ? Number(item.badge) : 0), 0)
   const activeItem = [...allItems]
     .sort((a, b) => b.to.length - a.to.length)
     .find((item) => item.end ? pathname === item.to : pathname === item.to || pathname.startsWith(`${item.to}/`))
+  const onSearchPage = !!(searchAction && pathname === searchAction.to)
+  const activeLabel = onSearchPage ? searchAction.text : activeItem?.text
 
   const closeMenu = (restoreFocus = true) => {
     setMenuOpen(false)
@@ -79,6 +108,7 @@ export function LumenShell({
     <div className="lumen-shell app-canvas h-full text-text">
       <a className="lumen-skip-link" href="#lumen-main" aria-hidden={menuOpen ? 'true' : undefined} tabIndex={menuOpen ? -1 : undefined}>Ir para o conteúdo</a>
 
+      {banner}
       <header className="lumen-topbar" aria-hidden={menuOpen ? 'true' : undefined} inert={menuOpen ? '' : undefined}>
         <div className="lumen-brand">
           {logo ? (
@@ -102,6 +132,7 @@ export function LumenShell({
             >
               <item.icon size={17} aria-hidden="true" />
               <span>{item.text}</span>
+              <NavCount item={item} className="lumen-nav-count" />
             </NavLink>
           ))}
         </nav>
@@ -112,6 +143,11 @@ export function LumenShell({
               {contextAction.icon && <contextAction.icon size={16} aria-hidden="true" />}
               <span>{contextAction.label}</span>
             </button>
+          )}
+          {searchAction && (
+            <NavLink to={searchAction.to} aria-label={searchAction.label} title={searchAction.label} className={({ isActive }) => cn('lumen-icon-button lumen-search-action', isActive && 'is-active')}>
+              {searchAction.icon && <searchAction.icon size={19} aria-hidden="true" />}
+            </NavLink>
           )}
           {notifications}
           <ThemeToggle />
@@ -133,16 +169,17 @@ export function LumenShell({
               <span className="lumen-profile-copy"><strong>{userName || 'Usuário'}</strong><span>{userDetail}</span></span>
             </div>
           )}
-          <button type="button" className="lumen-icon-button lumen-logout" onClick={onLogout} aria-label="Sair"><LogOut size={18} /></button>
+          <button type="button" className="lumen-icon-button lumen-logout" onClick={onLogout} aria-label={logoutLabel}><LogOut size={18} /></button>
           <button
             type="button"
             className={cn('lumen-icon-button lumen-menu-trigger', menuOpen && 'is-active')}
             onClick={toggleMenu}
             aria-expanded={menuOpen}
             aria-controls="lumen-navigation-panel"
-            aria-label="Abrir todos os módulos"
+            aria-label={hiddenBadge > 0 ? 'Abrir todos os módulos (há novidades no menu)' : 'Abrir todos os módulos'}
           >
             <Menu size={20} />
+            {hiddenBadge > 0 && <i aria-hidden="true" className="lumen-more-dot" />}
           </button>
         </div>
       </header>
@@ -152,7 +189,7 @@ export function LumenShell({
           <button type="button" className="lumen-menu-backdrop" onClick={() => closeMenu()} aria-hidden="true" tabIndex="-1" />
           <aside ref={menuPanelRef} id="lumen-navigation-panel" className="lumen-menu-panel" role="dialog" aria-modal="true" aria-label="Todos os módulos">
             <div className="lumen-menu-head">
-              <div><span>Menu completo</span><strong>{activeItem?.text || conceptLabel}</strong></div>
+              <div><span>Menu completo</span><strong>{activeLabel || conceptLabel}</strong></div>
               <button ref={closeButtonRef} type="button" className="lumen-icon-button" onClick={() => closeMenu()} aria-label="Fechar menu"><X size={20} /></button>
             </div>
             <nav className="lumen-menu-groups" aria-label="Todos os módulos">
@@ -169,7 +206,7 @@ export function LumenShell({
                     >
                       <span className="lumen-menu-icon"><item.icon size={17} aria-hidden="true" /></span>
                       <span>{item.text}</span>
-                      {item.badge > 0 && <span className="ml-auto rounded-full bg-warning px-2 py-0.5 text-[10px] font-bold text-white">{item.badge}</span>}
+                      {item.badge > 0 && <><span aria-hidden="true" className={cn('ml-auto rounded-full px-2 py-0.5 text-[10px] font-bold', item.badgeTone === 'primary' ? 'bg-primary text-primary-fg' : 'bg-warning text-white')}>{item.badge > 99 ? '99+' : item.badge}</span><span className="sr-only">{`, ${navBadgeLabel(item)}`}</span></>}
                     </NavLink>
                   ))}
                 </section>
@@ -177,7 +214,7 @@ export function LumenShell({
             </nav>
             <div className="lumen-menu-footer">
               <ConnectionStatus variant="lumen" />
-              <button type="button" onClick={onLogout}><LogOut size={15} /> Sair</button>
+              <button type="button" onClick={onLogout}><LogOut size={15} /> {logoutLabel}</button>
             </div>
           </aside>
         </div>
@@ -186,7 +223,7 @@ export function LumenShell({
       <main id="lumen-main" className="lumen-main" tabIndex="-1" aria-hidden={menuOpen ? 'true' : undefined} inert={menuOpen ? '' : undefined}>
         <div className="lumen-page-context" aria-hidden="true">
           <span>{conceptLabel}</span>
-          <strong>{activeItem?.text || 'Visão geral'}</strong>
+          <strong>{activeLabel || 'Visão geral'}</strong>
         </div>
         {children}
       </main>
@@ -197,21 +234,24 @@ export function LumenShell({
             key={item.to}
             to={item.to}
             end={item.end}
-            className={({ isActive }) => cn(isActive && 'is-active')}
+            className={({ isActive }) => cn('relative', isActive && 'is-active')}
           >
             <item.icon size={19} aria-hidden="true" />
             <span>{item.text}</span>
+            <NavCount item={item} className="lumen-bottom-count" />
           </NavLink>
         ))}
         <button
           type="button"
           onClick={openMenu}
-          className={menuOpen ? 'is-active' : ''}
+          className={cn('relative', menuOpen && 'is-active')}
+          aria-label={hiddenBadge > 0 ? 'Mais (há novidades no menu)' : undefined}
           aria-expanded={menuOpen}
           aria-controls="lumen-navigation-panel"
         >
           <Menu size={20} aria-hidden="true" />
           <span>Mais</span>
+          {hiddenBadge > 0 && <i aria-hidden="true" className="lumen-more-dot" />}
         </button>
       </nav>
     </div>

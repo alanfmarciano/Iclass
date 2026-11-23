@@ -70,6 +70,14 @@ describe('[UC-PAPEIS-004] permissões da tela pela lista do servidor', () => {
     expect(ADMIN_PATH_PERMISSIONS['/matriculas']).toBe('enrollments.approve')
   })
 
+  it('Tarefas (/tarefas) pede page.assignments, a permissão das rotas de tarefa', () => {
+    expect(ADMIN_PATH_PERMISSIONS['/tarefas']).toBe('page.assignments')
+    expect(canAccessAdminPath({ accountRole: 'professor', effectivePermissions: ['page.dashboard', 'page.assignments'] }, '/tarefas')).toBe(true)
+    // Antes do C7 o caminho não estava na lista e abria para qualquer conta do painel.
+    expect(canAccessAdminPath({ accountRole: 'monitor', effectivePermissions: ['page.dashboard', 'page.monitor'] }, '/tarefas')).toBe(false)
+    expect(canAccessAdminPath({ accountRole: 'secretaria', effectivePermissions: ['page.dashboard', 'page.students'] }, '/tarefas')).toBe(false)
+  })
+
   it('adminAccountFields guarda o que o whoami manda (nome, lista, escopo, só consulta, rótulo)', () => {
     const fields = adminAccountFields({ name: 'Rita', role: 'coordenacao', effectivePermissions: ['page.dashboard'], scopeKind: 'escolas', readOnly: true, roleLabel: 'Coordenação', assignedSchoolIds: ['e1'] })
     expect(fields).toMatchObject({ name: 'Rita', accountRole: 'coordenacao', effectivePermissions: ['page.dashboard'], scopeKind: 'escolas', readOnly: true, roleLabel: 'Coordenação', assignedSchoolIds: ['e1'] })

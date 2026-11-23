@@ -1,11 +1,12 @@
 import { NavLink } from 'react-router-dom'
-import { LayoutDashboard, MonitorPlay, ClipboardList, BarChart3, Unlock, PenLine, Users, UserCheck, KeyRound, MessagesSquare, Palette, Settings, GraduationCap, Building2, School, LayoutGrid, ClipboardCheck, Megaphone, FolderOpen, CalendarDays, Sparkles, ScrollText, ShieldCheck, QrCode, Archive, CircleHelp } from 'lucide-react'
+import { LayoutDashboard, MonitorPlay, ClipboardList, BarChart3, Unlock, PenLine, Users, UserCheck, KeyRound, MessagesSquare, Palette, Settings, GraduationCap, Building2, School, LayoutGrid, ClipboardCheck, Megaphone, FolderOpen, CalendarDays, Sparkles, ScrollText, ShieldCheck, QrCode, Archive, CircleHelp, FileUp, Mail } from 'lucide-react'
 import { cn } from '../../lib/cn'
 import { useAuth } from '../../context/AuthProvider'
 import { ADMIN_PERMISSIONS, canAccessAdminPath, canAccessAdminPermission, isFullAdmin } from '../../lib/adminPermissions'
 import { useBranding } from '../../context/BrandingProvider'
 import { useApi } from '../../hooks/useApi'
 import { ConnectionStatus } from './ConnectionStatus'
+import { navBadgeLabel, useMessageCount } from '../../lib/messageCounter'
 
 // Ajuda (fase 3, A1 / P6-S9, OPS-13): o último grupo dos dois menus, para toda conta do
 // painel (sem permissão própria). /ajuda abre com ou sem curso escolhido
@@ -25,6 +26,8 @@ const COURSE_GROUPS = [
   { label: 'Avaliações', items: [
     { to: '/provas', icon: ClipboardList, text: 'Provas' },
     { to: '/monitor', icon: MonitorPlay, text: 'Monitor Online' },
+    // Tarefas com envio de arquivo (fase 3, C7 / P1-e; FUN-01): page.assignments.
+    { to: '/tarefas', icon: FileUp, text: 'Tarefas' },
     { to: '/resultados', icon: BarChart3, text: 'Resultados' },
   ] },
   { label: 'Conteúdo', items: [
@@ -38,6 +41,11 @@ const COURSE_GROUPS = [
     { to: '/avisos', icon: Megaphone, text: 'Avisos' },
     { to: '/calendario', icon: CalendarDays, text: 'Calendário' },
     { to: '/forum', icon: MessagesSquare, text: 'Fórum & Dúvidas' },
+    // Mensagens particulares com os alunos (fase 3, C14 / P5-S7b; FUN-14): page.messages.
+    // O número é o de conversas com mensagem nova de aluno, lido do sino. O desenho dizia
+    // "em Comunicação", grupo que não existe neste menu: fica em Gestão, ao lado de Avisos
+    // e Fórum, sem mexer na ordem que o professor já conhece.
+    { to: '/mensagens', icon: Mail, text: 'Mensagens' },
   ] },
   HELP_GROUP,
 ]
@@ -48,6 +56,9 @@ const INSTITUTION_GROUPS = [
     { to: '/turmas', icon: School, text: 'Cursos e turmas' },
     { to: '/diretorio', icon: Users, text: 'Alunos' },
     { to: '/encerrados', icon: Archive, text: 'Cadastros encerrados', adminOnly: true },
+    // Mensagens também sem turma escolhida (revisão do C14): "Todas as minhas turmas" e,
+    // para o administrador, "Todas da escola" (AdminCourseGate INSTITUTION_PATHS).
+    { to: '/mensagens', icon: Mail, text: 'Mensagens' },
   ] },
   { label: 'Instituição', items: [
     { to: '/escolas', icon: Building2, text: 'Escolas' },
@@ -60,13 +71,17 @@ const INSTITUTION_GROUPS = [
   HELP_GROUP,
 ]
 
-export function getAdminNavGroups(auth, pendingEnrollments = 0) {
+export function getAdminNavGroups(auth, pendingEnrollments = 0, newMessages = 0) {
   const baseGroups = auth.activeWorkspace?.courseId && auth.activeWorkspace?.className ? COURSE_GROUPS : INSTITUTION_GROUPS
   return baseGroups
     .map((group) => ({ ...group, items: group.items
       // adminOnly: só o administrador pleno (contrato C2 do P4), além da permissão do caminho.
       .filter((item) => (!item.adminOnly || isFullAdmin(auth)) && (item.always || canAccessAdminPath(auth, item.to)))
-      .map((item) => item.to === '/matriculas' ? { ...item, badge: pendingEnrollments } : item) }))
+      .map((item) => {
+        if (item.to === '/matriculas') return { ...item, badge: pendingEnrollments }
+        if (item.to === '/mensagens') return { ...item, badge: newMessages, badgeTone: 'primary' }
+        return item
+      }) }))
     .filter((group) => group.items.length > 0)
 }
 
@@ -78,7 +93,8 @@ export function Sidebar({ open, onNavigate }) {
   const inCourse = !!(auth.activeWorkspace?.courseId && auth.activeWorkspace?.className)
   const enrollmentPath = inCourse && canAccessAdminPermission(auth, ADMIN_PERMISSIONS.ENROLLMENTS_APPROVE) ? `/api/admin/enrollment-requests?courseId=${encodeURIComponent(auth.activeWorkspace.courseId)}&studentClass=${encodeURIComponent(auth.activeWorkspace.className)}` : null
   const enrollments = useApi(enrollmentPath, [auth.activeWorkspace?.courseId, auth.activeWorkspace?.className], { pollMs: 15000 })
-  const visibleGroups = getAdminNavGroups(auth, enrollments.data?.pendingCount || 0)
+  const newMessages = useMessageCount()
+  const visibleGroups = getAdminNavGroups(auth, enrollments.data?.pendingCount || 0, newMessages)
 
   return (
     <aside aria-hidden={!open ? 'true' : undefined} inert={!open ? '' : undefined} className={cn('fixed inset-y-0 left-0 z-40 flex w-[272px] shrink-0 flex-col overflow-hidden border-r border-border bg-[var(--sidebar)] backdrop-blur-2xl transition-transform duration-300 md:static md:translate-x-0', open ? 'translate-x-0' : '-translate-x-full')}>
@@ -101,7 +117,7 @@ export function Sidebar({ open, onNavigate }) {
               <NavLink key={it.to} to={it.to} end={it.end} onClick={onNavigate}
                 className={({ isActive }) => cn('group mb-1 flex items-center gap-3 rounded-xl px-3 py-2.5 text-[13px] transition-all duration-300',
                   isActive ? 'bg-primary-soft font-semibold text-text shadow-[inset_0_0_0_1px_var(--primary-soft)]' : 'text-muted hover:bg-surface-2 hover:text-text')}>
-                {({ isActive }) => <><span className={cn('grid h-7 w-7 place-items-center rounded-lg transition-colors', isActive ? 'bg-primary text-primary-fg' : 'text-subtle group-hover:text-text')}><it.icon size={16} /></span><span className="truncate">{it.text}</span>{it.badge > 0 ? <span className="ml-auto rounded-full bg-warning px-2 py-0.5 text-[10px] font-bold text-white">{it.badge}</span> : isActive && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-primary" />}</>}
+                {({ isActive }) => <><span className={cn('grid h-7 w-7 place-items-center rounded-lg transition-colors', isActive ? 'bg-primary text-primary-fg' : 'text-subtle group-hover:text-text')}><it.icon size={16} /></span><span className="truncate">{it.text}</span>{it.badge > 0 ? <><span aria-hidden="true" className={cn('ml-auto rounded-full px-2 py-0.5 text-[10px] font-bold', it.badgeTone === 'primary' ? 'bg-primary text-primary-fg' : 'bg-warning text-white')}>{it.badge > 99 ? '99+' : it.badge}</span><span className="sr-only">{`, ${navBadgeLabel(it)}`}</span></> : isActive && <span className="ml-auto h-1.5 w-1.5 rounded-full bg-primary" />}</>}
               </NavLink>
             ))}
           </div>

@@ -125,7 +125,7 @@ const MESSAGES = Object.freeze({
     archived: 'Esta tarefa está arquivada. Reative a tarefa para alterar.',
     archivedPublish: 'Esta tarefa está arquivada. Reative a tarefa antes de publicar.',
     otherClass: 'A turma de uma tarefa não muda. Para usar a tarefa em outra turma, use "Copiar para outra turma".',
-    reason: `Esta tarefa já tem entregas. Para mudar a abertura, o prazo ou o encerramento, informe o motivo (de ${LIMITS.reasonMin} a ${LIMITS.reasonMax} caracteres).`,
+    reason: `Esta tarefa já tem entrega ou nota de aluno. Para mudar a abertura, o prazo ou o encerramento, informe o motivo (de ${LIMITS.reasonMin} a ${LIMITS.reasonMax} caracteres).`,
     confirm: 'Digite EXCLUIR para confirmar.',
     hasSubmissions: 'Esta tarefa já tem entregas ou registros de alunos e não pode ser excluída. Arquive a tarefa para ela sumir para os alunos.',
     penaltyPerDay: 'Com desconto por atraso, informe o desconto por dia (de 1% a 100%).',
@@ -137,6 +137,8 @@ const MESSAGES = Object.freeze({
     submissionNotFound: 'Entrega não encontrada nesta tarefa.',
     fileNotFound: 'Arquivo não encontrado nesta tarefa.',
     fileMissing: 'Este arquivo não está mais no computador. Se houver cópia no destino externo do backup, ele pode ser trazido de volta em Sistema.',
+    // Anonimização do aluno (C10, D14): o arquivo saiu de propósito, não sumiu.
+    fileRemoved: 'Este arquivo foi tirado da entrega quando o cadastro do aluno foi anonimizado (proteção de dados). Ele foi para a lixeira de arquivos, que só o administrador vê.',
     readFailed: 'Não foi possível ler o arquivo agora. Tente de novo em alguns segundos.',
     exportFailed: 'Não foi possível montar o ZIP das entregas agora. Tente de novo em alguns segundos.',
     gradeRequired: 'Informe a nota (de 0 a 10).',
@@ -249,6 +251,11 @@ const SCHEMAS = {
         waivePenalty: bool({ label: 'dispensar desconto' }),
     }),
     exportQuery: shape({ versoes: oneOf(assignmentExport.EXPORT_VERSIONS, { label: 'versões' }) }),
+    // Formulário (C7)
+    formOptions: shape({
+        courseId: str({ max: 100, required: true, label: 'curso' }),
+        studentClass: str({ max: 200, required: true, label: 'turma' }),
+    }),
 };
 
 // ------------------------------------------------------------ apoio
@@ -510,12 +517,95 @@ function presentAssignment(memory, raw, { tz, full = true } = {}) {
         archivedBy: task.archivedBy,
         local: localFields(task, tz),
         counts: assignments.assignmentStatusSummary(memory, task),
+        // A mesma regra do POST /:id/delete: qualquer linha de aluno (nota sem envio,
+        // prorrogação, entrega em mãos) segura a tarefa. A lista só mostra "Excluir" com true.
+        deletable: assignments.submissionsForAssignment(memory, task.id).length === 0,
+        // A mesma regra do POST /:id/update: com versão, entrega em mãos ou nota de algum
+        // aluno, mudar prazo, abertura ou encerramento pede o motivo. O formulário mostra o
+        // campo do motivo já com true (nota sem envio também conta, sem contar em enviadas).
+        deadlineReasonRequired: deliveredSubmissions(memory, task.id).length > 0,
     };
     if (full) {
         out.instructions = task.instructions;
         out.libraryIds = task.libraryIds;
     }
     return out;
+}
+
+// Opções do formulário da tarefa na tela (C7 / P1-e): o catálogo de tipos de arquivo com
+// o nome em português e as extensões (a mesma lista que o envio do aluno confere), os
+// limites dos campos (o teto do tamanho por arquivo é o de settings.entregas, D17), os
+// padrões de uma tarefa nova e, da turma, os módulos com as unidades e os materiais da
+// Biblioteca que o aluno da turma vê (os únicos que a gravação aceita). A unidade leva a
+// chave principal (apostila, senão avaliação, senão a própria) e todas as chaves que a
+// gravação aceita para ela (keys), para a tela reconhecer a tarefa gravada com outra.
+function formOptions(cls) {
+    const ceiling = perFileCeilingMb();
+    const entregas = settingsUtil.getSettings().entregas || {};
+    const perSubmission = Math.floor(Number(entregas.maxMbPorEnvio));
+    const modules = structureOf(cls.courseId, cls.name)
+        .filter(module => module && module.id !== undefined && module.id !== null && String(module.id) !== '')
+        .map(module => ({
+            id: String(module.id),
+            name: String(module.name || module.title || module.id),
+            units: (module.units || module.items || [])
+                .filter(unit => unit && typeof unit === 'object')
+                .map(unit => {
+                    const keys = [unit.apostilaKey, unit.avaliacaoKey, unit.key].filter(key => typeof key === 'string' && key && KEY_PATTERN.test(key));
+                    return keys.length ? { key: keys[0], keys: [...new Set(keys)], name: String(unit.name || unit.title || keys[0]) } : null;
+                })
+                .filter(Boolean),
+        }));
+    const library = visibleLibraryEntries(db.memory.library || [], cls.courseId, cls.name)
+        .filter(entry => entry && entry.id !== undefined && entry.id !== null && String(entry.id) !== '')
+        .map(entry => ({
+            id: String(entry.id),
+            name: String(entry.name || entry.title || entry.originalName || entry.id),
+            kind: String(entry.kind || ''),
+            moduleId: String(entry.moduleId || ''),
+        }));
+    return {
+        courseId: cls.courseId,
+        studentClass: cls.name,
+        timezone: timezone(),
+        serverNow: Date.now(),
+        fileTypes: assignmentFiles.FILE_TYPE_KEYS.map(key => ({
+            key,
+            label: assignmentFiles.ASSIGNMENT_FILE_TYPES[key].label,
+            extensions: [...assignmentFiles.ASSIGNMENT_FILE_TYPES[key].extensions],
+        })),
+        // Executáveis nunca entram, nem como formato do curso (a tela avisa antes de mandar).
+        blockedExtensions: [...assignmentFiles.BLOCKED_EXECUTABLES],
+        lateModes: [...assignments.LATE_MODES],
+        limits: {
+            titleMin: LIMITS.titleMin,
+            titleMax: LIMITS.titleMax,
+            instructionsMax: LIMITS.instructionsMax,
+            libraryIdsMax: LIMITS.libraryIdsMax,
+            maxFilesMin: LIMITS.maxFilesMin,
+            maxFilesMax: LIMITS.maxFilesMax,
+            maxSizeMbMin: LIMITS.maxSizeMbMin,
+            maxSizeMbMax: ceiling,
+            maxMbPorEnvio: Number.isFinite(perSubmission) && perSubmission >= 1 ? perSubmission : null,
+            extraExtensionsMax: assignmentFiles.EXTRA_EXTENSIONS_MAX,
+            reasonMin: LIMITS.reasonMin,
+            reasonMax: LIMITS.reasonMax,
+        },
+        defaults: {
+            response: { ...assignments.DEFAULT_RESPONSE },
+            files: {
+                maxFiles: assignments.DEFAULT_FILE_RULES.maxFiles,
+                maxSizeMb: Math.min(assignments.DEFAULT_FILE_RULES.maxSizeMb, ceiling),
+                types: [...assignments.DEFAULT_FILE_RULES.types],
+                extraExtensions: [...assignments.DEFAULT_FILE_RULES.extraExtensions],
+            },
+            latePolicy: { ...assignments.DEFAULT_LATE_POLICY },
+            countsInAverage: true,
+            dueTime: '23:59',
+        },
+        modules,
+        library,
+    };
 }
 
 // Cópia da tarefa para a auditoria (sem contagens nem campos calculados).
@@ -795,8 +885,10 @@ function presentAdminSubmission(task, raw, student = null) {
                 ext: file.ext,
                 category: file.category,
                 comprovante: assignments.fileReceiptCode(file),
-                preview: assignmentFiles.previewKind(file),
+                preview: file.removedAt ? null : assignmentFiles.previewKind(file),
                 missing: !assignmentFiles.storedFileExists(file),
+                // Tirado na anonimização do aluno (C10): a tela diz isso, não "sumiu".
+                removed: !!file.removedAt,
             })),
         })),
         grade: presentGrade(sub.grade),
@@ -892,6 +984,21 @@ function createAdminAssignmentsRouter() {
         if (publish) audit(req, account, 'assignment_published', record, { details: { id: record.id, opensAt: record.opensAt } });
         await db.save({ only: ['assignments', 'auditLogs'] });
         res.status(201).json({ success: true, assignment: presentAssignment(db.memory, record, { tz }) });
+    }));
+
+    // Opções do formulário (C7 / P1-e). Declarada antes de '/:id' para não virar uma tarefa
+    // chamada "form-options".
+    router.get('/api/admin/assignments/form-options', (req, res) => validateAdmin(req, res, (config, account) => {
+        const query = { ...(req.query || {}) };
+        const checked = SCHEMAS.formOptions.run(query, '', 'filtro');
+        if (!checked.ok) return sendFieldError(res, checked.error, checked.field);
+        const target = findTargetClass(String(query.courseId).trim(), String(query.studentClass).trim());
+        if (!target) return sendFieldError(res, MESSAGES.classNotFound, 'studentClass', { status: 404 });
+        const { cls } = target;
+        if (!adminCanAccessClass(account, cls.name, cls.courseId)) {
+            return sendFieldError(res, outOfScopeMessage(account, 'A turma solicitada'), 'studentClass', { status: 403 });
+        }
+        res.json({ success: true, ...formOptions(cls) });
     }));
 
     router.get('/api/admin/assignments/:id', (req, res) => validateAdmin(req, res, (config, account) => {
@@ -1109,6 +1216,7 @@ function createAdminAssignmentsRouter() {
             });
         }
         if (!file) return sendFieldError(res, MESSAGES.fileNotFound, null, { status: 404 });
+        if (file.removedAt) return sendFieldError(res, MESSAGES.fileRemoved, null, { status: 410, code: 'file_removed' });
         return assignmentFiles.sendStoredFile(res, file, {
             inline: String((req.query && req.query.inline) || '') === '1',
             missingMessage: MESSAGES.fileMissing,

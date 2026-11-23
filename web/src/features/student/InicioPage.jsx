@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, BookOpen, CalendarDays, CalendarOff, CheckCircle2, Clock, Megaphone, Sparkles, TrendingUp, UserCheck } from 'lucide-react'
+import { AlertTriangle, ArrowRight, BookOpen, CalendarDays, CalendarOff, CheckCircle2, Clock, FileUp, Megaphone, Sparkles, TrendingUp, UserCheck, Users } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { Card } from '../../components/ui/Card'
 import { Badge } from '../../components/ui/Badge'
@@ -7,20 +7,53 @@ import { useApi } from '../../hooks/useApi'
 import { useStudent } from './useStudent'
 import { fmtGradeValue } from '../../lib/grades'
 import { eventDates as calendarEventDates, NON_SCHOOL_EVENT_TYPE } from '../../components/calendar/MonthCalendar'
+import { ASSIGNMENTS_POLL_MS, assignmentsPath, atividadeHref } from './AtividadesPage'
+import { deadlineLine, isToDo, situationTone } from './atividades/atividadeText'
+import { unitHref } from './unitLinks'
+
+// Quantas atividades a fazer a Início mostra (as de prazo mais perto; o resto em "Ver todas").
+export const HOME_TODO_LIMIT = 5
+
+// "Pendências" da Início (fase 3, C9 / P1-g; parte de UXA-25): as atividades esperando o
+// envio do aluno, com o prazo e o link para enviar. A lista vem pronta e por prazo do
+// servidor (GET /api/student/assignments); falha nela não derruba a Início.
+function AtividadesAFazer({ data, onOpenAll, onOpen }) {
+  const rows = (Array.isArray(data?.assignments) ? data.assignments : []).filter(isToDo)
+  const now = typeof data?.serverNow === 'number' ? data.serverNow : Date.now()
+  const timezone = data?.timezone || ''
+  return (
+    <Card>
+      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+        <h2 className="flex items-center gap-2 font-semibold text-text"><FileUp size={17} aria-hidden="true" /> Atividades a fazer{rows.length ? ` (${rows.length})` : ''}</h2>
+        <button type="button" onClick={onOpenAll} className="min-h-[44px] px-1 text-xs text-muted hover:text-text">Ver todas</button>
+      </div>
+      {rows.length ? rows.slice(0, HOME_TODO_LIMIT).map((row) => (
+        <button key={row.id} type="button" onClick={() => onOpen(row.id)} className="flex w-full items-center gap-3 border-b border-border px-4 py-3 text-left transition last:border-0 hover:bg-surface-2/40">
+          <span className="min-w-0 flex-1"><strong className="block truncate text-sm text-text">{row.title}</strong><span className="mt-0.5 block text-xs text-muted">{deadlineLine(row, now, timezone)}</span></span>
+          <Badge tone={situationTone(row)}>{row.situacaoTexto}</Badge>
+        </button>
+      )) : <p className="p-4 text-sm text-muted">Nenhuma atividade esperando o seu envio.</p>}
+    </Card>
+  )
+}
 
 const EVENT_TONES = { aula: 'info', prova: 'danger', entrega: 'warning', aviso: 'neutral', reuniao: 'success', nao_letivo: 'warning' }
 // Rótulo do tipo de evento (o dia não letivo, feriado ou recesso, aparece como "Sem aula").
 const EVENT_LABELS = { nao_letivo: 'Sem aula', reuniao: 'reunião' }
 
-function Metric({ label, value, helper, icon: Icon, tone = 'text-primary' }) {
-  return (
-    <Card className="premium-card-interactive relative overflow-hidden p-5">
+// onClick: o cartão leva à tela do número (a "Pendências" abre os conteúdos liberados,
+// UXA-25: antes o número não levava a nada).
+function Metric({ label, value, helper, icon: Icon, tone = 'text-primary', onClick }) {
+  const card = (
+    <Card className="premium-card-interactive relative h-full overflow-hidden p-5">
       <span className="absolute -right-5 -top-6 h-20 w-20 rounded-full bg-primary-soft blur-2xl" aria-hidden />
       <div className="flex items-center justify-between gap-3"><span className="text-[13px] font-medium text-muted">{label}</span><span className={`grid h-10 w-10 place-items-center rounded-xl bg-surface-2 ${tone}`}><Icon size={17} /></span></div>
       <p className="mt-4 text-[1.8rem] font-semibold leading-none tracking-[-0.04em] tabular-nums text-text">{value}</p>
       <p className="mt-2 text-xs text-subtle">{helper}</p>
     </Card>
   )
+  if (typeof onClick !== 'function') return card
+  return <button type="button" onClick={onClick} className="block h-full w-full rounded-[inherit] text-left focus:outline-none focus-visible:ring-2 focus-visible:ring-primary">{card}</button>
 }
 
 function CourseProgress({ value = 0 }) {
@@ -88,11 +121,34 @@ function MiniCalendar({ events = [], onOpen }) {
   )
 }
 
+// Meus grupos (fase 3, P5-S4, CRIT-11): os grupos ativos do aluno na turma, com o nome
+// dos colegas (só o nome, P-C3). Sem grupo, o cartão não aparece.
+export function MeusGrupos({ groups }) {
+  const list = Array.isArray(groups) ? groups : []
+  if (list.length === 0) return null
+  return (
+    <Card>
+      <div className="flex items-center justify-between border-b border-border px-4 py-3"><h2 className="flex items-center gap-2 font-semibold text-text"><Users size={17} /> Meus grupos</h2><span className="text-xs text-muted">{list.length === 1 ? '1 grupo' : `${list.length} grupos`}</span></div>
+      <ul>
+        {list.map((group) => (
+          <li key={group.id} className="border-b border-border px-4 py-3 last:border-0">
+            <div className="flex flex-wrap items-center gap-2"><strong className="min-w-0 break-words text-sm text-text">{group.nome}</strong><Badge tone="info">{group.tipoTexto}</Badge></div>
+            <p className="mt-0.5 text-xs text-muted">{group.conjunto}</p>
+            <p className="mt-1.5 break-words text-xs text-muted">{group.colegas?.length ? `Com ${group.colegas.join(', ')}` : 'Só você neste grupo por enquanto.'}</p>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  )
+}
+
 export default function InicioPage() {
   const { email, name, displayName, studentClass, courseId } = useStudent()
   const nav = useNavigate()
   const dashboard = useApi(email ? `/api/student/dashboard?email=${encodeURIComponent(email)}&studentClass=${encodeURIComponent(studentClass)}&courseId=${encodeURIComponent(courseId)}` : null, [email, studentClass, courseId], { pollMs: 10000 })
   const calendar = useApi(email ? `/api/student/calendar-events?courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(studentClass)}` : null, [email, courseId, studentClass], { pollMs: 10000 })
+  const assignments = useApi(email ? assignmentsPath(courseId, studentClass) : null, [email, courseId, studentClass], { pollMs: ASSIGNMENTS_POLL_MS })
+  const groups = useApi(email && courseId && studentClass ? `/api/student/groups?courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(studentClass)}` : null, [email, courseId, studentClass])
   const data = dashboard.data || {}
   const modules = data.modules || []
   const firstName = (displayName || name || 'aluno').split(' ')[0]
@@ -123,14 +179,17 @@ export default function InicioPage() {
           <Metric label="Nota geral" value={fmtGradeValue(data.overallNote, '-')} helper={data.overallNote == null ? 'Aguardando publicação' : 'Somente notas publicadas'} icon={TrendingUp} tone="text-success" />
           <Metric label="Frequência" value={data.frequency == null ? '-' : `${data.frequency}%`} helper={data.frequency == null ? 'Sem registros ainda' : 'Presença registrada'} icon={UserCheck} tone="text-info" />
           <Metric label="Tópicos concluídos" value={`${data.completedCount || 0}/${data.totalUnits || 0}`} helper="Progresso no curso" icon={CheckCircle2} tone="text-success" />
-          <Metric label="Pendências" value={data.pendingCount || 0} helper="Conteúdos liberados" icon={AlertTriangle} tone="text-warning" />
+          <Metric label="Pendências" value={data.pendingCount || 0} helper="Conteúdos liberados para estudar" icon={AlertTriangle} tone="text-warning" onClick={() => nav('/aluno/modulos')} />
         </div>
+
+        <AtividadesAFazer data={assignments.data} onOpenAll={() => nav('/aluno/atividades')} onOpen={(id) => nav(atividadeHref(id))} />
 
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(290px,.75fr)]">
           <div className="space-y-4">
             <Card>
               <div className="flex items-center justify-between border-b border-border px-5 py-4"><h2 className="font-semibold text-text">Continue de onde parou</h2><span className="text-xs text-muted">Seu último conteúdo</span></div>
-              <button type="button" onClick={() => nav('/aluno/modulos')} className="group flex w-full items-center gap-4 p-5 text-left transition-all duration-300 hover:bg-surface-2/40">
+              {/* Abre direto a unidade (?unidade=, C16 / P5-S2); sem unidade, a lista. */}
+              <button type="button" onClick={() => nav(data.continueItem?.key ? unitHref(data.continueItem.key) : '/aluno/modulos')} className="group flex w-full items-center gap-4 p-5 text-left transition-all duration-300 hover:bg-surface-2/40">
                 <span className="grid h-12 w-12 shrink-0 place-items-center rounded-xl bg-primary-soft text-primary transition-transform duration-300 group-hover:scale-105"><BookOpen size={21} /></span>
                 <span className="min-w-0 flex-1"><strong className="block truncate text-sm text-text">{data.continueItem?.title || 'Acesse seus módulos'}</strong><span className="mt-1 block truncate text-xs text-muted">{data.continueItem?.moduleName || 'Continue avançando no curso'}</span></span>
                 <span className="grid h-9 w-9 place-items-center rounded-full border border-border text-subtle transition-all duration-300 group-hover:border-primary/30 group-hover:bg-primary-soft group-hover:text-primary"><ArrowRight size={15} /></span>
@@ -160,6 +219,8 @@ export default function InicioPage() {
           </div>
 
           <div className="space-y-4">
+            <MeusGrupos groups={groups.data} />
+
             <MiniCalendar events={calendar.data || []} onOpen={() => nav('/aluno/calendario')} />
 
             <Card>

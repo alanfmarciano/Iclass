@@ -1,6 +1,6 @@
 import { useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ClipboardList, Eye, History, KeyRound, LockOpen, MessageSquare, Pencil, ShieldAlert, ShieldCheck, Trash2, Unlock, UserMinus, UserPlus } from 'lucide-react'
+import { ClipboardList, Eye, History, KeyRound, LockOpen, MessageSquare, Pencil, ShieldAlert, ShieldCheck, Trash2, Unlock, UserMinus, UserPlus, UsersRound } from 'lucide-react'
 import { DataTable } from '../../components/ui/Table'
 import { Button } from '../../components/ui/Button'
 import { Badge } from '../../components/ui/Badge'
@@ -24,6 +24,7 @@ import { criterioOf, fmtGrade, gradeOf, gradeTone } from '../../lib/grades'
 import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
+import { groupsPath } from './grupos/groupsPath'
 import { acceptanceText, birthDateText, isMinorBirthDate, todayIso } from '../../lib/legalAcceptance'
 import { ADMIN_PERMISSIONS, canAccessAdminPermission, isFullAdmin } from '../../lib/adminPermissions'
 import { displayEmail, isPlaceholderEmail, studentFormIdentity, studentFormProblem, studentIdentityPayload, studentLoginLabel, studentRouteKey } from '../../lib/studentProfile'
@@ -322,7 +323,10 @@ export default function AlunosPage() {
     <div className="max-w-7xl mx-auto space-y-6">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div><h1 className="text-2xl font-bold text-text">Alunos</h1><p className="text-sm text-muted">{filteredStudents.length} contas em {courseName || activeCourseId} · {activeClassName}</p></div>
-        {canEditStudent && <Button icon={UserPlus} onClick={() => { setForm({ ...emptyForm(), courseId: activeCourseId, classes: [activeClassName] }); setOpen(true) }}>Novo aluno</Button>}
+        <div className="flex flex-wrap items-center gap-2">
+          {activeCourseId && activeClassName && <Button variant="secondary" icon={UsersRound} onClick={() => nav(groupsPath(activeCourseId, activeClassName), { state: { voltar: '/alunos' } })}>Grupos</Button>}
+          {canEditStudent && <Button icon={UserPlus} onClick={() => { setForm({ ...emptyForm(), courseId: activeCourseId, classes: [activeClassName] }); setOpen(true) }}>Novo aluno</Button>}
+        </div>
       </div>
       <PageState loading={loading} error={error} onRetry={refetch}>
         <DataTable columns={columns} rows={filteredStudents.map((s, i) => ({ id: s.email || i, ...s, emailShown: displayEmail(s.email) }))}

@@ -18,7 +18,10 @@ const openModals = []
 // margem nem a borda arredondada, e os botões do rodapé quebram em linhas inteiras em vez
 // de espremer o texto (diálogos longos, como o "Corrigir gabarito" do P3-S6). O rodapé fica
 // preso embaixo (sticky) enquanto o conteúdo rola.
-export function Modal({ open, onClose, title, description, children, footer, size = 'md', fullScreenOnPhone = false }) {
+// drawer (fase 3, C8): gaveta à direita no computador (altura inteira, largura do size) e
+// tela cheia no celular, com o rodapé dos botões fixo embaixo enquanto o corpo rola (o
+// painel de correção das tarefas). O teclado (Esc, Tab) segue a mesma regra do modal.
+export function Modal({ open, onClose, title, description, children, footer, size = 'md', fullScreenOnPhone = false, drawer = false }) {
   const dialogRef = useRef(null)
   const previousFocusRef = useRef(null)
   const onCloseRef = useRef(onClose)
@@ -62,6 +65,25 @@ export function Modal({ open, onClose, title, description, children, footer, siz
     }
   }, [open])
   if (!open) return null
+  if (drawer) {
+    return createPortal(
+      <div className="fixed inset-0 z-[9998] flex justify-end">
+        <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" aria-hidden="true" onClick={onClose} />
+        <div ref={dialogRef} role="dialog" aria-modal="true" aria-labelledby={titleId} aria-describedby={description ? descriptionId : undefined} tabIndex={-1} className={`relative flex h-full max-h-full w-full flex-col bg-surface shadow-lg sm:border-l sm:border-border ${WIDTHS[size] || WIDTHS.md}`}>
+          <div className="flex items-start justify-between gap-3 border-b border-border px-4 py-3 sm:px-5">
+            <div className="min-w-0">
+              <h2 id={titleId} className="break-words text-lg font-semibold text-text">{title}</h2>
+              {description && <p id={descriptionId} className="mt-1 text-sm text-muted">{description}</p>}
+            </div>
+            <button onClick={onClose} aria-label="Fechar" className="grid min-h-[44px] min-w-[44px] shrink-0 place-items-center text-subtle hover:text-text sm:min-h-0 sm:min-w-0"><X size={20} /></button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden px-4 py-4 sm:px-5">{children}</div>
+          {footer && <div className="flex flex-wrap justify-end gap-2 border-t border-border bg-surface px-4 py-3 sm:px-5">{footer}</div>}
+        </div>
+      </div>,
+      document.body
+    )
+  }
   return createPortal(
     <div className={`fixed inset-0 z-[9998] grid place-items-center ${fullScreenOnPhone ? 'p-0 sm:p-4' : 'p-4'}`}>
       <div className="absolute inset-0 bg-black/60 backdrop-blur-sm" aria-hidden="true" onClick={onClose} />

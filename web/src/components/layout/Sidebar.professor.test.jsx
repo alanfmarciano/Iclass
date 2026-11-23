@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { getAdminNavGroups } from './Sidebar'
 import { ADMIN_PERMISSIONS, ADMIN_PATH_PERMISSIONS } from '../../lib/adminPermissions'
+import { INSTITUTION_PATHS } from '../../features/admin/AdminCourseGate'
 import baseline from '../../../../test/backend/fixtures/professor-permissoes-281029f.json'
 
 // Menu do professor (fase 3, B0a; FUN-13): o que o professor via no menu na 281029f
@@ -35,5 +36,45 @@ describe('[UC-PAPEIS-004] menu do professor de hoje', () => {
     const auth = { ...professor, effectivePermissions: baseline.tela, scopeKind: 'turmas', readOnly: false, roleLabel: 'Professor' }
     baseline.menu.instituicao.forEach((path) => expect(menuPaths({ ...auth, activeWorkspace: null })).toContain(path))
     baseline.menu.curso.forEach((path) => expect(menuPaths({ ...auth, activeWorkspace: { courseId: 'curso', className: '1A' } })).toContain(path))
+  })
+})
+
+describe('menu Tarefas (fase 3, C7 / P1-e)', () => {
+  const inCourse = { activeWorkspace: { courseId: 'curso', className: '1A' } }
+  const avaliacoes = (auth) => getAdminNavGroups(auth).find((group) => group.label === 'Avaliações')?.items.map((item) => item.to) || []
+
+  it('aparece em Avaliações para o professor (page.assignments do padrão) e para a Coordenação', () => {
+    expect(avaliacoes({ accountRole: 'professor', additionalPermissions: [], ...inCourse })).toContain('/tarefas')
+    expect(avaliacoes({ accountRole: 'coordenacao', effectivePermissions: ['page.dashboard', 'page.results', 'page.assignments'], readOnly: true, ...inCourse })).toContain('/tarefas')
+  })
+
+  it('não aparece para quem não tem page.assignments (Professor auxiliar, Secretaria) nem fora da turma', () => {
+    expect(menuPaths({ accountRole: 'monitor', effectivePermissions: ['page.dashboard', 'page.monitor', 'page.students'], ...inCourse })).not.toContain('/tarefas')
+    expect(menuPaths({ accountRole: 'secretaria', effectivePermissions: ['page.dashboard', 'page.students'], ...inCourse })).not.toContain('/tarefas')
+    expect(menuPaths({ accountRole: 'professor', additionalPermissions: [], activeWorkspace: null })).not.toContain('/tarefas')
+  })
+})
+
+describe('[UC-MENSAGEM-006] menu Mensagens (fase 3, C14 / P5-S7b)', () => {
+  const inCourse = { activeWorkspace: { courseId: 'curso', className: '1A' } }
+  const item = (auth, count) => getAdminNavGroups(auth, 0, count).flatMap((group) => group.items).find((entry) => entry.to === '/mensagens')
+
+  it('aparece na turma para o professor (page.messages do padrão) e para o administrador, com o número de conversas com mensagem nova', () => {
+    expect(item({ accountRole: 'professor', additionalPermissions: [], ...inCourse }, 3)).toMatchObject({ text: 'Mensagens', badge: 3 })
+    expect(item({ accountRole: 'admin', ...inCourse }, 0)).toMatchObject({ text: 'Mensagens', badge: 0 })
+    expect(ADMIN_PATH_PERMISSIONS['/mensagens']).toBe('page.messages')
+  })
+
+  it('não aparece para Professor auxiliar, Secretaria e Coordenação (sem page.messages), com ou sem turma', () => {
+    expect(item({ accountRole: 'monitor', effectivePermissions: ['page.dashboard', 'page.monitor', 'page.students'], ...inCourse }, 1)).toBeUndefined()
+    expect(item({ accountRole: 'secretaria', effectivePermissions: ['page.dashboard', 'page.students'], ...inCourse }, 1)).toBeUndefined()
+    expect(item({ accountRole: 'coordenacao', effectivePermissions: ['page.dashboard', 'page.results'], readOnly: true, ...inCourse }, 1)).toBeUndefined()
+    expect(item({ accountRole: 'secretaria', effectivePermissions: ['page.dashboard', 'page.students'], activeWorkspace: null }, 1)).toBeUndefined()
+  })
+
+  it('aparece também sem turma escolhida (modo instituição), com o número somado das turmas, e a tela abre sem o seletor de curso', () => {
+    expect(item({ accountRole: 'professor', additionalPermissions: [], activeWorkspace: null }, 2)).toMatchObject({ text: 'Mensagens', badge: 2 })
+    expect(item({ accountRole: 'admin', activeWorkspace: null }, 0)).toMatchObject({ text: 'Mensagens' })
+    expect(INSTITUTION_PATHS).toContain('/mensagens')
   })
 })

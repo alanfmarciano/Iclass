@@ -104,7 +104,39 @@ Abriu o Monitor em outro computador, no projetor ou fechou a aba? Em **Token de 
 
 ## Tarefas {#tarefas}
 
-<!-- P1 (trilha C) escreve aqui: criar tarefa, prazos, entregas, correção, devolução e ZIP. -->
+Tarefa é um trabalho com prazo que o aluno entrega pelo IClass: um arquivo (PDF, foto, documento, código, o arquivo do programa do curso), um texto ou um link. Fica em **Avaliações > Tarefas**, dentro da turma.
+
+**A lista.** Cada cartão mostra o prazo (com quanto falta), a situação (**Rascunho**, **Publicada** ou **Arquivada**) e, depois de publicada, quantas entregas estão **Para corrigir**, quantas chegaram **Atrasadas** e quantos alunos estão **Sem envio**. Em **Mostrar** você vê só as publicadas, só os rascunhos ou só as que têm entrega para corrigir (o aviso do Dashboard abre assim).
+
+**Criar.** Toque em **Nova tarefa**. Escreva o título e as instruções (negrito, listas e links como nas apostilas; **Prévia** mostra como o aluno vai ler). Se quiser, ligue a tarefa a um módulo e a uma unidade e escolha materiais de apoio da Biblioteca. Em **O aluno responde com**, marque arquivo, texto ou link. Com arquivo, escolha os tipos aceitos, até quantos arquivos e de quantos MB cada; o tamanho vai até o limite das entregas em **Sistema**. Programa do curso que não está na lista (Packet Tracer, por exemplo)? Escreva a extensão em **Formatos do curso** (.pkt). Programas que se instalam ou rodam sozinhos (.exe, .bat e afins) nunca são aceitos.
+
+**Prazo.** O prazo é a data e a hora no relógio da escola. **Encerrar envios em** é opcional: depois dele, nada chega, nem atrasado. Em **Depois do prazo**, escolha entre aceitar e marcar como atrasada, aceitar com desconto na nota (tanto por dia, até um máximo) ou não aceitar. A frase "O aluno lê" mostra como a regra aparece para ele. **Aparecer para os alunos** pode ser assim que publicar ou numa data.
+
+**Rascunho e publicar.** **Salvar como rascunho** guarda sem os alunos verem (o rascunho pode ficar sem prazo). **Publicar** exige o prazo; a tarefa aparece para a turma e o aluno recebe o aviso no sino. Mudar o prazo de uma tarefa que já tem entrega ou nota lançada pede o motivo, que fica na Auditoria.
+
+**Arquivar e excluir.** **Arquivar** tira a tarefa dos alunos e guarda as entregas e as notas; ela fica na aba **Arquivadas**, de onde volta com **Reativar**. **Excluir** só aparece na tarefa sem nenhum registro de aluno: nem entrega, nem nota lançada, nem prazo prorrogado.
+
+**Entregas da turma.** Toque no título da tarefa (ou em **Entregas**) para ver a lista da turma: cada aluno com a situação (**Sem envio**, **Para corrigir**, **Corrigida, sem devolver**, **Refazer (esperando o aluno)** ou **Devolvida**), quando enviou, se chegou atrasada e a nota. Em **Mostrar**, veja só quem está para corrigir, as corrigidas, as atrasadas, quem não enviou ou as devolvidas. No celular, a lista vira cartões.
+
+**Corrigir.** Toque em **Corrigir** (ou **Abrir**) no aluno. O painel mostra a entrega: a versão (o aluno pode mandar de novo; escolha em **Versão**), a hora que chegou no relógio da escola, os arquivos, o texto e o link. Foto (JPG, PNG, WebP, GIF) e texto aparecem ali mesmo; PDF abre em outra aba com **Abrir**; o resto (Word, planilha, ZIP, arquivo do programa do curso, foto HEIC do iPhone) você baixa com **Baixar**. O link do aluno aparece como texto: confira antes de tocar em **Abrir**.
+
+**Nota e comentário.** Digite a nota de 0 a 10 (aceita vírgula: 8,5) e o comentário para o aluno. Se a entrega chegou atrasada numa tarefa com desconto, o painel mostra a conta antes de salvar ("Atraso de 2 dias: -20%, nota final 6,4."); cada dia começado conta como um dia. **Dispensar desconto** tira o desconto só deste aluno. **Salvar** guarda sem o aluno ver; **Devolver ao aluno** mostra a nota e o comentário para ele e avisa no sino. **Próximo aluno** segue a ordem da lista que estava na tela quando você abriu o painel. Se você digitou e não salvou, o IClass pergunta antes de sair.
+
+**Nota já devolvida.** Mudar a nota ou o comentário de uma correção que o aluno já vê pede o motivo, que fica na Auditoria.
+
+**Outras ações.** Em **Pedir para refazer**, escreva o que o aluno precisa refazer e o novo prazo; ele manda uma versão nova e a correção volta para você. **Prorrogar prazo** dá um prazo só para aquele aluno (o da turma não muda) e pede o motivo; o aluno aparece com **Prazo próprio**. **Entrega em mãos** registra o trabalho entregue fora do IClass (papel, pendrive, apresentação), com uma observação e, se quiser, a nota. Aluno sem entrega nunca recebe zero sozinho: sem envio, só a nota zero que você lança ou a entrega em mãos.
+
+**Devolver todas.** **Devolver todas as corrigidas** devolve de uma vez as correções salvas com nota. A que recebeu versão nova depois da correção fica de fora, para você conferir.
+
+**Baixar entregas (ZIP).** Baixa os arquivos da turma num ZIP, uma pasta por aluno, só a última versão ou todas. Serve para corrigir no computador ou guardar.
+
+**Copiar para outra turma.** Cria a mesma tarefa como rascunho noutra turma sua, com o prazo que você escolher (ou sem prazo). As entregas não vão junto.
+
+A Coordenação vê as entregas, abre os arquivos e baixa o ZIP, mas não corrige.
+
+**Quando o aluno sai da escola.** Em **Cadastros encerrados**, **Anonimizar** guarda as entregas com um código no lugar do nome (a situação, as datas, o atraso e a nota ficam; o texto, o link, o seu comentário e o nome dos arquivos saem) e **Apagar de vez** tira as entregas. Nos dois casos, os arquivos vão para a lixeira de arquivos em **Sistema**, que só o administrador vê; na correção, o arquivo aparece como "tirado da entrega quando o cadastro do aluno foi anonimizado". O seu comentário, a observação da entrega em mãos e o motivo da prorrogação saem também da Auditoria. Ao arquivar um curso em **Turmas**, as tarefas e as entregas vão junto para o pacote do curso e voltam quando ele é restaurado.
+
+**Cópia dos arquivos enviados.** Os arquivos dos alunos não entram no arquivo de backup: o backup de todo dia os copia para a pasta "entregas" do pendrive ou HD externo escolhido em **Sistema**, só o que é novo. O cartão **Armazenamento** mostra quantos ainda não têm cópia e quando foi a última; se o computador for trocado, o administrador liga o mesmo pendrive ou HD no computador novo, escolhe-o como destino no cartão **Backup** e usa **Trazer arquivos do destino externo** para trazê-los de volta (o IClass acha a pasta que o computador de antes deixou lá). Se um arquivo deste computador deixar de conferir com o que o aluno enviou (disco com defeito, vírus), a cópia do pendrive não é trocada por ele: o cartão mostra "Diferentes do registro" e **Trazer arquivos do destino externo** põe a cópia boa no lugar (o arquivo estragado vai para a lixeira). Restaurar um backup antigo não apaga os arquivos, mas tira as entregas feitas depois dele (a prévia avisa).
 
 ## Resultados {#resultados}
 
@@ -170,11 +202,33 @@ Para anular a tentativa de um aluno por cola, use **Anular tentativa** no Monito
 
 ## Grupos {#grupos}
 
-<!-- P5 (C12 e C19) escreve aqui: grupos da turma, sorteio e grupos em avisos, liberação e provas. -->
+Grupo é uma parte da turma: uma equipe de trabalho ou uma subturma (a metade que vai ao laboratório, por exemplo). Abra em **Turmas** (botão **Grupos** na turma) ou em **Alunos** (botão **Grupos** no topo).
+
+**Conjuntos.** Cada grupo pertence a um conjunto, que junta as divisões de uma mesma atividade: "Projeto integrador" com as equipes 1, 2 e 3; "Laboratório" com as subturmas A e B. O aluno fica em **no máximo um grupo de cada conjunto**, mas pode estar ao mesmo tempo numa equipe do projeto e numa subturma do laboratório. Abaixo do nome do conjunto aparece quem ainda está **sem grupo** nele.
+
+**Criar.** Toque em **Novo grupo**, escreva o nome, o conjunto (escolha um que já existe ou escreva um novo) e o tipo (**Equipe** ou **Subturma**), e marque os alunos. Quem já está em outro grupo do mesmo conjunto aparece com "Em Equipe 1" e não pode ser marcado aqui.
+
+**Editar.** Em **Editar**, mude o nome, o conjunto, o tipo e quem está no grupo. Marcar um aluno que está em outro grupo do conjunto mostra "Sai de Equipe 2": ao salvar, ele sai de lá e entra neste. Aluno que saiu da turma (transferido, desligado) continua no grupo com a etiqueta **Saiu da turma**, sem contar no total; desmarque para tirar. Se outra pessoa mudou o mesmo grupo enquanto você editava, o IClass avisa, atualiza a lista e você salva de novo.
+
+**Sortear.** **Sortear grupos** divide a turma (só os alunos ativos) pela **quantidade de grupos** ou pelo **número de alunos por grupo**; os tamanhos diferem no máximo em um aluno. Escolha o conjunto e, se quiser, o começo do nome ("Grupo" vira Grupo 1, Grupo 2...). Nada é gravado até você conferir a proposta e tocar em **Criar estes grupos**; **Sortear de novo** faz outra divisão. Num conjunto que já tem grupos, o sorteio pega só quem está sem grupo nele (para sortear a turma toda de novo, use outro conjunto ou arquive os grupos antes). Se a turma mudou entre o sorteio e a confirmação, o IClass pede outro sorteio.
+
+**Arquivar e reativar.** **Arquivar** tira o grupo da lista (o motivo é opcional e fica na Auditoria) e deixa os alunos livres para outro grupo do conjunto. **Mostrar arquivados** traz os arquivados de volta à tela, com **Reativar**; se algum aluno entrou em outro grupo do conjunto nesse meio-tempo, o IClass avisa e não reativa.
+
+**O que o aluno vê.** Na **Início** do portal, o aluno vê o cartão **Meus grupos** com o nome dos grupos dele e dos colegas (só o nome; e-mail e telefone não aparecem). Criar, mudar, arquivar e sortear grupos ficam na **Auditoria**. A Coordenação vê os grupos sem poder mudar.
+
+<!-- P5 (C19) escreve aqui: grupos em avisos, liberação e provas. -->
 
 ## Ver como aluno {#ver-como-aluno}
 
-<!-- P5 (C2 e C15) escreve aqui. -->
+Mostra o portal do aluno exatamente como um aluno da turma o vê, sem criar um aluno de teste e sem sair do painel. Toque em **Ver como aluno**: na linha da turma em **Turmas**, no topo de **Materiais** (com a turma escolhida) ou no cartão da turma ao escolher a turma no **Dashboard**.
+
+**Escolher o grupo.** O diálogo "Ver o portal como um aluno de 1DES" deixa escolher, se quiser, um grupo ativo da turma (**Ver como membro de um grupo**): a prévia mostra então o que um membro desse grupo vê, como o cartão **Meus grupos**. Sem grupo, você vê só o que a turma inteira vê. Não existe "ver como um aluno específico": liberações individuais e avisos particulares de um aluno não aparecem.
+
+**Nada é gravado.** O portal abre na mesma aba com a faixa "Pré-visualização como aluno de 1DES · nada é gravado". Você lê apostilas, biblioteca, avisos, calendário, fórum e provas abertas, mas os botões que gravam (Concluir unidade, Salvar o caderno, anotações, Postar no fórum, Enviar dúvida, entregar tarefa, Nova mensagem, Alterar senha, Baixar meus dados) ficam desativados com o texto "Desativado na pré-visualização". Abrir a apostila não conta como acesso do aluno, abrir um aviso não o marca como lido e a presença não é registrada. **A prova não começa**: para ver as questões, use **Provas > Visualizar**.
+
+**Sair.** **Sair da pré-visualização** (na faixa ou no Sair do menu do portal) fecha a prévia e volta para a tela do painel de onde você veio; o seu login no painel continua. A prévia dura 60 minutos e também termina quando você sai do painel, troca a senha ou perde o acesso à turma; nesses casos o IClass volta ao painel e avisa o motivo. Abrir uma tela do painel (pelo voltar do navegador, por exemplo) também fecha a prévia.
+
+**Quem pode.** Quem cuida do conteúdo das turmas (Professor e Administrador) nas turmas dele. A Coordenação, que só consulta, não tem o botão.
 
 ## Chamada {#chamada}
 
@@ -210,7 +264,21 @@ No celular, o mês aparece como uma lista dos dias que têm evento.
 
 ## Mensagens {#mensagens}
 
-<!-- P5 (C13 e C14) escreve aqui: conversas com os alunos e o aviso de leitura pelo administrador. -->
+**Mensagens** (no menu, em Gestão dentro de uma turma, ou em Gestão acadêmica sem turma escolhida) é a conversa particular entre você e um aluno de uma das suas turmas. A turma não vê. Para dúvidas da matéria, o **Fórum** continua sendo o melhor lugar.
+
+**A lista.** Mostra as suas conversas da turma escolhida no painel (sem turma escolhida, as de todas as suas turmas), da mais recente para a mais antiga, com o nome e a matrícula do aluno, o assunto e o selo **nova** quando o aluno escreveu e você ainda não leu. Filtre por **Abertas**, **Encerradas** ou **Todas**, troque, no seletor **Turmas** da própria tela Mensagens, para **Todas as minhas turmas** e busque pelo nome (sem precisar de acento). O item **Mensagens** do menu e o **sino** mostram quantas conversas têm mensagem nova.
+
+**Começar.** O aluno pode começar a conversa pelo portal (ele escolhe entre os professores da turma) ou você toca em **Nova conversa**, escolhe a turma (já vem a do painel; dá para trocar por outra das suas turmas) e o aluno, escreve o assunto (opcional) e a mensagem. Se já existe uma conversa aberta com o mesmo aluno, a mensagem entra nela.
+
+**Responder.** Toque na conversa, escreva no campo de baixo e toque em **Enviar** (ou **Ctrl+Enter**). Com a conversa aberta, as mensagens novas do aluno aparecem sozinhas. Só texto, até 2.000 caracteres; as mensagens **não podem ser apagadas** nem editadas.
+
+**Encerrar e reabrir.** **Encerrar conversa** (o motivo é opcional e fica na Auditoria) deixa o aluno só lendo: ele não responde, mas pode começar outra. Você ainda pode escrever na encerrada. **Reabrir** devolve a conversa ao aluno. Durante uma prova, o aluno não consegue mandar mensagem (ele usa o botão da prova); você pode escrever, e ele lê depois.
+
+**Aluno com o cadastro encerrado** (desligado ou anonimizado): a conversa fica só para consulta. Anonimizar o aluno tira o texto dele e o nome dele das suas mensagens.
+
+**Não quer receber mensagens?** Em **Minha conta**, desligue **Receber mensagens de alunos**: os alunos deixam de ver você na lista para começar conversa nova. As conversas que já existem continuam.
+
+**Quem lê.** Você e o aluno da conversa. **O administrador da escola pode ler estas mensagens** (decisão da escola), e as duas telas mostram esse aviso. Para o administrador: na tela **Mensagens**, no seletor **Turmas** acima da lista (não é a tela Turmas do menu), escolha **Todas da escola**; as conversas de outros professores aparecem sem o assunto, e abrir uma delas pede **Ler como administrador**, que fica registrado na **Auditoria** (uma vez por dia e conversa). Lendo a conversa de outra pessoa, o administrador não responde nem encerra.
 
 ## Responsáveis {#responsaveis}
 
@@ -223,6 +291,8 @@ No celular, o mês aparece como uma lista dos dias que têm evento.
 ## Cursos e turmas {#turmas}
 
 Lista os cursos da instituição e as turmas de cada um. Daqui você cria turmas e abre ou fecha o autocadastro dos alunos em cada uma.
+
+**Impressão da apostila.** Em **Novo curso** e **Editar**, a chave **Alunos podem imprimir ou salvar a apostila em PDF** vem ligada (também nos cursos que já existiam). Ligada, o aluno tem o botão **Imprimir ou salvar em PDF** na apostila aberta: sai só o texto da unidade, com o nome da escola e "Material de uso dos alunos de <curso>" no rodapé, sem o menu, o caderno nem o fórum. Desligue se o material do curso não pode sair da escola: o botão some e quem tentar imprimir a página pelo navegador recebe só "Impressão desativada pela escola.". A mudança fica na Auditoria. Isso não impede uma foto da tela; é um aviso claro de que o material é da escola. O curso duplicado leva a mesma escolha.
 
 <!-- P2 (B6, B8, B10) escreve aqui: critérios de avaliação, disciplinas, período letivo e encerrar turma. -->
 

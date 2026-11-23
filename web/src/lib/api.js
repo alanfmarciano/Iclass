@@ -4,6 +4,7 @@
 import { BUILD_HEADER, noteServerBuild } from './buildVersion'
 import { AUTOSAVE_TIMEOUT_MS, INSTRUCTOR_TIMEOUT_MS, KEYSTROKE_TIMEOUT_MS, POLL_TIMEOUT_MS } from './requestTimeouts'
 import { reportFailure, reportResponse, setConnectionProbe } from './connection'
+import { PREVIEW_HEADER, currentPreviewToken, isPreviewPortalRequest, notifyPreviewEnded } from './previewSession'
 let authProvider = () => ({})
 export function setAuthProvider(fn) { authProvider = fn } // injetado pelo AuthProvider
 // Há sessão aberta neste navegador? O logout limpa o provedor na hora (antes de o portal
@@ -31,6 +32,14 @@ function notePasswordChangeRequired(status, data) {
   if (status !== 403 || !data || data.passwordChangeRequired !== true || !passwordChangeRequiredHandler) return
   try { passwordChangeRequiredHandler(data) } catch {}
 }
+// Pré-visualização como aluno que o servidor encerrou (401 { code: 'preview_ended' }: 60 min,
+// Sair do painel, senha trocada, turma fora do escopo, servidor reiniciado): o AuthProvider
+// fecha a prévia e volta ao painel com o motivo (lib/previewSession.js), em vez de tratar
+// como sessão de aluno vencida (o que levaria o instrutor ao login).
+function notePreviewEnded(status, data, headers) {
+  if (status !== 401 || !data || data.code !== 'preview_ended' || !headers[PREVIEW_HEADER]) return
+  notifyPreviewEnded(data)
+}
 const AUTH_STORAGE_KEY = 'iclass-v3-auth'
 
 function getStoredAuth() {
@@ -38,8 +47,18 @@ function getStoredAuth() {
   try { return JSON.parse(localStorage.getItem(AUTH_STORAGE_KEY)) || {} } catch { return {} }
 }
 
-function authHeaders() {
+// path: o pedido. Com a pré-visualização aberta nesta aba (lib/previewSession.js, C15 /
+// P5-S6b, D21 do P5), os pedidos do portal levam só o x-preview-session (nunca o
+// x-admin-session: o portal na prévia é o do aluno virtual, e uma rota que aceitasse a
+// sessão do painel mostraria outra coisa); /api/admin/* e o Sair do instrutor continuam
+// com a sessão do painel.
+function authHeaders(path) {
   const headers = {}
+  const previewToken = currentPreviewToken()
+  if (previewToken && isPreviewPortalRequest(path)) {
+    headers[PREVIEW_HEADER] = previewToken
+    return headers
+  }
   const providedAuth = authProvider() || {}
   const a = (providedAuth.adminSession || providedAuth.sessionToken) ? providedAuth : getStoredAuth()
   // Instrutor: só o token da sessão. A senha passa uma vez, no POST /api/session/admin-login;
@@ -148,9 +167,11 @@ function abortError(signal) {
 // erro sai como AbortError, sem mensagem de conexão).
 // body: objeto (vai como JSON) ou FormData (envio de arquivo: vai como está, e o
 // navegador põe o Content-Type multipart com o separador).
-async function request(path, { method = 'GET', body, auth = true, raw, keepalive = false, timeoutMs, background = false, signal } = {}) {
+// headers: cabeçalhos a mais (o fim da pré-visualização manda o x-preview-session junto
+// com a sessão do painel); os de sessão vêm depois e valem mais.
+async function request(path, { method = 'GET', body, auth = true, raw, keepalive = false, timeoutMs, background = false, signal, headers: extraHeaders = null } = {}) {
   const fileUpload = isFormData(body)
-  const headers = { ...(fileUpload ? {} : { 'Content-Type': 'application/json' }), ...(auth ? authHeaders() : {}) }
+  const headers = { ...(fileUpload ? {} : { 'Content-Type': 'application/json' }), ...(extraHeaders && typeof extraHeaders === 'object' ? extraHeaders : {}), ...(auth ? authHeaders(path) : {}) }
   if (background) headers[BACKGROUND_HEADER] = '1'
   const limit = keepalive ? 0 : (timeoutMs === undefined || timeoutMs === null ? defaultTimeoutMs(path, headers, fileUpload) : Math.max(0, Number(timeoutMs) || 0))
   const canAbort = typeof AbortController === 'function'
@@ -206,6 +227,7 @@ async function request(path, { method = 'GET', body, auth = true, raw, keepalive
   if (!res.ok) {
     noteAdminAccessDenied(res.status, data)
     notePasswordChangeRequired(res.status, data)
+    notePreviewEnded(res.status, data, headers)
     throw responseError(res.status, data)
   }
   return data
@@ -234,17 +256,33 @@ function responseError(status, data) {
 // Conferência do servidor enquanto a conexão não está 'online' (lib/connection.js): o
 // próprio request() leva o resultado ao estado.
 setConnectionProbe(() => request('/api/session/status', { auth: false, background: true, timeoutMs: POLL_TIMEOUT_MS }))
-// Baixa um arquivo de rota autenticada (CSV, etc.). window.open não manda o
-// cabeçalho de sessão e abria "Acesso não autorizado." (UXI-01). O Blob preserva
-// os bytes (inclusive o BOM UTF-8 que o Excel usa para os acentos).
-// Sem prazo (o arquivo pode ser grande, como o backup completo); sem rede, a mesma
-// mensagem de conexão dos outros pedidos.
-export async function downloadFile(path, fallbackName = 'arquivo') {
-  const headers = authHeaders()
+// Nome do arquivo do Content-Disposition: o filename* (UTF-8, com os acentos de
+// "Relatório final.pdf") vale mais que o filename (só ASCII, a reserva dos navegadores
+// antigos); sem nenhum, o nome de reserva de quem chamou.
+export function dispositionFileName(disposition, fallbackName = 'arquivo') {
+  const value = String(disposition || '')
+  const extended = value.match(/filename\*\s*=\s*(?:UTF-8|utf-8)''([^;]+)/)
+  if (extended) {
+    try {
+      const decoded = decodeURIComponent(extended[1].trim().replace(/^"|"$/g, ''))
+      if (decoded) return decoded
+    } catch {}
+  }
+  const match = value.match(/filename="?([^";]+)"?/i)
+  return match ? match[1] : fallbackName
+}
+
+// Lê um arquivo de rota autenticada como Blob (prévia de imagem, PDF e texto das entregas
+// no painel, fase 3 C8, e o download abaixo): { blob, name, type }. Sem prazo (o arquivo
+// pode ser grande); sem rede, a mesma mensagem de conexão dos outros pedidos; recusa do
+// servidor com a mensagem dele. signal: cancela (a prévia que saiu da tela).
+export async function fetchBlob(path, { fallbackName = 'arquivo', signal } = {}) {
+  const headers = authHeaders(path)
   let res
   try {
-    res = await fetch(path, { headers })
-  } catch {
+    res = await fetch(path, signal ? { headers, signal } : { headers })
+  } catch (error) {
+    if (signal && signal.aborted) throw abortError(signal)
     throw noteFailure(connectionError('network'))
   }
   noteBuildFrom(res, path, headers)
@@ -253,13 +291,28 @@ export async function downloadFile(path, fallbackName = 'arquivo') {
     reportResponse(res.status, data)
     noteAdminAccessDenied(res.status, data)
     notePasswordChangeRequired(res.status, data)
+    notePreviewEnded(res.status, data, headers)
     throw responseError(res.status, data)
   }
   reportResponse(res.status, null)
-  const blob = await res.blob()
-  const disposition = res.headers.get('content-disposition') || ''
-  const match = disposition.match(/filename="?([^";]+)"?/i)
-  const name = match ? match[1] : fallbackName
+  let blob
+  try {
+    blob = await res.blob()
+  } catch (error) {
+    if (signal && signal.aborted) throw abortError(signal)
+    throw noteFailure(connectionError('network'))
+  }
+  const name = dispositionFileName(res.headers.get('content-disposition'), fallbackName)
+  return { blob, name, type: blob.type || res.headers.get('content-type') || '' }
+}
+
+// Baixa um arquivo de rota autenticada (CSV, etc.). window.open não manda o
+// cabeçalho de sessão e abria "Acesso não autorizado." (UXI-01). O Blob preserva
+// os bytes (inclusive o BOM UTF-8 que o Excel usa para os acentos).
+// Sem prazo (o arquivo pode ser grande, como o backup completo); sem rede, a mesma
+// mensagem de conexão dos outros pedidos.
+export async function downloadFile(path, fallbackName = 'arquivo') {
+  const { blob, name } = await fetchBlob(path, { fallbackName })
   const url = URL.createObjectURL(blob)
   const a = document.createElement('a')
   a.href = url
@@ -269,6 +322,117 @@ export async function downloadFile(path, fallbackName = 'arquivo') {
   a.remove()
   setTimeout(() => URL.revokeObjectURL(url), 1000)
   return name
+}
+
+// Envio de arquivo com progresso (fase 3, C9 / P1-g; D12 do P1): o fetch não diz quanto
+// do corpo já subiu, e o aluno no celular, na Wi-Fi da sala, precisa ver a barra andar.
+// XMLHttpRequest com os mesmos cabeçalhos de sessão, as mesmas mensagens e marcas de erro
+// do request() (status 0 com err.network ou err.timeout, 503 retryable com o texto fixo,
+// a mensagem do servidor nas recusas), o mesmo estado da conexão e a mesma conferência
+// da versão do build. Sem pacote novo.
+// onProgress({ loaded, total, percent }): a cada pedaço enviado (percent de 0 a 100; o
+// 100 sai quando o corpo terminou de subir, antes da resposta). signal: cancela (o erro
+// sai como AbortError, sem mensagem de conexão). timeoutMs: prazo (padrão 0 = sem prazo,
+// porque o tempo depende do tamanho do arquivo e da rede da sala). headers: cabeçalhos a
+// mais do pedido (o envio da atividade manda o x-envio-id); os de sessão vêm sempre.
+// stallMs (C9, ajuste 2): prazo SEM NOVIDADE, contado de novo a cada pedaço que sobe e
+// quando a resposta começa a chegar (padrão 0 = desligado). A Wi-Fi da sala congestionada
+// pode parar de passar dados sem fechar a conexão; sem este prazo o envio ficava parado
+// até o sistema desistir da conexão, muitos minutos depois. Estourado, o pedido é
+// cancelado e o erro sai como o do tempo-limite (status 0, err.timeout), com err.stalled.
+// Devolve o JSON da resposta (ou null sem corpo JSON).
+export function uploadWithProgress(path, formData, { method = 'POST', onProgress, signal, timeoutMs = 0, stallMs = 0, headers: extraHeaders = null } = {}) {
+  return new Promise((resolve, reject) => {
+    if (signal && signal.aborted) { reject(abortError(signal)); return }
+    if (typeof XMLHttpRequest !== 'function') { reject(noteFailure(connectionError('network'))); return }
+    const headers = { ...(extraHeaders && typeof extraHeaders === 'object' ? extraHeaders : {}), ...authHeaders(path) }
+    const xhr = new XMLHttpRequest()
+    let settled = false
+    let timedOut = false
+    let stalled = false
+    let timer = null
+    let stallTimer = null
+    const stallLimit = Math.max(0, Number(stallMs) || 0)
+    const onCallerAbort = () => { try { xhr.abort() } catch {} }
+    const finish = () => {
+      settled = true
+      if (timer) clearTimeout(timer)
+      if (stallTimer) clearTimeout(stallTimer)
+      if (signal) signal.removeEventListener('abort', onCallerAbort)
+    }
+    const timeoutError = () => {
+      const err = noteFailure(connectionError('timeout'))
+      if (stalled) err.stalled = true
+      return err
+    }
+    const fail = (err) => { if (settled) return; finish(); reject(err) }
+    // Algo andou (pedaço enviado, resposta chegando): o prazo sem novidade recomeça.
+    const armStall = () => {
+      if (!stallLimit || settled) return
+      if (stallTimer) clearTimeout(stallTimer)
+      stallTimer = setTimeout(() => { stalled = true; timedOut = true; try { xhr.abort() } catch {} }, stallLimit)
+    }
+    const report = (loaded, total) => {
+      if (typeof onProgress !== 'function') return
+      const safeTotal = Number(total) > 0 ? Number(total) : 0
+      const percent = safeTotal ? Math.max(0, Math.min(100, Math.round((Number(loaded) / safeTotal) * 100))) : 0
+      try { onProgress({ loaded: Number(loaded) || 0, total: safeTotal, percent }) } catch {}
+    }
+    try {
+      xhr.open(method, path, true)
+      Object.entries(headers).forEach(([name, value]) => xhr.setRequestHeader(name, value))
+    } catch {
+      fail(noteFailure(connectionError('network')))
+      return
+    }
+    if (xhr.upload) {
+      xhr.upload.onprogress = (event) => {
+        armStall()
+        if (event && event.lengthComputable) report(event.loaded, event.total)
+      }
+      xhr.upload.onload = () => { armStall(); report(1, 1) }
+    }
+    // Cabeçalhos ou pedaços da resposta chegando também contam como novidade.
+    xhr.onreadystatechange = () => { if (xhr.readyState >= 2) armStall() }
+    xhr.onload = () => {
+      if (settled) return
+      const status = xhr.status
+      // Status 0 no onload: o navegador não recebeu resposta de verdade (conexão cortada).
+      if (!status) { fail(timedOut ? timeoutError() : noteFailure(connectionError('network'))); return }
+      const res = { headers: { get: (name) => xhr.getResponseHeader(name) } }
+      noteBuildFrom(res, path, headers)
+      let data = null
+      const ct = xhr.getResponseHeader('content-type') || ''
+      if (ct.includes('application/json')) {
+        try { data = JSON.parse(xhr.responseText) } catch { data = null }
+      }
+      finish()
+      reportResponse(status, data)
+      if (status < 200 || status >= 300) {
+        noteAdminAccessDenied(status, data)
+        notePasswordChangeRequired(status, data)
+        notePreviewEnded(status, data, headers)
+        reject(responseError(status, data))
+        return
+      }
+      resolve(data)
+    }
+    xhr.onerror = () => fail(timedOut ? timeoutError() : noteFailure(connectionError('network')))
+    xhr.ontimeout = () => fail(timeoutError())
+    xhr.onabort = () => {
+      if (timedOut) fail(timeoutError())
+      else fail(abortError(signal))
+    }
+    if (signal) signal.addEventListener('abort', onCallerAbort, { once: true })
+    const limit = Math.max(0, Number(timeoutMs) || 0)
+    if (limit > 0) timer = setTimeout(() => { timedOut = true; try { xhr.abort() } catch {} }, limit)
+    try {
+      xhr.send(formData)
+      armStall()
+    } catch {
+      fail(noteFailure(connectionError('network')))
+    }
+  })
 }
 
 export const api = {

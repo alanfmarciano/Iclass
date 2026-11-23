@@ -8,7 +8,11 @@ const runtimePaths = require('../runtimePaths.js');
 const { resolveInside, assertSafeId } = require('../utils/safePath.js');
 const { revokeStudentSession } = require('../utils/authSessions.js');
 const { recordAudit } = require('../utils/audit.js');
-const { assignStudentId } = require('../utils/studentIdentity.js');
+const { assignStudentId, studentIdsByEmail } = require('../utils/studentIdentity.js');
+const { relinkRecordsByEmail } = require('../utils/studentDataHandlers.js');
+// Tarefas e entregas do curso (fase 3, C10 / P1-h, D14): os registros vão no pacote e os
+// arquivos para data/entregas/_cursos_arquivados/<pasta> (fora do ZIP de backup).
+const assignmentLifecycle = require('../utils/assignmentLifecycle.js');
 
 const ARCHIVE_DIR = runtimePaths.ARCHIVE_DIR;
 
@@ -71,6 +75,11 @@ function createAdminArchiveRouter({ studentClassNames }) {
                 }
             });
 
+            // Tarefas e entregas (C10): todas as do curso, de qualquer aluno, como as provas.
+            const courseTasks = assignmentLifecycle.courseAssignmentRecords(db.memory, courseId);
+            const taskIds = courseTasks.assignments.map(item => item.id);
+            const taskFiles = courseTasks.assignmentSubmissions.reduce((sum, sub) => sum + (sub.versions || []).reduce((n, version) => n + ((version && version.files) || []).length, 0), 0);
+
             const bundle = {
                 archivedAt: new Date().toISOString(),
                 archivedBy: matchedAdmin.email || 'admin',
@@ -81,6 +90,8 @@ function createAdminArchiveRouter({ studentClassNames }) {
                 progress: pickByEmails(db.memory.progress, orphanEmails),
                 notes: pickByEmails(db.memory.notes, orphanEmails),
                 annotations: pickByEmails(db.memory.annotations, orphanEmails),
+                assignments: courseTasks.assignments,
+                assignmentSubmissions: courseTasks.assignmentSubmissions,
             };
 
             const stamp = new Date().toISOString().replace(/[:.]/g, '-');
@@ -102,7 +113,12 @@ function createAdminArchiveRouter({ studentClassNames }) {
                         alunos: orphanStudents.length,
                         submissoes: submissions.length,
                         arquivos: Object.keys(contentFiles).length,
+                        tarefas: courseTasks.assignments.length,
+                        entregas: courseTasks.assignmentSubmissions.length,
+                        arquivosEntregas: taskFiles,
                     },
+                    // Onde ficam os arquivos das entregas (relativo a data/entregas).
+                    entregas: taskFiles ? `${assignmentLifecycle.COURSE_ARCHIVE_SEGMENT}/${folderName}` : null,
                 }, null, 2));
             } catch (error) {
                 // O detalhe (caminho, código do sistema) fica no crash.log; a tela recebe a
@@ -114,6 +130,10 @@ function createAdminArchiveRouter({ studentClassNames }) {
             db.memory.classes = classes.filter(item => item.courseId !== courseId);
             db.memory.submissions = (db.memory.submissions || []).filter(item => !(item.courseId === courseId || classNames.has(item.studentClass)));
             db.memory.students = (db.memory.students || []).filter(student => !orphanEmails.has(String(student.email || '').toLowerCase()));
+            const archivedTasks = new Set(courseTasks.assignments);
+            const archivedSubs = new Set(courseTasks.assignmentSubmissions);
+            db.memory.assignments = (db.memory.assignments || []).filter(item => !archivedTasks.has(item));
+            db.memory.assignmentSubmissions = (db.memory.assignmentSubmissions || []).filter(item => !archivedSubs.has(item));
             // Os alunos que saíram com o curso perdem a sessão (também na tabela
             // auth_sessions, H3a-2): ela não volta num reinício nem quando o curso arquivado
             // for restaurado com eles.
@@ -137,7 +157,7 @@ function createAdminArchiveRouter({ studentClassNames }) {
                 }
             });
             // O que saiu do sistema e para onde foi (SEG-07): a cópia inteira está na pasta.
-            const counts = { turmas: courseClasses.length, alunos: orphanStudents.length, submissoes: submissions.length, arquivos: Object.keys(contentFiles).length };
+            const counts = { turmas: courseClasses.length, alunos: orphanStudents.length, submissoes: submissions.length, arquivos: Object.keys(contentFiles).length, tarefas: courseTasks.assignments.length, entregas: courseTasks.assignmentSubmissions.length };
             recordAudit(db.memory, {
                 req,
                 actor: matchedAdmin,
@@ -148,7 +168,11 @@ function createAdminArchiveRouter({ studentClassNames }) {
             });
 
             await db.save();
-            res.json({ success: true, folder: folderName, counts: { turmas: courseClasses.length, alunos: orphanStudents.length, submissoes: submissions.length } });
+            // Os arquivos das entregas só mudam de lugar com o curso já fora do banco (nenhum
+            // envio novo chega a uma tarefa que saiu). O que não mudar de lugar fica em
+            // data/entregas e volta igual na restauração do curso.
+            await assignmentLifecycle.archiveCourseAssignmentFiles(taskIds, folderName);
+            res.json({ success: true, folder: folderName, counts: { turmas: courseClasses.length, alunos: orphanStudents.length, submissoes: submissions.length, tarefas: courseTasks.assignments.length, entregas: courseTasks.assignmentSubmissions.length } });
         });
     });
 
@@ -213,6 +237,23 @@ function createAdminArchiveRouter({ studentClassNames }) {
                     Object.assign(db.memory[collection], bundle[collection]);
                 }
             });
+            // Tarefas e entregas (C10; pacote de antes do C10 não tem: nada muda). Registro
+            // com o mesmo id de um que já existe fica de fora, como as provas; a entrega
+            // volta ligada ao id de hoje do aluno (relink pelo e-mail).
+            const existingTaskIds = new Set((db.memory.assignments || []).map(item => item && item.id));
+            const restoredTasks = (Array.isArray(bundle.assignments) ? bundle.assignments : []).filter(item => item && item.id && !existingTaskIds.has(item.id));
+            const existingDeliveryIds = new Set((db.memory.assignmentSubmissions || []).map(item => item && item.id));
+            // Anonimizar ou apagar um aluno que já passou e cujo pacote ainda espera a
+            // regravação (ela vem depois da gravação do banco): a entrega volta como ficaria.
+            const bundleDeliveries = assignmentLifecycle.pendingBundleChangesApplied(path.basename(directory), Array.isArray(bundle.assignmentSubmissions) ? bundle.assignmentSubmissions : []);
+            const restoredDeliveries = bundleDeliveries.filter(item => item && item.id && !existingDeliveryIds.has(item.id));
+            if (restoredTasks.length) db.memory.assignments = [...(db.memory.assignments || []), ...restoredTasks];
+            if (restoredDeliveries.length) {
+                relinkRecordsByEmail(db.memory, restoredDeliveries, studentIdsByEmail(db.memory));
+                // Aluno que trocou de e-mail com o curso fora: a entrega vai para o e-mail de hoje.
+                assignmentLifecycle.followCurrentStudentEmails(db.memory, restoredDeliveries);
+                db.memory.assignmentSubmissions = [...(db.memory.assignmentSubmissions || []), ...restoredDeliveries];
+            }
             recordAudit(db.memory, {
                 req,
                 actor: matchedAdmin,
@@ -226,10 +267,15 @@ function createAdminArchiveRouter({ studentClassNames }) {
                         turmas: (bundle.classes || []).length,
                         alunos: (bundle.students || []).length,
                         submissoes: (bundle.submissions || []).length,
+                        tarefas: restoredTasks.length,
+                        entregas: restoredDeliveries.length,
                     },
                 },
             });
             await db.save();
+            // Os arquivos das entregas voltam para data/entregas (sem sobrescrever). O que não
+            // voltar vai para a lixeira de arquivos antes de o pacote sair (não fica perdido).
+            await assignmentLifecycle.restoreCourseAssignmentFiles(path.basename(directory), { deletedBy: matchedAdmin.email || 'admin' });
             try { fs.rmSync(directory, { recursive: true, force: true }); } catch (error) {}
             res.json({ success: true, course });
         });
@@ -244,7 +290,14 @@ function createAdminArchiveRouter({ studentClassNames }) {
             // O manifesto diz o que foi apagado (curso e contagens), para a auditoria.
             let manifest = {};
             try { manifest = JSON.parse(fs.readFileSync(path.join(directory, 'manifesto.json'), 'utf8')) || {}; } catch (error) { manifest = {}; }
+            // As entregas do pacote (C10): os arquivos vão para a lixeira com lápide.
+            let bundleDeliveries = [];
+            try {
+                const bundle = JSON.parse(fs.readFileSync(path.join(directory, 'curso.json'), 'utf8')) || {};
+                bundleDeliveries = Array.isArray(bundle.assignmentSubmissions) ? bundle.assignmentSubmissions : [];
+            } catch (error) { bundleDeliveries = []; }
             try { fs.rmSync(directory, { recursive: true, force: true }); } catch (error) { return sendInternalError(error, req, res); }
+            const deliveryFiles = assignmentLifecycle.trashArchivedCourseAssignmentFiles(db.memory, path.basename(directory), bundleDeliveries, { deletedBy: matchedAdmin.email || 'admin' });
             recordAudit(db.memory, {
                 req,
                 actor: matchedAdmin,
@@ -256,6 +309,7 @@ function createAdminArchiveRouter({ studentClassNames }) {
                     name: String(manifest.name || ''),
                     archivedAt: manifest.archivedAt || null,
                     counts: manifest.counts && typeof manifest.counts === 'object' ? manifest.counts : null,
+                    arquivosEntregasNaLixeira: deliveryFiles.arquivos,
                 },
             });
             await db.save();

@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { MemoryRouter } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { NotificationBell } from './NotificationBell'
+import { requestNotificationsRefresh } from '../../lib/messageCounter'
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }))
 vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post } }))
@@ -128,5 +129,17 @@ describe('Sino de notificações', () => {
     fireEvent.click(screen.getByText('Prova adiada'))
     await waitFor(() => expect(onOpenItem).toHaveBeenCalledWith(expect.objectContaining({ id: 'aviso:a1' })))
     expect(await screen.findByRole('button', { name: 'Notificações: 1 nova' })).toBeInTheDocument()
+  })
+  it('[UC-MENSAGEM-006] a tela Mensagens pede uma consulta na hora (depois de ler) e o onData leva a resposta ao contador do menu', async () => {
+    const onData = vi.fn()
+    mocks.get.mockResolvedValue({ unread: 1, items: [{ id: 'mensagem:c1', type: 'mensagem', title: 'Mensagem de Paulo', unread: true, href: '/aluno/mensagens?c=c1' }] })
+    render(<MemoryRouter><NotificationBell endpoint="/api/student/notifications?courseId=c&studentClass=A" seenEndpoint="/api/student/notifications/seen" onData={onData} /></MemoryRouter>)
+    await waitFor(() => expect(onData).toHaveBeenCalledTimes(1))
+    const before = mocks.get.mock.calls.length
+    // Antes do C14 o sino só consultava de novo no intervalo (30 s) ou no foco da janela.
+    requestNotificationsRefresh()
+    await waitFor(() => expect(mocks.get.mock.calls.length).toBe(before + 1))
+    await waitFor(() => expect(onData).toHaveBeenCalledTimes(2))
+    expect(onData.mock.calls[1][0].items[0].type).toBe('mensagem')
   })
 })

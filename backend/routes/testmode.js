@@ -13,6 +13,7 @@ const { applicationToOnlineConfig, createExamApplication } = require('../utils/e
 const { markStudentPresence } = require('../utils/authSessions.js');
 const { modelDocumentId } = require('../utils/legalDocuments.js');
 const { assignStudentId } = require('../utils/studentIdentity.js');
+const { replaceGroupsWithPrefix } = require('../utils/classGroups.js');
 
 const TEST = process.env.TEST_MODE === '1';
 const TEST_ADMIN = DEMO_ACCOUNTS.admin;
@@ -391,6 +392,96 @@ function seedAdditionalData() {
   ]);
 }
 
+// Grupos de demonstração (fase 3, P5-S4): dois conjuntos na turma 1DES, Laboratório A e
+// B (subturmas, metade da turma cada) e Equipes 1 a 3 do projeto integrador. Os grupos do
+// seed (id seed_grp_) são refeitos a cada seed; os criados pela tela ficam.
+function seedGroups() {
+  const now = Date.now();
+  const emails = STUDENTS.map(([, email]) => email);
+  const idOf = email => {
+    const student = (db.memory.students || []).find(item => item.email && item.email.toLowerCase() === email);
+    return student && typeof student.id === 'string' ? student.id : null;
+  };
+  const row = (id, conjunto, tipo, nome, members, index) => ({
+    id, schemaVersion: 1, courseId: TEST_COURSE, studentClass: TEST_CLASS, nome, conjunto, tipo,
+    membros: members.map(email => ({ email, studentId: idOf(email), adicionadoEm: now - 7 * 86400000, adicionadoPor: TEST_PROFESSOR.email })),
+    criadoEm: now - (7 * 86400000) + index, criadoPor: TEST_PROFESSOR.email,
+    atualizadoEm: now - (7 * 86400000) + index, atualizadoPor: TEST_PROFESSOR.email,
+    arquivadoEm: null, arquivadoPor: null,
+  });
+  const half = Math.ceil(emails.length / 2);
+  replaceGroupsWithPrefix(db.memory, 'seed_grp_', [
+    row('seed_grp_lab_a', 'Laboratório', 'subturma', 'Laboratório A', emails.slice(0, half), 1),
+    row('seed_grp_lab_b', 'Laboratório', 'subturma', 'Laboratório B', emails.slice(half), 2),
+    row('seed_grp_eq_1', 'Projeto integrador', 'equipe', 'Equipe 1', [emails[0], emails[3], emails[6], emails[9]], 3),
+    row('seed_grp_eq_2', 'Projeto integrador', 'equipe', 'Equipe 2', [emails[1], emails[4], emails[7], emails[10]], 4),
+    row('seed_grp_eq_3', 'Projeto integrador', 'equipe', 'Equipe 3', [emails[2], emails[5], emails[8], emails[11]], 5),
+  ]);
+}
+
+// Conversas de demonstração (fase 3, C14 / P5-S7b, FUN-14): duas na turma 1DES com o
+// professor de teste. A da Alice está aberta, com a última mensagem do professor ainda
+// não lida por ela (o sino e o contador de Mensagens do portal mostram 1); a do Bruno foi
+// encerrada pelo professor. As do seed (id seed_conv_ e seed_msg_) são refeitas a cada
+// seed, com as respostas que a tela escreveu nelas; as conversas criadas pela tela ficam.
+function seedConversations() {
+  const now = Date.now();
+  const hour = 3600000;
+  const idOf = email => {
+    const student = (db.memory.students || []).find(item => item.email && item.email.toLowerCase() === email);
+    return student && typeof student.id === 'string' ? student.id : null;
+  };
+  const conversation = (id, email, assunto, messages, extra = {}) => {
+    const fromStudent = messages.filter(([autor]) => autor === 'aluno');
+    const fromInstructor = messages.filter(([autor]) => autor === 'instrutor');
+    const last = messages[messages.length - 1];
+    return {
+      id, schemaVersion: 1, courseId: TEST_COURSE, studentClass: TEST_CLASS,
+      aluno: { email, studentId: idOf(email) },
+      instrutor: { email: TEST_PROFESSOR.email, nome: TEST_PROFESSOR.name },
+      assunto, status: 'aberta', iniciadaPor: messages[0][0],
+      criadaEm: messages[0][1], ultimaMensagemEm: last[1], mensagens: messages.length,
+      lidaAte: { aluno: 0, instrutor: 0 },
+      ultimaDoAlunoEm: fromStudent.length ? fromStudent[fromStudent.length - 1][1] : null,
+      ultimaDoInstrutorEm: fromInstructor.length ? fromInstructor[fromInstructor.length - 1][1] : null,
+      arquivadaPeloAlunoEm: null,
+      ...extra,
+    };
+  };
+  const messageRows = (conversationId, email, messages) => messages.map(([autor, criadaEm, texto], index) => ({
+    id: `seed_msg_${conversationId.slice('seed_conv_'.length)}_${index + 1}`, schemaVersion: 1, conversationId, autor,
+    autorEmail: autor === 'aluno' ? email : TEST_PROFESSOR.email, texto, criadaEm,
+  }));
+  const alice = TEST_STUDENT.email;
+  const bruno = 'bruno.souza@teste.local';
+  const aliceMessages = [
+    ['aluno', now - 26 * hour, 'Professor, posso pedir revisão da questão 4 da avaliação de FUTEC? Acho que a minha resposta estava certa.'],
+    ['instrutor', now - 25 * hour, 'Pode sim, Alice. Vou olhar a sua prova e te respondo por aqui.'],
+    ['instrutor', now - 2 * hour, 'Olhei a questão 4: você tem razão.\nA nota foi corrigida; confira em Provas.'],
+  ];
+  const brunoMessages = [
+    ['aluno', now - 5 * 24 * hour, 'Professor, faltei ontem por causa de uma consulta médica. Onde entrego o atestado?'],
+    ['instrutor', now - 5 * 24 * hour + hour, 'Entregue o atestado na secretaria. Eu abono a falta na chamada.'],
+    ['aluno', now - 5 * 24 * hour + 2 * hour, 'Obrigado, professor!'],
+  ];
+  db.memory.conversations = replaceSeedRows(db.memory.conversations, 'seed_conv_', [
+    conversation('seed_conv_alice', alice, 'Revisão da prova', aliceMessages, {
+      lidaAte: { aluno: aliceMessages[1][1], instrutor: aliceMessages[2][1] },
+    }),
+    conversation('seed_conv_bruno', bruno, 'Atestado médico', brunoMessages, {
+      status: 'encerrada', lidaAte: { aluno: brunoMessages[2][1], instrutor: brunoMessages[2][1] },
+      encerradaEm: now - 4 * 24 * hour, encerradaPor: TEST_PROFESSOR.email, motivoEncerramento: 'Assunto resolvido',
+    }),
+  ]);
+  // As respostas escritas pela tela numa conversa do seed saem com ela (a conversa volta ao
+  // estado do seed e a contagem de mensagens continua batendo).
+  const outsideSeed = (db.memory.conversationMessages || []).filter(msg => !String(msg && msg.conversationId || '').startsWith('seed_conv_'));
+  db.memory.conversationMessages = replaceSeedRows(outsideSeed, 'seed_msg_', [
+    ...messageRows('seed_conv_alice', alice, aliceMessages),
+    ...messageRows('seed_conv_bruno', bruno, brunoMessages),
+  ]);
+}
+
 // Apostila de demonstração gerada para cada unidade. Só é escrita quando o arquivo
 // não existe, então nunca sobrescreve conteúdo real (o modo demonstração usa content-demo/).
 function demoApostila(module, unit) {
@@ -502,6 +593,8 @@ function ensureSeed() {
   seedAcademicData();
   seedCommunicationData();
   seedAdditionalData();
+  seedGroups();
+  seedConversations();
   seedDemoContent();
   seedDemoApplication(cls);
   db.save();
@@ -535,7 +628,7 @@ router.post('/api/test/seed', (req, res) => {
     professor: { email: TEST_PROFESSOR.email, password: TEST_PROFESSOR.password },
     student: { email: TEST_STUDENT.email, password: TEST_STUDENT.password },
     exam: { key: ACTIVE_EXAM, className: TEST_CLASS, courseId: TEST_COURSE },
-    demo: { students: STUDENTS.length, announcements: 5, calendarEvents: 7, submissions: STUDENTS.length * RESULT_EXAMS.length }
+    demo: { students: STUDENTS.length, announcements: 5, calendarEvents: 7, submissions: STUDENTS.length * RESULT_EXAMS.length, groups: 5, conversations: 2 }
   });
 });
 

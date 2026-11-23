@@ -20,7 +20,8 @@
 //   href?, endDate? (a última data de um evento de vários dias) }. Os eventos entram na mesma ordem por data e hora.
 // - registerInstructorQueueProvider({ id, items(ctx) }): pendências da fila e do sino do
 //   instrutor. ctx = { memory, cls, course, students, emails (Set dos e-mails do escopo),
-//   today, now, canSeeMatriculas }; os alunos já vêm no escopo de quem vê. Cada item:
+//   today, now, canSeeMatriculas, viewer (a conta de quem vê, ou null) }; os alunos já
+//   vêm no escopo de quem vê. Cada item:
 //   { id, tipo, titulo, detalhe?, count, tone, href, permissao (texto ou lista: qualquer
 //   uma basta), at?, adiavel?, somenteQuemAltera? (true: pede uma ação que a conta só de
 //   consulta, a Coordenação, não pode fazer; a fila e o sino não o mostram a ela) }; a rota

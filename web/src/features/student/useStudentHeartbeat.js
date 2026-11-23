@@ -17,7 +17,9 @@ export const HEARTBEAT_MS = 15000
 // onPresence (opcional) recebe a resposta de cada ping: o portal passa a versão publicada
 // dos documentos (legalVersion) ao portão de primeiro acesso (StudentPrivacyGate), também
 // para o aluno sem turma, que não tem o sino.
-export function useStudentHeartbeat({ onPresence } = {}) {
+// enabled (padrão true): a pré-visualização como aluno (C15 / P5-S6b) desliga a presença;
+// com auth.preview o ping também não sai (o servidor recusaria: a prévia não grava).
+export function useStudentHeartbeat({ onPresence, enabled = true } = {}) {
   const { auth, endSessionFromError, syncPasswordChange } = useAuth()
   const nav = useNavigate()
   const email = auth.email
@@ -42,5 +44,5 @@ export function useStudentHeartbeat({ onPresence } = {}) {
       return false
     }
   }, [email, endSessionFromError, nav, syncPasswordChange, onPresence])
-  usePolling(ping, { intervalMs: HEARTBEAT_MS, enabled: !!email })
+  usePolling(ping, { intervalMs: HEARTBEAT_MS, enabled: !!email && enabled !== false && !auth.preview })
 }

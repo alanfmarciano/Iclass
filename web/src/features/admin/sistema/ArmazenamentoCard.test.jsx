@@ -1,7 +1,7 @@
 import { cleanup, render, screen, waitFor } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import { ArmazenamentoCard, ONEDRIVE_WARNING, compactResultText, databaseSizeText, formatBytes, freeSpaceText, topCollections, writeErrorText } from './ArmazenamentoCard'
+import { ArmazenamentoCard, ONEDRIVE_WARNING, assignmentFilesText, compactResultText, databaseSizeText, differentFilesText, formatBytes, freeSpaceText, mirrorStatusText, recoverResultText, topCollections, writeErrorText } from './ArmazenamentoCard'
 
 const MB = 1024 * 1024
 
@@ -148,5 +148,78 @@ describe('ArmazenamentoCard · Armazenamento', () => {
     expect(databaseSizeText({ databaseBytes: 3 * MB, walBytes: 0 })).toBe('3 MB')
     // Servidor antigo sem allocatedBytes: cai no databaseBytes.
     expect(freeSpaceText({ freeBytes: MB, databaseBytes: 4 * MB })).toBe('1 MB (25% do arquivo)')
+  })
+  // ---------------------------------------------------------------- trabalhos dos alunos (C11)
+  const entregas = (extra = {}) => ({
+    bytes: 3.2 * 1024 * MB, arquivos: 1240, semRegistro: 0, semRegistroBytes: 0, faltando: 0, podeRecuperar: true,
+    ...extra,
+    espelho: { configurado: true, acessivel: true, ultimoSucesso: '2026-11-22T05:00:00Z', arquivos: 1240, pendentes: 0, ultimaFalha: null, ...(extra.espelho || {}) },
+  })
+
+  it('[UC-ARMAZENAMENTO-002] mostra o tamanho dos trabalhos, a cópia no destino, os sem registro e os que faltam aqui', () => {
+    mocks.result = { data: storage({ entregas: entregas({ semRegistro: 3, semRegistroBytes: 12 * MB, faltando: 2 }) }), error: null }
+    render(<ArmazenamentoCard />)
+    expect(screen.getByText('3,2 GB em 1.240 arquivos')).toBeVisible()
+    expect(screen.getByText(/^Em dia \(última cópia em /)).toBeVisible()
+    expect(screen.getByText(/3 arquivos \(12 MB\) de trabalhos que nenhuma entrega registra/)).toBeVisible()
+    expect(screen.getByText('2 arquivos de entregas registradas não estão neste computador.')).toBeVisible()
+    expect(screen.getByRole('button', { name: /Trazer arquivos do destino externo/ })).toBeVisible()
+  })
+
+  it('[UC-ARMAZENAMENTO-002] sem destino externo: avisa que os trabalhos só estão aqui e não oferece trazer', () => {
+    mocks.result = { data: storage({ entregas: entregas({ podeRecuperar: false, espelho: { configurado: false, acessivel: false, ultimoSucesso: null, pendentes: null } }) }), error: null }
+    render(<ArmazenamentoCard />)
+    expect(screen.getByText(/Sem destino externo: os trabalhos dos alunos só estão neste computador/)).toBeVisible()
+    expect(screen.queryByRole('button', { name: /Trazer arquivos/ })).toBeNull()
+  })
+
+  it('[UC-ARMAZENAMENTO-002] trazer arquivos pede confirmação, não tem prazo no navegador e mostra o resultado', async () => {
+    const user = userEvent.setup()
+    mocks.result = { data: storage({ entregas: entregas({ faltando: 2 }) }), error: null }
+    mocks.post.mockResolvedValue({ success: true, copiados: 2, conferidos: 1238, faltando: 0, divergentes: 0 })
+    render(<ArmazenamentoCard />)
+    await user.click(screen.getByRole('button', { name: /Trazer arquivos do destino externo/ }))
+    expect(screen.getByText(/O arquivo daqui que não confere com o registro da entrega vai para a lixeira e a cópia conferida toma o lugar/)).toBeVisible()
+    await user.click(screen.getByRole('button', { name: 'Trazer arquivos' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/backup/entregas/recuperar', {}, { timeoutMs: 0 }))
+    expect(mocks.toast.success).toHaveBeenCalledWith('2 arquivos trazidos do destino externo.')
+    expect(mocks.refetch).toHaveBeenCalled()
+  })
+
+  // Rodada 2 do C11: o arquivo daqui trocado (disco com defeito, ransomware) não pode
+  // sumir no "Em dia": o cartão mostra que ele não confere com o registro e que a cópia do
+  // destino foi mantida, e "Trazer arquivos" diz que trocou.
+  it('[UC-ARMAZENAMENTO-002] arquivo deste computador diferente do registro aparece no cartão e a cópia não fica "Em dia"', async () => {
+    const user = userEvent.setup()
+    mocks.result = { data: storage({ entregas: entregas({ diferentes: 1 }) }), error: null }
+    mocks.post.mockResolvedValue({ success: true, copiados: 0, trocados: 1, conferidos: 1239, faltando: 0, divergentes: 0, naoTrocados: 0 })
+    render(<ArmazenamentoCard />)
+    expect(screen.getByText('Diferentes do registro')).toBeVisible()
+    expect(screen.getByText(/^1 arquivo deste computador não confere com o que o aluno enviou/)).toBeVisible()
+    expect(screen.queryByText(/^Em dia/)).toBeNull()
+    expect(screen.getByText(/1 arquivo deste computador ficou de fora por não conferir com o registro; a cópia de lá foi mantida\.$/)).toBeVisible()
+    await user.click(screen.getByRole('button', { name: /Trazer arquivos do destino externo/ }))
+    await user.click(screen.getByRole('button', { name: 'Trazer arquivos' }))
+    await waitFor(() => expect(mocks.toast.success).toHaveBeenCalledWith('1 arquivo diferente do registro foi trocado pela cópia conferida (o de antes foi para a lixeira).'))
+    expect(differentFilesText({ diferentes: 2, podeRecuperar: false })).toBe('2 arquivos deste computador não conferem com o que o aluno enviou (registro da entrega): disco com defeito ou programa que alterou os arquivos. A cópia do destino externo não foi trocada.')
+    expect(recoverResultText({ copiados: 1, trocados: 0, naoTrocados: 1 })).toBe('1 arquivo trazido do destino externo. 1 arquivo diferente do registro continua aqui: não há cópia conferida dele no destino externo.')
+  })
+
+  it('[UC-ARMAZENAMENTO-002] textos da cópia dos trabalhos', () => {
+    expect(assignmentFilesText({ arquivos: 0, bytes: 0 })).toBe('Nenhum trabalho enviado ainda.')
+    expect(assignmentFilesText({ arquivos: 1, bytes: 640 * 1024 })).toBe('640 KB em 1 arquivo')
+    expect(mirrorStatusText(entregas({ espelho: { ultimaFalha: { em: '2026-11-22T05:00:00Z', mensagem: 'Espaço insuficiente no destino externo.' } } }))).toEqual({ tone: 'danger', text: expect.stringMatching(/^A última cópia falhou em .*: Espaço insuficiente no destino externo\.$/) })
+    expect(mirrorStatusText(entregas({ espelho: { pendentes: 3 } })).text).toMatch(/3 arquivos novos esperam a próxima, junto com o backup\.$/)
+    expect(mirrorStatusText(entregas({ espelho: { pendentes: 1 } })).text).toMatch(/1 arquivo novo espera a próxima/)
+    expect(mirrorStatusText(entregas({ espelho: { pendentes: null, acessivel: false } }))).toEqual({ tone: 'warning', text: expect.stringMatching(/O destino não está conectado agora\.$/) })
+    expect(mirrorStatusText(entregas({ espelho: { ultimoSucesso: null } })).text).toBe('Ainda sem cópia: ela sai junto com o próximo backup.')
+    expect(recoverResultText({ copiados: 0, faltando: 1, divergentes: 1 })).toBe('Nenhum arquivo precisou ser trazido. 1 arquivo não está no destino externo. 1 cópia não conferiu com o registro e ficou de fora.')
+    // Destino novo desconectado, sem nenhuma cópia ainda: avisa que não está acessível (antes
+    // dizia "Ainda sem cópia: ela sai junto com o próximo backup.").
+    expect(mirrorStatusText(entregas({ espelho: { ultimoSucesso: null, acessivel: false, pendentes: null } }))).toEqual({ tone: 'warning', text: 'O destino externo não está acessível agora (pendrive ou HD desconectado, ou pasta removida): os trabalhos dos alunos ainda não têm cópia fora deste computador.' })
+    // Computador trocado: os arquivos vêm da pasta do computador de antes.
+    expect(recoverResultText({ copiados: 2, deOutroComputador: 2 })).toBe('2 arquivos trazidos do destino externo, da cópia feita em outro computador.')
+    expect(recoverResultText({ copiados: 3, deOutroComputador: 1 })).toBe('3 arquivos trazidos do destino externo (1 deles veio da cópia feita em outro computador).')
+    expect(topCollections({ assignmentSubmissions: 4 })).toEqual([{ name: 'assignmentSubmissions', label: 'Trabalhos entregues (registros)', rows: 4 }])
   })
 })

@@ -9,6 +9,9 @@ import { EmptyState } from '../../components/ui/EmptyState'
 import { PageState } from '../../components/ui/PageState'
 import { api } from '../../lib/api'
 import { useStudent } from './useStudent'
+import { usePreview } from '../../hooks/usePreview'
+import { PREVIEW_DISABLED_TEXT } from '../../lib/previewSession'
+import { PreviewDisabledNote } from './PreviewBanner'
 import { useToast } from '../../context/ToastProvider'
 import { usePolling } from '../../hooks/usePolling'
 import { FORUM_TEXT_MAX_CHARS, SHORT_TEXT_COUNTER_FROM } from '../../lib/textLimits'
@@ -29,6 +32,8 @@ function when(value) {
 // o tópico "geral" e abria vazia.
 export default function DuvidasPage() {
   const { email, name, courseId, studentClass } = useStudent()
+  // Pré-visualização como aluno (C15 / P5-S6b): Enviar fica desativado.
+  const preview = usePreview()
   const [comments, setComments] = useState([])
   const [topics, setTopics] = useState([{ key: 'geral', title: 'Dúvida geral', module: '' }])
   const [loading, setLoading] = useState(true)
@@ -64,7 +69,7 @@ export default function DuvidasPage() {
   usePolling((requestOptions) => load(true, requestOptions), { intervalMs: 15000, immediate: false, resetKey: classKey })
 
   async function post() {
-    if (!text.trim()) return
+    if (!text.trim() || preview) return
     setSending(true)
     try {
       await api.post('/api/forum/comment', { key: topic, studentName: name, studentEmail: email, courseId, studentClass, text })
@@ -92,7 +97,7 @@ export default function DuvidasPage() {
           {topics.map((t) => <option key={t.key} value={t.key}>{t.module ? `${t.module} · ${t.title}` : t.title}</option>)}
         </Select>
         <Textarea id="q" value={text} onChange={(e) => setText(e.target.value)} maxLength={FORUM_TEXT_MAX_CHARS} counterFrom={SHORT_TEXT_COUNTER_FROM} placeholder="Escreva sua dúvida…" className="min-h-[90px]" />
-        <div className="flex justify-end"><Button icon={Send} loading={sending} onClick={post} disabled={!text.trim()}>Enviar</Button></div>
+        <div className="flex flex-wrap items-center justify-end gap-2"><PreviewDisabledNote /><Button icon={Send} loading={sending} onClick={post} disabled={!text.trim() || !!preview} title={preview ? PREVIEW_DISABLED_TEXT : undefined}>Enviar</Button></div>
       </Card>
 
       <PageState loading={loading} error={error} onRetry={() => load()}>
