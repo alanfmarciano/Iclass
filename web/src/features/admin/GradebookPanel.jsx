@@ -84,16 +84,20 @@ function columnTitle(column) {
 // Nota de uma prova no quadro, com a cor da faixa pela média mínima do curso
 // (gradeTone/gradeBand, a mesma regra do servidor). Coluna fora da média (sem etapa, "Não
 // conta" ou arquivada) fica sem cor.
-// Sem nota, a célula diz por quê (B10, pendências da J2): "aguardando correção" (a entrega
-// espera o professor e ainda não entra na média) ou "anulada" (toda tentativa que contava
-// foi anulada com "desconsiderar"); as mesmas palavras do CSV e do XLSX.
+// Prova que espera a correção do professor (aguardandoCorrecao, sem nota): "aguardando
+// correção" no lugar do traço (A18). Antes a célula ficava com o traço, como se o aluno
+// não tivesse feito a prova.
 function Cell({ cell, criterio, muted = false }) {
   const tone = cell && !muted ? gradeTone(cell.score == null ? null : cell.score / 10, criterio) : null
-  const reason = cell && cell.score == null ? (cell.aguardandoCorrecao ? 'aguardando correção' : (cell.anulada ? 'anulada' : null)) : null
+  if (cell?.aguardandoCorrecao && cell.score == null) {
+    return <span className="whitespace-nowrap text-xs font-medium text-warning" title="A nota sai quando o professor concluir a correção">aguardando correção</span>
+  }
   return (
     <>
-      {reason
-        ? <span className="text-xs italic text-subtle">{reason}</span>
+      {/* Sem nota porque toda tentativa que contava foi anulada com "desconsiderar" (B10,
+          pendências da J2): "anulada", a mesma palavra do CSV e do XLSX. */}
+      {cell?.anulada && cell.score == null
+        ? <span className="text-xs italic text-subtle">anulada</span>
         : cell ? <span className={tone ? TONE_TEXT[tone] : undefined}>{fmtGrade(cell.score)}</span> : <span className="text-subtle">—</span>}
       {cell?.pending > 0 && <span className="ml-1 text-[10px] text-warning" title="Há tentativa ainda não publicada para o aluno">•</span>}
     </>

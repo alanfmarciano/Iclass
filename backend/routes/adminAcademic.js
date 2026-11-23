@@ -547,6 +547,17 @@ function closurePendencias(cls) {
     apps.filter(app => ACTIVE_APPLICATION_STATUSES.has(app.status)).forEach(app => {
         out.push({ code: 'exam_in_progress', texto: `A prova "${examTitleOf(app.examKey)}" está aberta no Monitor. Encerre a aplicação antes de encerrar a turma.` });
     });
+    // Prova aberta pelo controle antigo, sem aplicação (onlineExamConfigs de banco de antes
+    // das aplicações): student/submit ainda aceita entrega nela. Mesma leitura do launcher
+    // (launcherInstall.js, provas abertas): status ativo, ou onlineActive sem status.
+    const knownApps = new Set((db.memory.examApplications || []).map(app => app && app.id).filter(Boolean));
+    const configs = cls.onlineExamConfigs && typeof cls.onlineExamConfigs === 'object' ? cls.onlineExamConfigs : {};
+    Object.entries(configs).forEach(([examKey, cfg]) => {
+        if (!cfg || typeof cfg !== 'object' || (cfg.applicationId && knownApps.has(cfg.applicationId))) return;
+        const active = ACTIVE_APPLICATION_STATUSES.has(cfg.status) || (cfg.onlineActive === true && !cfg.status);
+        if (!active) return;
+        out.push({ code: 'exam_in_progress', texto: `A prova "${examTitleOf(examKey)}" está aberta no Monitor. Encerre a prova antes de encerrar a turma.` });
+    });
     apps.filter(app => app.status === 'prepared').forEach(app => {
         const agenda = applicationAgenda(app);
         if (!agenda || agenda.perdida === true || Number(agenda.abertaEm) > 0) return;
@@ -821,6 +832,7 @@ function createAdminAcademicRouter() {
                 details: {
                     courseId: String(cls.courseId || ''),
                     studentClass: cls.name,
+                    periodoLetivoId: text(cls.periodoLetivoId) || null,
                     alunos: summary.alunos,
                     situacoes: Object.fromEntries(summary.situacoes.map(item => [item.situacao, item.total])),
                     criteriosLigados: !!(course.avaliacao && course.avaliacao.ativo !== false),

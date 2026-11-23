@@ -163,6 +163,9 @@ test('[UC-CURSO-003] encerrar pede ENCERRAR digitado, copia os critérios, audit
     assert.equal(audit.reason, 'fim do semestre');
     assert.equal(audit.details.alunos, 2);
     assert.deepEqual(audit.details.situacoes, { reprovado_nota: 1, aprovado: 1 });
+    // Ajuste 2 do B10: o details leva o período letivo da turma (desenho P2, auditoria).
+    assert.ok('periodoLetivoId' in audit.details, JSON.stringify(audit.details));
+    assert.equal(audit.details.periodoLetivoId, cls1().periodoLetivoId || null);
 
     // Encerrar de novo não muda nada.
     const again = await as('admin', 'post', '/api/admin/class/close').send({ courseId: COURSE, name: '1DES', confirm: 'ENCERRAR' });
@@ -208,6 +211,23 @@ test('[UC-CURSO-003] encerrar recusa com prova aberta, prova agendada e entrega 
     assert.equal(res.status, 409);
     assert.equal(res.body.code, 'exam_in_progress');
     assert.match(res.body.error, /"Prova 1" está aberta no Monitor/);
+
+    // Ajuste 2 do B10: prova aberta pelo controle antigo, sem aplicação (onlineExamConfigs de
+    // banco de antes das aplicações), também segura: student/submit aceitaria entrega nela.
+    db.memory.examApplications = [];
+    cls1().onlineExamConfigs = { Av_P1: { onlineActive: true } };
+    res = await as('admin', 'post', '/api/admin/class/close').send({ courseId: COURSE, name: '1DES', confirm: 'ENCERRAR' });
+    assert.equal(res.status, 409, JSON.stringify(res.body));
+    assert.equal(res.body.code, 'exam_in_progress');
+    cls1().onlineExamConfigs = { Av_P1: { onlineActive: true, status: 'paused', applicationId: 'app_sumiu' } };
+    res = await as('admin', 'post', '/api/admin/class/close').send({ courseId: COURSE, name: '1DES', confirm: 'ENCERRAR' });
+    assert.equal(res.body.code, 'exam_in_progress');
+    // Configuração antiga parada, ou de uma aplicação que existe (o status da aplicação vale), não segura.
+    cls1().onlineExamConfigs = { Av_P1: { onlineActive: false, status: 'finished' }, Av_P2: { onlineActive: true, status: 'running', applicationId: 'app_fim' } };
+    db.memory.examApplications = [{ ...base, id: 'app_fim', status: 'finished' }];
+    const legacy = await as('admin', 'get', `/api/admin/class/close-summary?courseId=${COURSE}&name=1DES`);
+    assert.deepEqual(legacy.body.pendencias, [], JSON.stringify(legacy.body.pendencias));
+    delete cls1().onlineExamConfigs;
 
     const abreEm = Date.now() + 86400000;
     db.memory.examApplications = [{ ...base, id: 'app_sched', status: 'prepared', agenda: { abreEm, fechaEm: abreEm + 3600000 } }];
