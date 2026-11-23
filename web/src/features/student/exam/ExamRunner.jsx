@@ -978,6 +978,8 @@ function ExamRunnerScreen() {
           answeredCount: outcome.answeredCount,
           lateBySeconds: outcome.lateBySeconds,
           awaitingCorrection: outcome.awaitingCorrection === true,
+          // Encerrada pela agenda (P3-S12): a tela final não diz que foi o professor.
+          closedBySchedule: r.finishedBySchedule === true,
         })
         return
       }

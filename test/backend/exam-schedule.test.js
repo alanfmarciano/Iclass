@@ -194,8 +194,11 @@ test('[UC-PROVA-008] agendada: o aluno vê "Abre em..." sem questões nem token;
     for (const secret of ['versionSnapshots', 'accessTokenHash', 'accessTokenSealed', 'config', 'questions', 'participants', 'studentOverrides', 'agenda']) {
         assert.equal(Object.prototype.hasOwnProperty.call(scheduled, secret), false, secret);
     }
-    // Antes da hora: começar a tentativa é recusado (a prova não foi iniciada).
-    await asStudent(request(app).post(`/api/student/exam-applications/${application.id}/start-attempt`), ALICE).send({}).expect(409);
+    // Antes da hora: começar a tentativa é recusado, e a mensagem fala do horário marcado
+    // (antes dizia "ainda não foi iniciada pelo professor", J2).
+    const early = await asStudent(request(app).post(`/api/student/exam-applications/${application.id}/start-attempt`), ALICE).send({}).expect(409);
+    assert.equal(early.body.error, `A prova abre em ${examSchedule.formatWhen(abreEm)}.`);
+    assert.doesNotMatch(early.body.error, /professor/);
 
     // A varredura antes da hora não muda nada.
     assert.equal(examSchedule.sweepSchedules(db.memory, { now: abreEm - 1000 }).changed, false);

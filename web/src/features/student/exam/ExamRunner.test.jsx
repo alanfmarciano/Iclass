@@ -1999,6 +1999,21 @@ describe('[UC-PROVA-006] ExamRunner: aplicação só para alguns alunos e prazo 
     expect(await screen.findByText('Esta aplicação foi encerrada no horário marcado pelo professor.')).toBeVisible()
   })
 
+  it('[UC-PROVA-008] aluno dentro da prova no fechamento da agenda: a tela final diz o horário marcado, não o professor', async () => {
+    // Tentativa conhecida (o aluno estava respondendo): o sync seguinte traz a entrega
+    // (attemptOutcome com source 'instructor_finish') e finishedBySchedule.
+    let closed = false
+    apiMock.get.mockImplementation(async () => (closed
+      ? { ...syncResponse({ startedAt: null, status: 'finished', finishOutcome: 'submitted', attemptOutcome: { attemptId: 'att-1', finalizedByServer: false, source: 'instructor_finish', answeredCount: 1 } }), finishedBySchedule: true }
+      : syncResponse({ timerRemaining: 600 })))
+    renderRunner()
+    enterFullscreen()
+    expect(await screen.findByRole('button', { name: /Dois/ })).toBeVisible()
+    closed = true
+    expect(await screen.findByText('A prova fechou no horário marcado e o que você havia respondido foi salvo e entregue.', {}, { timeout: 6000 })).toBeVisible()
+    expect(screen.queryByText(/O professor encerrou/)).not.toBeInTheDocument()
+  }, 15000)
+
   it('instruções sem exceção: o limite da turma e nenhum prazo', async () => {
     apiMock.get.mockResolvedValue(syncResponse({ startedAt: null }))
     renderRunner()

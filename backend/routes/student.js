@@ -1565,6 +1565,12 @@ router.post('/api/student/exam-applications/:applicationId/start-attempt', valid
         return res.status(409).json({ error: 'Esta aplicação já foi encerrada pelo professor.', applicationClosed: true });
     }
     if (!mayStart || !config?.onlineActive) {
+        // Agendada (P3-S12): antes da hora, a mensagem fala do horário marcado, e não do
+        // professor (que não precisa iniciar).
+        const agenda = examSchedule.applicationAgenda(application);
+        if (agenda && application.status === 'prepared' && Number(agenda.abreEm) > now) {
+            return res.status(409).json({ error: `A prova abre em ${examSchedule.formatWhen(Number(agenda.abreEm))}.`, notStarted: true, scheduled: true });
+        }
         return res.status(409).json({ error: 'A prova ainda não foi iniciada pelo professor.', notStarted: true });
     }
 
