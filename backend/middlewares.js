@@ -32,6 +32,7 @@ const {
     sendPreviewEnded,
 } = require('./utils/previewAccess.js');
 const { findGroup } = require('./utils/classGroups.js');
+const { findConversation } = require('./utils/conversations.js');
 const {
     findStudentSession,
     studentSessionByEmail,
@@ -922,6 +923,18 @@ function validateProfessorRequestScope(req, account) {
         const group = findGroup(db.memory, safeDecode(groupPath[1]));
         if (group && !adminCanAccessClass(account, group.studentClass, group.courseId)) {
             return outOfScopeMessage(account, 'O grupo solicitado');
+        }
+    }
+    // Conversa com aluno pelo caminho (fase 3, P5-S7a): a turma do registro da conversa,
+    // para o participante. Quem não participa segue para a rota, que responde 404 (sigilo:
+    // outro professor não sabe se a conversa existe).
+    const conversationPath = rawPath.match(/^\/conversations\/([^/]+)\/[^/]+$/i);
+    if (conversationPath) {
+        const conversation = findConversation(db.memory, safeDecode(conversationPath[1]));
+        const instructorEmail = conversation && conversation.instrutor ? String(conversation.instrutor.email || '').trim().toLowerCase() : '';
+        if (conversation && instructorEmail && instructorEmail === String(account.email || '').trim().toLowerCase()
+            && !adminCanAccessClass(account, conversation.studentClass, conversation.courseId)) {
+            return outOfScopeMessage(account, 'A conversa solicitada');
         }
     }
     const requestedCourseId = body.courseId || query.courseId || null;

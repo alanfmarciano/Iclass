@@ -211,6 +211,7 @@ const { nonSchoolDayCalendarItems } = require('../utils/calendarFeed.js');
 const { createAdminQuestionBankRouter } = require('./adminQuestionBank.js');
 const { createAdminGroupsRouter } = require('./adminGroups.js');
 const { createAdminPreviewRouter } = require('./adminPreview.js');
+const { createAdminMessagesRouter } = require('./adminMessages.js');
 const { createAdminAssignmentsRouter } = require('./adminAssignments.js');
 const { body, either, list, num, shape, str } = require('../utils/inputSchema.js');
 const { normalizeEvaluationQuestions, questionInputSchema } = require('../utils/questionModel.js');
@@ -3752,12 +3753,14 @@ router.use(createAdminStudentRecordsRouter());
 router.use(createAdminCoursesRouter());
 // Rotas novas da fase 3 (ordem_no_createApp do plano), depois do router de cursos:
 // calendário acadêmico (P2), banco de questões (P3-S9a), tarefas com envio de arquivo
-// (P1-b e P1-d), grupos de alunos (P5-S4) e pré-visualização como aluno (P5-S6a).
+// (P1-b e P1-d), grupos de alunos (P5-S4), pré-visualização como aluno (P5-S6a) e
+// conversas com os alunos (P5-S7a).
 router.use(createAdminAcademicRouter());
 router.use(createAdminQuestionBankRouter());
 router.use(createAdminAssignmentsRouter());
 router.use(createAdminGroupsRouter());
 router.use(createAdminPreviewRouter());
+router.use(createAdminMessagesRouter());
 
 
 // Upload de comprovante/atestado de justificativa (PDF ou imagem)
@@ -5595,7 +5598,7 @@ router.get('/api/admin/dashboard/queue', (req, res) => {
         const backupBlock = _backupQueueBlock(matchedAdmin, now);
         let items = computeQueue({
             memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
-            today: settingsUtil.today(), now, canSeeMatriculas, pendingEnrollments,
+            today: settingsUtil.today(), now, canSeeMatriculas, pendingEnrollments, viewer: matchedAdmin,
         }, {
             storage: await _storageQueueBlock(matchedAdmin), security: _securityQueueBlock(matchedAdmin, scope.students, { now }), backup: backupBlock,
             entregas: await _assignmentStorageQueueBlock(matchedAdmin, backupBlock),
@@ -5683,7 +5686,7 @@ router.get('/api/admin/notifications', (req, res) => {
             // No sino, só o que é da turma (os alertas da escola ficam na fila do painel).
             const queue = computeQueue({
                 memory: db.memory, cls: scope.cls, course: scope.course, students: scope.students,
-                today, now, canSeeMatriculas: false,
+                today, now, canSeeMatriculas: false, viewer: matchedAdmin,
             }, { security: _securityQueueBlock(matchedAdmin, scope.students, { adminOnly: false, now }) });
             if (canSeeMatriculas && scope.cls) {
                 const pending = _pendingEnrollmentsForClass(scope.cls);

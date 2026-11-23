@@ -171,6 +171,8 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
 
 // ---------------------------------------------------------------------------
 // PRECISA DE VOCÊ — cada item é uma pendência com destino clicável.
+// `viewer` (fase 3, P5-S7a): a conta de quem vê, para os provedores cujo item é da conta
+// (as conversas com mensagem nova são do instrutor da conversa); sem ele, eles não entram.
 // `canSeeMatriculas` vem da rota (quem aprova matrícula); `pendingEnrollments`, quando
 // vem, é a contagem já filtrada pelo escopo de quem vê (Secretaria: só os cursos das
 // escolas dela) e substitui a soma dos pedidos de `students`; snooze é aplicado na rota.
@@ -187,7 +189,7 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
 // entregas (C11 / P1-i): { semCopia, diferentes, espelhoFalhou, discoBaixo } de
 // utils/assignmentMirror.js queueAlerts, só para administrador.
 // ---------------------------------------------------------------------------
-function computeQueue({ memory, cls, course, students, today, now, canSeeMatriculas, pendingEnrollments }, extras = {}) {
+function computeQueue({ memory, cls, course, students, today, now, canSeeMatriculas, pendingEnrollments, viewer = null }, extras = {}) {
     const emails = emailSet(students);
     const items = [];
 
@@ -342,7 +344,7 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
     // passam a de quem vê), fica de fora o item de quem não a tem. Os itens de hoje
     // continuam como eram (cada bloco acima já decide quem os vê).
     const canAccess = extras && typeof extras.canAccess === 'function' ? extras.canAccess : null;
-    collectInstructorQueue({ memory, cls, course, students, emails, today, now, canSeeMatriculas: !!canSeeMatriculas })
+    collectInstructorQueue({ memory, cls, course, students, emails, today, now, canSeeMatriculas: !!canSeeMatriculas, viewer })
         .filter(item => !canAccess || canAccess(item.permissao, item))
         .forEach(item => items.push(item));
 

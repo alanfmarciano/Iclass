@@ -596,3 +596,36 @@ test('[UC-GRUPO-001] grupos: criar, alterar, arquivar, reativar e sortear ficam 
     }
     assert.equal(last('class_groups_drawn').details.semente, proposal.body.semente);
 });
+
+// Conversas com professores (fase 3, C13 / P5-S7a, FUN-14): encerrar e reabrir ficam na
+// trilha do aluno (categoria 'student', com o curso, a turma e o e-mail dele), e a leitura
+// pela administração de conversa de outro professor fica na de privacidade. Mensagem não
+// entra na trilha (o texto fica só na conversa).
+test('[UC-MENSAGEM-002] mensagens: encerrar, reabrir e a leitura pela administração ficam na trilha; mensagem não', async () => {
+    db.memory.conversations = [];
+    db.memory.conversationMessages = [];
+    const started = await professor(request(app).post('/api/admin/conversations')).send({ courseId: COURSE, studentClass: '1DES', studentEmail: 'ana@cobertura.local', assunto: 'Recuperação', texto: 'Ana, vamos combinar a recuperação?' });
+    assert.equal(started.status, 201, JSON.stringify(started.body));
+    const id = started.body.conversa.id;
+    assert.equal(db.memory.auditLogs.filter(entry => /^conversation_/.test(entry.action)).length, 0, 'mensagem não entra na trilha');
+    assert.equal((await professor(request(app).post(`/api/admin/conversations/${id}/close`)).send({ motivo: 'Combinado em sala' })).status, 200);
+    assert.equal((await professor(request(app).post(`/api/admin/conversations/${id}/reopen`)).send({})).status, 200);
+    for (const action of ['conversation_closed', 'conversation_reopened']) {
+        const entry = last(action);
+        assert.ok(entry, action);
+        assert.equal(entry.category, 'student', action);
+        assert.equal(entry.studentEmail, 'ana@cobertura.local', action);
+        assert.equal(entry.courseId, COURSE, action);
+        assert.equal(entry.studentClass, '1DES', action);
+        assert.equal(entry.actor, 'prof@cobertura.local', action);
+        assert.equal(entry.details.conversationId, id, action);
+    }
+    assert.equal(last('conversation_closed').details.motivo, 'Combinado em sala');
+    assert.equal((await admin(request(app).get(`/api/admin/conversations/${id}/messages`))).status, 403);
+    assert.equal((await admin(request(app).post(`/api/admin/conversations/${id}/admin-open`)).send({})).status, 200);
+    const opened = last('conversation_read_by_admin');
+    assert.equal(opened.category, 'privacy');
+    assert.equal(opened.actor, 'admin@cobertura.local');
+    assert.equal(opened.details.conversationId, id);
+    assert.equal((await admin(request(app).get(`/api/admin/conversations/${id}/messages`))).status, 200);
+});

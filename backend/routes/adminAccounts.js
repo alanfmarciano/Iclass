@@ -794,6 +794,11 @@ function createAdminAccountsRouter() {
             // total passa de 64 KB.
             const checked = PREFERENCES_DICT.run(req.body, '', 'preferências');
             if (!checked.ok) return res.status(400).json({ success: false, error: checked.error, field: checked.field });
+            // "Receber mensagens de alunos" (fase 3, P5-S7a): só verdadeiro ou falso. Desligada,
+            // o professor sai da lista de quem o aluno escolhe para conversa nova.
+            if (Object.prototype.hasOwnProperty.call(req.body, 'messages.receive') && typeof req.body['messages.receive'] !== 'boolean') {
+                return res.status(400).json({ success: false, error: 'O campo "Receber mensagens de alunos" precisa ser sim ou não.', field: 'messages.receive' });
+            }
             const current = account.preferences && typeof account.preferences === 'object' && !Array.isArray(account.preferences) ? account.preferences : {};
             const merged = { ...current, ...req.body };
             const mergedBytes = jsonBytes(merged);

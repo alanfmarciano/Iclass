@@ -533,6 +533,16 @@ function decisions(virtualEmail) {
         'GET /api/student/assignments/:id/files/:fileId': 'recusada',
         // Grupos do aluno (fase 3, C12 / P5-S4): só lê.
         'GET /api/student/groups': read(`/api/student/groups?${Q}`),
+        // Conversas com professores (fase 3, C13 / P5-S7a): a prévia vê a lista (sempre
+        // vazia: a pessoa virtual não tem conversa) e quem atende a turma; começar,
+        // responder, ler, marcar e arquivar não.
+        'GET /api/student/conversations': read(`/api/student/conversations?${Q}`),
+        'GET /api/student/conversations/recipients': read(`/api/student/conversations/recipients?${Q}`),
+        'POST /api/student/conversations': 'recusada',
+        'GET /api/student/conversations/:id/messages': 'recusada',
+        'POST /api/student/conversations/:id/messages': 'recusada',
+        'POST /api/student/conversations/:id/read': 'recusada',
+        'POST /api/student/conversations/:id/archive': 'recusada',
     };
 }
 

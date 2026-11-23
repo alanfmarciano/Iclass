@@ -72,6 +72,8 @@ const PREVIEW_READ_ROUTES = Object.freeze([
     { method: 'GET', pattern: /^\/api\/student\/assignments$/i, label: 'tarefas da turma' },
     { method: 'GET', pattern: /^\/api\/student\/assignments\/[^/]+$/i, label: 'tarefa (sem entrega: a prévia não envia nem baixa arquivo)' },
     { method: 'GET', pattern: /^\/api\/student\/groups$/i, label: 'meus grupos (P5-S4; na prévia com grupo, o de um membro)' },
+    { method: 'GET', pattern: /^\/api\/student\/conversations$/i, label: 'conversas com os professores (P5-S7a; na prévia, nenhuma)' },
+    { method: 'GET', pattern: /^\/api\/student\/conversations\/recipients$/i, label: 'professores para quem escrever (P5-S7a)' },
     { method: 'GET', pattern: /^\/api\/student\/progress$/i, label: 'progresso (ler)' },
     { method: 'GET', pattern: /^\/api\/student\/annotations$/i, label: 'anotações (ler)' },
     { method: 'GET', pattern: /^\/api\/student\/my-forum$/i, label: 'minhas dúvidas' },

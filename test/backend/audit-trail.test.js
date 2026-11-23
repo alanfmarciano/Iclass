@@ -456,6 +456,9 @@ const MAY_ALTER = {
     // Anonimizar e apagar de vez o aluno (C10): tira o texto livre das entradas das
     // entregas de tarefa dele, como anonymizeStudentAuditTrail faz com nome e e-mail.
     'backend/utils/assignmentLifecycle.js': ['scrubSubmissionAuditText'],
+    // Anonimizar e apagar de vez o aluno (C13): o motivo de encerrar/reabrir as conversas
+    // dele (conversation_*) perde o nome ou sai, como as entregas do C10.
+    'backend/utils/conversations.js': ['scrubConversationAudit'],
 };
 // Onde entra entrada sem o recordAudit: o próprio audit.js, a carga do banco e a
 // restauração (backup.js, que junta a trilha do backup com a atual por mergeAuditTrails).
