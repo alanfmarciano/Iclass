@@ -115,14 +115,27 @@ function assertEligible(student, mode) {
     }
 }
 
+function pseudonymNameFromRef(ref) {
+    return `${ANONYMIZED_NAME_PREFIX} ${String(ref).slice(0, 6).toUpperCase()}`;
+}
+
 function newPseudonym(memory) {
     for (;;) {
         const ref = crypto.randomBytes(6).toString('hex');
         const email = `anonimizado-${ref}@${ANONYMIZED_EMAIL_DOMAIN}`;
         if (!findStudent(memory, email)) {
-            return { ref, email, name: `${ANONYMIZED_NAME_PREFIX} ${ref.slice(0, 6).toUpperCase()}` };
+            return { ref, email, name: pseudonymNameFromRef(ref) };
         }
     }
+}
+
+// O nome do pseudônimo a partir do e-mail dele ('Aluno anonimizado <REF>'), para o registro
+// que ficou com o e-mail do pseudônimo sem o cadastro ao lado (ex.: backup de antes da
+// anonimização restaurado: o cadastro volta com o e-mail original e a conversa não).
+// Outro e-mail: ''.
+function pseudonymNameFromEmail(email) {
+    const match = /^anonimizado-([0-9a-f]{6,})@(.+)$/.exec(normalizeEmail(email));
+    return match && match[2] === ANONYMIZED_EMAIL_DOMAIN ? pseudonymNameFromRef(match[1]) : '';
 }
 
 function actorEmail(actor) {
@@ -149,9 +162,12 @@ function accentInsensitivePattern(value) {
 
 // Tira do texto livre o e-mail, o nome e a matrícula do aluno (palavra inteira, sem
 // diferenciar maiúscula), no lugar do nome fica `replacement`. foldAccents: o nome casa
-// também escrito com outro acento ou sem acento (mensagens digitadas à mão).
+// também escrito com outro acento ou sem acento (mensagens digitadas à mão). Texto sem
+// nenhum termo volta como veio: a arrumação de espaços e parênteses vazios só vale para o
+// que a troca deixou (a mensagem do professor que não cita o aluno não muda de forma).
 function scrubReason(text, { emails = [], names = [], matriculas = [], replacement = 'aluno', foldAccents = false } = {}) {
-    let out = String(text || '');
+    const original = String(text || '');
+    let out = original;
     const edge = (value, to, pattern = escapeRegExp(value)) => {
         out = out.replace(new RegExp(`(^|[^\\p{L}\\p{N}@._-])${pattern}(?=$|[^\\p{L}\\p{N}@_-]|\\.(?![\\p{L}\\p{N}]))`, 'giu'), `$1${to}`);
     };
@@ -160,7 +176,7 @@ function scrubReason(text, { emails = [], names = [], matriculas = [], replaceme
         .sort((a, b) => b.length - a.length)
         .forEach(name => edge(name, replacement, foldAccents ? accentInsensitivePattern(name) : undefined));
     matriculas.map(value => String(value || '').trim()).filter(value => value.length >= 3).forEach(value => edge(value, ''));
-    return tidyScrubbedText(out, [replacement]);
+    return out === original ? original : tidyScrubbedText(out, [replacement]);
 }
 
 function countBy(list, predicate) {
@@ -675,4 +691,5 @@ module.exports = {
     runStudentLifecycle,
     closedStudentRows,
     scrubReason,
+    pseudonymNameFromEmail,
 };

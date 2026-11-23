@@ -667,6 +667,59 @@ test('[UC-MENSAGEM-005] anonimizar tira do texto do professor o primeiro nome, o
     }
 });
 
+// Rodada 2 do C13: o sobrenome com hífen ficava ("Souza-Lima", porque só as partes
+// entravam e a borda não aceita hífen colado) e a arrumação de espaços mudava a forma da
+// mensagem do professor que nem citava o aluno.
+test('[UC-MENSAGEM-005] anonimizar tira o sobrenome com hífen e não muda a forma da mensagem do professor sem o nome', async () => {
+    const ana = db.memory.students.find(item => item.email === ANA);
+    ana.name = 'Ana Souza-Lima';
+    const conv = await startOk({ texto: 'Oi, professor' });
+    const lista = 'Lista:\n    1.  primeiro  item\n    2.  segundo ( ) ok !';
+    const textos = [
+        'Souza-Lima, fale comigo.',
+        'Recado para a SOUZA-LIMA e para a souza lima; Lima e Souza também.',
+        lista,
+        'Anabela-Souzana fica.',
+    ];
+    for (const texto of textos) {
+        const res = await as('prof', request(app).post(`/api/admin/conversations/${conv.id}/messages`)).send({ texto });
+        assert.equal(res.status, 201, JSON.stringify(res.body));
+    }
+    ana.status = 'Transferido';
+    const anonymized = await as('admin', request(app).post('/api/admin/students/anonymize')).send({ email: ANA, confirm: 'ANONIMIZAR', reason: 'Pedido da família' });
+    assert.equal(anonymized.status, 200, JSON.stringify(anonymized.body));
+    const texts = db.memory.conversationMessages.filter(msg => msg.conversationId === conv.id).map(msg => msg.texto);
+    assert.deepEqual(texts, [
+        '[mensagem removida na anonimização]',
+        'aluno, fale comigo.',
+        'Recado para a aluno e para a aluno aluno; aluno e aluno também.',
+        lista,
+        'Anabela-Souzana fica.',
+    ]);
+    assert.equal(/souza|lima/i.test(texts.slice(1, 3).join(' ')), false);
+});
+
+// Rodada 2 do C13: backup de antes da anonimização restaurado traz de volta o cadastro com
+// o e-mail original, e a conversa fica com o do pseudônimo. A lista mostrava o endereço
+// interno como nome do aluno.
+test('[UC-MENSAGEM-005] conversa com o e-mail do pseudônimo sem o cadastro ao lado aparece com o nome do pseudônimo', async () => {
+    const conv = await startOk({ texto: 'Oi, professor' });
+    const original = { ...db.memory.students.find(item => item.email === ANA) };
+    db.memory.students.find(item => item.email === ANA).status = 'Transferido';
+    const anonymized = await as('admin', request(app).post('/api/admin/students/anonymize')).send({ email: ANA, confirm: 'ANONIMIZAR', reason: 'Pedido da família' });
+    assert.equal(anonymized.status, 200, JSON.stringify(anonymized.body));
+    const pseudonym = db.memory.students.find(item => item.status === 'Anonimizado');
+    // Como a restauração do backup antigo: o cadastro volta como era; a conversa não muda.
+    db.memory.students = db.memory.students.map(item => (item === pseudonym ? original : item));
+    const row = (await as('prof', request(app).get('/api/admin/conversations'))).body.conversas.find(item => item.id === conv.id);
+    assert.equal(row.aluno.nome, pseudonym.name, JSON.stringify(row.aluno));
+    assert.equal(row.aluno.ativo, false);
+    const read = await as('prof', request(app).get(`/api/admin/conversations/${conv.id}/messages`));
+    assert.equal(read.status, 200);
+    assert.equal(JSON.stringify(read.body).includes(`"nome":"${pseudonym.email}"`), false);
+    assert.equal(read.body.conversa.aluno.nome, pseudonym.name);
+});
+
 test('[UC-MENSAGEM-005] anonimizar encerra a conversa aberta; cadastro encerrado ou anonimizado não recebe mensagem nem reabre (409 student_inactive)', async () => {
     const conv = await startOk({ texto: 'Oi, professor' });
     const bia = await startOk({ texto: 'Sou a Bia' }, BIA);

@@ -497,6 +497,14 @@ test('scrubReason tira e-mail, nome e matrícula sem pegar pedaço de palavra', 
     assert.equal(out, 'aluno e aluno; Anabela fica');
 });
 
+// Rodada 2 do C13: sem nenhum termo, o texto volta como veio (antes a arrumação juntava
+// espaços, tirava "( )" e a indentação de qualquer texto).
+test('scrubReason sem nome, e-mail nem matrícula no texto devolve o texto sem mudar a forma', () => {
+    const text = 'Lista:\n    1.  primeiro  item\n    2.  segundo ( ) ok ! ';
+    assert.equal(scrubReason(text, { emails: ['ana@x.local'], names: ['Ana Souza'], matriculas: ['MAT-1'] }), text);
+    assert.equal(scrubReason('Falei com Ana Souza ( )', { names: ['Ana Souza'] }), 'Falei com aluno');
+});
+
 // Decisões §12 (sobras do H7c). Antes: a anonimização apagava o antes/depois de toda
 // alteração de cadastro (até Status e Turmas, que não identificam a pessoa); o motivo
 // ficava "pediu para sair ()" e "da Aluno anonimizado"; e os arquivos na pasta mandada à

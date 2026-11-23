@@ -526,8 +526,13 @@ function instructorLabel(memory, read) {
     return (account && instructorName(account)) || read.instrutor.nome || 'Professor';
 }
 
+// Sem o cadastro ao lado e com o e-mail do pseudônimo (backup de antes da anonimização
+// restaurado): o nome do pseudônimo, nunca o endereço interno (carga na hora, como no
+// scrubberFor).
 function studentLabel(student, email) {
-    return (student && displayName(student)) || publicStudentEmail(email) || 'Aluno';
+    if (student && displayName(student)) return displayName(student);
+    const pseudonym = require('./studentLifecycle.js').pseudonymNameFromEmail(email);
+    return pseudonym || publicStudentEmail(email) || 'Aluno';
 }
 
 // Conversa na lista do portal.
@@ -770,18 +775,22 @@ function foldWord(value) {
 
 // O nome completo, o nome social e cada parte deles com 3 letras ou mais (menos as
 // partículas): na conversa o professor chama o aluno pelo primeiro nome ("Oi Ana") ou só
-// pelo sobrenome. Palavra comum igual a uma parte do nome também sai (preferimos tirar a
-// mais do que deixar o nome).
+// pelo sobrenome. O sobrenome com hífen entra inteiro ("Souza-Lima") e também por partes
+// ("Souza", "Lima"): a borda do scrubReason não aceita hífen colado no termo, então só as
+// partes não tiram o "Souza-Lima" do texto. Palavra comum igual a uma parte do nome também
+// sai (preferimos tirar a mais do que deixar o nome).
 function nameTerms(values) {
     const out = new Set();
+    const addWord = part => {
+        const word = part.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+        if (Array.from(word).length >= 3 && !NAME_PARTICLES.has(foldWord(word))) out.add(word);
+    };
     values.forEach(value => {
         const full = cleanLine(value);
         if (!full) return;
         out.add(full);
-        full.split(/[\s-]+/).forEach(part => {
-            const word = part.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
-            if (Array.from(word).length >= 3 && !NAME_PARTICLES.has(foldWord(word))) out.add(word);
-        });
+        full.split(/\s+/).forEach(addWord);
+        full.split(/[\s-]+/).forEach(addWord);
     });
     return [...out];
 }
