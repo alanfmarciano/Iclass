@@ -190,7 +190,7 @@ function keysByNumber(questions) {
 }
 
 // Entrega lançada pelo cartão-resposta (POST /api/admin/submissions/create): não tem
-// examSnapshot nem applicationId, e o número de cada resposta é o da questão na
+// applicationId (e, antes do P3-S4a, nem examSnapshot), e o número de cada resposta é o da questão na
 // avaliação (originalNumber). A chave do banco vem:
 // 1. da prova impressa registrada no histórico da turma (examHistory[examKey], type
 //    'impressa'): a mais nova cujas versões têm todas as questões respondidas (a do
@@ -303,14 +303,20 @@ function questionBankStats(memory, { canAccessClass = null } = {}) {
         const studentClass = submission.student?.studentClass || submission.studentClass || '';
         const courseId = submission.student?.courseId || submission.courseId || '';
         if (!allowed(studentClass, courseId)) return;
-        let byNumber = keysByNumber(submission.examSnapshot?.questions);
+        // Lançada pelo cartão-resposta: desde o P3-S4a ela guarda as questões corrigidas
+        // (examSnapshot, para a correção do professor), mas a chave e o uso continuam vindo
+        // da prova impressa registrada (printedKeysResolver), como antes: o snapshot só
+        // entra se o resolvedor não achar nada.
+        const cardEntry = submission.entryMode === 'card' && !submission.applicationId;
+        let byNumber = cardEntry ? new Map() : keysByNumber(submission.examSnapshot?.questions);
         if (!byNumber.size && submission.applicationId && applications.has(submission.applicationId)) byNumber = keysOfApplication(submission.applicationId);
-        // Lançada pelo cartão-resposta (prova impressa): sem snapshot e sem aplicação.
+        // Lançada pelo cartão-resposta (prova impressa): sem aplicação.
         if (!byNumber.size && !submission.applicationId) {
             const resolved = printed(submission, studentClass, courseId, answers);
             byNumber = resolved.byNumber;
             resolved.extraUses.forEach(key => { entry(key).usos += 1; });
         }
+        if (!byNumber.size && cardEntry) byNumber = keysByNumber(submission.examSnapshot?.questions);
         if (!byNumber.size) return;
         answers.forEach(answer => {
             if (!answer || typeof answer !== 'object') return;

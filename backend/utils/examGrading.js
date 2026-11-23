@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const { answersFromGradedAnswers, correctLetterFor, gradedAnswerFor, questionPoints, questionType, roundPoints } = require('./examScoring.js');
+const { drawNumbers, isPerStudentDraw, withReplacements } = require('./examDraw.js');
 
 // Campos que decidem a nota de uma questão: o tipo, os pontos e o gabarito de cada tipo
 // (a letra de escolha única e as alternativas marcadas ficam no snapshot desde sempre).
@@ -95,16 +96,32 @@ function questionsForAttempt({ application, onlineConfig, state, evaluation } = 
         return [number, attemptQuestion(question, fallback, number)];
     }));
 
-    let assignedNumbers = Array.isArray(state?.assignedQuestionNumbers)
-        ? state.assignedQuestionNumbers.map(Number).filter(Number.isFinite)
-        : [...sourceByNumber.keys()];
+    let assignedNumbers;
+    if (Array.isArray(state?.assignedQuestionNumbers)) {
+        assignedNumbers = state.assignedQuestionNumbers.map(Number).filter(Number.isFinite);
+    } else if (state?.drawSeed && isPerStudentDraw(application)) {
+        // Sorteio por aluno (P3-S11) sem os números guardados: a semente refaz o mesmo
+        // sorteio (nunca a prova inteira, que é o pool).
+        assignedNumbers = withReplacements(
+            drawNumbers(application.sorteio, state.drawSeed, { shuffleOrder: application.shuffleQuestions !== false }).numbers,
+            snapshot
+        );
+    } else {
+        assignedNumbers = [...sourceByNumber.keys()];
+    }
     assignedNumbers = [...new Set(assignedNumbers)];
 
+    // examNumber é a posição na tentativa (D24): no sorteio por aluno a questão 7 do pool
+    // pode ser a 1ª de um aluno e a 4ª de outro; nas versões é a posição da versão.
+    const questions = assignedNumbers
+        .map(number => sourceByNumber.get(number))
+        .filter(Boolean)
+        .map((question, index) => ({ ...question, examNumber: index + 1 }));
     return {
         assignedVersion,
         snapshot,
         assignedNumbers,
-        questions: assignedNumbers.map(number => sourceByNumber.get(number)).filter(Boolean),
+        questions,
     };
 }
 
@@ -132,7 +149,8 @@ function manualItemsMap(manual) {
 // com a questão removida do total fora das duas. Com todas valendo 1 ponto a nota é a
 // mesma de antes (teste de compatibilidade com o corretor antigo congelado).
 // manual: os itens da correção do professor ({ [número]: { pontos } }).
-function gradeAttempt({ application, onlineConfig, state, evaluation, answers = {}, manual = null } = {}) {
+// onPaper: prova impressa lançada pelo cartão-resposta (scoreQuestion).
+function gradeAttempt({ application, onlineConfig, state, evaluation, answers = {}, manual = null, onPaper = false } = {}) {
     const resolved = questionsForAttempt({ application, onlineConfig, state, evaluation });
     const annulled = annulmentMap(application, onlineConfig);
     const manualItems = manualItemsMap(manual);
@@ -145,7 +163,7 @@ function gradeAttempt({ application, onlineConfig, state, evaluation, answers = 
     const gradedAnswers = resolved.questions.map(question => {
         const number = Number(question.originalNumber);
         const annulment = annulled.get(number) || null;
-        const graded = gradedAnswerFor(question, number, source[number], { annulment, manual: manualItems.get(number) || null });
+        const graded = gradedAnswerFor(question, number, source[number], { annulment, manual: manualItems.get(number) || null, onPaper });
         if (annulment?.mode !== 'remover_do_total') {
             totalCount += 1;
             if (graded.isCorrect === true) correctCount += 1;
@@ -175,6 +193,61 @@ function gradeAttempt({ application, onlineConfig, state, evaluation, answers = 
         assignedQuestionNumbers: resolved.assignedNumbers,
         examSnapshot,
     };
+}
+
+// Correção do professor (D7 e D8 do P3): a entrega com questão esperando o professor
+// (dissertativa respondida, ou resposta curta e numérica marcadas "revisar" que não
+// bateram) nasce com correcao 'pendente' e fica fora de toda média até a correção ser
+// concluída (submissionAttempts.isAwaitingCorrection). versao conta as gravações da
+// correção (conflito de duas abas, 409 correction_conflict).
+function newCorrection() {
+    return {
+        situacao: 'pendente',
+        versao: 1,
+        itens: {},
+        comentarioGeral: '',
+        concluidaPor: null,
+        concluidaEm: null,
+    };
+}
+
+function hasManualItems(correcao) {
+    const itens = correcao && correcao.itens && typeof correcao.itens === 'object' ? correcao.itens : {};
+    return Object.values(itens).some(item => item && typeof item === 'object');
+}
+
+// Depois de uma recorreção (anulação, gabarito, troca de questão): a entrega que passou a
+// ter questão esperando o professor ganha (ou volta a ter) a correção pendente; a que
+// estava pendente sem nada lançado e ficou sem questão para corrigir (a dissertativa foi
+// anulada) é concluída pelo sistema. Correção pendente com pontos já lançados fica como
+// está: quem conclui é o professor.
+function syncCorrectionWithGrade(submission, pendingCount, { by = '', now = Date.now() } = {}) {
+    const correcao = submission.correcao && typeof submission.correcao === 'object' && !Array.isArray(submission.correcao)
+        ? submission.correcao
+        : null;
+    if (pendingCount > 0) {
+        if (!correcao) {
+            submission.correcao = newCorrection();
+            return 'pendente';
+        }
+        if (correcao.situacao !== 'pendente') {
+            correcao.situacao = 'pendente';
+            correcao.versao = (Number.isInteger(correcao.versao) ? correcao.versao : 0) + 1;
+            correcao.reabertaEm = now;
+            correcao.reabertaPor = by || 'sistema';
+            return 'reaberta';
+        }
+        return null;
+    }
+    if (correcao && correcao.situacao === 'pendente' && !hasManualItems(correcao)) {
+        correcao.situacao = 'concluida';
+        correcao.versao = (Number.isInteger(correcao.versao) ? correcao.versao : 0) + 1;
+        correcao.concluidaPor = by || 'sistema';
+        correcao.concluidaEm = now;
+        correcao.concluidaPeloSistema = true;
+        return 'concluida';
+    }
+    return null;
 }
 
 function createSubmissionFromAttempt({
@@ -230,6 +303,8 @@ function createSubmissionFromAttempt({
         gradePublished: false,
         submissionSource: source,
         timestamp,
+        // Questão esperando o professor: a nota fica fora das médias até ele concluir.
+        ...(grade.pendingCount > 0 ? { correcao: newCorrection() } : {}),
         // Letras que o aluno viu (posição na versão), para as revisões (AVA-05).
         ...(state?.alternativeLabels ? { alternativeLabels: state.alternativeLabels } : {}),
         // Tentativa reaberta pelo "+N min" da turma depois da entrega do fim do tempo:
@@ -246,7 +321,7 @@ function createSubmissionFromAttempt({
 // saem de gradedAnswers por tipo (letra, lista de letras, número ou texto) e a correção
 // do professor (submission.correcao, D8 do P3) continua valendo: os pontos lançados por
 // ele entram por cima da conta automática e o registro da correção não é tocado.
-function regradeSubmission({ submission, application, onlineConfig, evaluation, reason = '', by = '' } = {}) {
+function regradeSubmission({ submission, application, onlineConfig, evaluation, reason = '', by = '', syncCorrection = true } = {}) {
     const existing = Array.isArray(submission?.gradedAnswers) ? submission.gradedAnswers : [];
     const answers = answersFromGradedAnswers(existing);
     const state = {
@@ -254,7 +329,7 @@ function regradeSubmission({ submission, application, onlineConfig, evaluation, 
         assignedQuestionNumbers: existing.map(answer => Number(answer.questionNumber)).filter(Number.isFinite),
     };
     const manual = submission?.correcao && typeof submission.correcao === 'object' ? submission.correcao.itens : null;
-    const grade = gradeAttempt({ application, onlineConfig, state, evaluation, answers, manual });
+    const grade = gradeAttempt({ application, onlineConfig, state, evaluation, answers, manual, onPaper: submission?.answersOnPaper === true });
     const previous = { score: submission.score, correctCount: submission.correctCount, totalCount: submission.totalCount };
     if (previous.score !== grade.score || previous.correctCount !== grade.correctCount || previous.totalCount !== grade.totalCount) {
         if (!Array.isArray(submission.scoreHistory)) submission.scoreHistory = [];
@@ -276,7 +351,34 @@ function regradeSubmission({ submission, application, onlineConfig, evaluation, 
     submission.gradedAnswers = grade.gradedAnswers;
     submission.examSnapshot = grade.examSnapshot;
     submission.regradedAt = new Date().toISOString();
+    if (syncCorrection) syncCorrectionWithGrade(submission, grade.pendingCount, { by });
     return submission;
+}
+
+// Recorrige uma entrega pelas questões que ela mesma guardou (examSnapshot: o que o aluno
+// viu, com o tipo, os pontos e o gabarito de quando foi corrigida), com as anulações da
+// aplicação. É a conta da correção do professor (adminCorrections.js): a troca de questão
+// no Monitor muda o snapshot da aplicação, mas não o que este aluno respondeu. Entrega sem
+// snapshot (antiga) cai na recorreção pela aplicação, como a do gabarito.
+function regradeFromOwnSnapshot({ submission, application, onlineConfig, evaluation, reason = '', by = '', syncCorrection = true } = {}) {
+    const own = submission && submission.examSnapshot && Array.isArray(submission.examSnapshot.questions) && submission.examSnapshot.questions.length
+        ? submission.examSnapshot
+        : null;
+    if (!own) return regradeSubmission({ submission, application, onlineConfig, evaluation, reason, by, syncCorrection });
+    const annulledQuestions = Array.isArray(application?.annulledQuestions)
+        ? application.annulledQuestions
+        : (Array.isArray(onlineConfig?.annulledQuestions) ? onlineConfig.annulledQuestions : []);
+    const version = String(submission.assignedVersion || own.version || 'A');
+    const ownConfig = { versionSnapshots: [{ ...clone(own), version }] };
+    return regradeSubmission({
+        submission,
+        application: { annulledQuestions },
+        onlineConfig: ownConfig,
+        evaluation,
+        reason,
+        by,
+        syncCorrection,
+    });
 }
 
 module.exports = {
@@ -286,8 +388,11 @@ module.exports = {
     freezeSnapshotGrading,
     createSubmissionFromAttempt,
     gradeAttempt,
+    newCorrection,
     questionNumber,
     questionsForAttempt,
+    regradeFromOwnSnapshot,
     regradeSubmission,
     snapshotForAttempt,
+    syncCorrectionWithGrade,
 };

@@ -226,6 +226,15 @@ test('[UC-PROVA-001][UC-PROVA-002] fluxo completo de prova pela interface preser
     student = await studentContext.newPage();
     await loginCreatedStudent(student);
     await student.getByText('Liberada', { exact: true }).first().click();
+    // A10 (D28): entrar de novo com a tentativa aberta conta como outro aparelho
+    // e trava a prova (política padrão 'travar'); o professor vê o selo e libera.
+    await expect(student.getByRole('heading', { name: 'Prova pausada' })).toBeVisible({ timeout: 15000 });
+    await expect(student.getByText(/Esta prova foi aberta em outro aparelho com a sua conta/)).toBeVisible();
+    await professor.bringToFront();
+    await expect(studentRow.getByText(/Entrou de outro aparelho às \d{2}:\d{2}/)).toBeVisible({ timeout: 15000 });
+    await expect(studentRow.getByRole('button', { name: 'Foco' })).toBeVisible({ timeout: 15000 });
+    await studentRow.getByRole('button', { name: 'Foco' }).click();
+    await student.bringToFront();
     // Ao retomar a tentativa a tela pode pedir tela cheia de novo; espera a prova
     // sincronizar (um dos dois botões) em vez de checar uma única vez.
     const resumeFullscreen = student.getByRole('button', { name: 'Voltar à tela cheia', exact: true });

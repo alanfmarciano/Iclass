@@ -198,6 +198,47 @@ test('[UC-AUDITORIA-002] banco de questões: criar, alterar, arquivar, desarquiv
     assert.equal(entries('question_created').length, 2);
 });
 
+// Importar e exportar o banco (fase 3, P3-S9b): a prévia não grava nem audita; a
+// confirmação grava question_bank_imported e a exportação question_bank_exported, na
+// mesma gravação; a confirmação recusada (arquivo mudou, nada para importar) não audita.
+test('[UC-AUDITORIA-002] banco de questões: importar e exportar (GIFT e planilha) ficam na trilha; a prévia e a recusa não', async () => {
+    const before = (db.memory.auditLogs || []).length;
+    const payload = { formato: 'gift', conteudo: '$CATEGORY: Redes\n\nPorta do HTTP? {=80 ~21}\n\nIPv4 tem 32 bits. {T}\n' };
+    const previewRes = await admin(request(app).post('/api/admin/question-bank/import/preview')).send(payload);
+    assert.equal(previewRes.status, 200, previewRes.body.error);
+    assert.equal((db.memory.auditLogs || []).length, before, 'a prévia não grava na trilha');
+    const changed = await admin(request(app).post('/api/admin/question-bank/import')).send({ ...payload, conteudo: `${payload.conteudo}\nOutra? {=a ~b}\n`, sha256: previewRes.body.sha256 });
+    assert.equal(changed.status, 409);
+    assert.equal(entries('question_bank_imported').length, 0, 'arquivo diferente da prévia: sem entrada');
+
+    const saved = await admin(request(app).post('/api/admin/question-bank/import')).send({ ...payload, sha256: previewRes.body.sha256 });
+    assert.equal(saved.status, 200, saved.body.error);
+    const imported = last('question_bank_imported');
+    assert.equal(imported.actor, 'admin@cobertura.local');
+    assert.equal(imported.category, 'academic');
+    assert.equal(imported.details.formato, 'gift');
+    assert.equal(imported.details.importadas, 2);
+    assert.equal(imported.details.sha256, previewRes.body.sha256);
+    assert.deepEqual(imported.details.categorias, ['Redes']);
+    const again = await admin(request(app).post('/api/admin/question-bank/import')).send({ ...payload, sha256: previewRes.body.sha256 });
+    assert.equal(again.body.code, 'nothing_to_import');
+    assert.equal(entries('question_bank_imported').length, 1, 'tudo repetido: sem entrada nova');
+
+    for (const formato of ['gift', 'csv']) {
+        const exported = await admin(request(app).get(`/api/admin/question-bank/export?formato=${formato}&categoria=Redes`));
+        assert.equal(exported.status, 200);
+        const entry = last('question_bank_exported');
+        assert.equal(entry.category, 'academic');
+        assert.equal(entry.details.formato, formato);
+        assert.equal(entry.details.quantidade, 2);
+        assert.equal(entry.details.filtros.categoria, 'Redes');
+    }
+    assert.equal(entries('question_bank_exported').length, 2);
+    // Nada para exportar (404) não grava.
+    assert.equal((await admin(request(app).get('/api/admin/question-bank/export?formato=gift&categoria=Nenhuma'))).status, 404);
+    assert.equal(entries('question_bank_exported').length, 2);
+});
+
 test('[UC-AUDITORIA-002] curso arquivado, restaurado do arquivo e apagado de vez ficam na trilha', async () => {
     const purge = await admin(request(app).post(`/api/admin/courses/${COURSE}/purge`)).send({});
     assert.equal(purge.status, 200, purge.body.error);
@@ -560,4 +601,100 @@ test('tarefas: correção, devolução, refazer, prorrogação, entrega em mãos
     assert.equal(exported.category, 'assignment');
     assert.equal(exported.actor, 'prof@cobertura.local');
     assert.deepEqual([exported.courseId, exported.studentClass, exported.details.alunos], [COURSE, '1DES', 2]);
+});
+
+// Correção do professor e anulação por cola (fase 3, A9 / P3-S4a): a gravação da
+// correção, a conclusão, o ajuste de questão objetiva, anular e desfazer a anulação ficam
+// na trilha (categoria nota), com o professor como ator, o curso, a turma e o aluno da
+// entrega e o motivo. Pedido recusado não grava.
+test('[UC-CORRECAO-001] correção, conclusão, ajuste, anulação e desfazer a anulação ficam na trilha', async () => {
+    const { createSubmissionFromAttempt } = require('../../backend/utils/examGrading.js');
+    const questions = [
+        { originalNumber: 1, number: 1, type: 'multiple_choice', points: 1, text: 'Questão 1', correctAnswer: 'A', alternatives: [{ letter: 'A', text: 'Sim' }, { letter: 'B', text: 'Não' }] },
+        { originalNumber: 2, number: 2, type: 'essay', points: 2, text: 'Explique.', expectedAnswer: 'Uma explicação.' },
+    ];
+    db.memory.evaluations.Avaliacao_P1 = { title: 'Prova 1', questions: JSON.parse(JSON.stringify(questions)) };
+    const application = { id: 'app_cobertura', examKey: 'Avaliacao_P1', studentClass: '1DES', courseId: COURSE, status: 'finished', versionSnapshots: [{ version: 'A', questions: JSON.parse(JSON.stringify(questions)) }], annulledQuestions: [] };
+    db.memory.examApplications = [application];
+    const submission = createSubmissionFromAttempt({
+        application,
+        onlineConfig: {},
+        state: { studentEmail: 'ana@cobertura.local', studentClass: '1DES', courseId: COURSE, examKey: 'Avaliacao_P1', applicationId: application.id, assignedVersion: 'A', assignedQuestionNumbers: [1, 2], attemptNumber: 1 },
+        evaluation: db.memory.evaluations.Avaliacao_P1,
+        student: db.memory.students[0],
+        answers: { 1: 'A', 2: { texto: 'Minha explicação.' } },
+    });
+    db.memory.submissions = [submission];
+    const correction = payload => professor(request(app).post(`/api/admin/submissions/${submission.id}/correction`)).send(payload);
+    const attempt = payload => professor(request(app).post(`/api/admin/exam-applications/${application.id}/attempt-action`)).send({ studentEmail: 'ana@cobertura.local', ...payload });
+
+    const refusedBefore = db.memory.auditLogs.length;
+    await correction({ versao: 1, itens: { 2: { pontos: 5 } } }).expect(400);
+    await attempt({ action: 'anular', motivo: 'x' }).expect(400);
+    assert.equal(db.memory.auditLogs.length, refusedBefore, 'recusa não grava');
+
+    const steps = [
+        [() => correction({ versao: 1, itens: { 2: { pontos: 1.5 } } }), 'grade_manual_correction', undefined],
+        [() => correction({ versao: 2, itens: { 1: { pontos: 0.5, motivo: 'Marcou duas no papel' } } }), 'grade_item_override', 'Marcou duas no papel'],
+        [() => correction({ versao: 3, concluir: true }), 'grade_correction_completed', undefined],
+        [() => attempt({ action: 'anular', motivo: 'Cola com celular', decisao: 'zero' }), 'grade_invalidated', 'Cola com celular'],
+        [() => attempt({ action: 'desfazer_anulacao', motivo: 'Engano na sala' }), 'grade_invalidation_undone', 'Engano na sala'],
+    ];
+    for (const [run, action, reason] of steps) {
+        const res = await run();
+        assert.equal(res.status, 200, `${action}: ${JSON.stringify(res.body)}`);
+        const entry = last(action);
+        assert.ok(entry, `sem ${action}`);
+        assert.equal(entry.category, 'grade', action);
+        assert.equal(entry.actor, 'prof@cobertura.local', action);
+        assert.equal(entry.courseId, COURSE, action);
+        assert.equal(entry.studentClass, '1DES', action);
+        assert.equal(entry.studentEmail, 'ana@cobertura.local', action);
+        assert.equal(entry.submissionId, submission.id, action);
+        if (reason) assert.equal(entry.reason, reason, action);
+    }
+    assert.match(last('grade_correction_completed').newValue, /correção concluída/);
+    // O mesmo pedido de novo (nada muda) não grava.
+    const before = db.memory.auditLogs.length;
+    const unchanged = await correction({ versao: 4, itens: { 2: { pontos: 1.5 } } }).expect(200);
+    assert.equal(unchanged.body.unchanged, true);
+    assert.equal(db.memory.auditLogs.length, before);
+});
+
+// Pacote de curso (fase 3, A14 / P4-S14): exportar e importar ficam na trilha (categoria
+// acadêmica, com o curso); a prévia e a importação recusada não gravam nada.
+test('[UC-PACOTE-001] pacote de curso: exportar e importar ficam na trilha; a prévia e a recusa não', async () => {
+    const res = await admin(request(app).get(`/api/admin/courses/${COURSE}/package`)).buffer(true)
+        .parse((response, callback) => { const chunks = []; response.on('data', chunk => chunks.push(chunk)); response.on('end', () => callback(null, Buffer.concat(chunks))); });
+    assert.equal(res.status, 200, String(res.body));
+    const exported = last('course_package_exported');
+    assert.ok(exported, 'sem course_package_exported');
+    assert.equal(exported.category, 'academic');
+    assert.equal(exported.courseId, COURSE);
+    assert.equal(exported.actor, 'admin@cobertura.local');
+    assert.equal(exported.details.bytes, res.body.length);
+
+    const post = (url, fields = {}) => {
+        let req = admin(request(app).post(url));
+        Object.entries(fields).forEach(([key, value]) => { req = req.field(key, value); });
+        return req.attach('arquivo', res.body, 'curso.iclass-curso.zip');
+    };
+    const before = db.memory.auditLogs.length;
+    const preview = await post('/api/admin/course-packages/preview');
+    assert.equal(preview.status, 200, JSON.stringify(preview.body));
+    const refused = await post('/api/admin/course-packages/import', { sha256: preview.body.sha256, newId: COURSE, newName: 'Repetido' });
+    assert.equal(refused.status, 400);
+    const changed = await post('/api/admin/course-packages/import', { sha256: 'b'.repeat(64), newId: 'COBERTURA_2', newName: 'Outro arquivo' });
+    assert.equal(changed.status, 409);
+    assert.equal(db.memory.auditLogs.length, before, 'a prévia e a recusa não gravam');
+
+    const done = await post('/api/admin/course-packages/import', { sha256: preview.body.sha256, newId: 'COBERTURA_2', newName: 'Cobertura importada' });
+    assert.equal(done.status, 200, JSON.stringify(done.body));
+    const imported = last('course_package_imported');
+    assert.ok(imported, 'sem course_package_imported');
+    assert.equal(imported.category, 'academic');
+    assert.equal(imported.courseId, 'COBERTURA_2');
+    assert.equal(imported.actor, 'admin@cobertura.local');
+    assert.equal(imported.details.origemCodigo, COURSE);
+    assert.equal(imported.details.sha256, preview.body.sha256);
 });

@@ -258,16 +258,22 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
     // 5. Conteúdo bloqueado de unidade com prova agendada em até 7 dias — o único
     // cruzamento (releasedItems × examApplications.startsAt) que nenhuma tela faz.
     if (cls && course) {
+        // A prova agendada (P3-S12) conta pelo horário de abrir; o material com liberação
+        // agendada para antes da prova não está "bloqueado".
+        const opensAt = a => Number(a.startsAt) || (a.agenda && a.agenda.perdida !== true ? Number(a.agenda.abreEm) : 0);
         const emBreve = classApplications(memory, cls, course).filter(a =>
             ['prepared', 'waiting'].includes(a.status)
-            && Number(a.startsAt) > now && Number(a.startsAt) <= now + 7 * DIA_MS);
+            && opensAt(a) > now && opensAt(a) <= now + 7 * DIA_MS);
         const released = cls.releasedItems || {};
+        const scheduled = cls.releaseSchedule && typeof cls.releaseSchedule === 'object' ? cls.releaseSchedule : {};
         let bloqueados = 0; let unidade = '';
         emBreve.forEach(app => {
             (course.structure || []).forEach(mod => (mod.units || []).forEach(unit => {
                 if (unit.avaliacaoKey !== app.examKey) return;
                 const keys = [unit.apostilaKey, ...(unit.files || []).map(f => f.key)].filter(Boolean);
-                const faltam = keys.filter(k => !released[k]).length;
+                const releasesBefore = k => Object.prototype.hasOwnProperty.call(scheduled, k)
+                    && Number(scheduled[k] && scheduled[k].at) > 0 && Number(scheduled[k].at) <= opensAt(app);
+                const faltam = keys.filter(k => !released[k] && !releasesBefore(k)).length;
                 if (faltam) { bloqueados += faltam; unidade = unit.name || unidade; }
             }));
         });

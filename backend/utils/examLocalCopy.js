@@ -42,7 +42,10 @@ function localCopyKeyFor(state) {
 // guardada (com a nota ainda não publicada) e o histórico são do professor.
 function stateWithoutSecrets(state) {
     if (!state || typeof state !== 'object') return state;
-    const { localCopyKey, tokenValidated, reopenedBy, reopenedFrom, reopenedDelivery, pageExit, ...safeState } = state;
+    // sessionEndedBy: o aparelho que saiu da conta com a prova em andamento (P3-S13), só
+    // para o registro do login seguinte. drawSeed e drawGroups: a semente e a contagem por
+    // grupo do sorteio por aluno (P3-S11); o aluno recebe só as questões que tirou.
+    const { localCopyKey, tokenValidated, reopenedBy, reopenedFrom, reopenedDelivery, pageExit, sessionEndedBy, drawSeed, drawGroups, ...safeState } = state;
     return safeState;
 }
 

@@ -26,8 +26,9 @@ import { FinishApplicationModal } from './FinishApplicationModal'
 import { ApplicationTokenPanel } from './ApplicationTokenPanel'
 import { controlResultMessage } from './applicationControl'
 import { serverOutageNotices, withLiveOutagePauses } from './serverOutage'
+import { ApplicationScheduleBanner } from './ApplicationSchedule'
 import { StudentAnswersModal } from './StudentAnswersModal'
-import { LOG_INFO, buildAlerts, focusLogLabel, isSuspiciousItem, logLabel, suspiciousCount } from './monitorLogs'
+import { LOG_INFO, buildAlerts, countsAsFocusExit, focusLogLabel, isDeviceChangeItem, isSuspiciousItem, lockReasonLabel, logInfoFor, logLabel, sameIpLabel, sessionChangeText, sessionRowBadges, suspiciousCount } from './monitorLogs'
 import { csvCell } from '../../lib/csv'
 import { keystrokeColumnLabel, keystrokeLiveEmptyText, keystrokeLiveTitle, keystrokeWatchTitle, normalizeKeystrokeMode } from '../../lib/keystrokeModes'
 import { compareText, matchesSearch } from '../../lib/textSearch'
@@ -150,9 +151,13 @@ function buildItems(events, logs) {
     return { cat: 'cmd', kind: ev.kind, key: ev.key, mods: ev.mods, t, sig: info.reason, ...info, ev }
   })
   const lg = (logs || []).filter((l) => ALERT_LOG_TYPES.has(l.eventType)).map((l) => {
-    const info = LOG_INFO[l.eventType]
+    const info = logInfoFor(l)
     const label = logLabel(l)
-    return { cat: 'cmd', kind: 'focus', t: Number(l.timestamp) || 0, sig: ['exam_left', 'page_return'].includes(l.eventType) ? `${l.eventType}:${label}` : l.eventType, ...info, label, log: l }
+    // Outro login e troca de IP (P3-S13): cada registro fica separado, com o IP e o
+    // navegador de antes e de agora embaixo do rótulo.
+    const detail = sessionChangeText(l)
+    const sig = ['exam_left', 'page_return'].includes(l.eventType) ? `${l.eventType}:${label}` : (detail ? `${l.eventType}:${l.id || l.timestamp}` : l.eventType)
+    return { cat: 'cmd', kind: 'focus', t: Number(l.timestamp) || 0, sig, ...info, label, detail, log: l }
   })
   return [...ks, ...lg].sort((a, b) => a.t - b.t)
 }
@@ -181,7 +186,7 @@ function groupStream(items) {
 }
 
 function buildCounters(items) {
-  const c = { copy: 0, paste: 0, focus: 0, ia: 0, devtools: 0, menu: 0 }
+  const c = { copy: 0, paste: 0, focus: 0, ia: 0, devtools: 0, menu: 0, device: 0 }
   for (const it of items) {
     if (it.cat !== 'cmd') continue
     if (it.reason === 'copiar_recortar' || it.reason === 'clipboard') c.copy++
@@ -189,7 +194,9 @@ function buildCounters(items) {
     else if (it.reason === 'assistente_ia') c.ia++
     else if (it.reason === 'devtools') c.devtools++
     else if (it.reason === 'contextmenu') c.menu++
-    if (it.kind === 'focus' && it.pauses !== false) c.focus++
+    // O outro aparelho conta à parte: não é saída de foco (P3-S13).
+    if (isDeviceChangeItem(it)) c.device++
+    else if (countsAsFocusExit(it)) c.focus++
   }
   return c
 }
@@ -260,6 +267,7 @@ function KeystrokeViewer({ events, row, loading, logs: liveLogs, emptyText = 'Ne
     { n: counters.paste, l: 'Colagens sinalizadas', ic: '📋', tone: 'warning' },
     { n: counters.menu, l: 'Menu do botão direito', ic: '☰', tone: 'warning' },
     { n: focusExits, l: 'Saídas de foco', ic: '⇄', tone: 'warning' },
+    { n: counters.device, l: 'Entradas em outro aparelho', ic: '⇆', tone: 'danger' },
   ].filter((c) => c.n > 0)
 
   return (
@@ -333,6 +341,7 @@ function KeystrokeViewer({ events, row, loading, logs: liveLogs, emptyText = 'Ne
                             {a.kind === 'focus' && a.pauses === false && a.badge && <span className="text-[10px] font-semibold uppercase rounded-full px-2 py-0.5 bg-surface-2 text-subtle border border-border">{a.badge}</span>}
                           </div>
                           {(a.mods || a.key) && a.kind !== 'focus' && <div className="text-[11px] text-subtle mt-0.5 font-mono">{[a.mods, a.key].filter(Boolean).join('+')}</div>}
+                          {a.detail && <div className="text-[11px] text-muted mt-0.5 break-words" data-testid="session-change-detail">{a.detail}</div>}
                         </div>
                         <div className="font-mono text-[11px] text-subtle whitespace-nowrap">{hhmmss(a.lastT || a.t)}</div>
                       </div>
@@ -390,6 +399,7 @@ function KeystrokeViewer({ events, row, loading, logs: liveLogs, emptyText = 'Ne
                         {seg.count > 1 && <span className="font-mono text-[10px] font-bold rounded-full px-1.5 bg-surface-2 text-danger border border-danger/30">×{seg.count}</span>}
                         {(seg.mods || seg.key) && seg.kind !== 'focus' && <span className="font-mono text-[10px] text-subtle bg-surface border border-border rounded px-1.5">{[seg.mods, seg.key].filter(Boolean).join('+')}</span>}
                       </div>
+                      {seg.detail && <div className="text-[11px] text-muted mt-0.5 break-words">{seg.detail}</div>}
                     </div>
                     <div className="font-mono text-[11px] text-subtle whitespace-nowrap">{hhmmss(seg.t)}</div>
                   </div>
@@ -418,6 +428,9 @@ export default function MonitorPage() {
   // nota (page.results; trocar também lê o banco de questões, page.exams). O Professor
   // auxiliar acompanha a prova sem esses botões (o servidor responderia 403).
   const canResults = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_RESULTS)
+  // A agenda da aplicação (POST .../schedule) é de page.exams e não vale para conta só de
+  // leitura: sem isso, o aviso do Monitor aparece sem os botões (P3-S12).
+  const canSchedule = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_EXAMS) && auth.readOnly !== true
   const canReplaceQuestion = canResults && canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_EXAMS)
   // A marca do gabarito em "Ver questão" (contestações) só para quem corrige a questão ou
   // prepara a prova; o servidor manda a questão sem a correta para o Professor auxiliar.
@@ -493,6 +506,18 @@ export default function MonitorPage() {
   // pausas da queda vêm da lista consultada a cada 5 s, porque a compensação acontece
   // no servidor.
   const outageNotice = useMemo(() => serverOutageNotices(liveApplication || selectedApplication), [liveApplication, selectedApplication])
+  // Agendamento (P3-S12): o servidor abre e fecha a aplicação agendada sozinho. A lista
+  // consultada a cada 5 s traz o status novo; a aplicação da tela passa a ele (e a turma é
+  // relida) para o Monitor mostrar "em andamento" ou "encerrada" sem recarregar a página.
+  useEffect(() => {
+    if (!liveApplication || !selectedApplication || liveApplication.id !== selectedApplication.id) return
+    if (liveApplication.status === selectedApplication.status && liveApplication.updatedAt === selectedApplication.updatedAt) return
+    setApplications((items) => items.map((item) => (item.id === liveApplication.id ? { ...item, ...liveApplication, agendaView: liveApplication.agendaView } : item)))
+    if (liveApplication.status !== selectedApplication.status) refetchClasses(true)
+  }, [liveApplication, selectedApplication, refetchClasses])
+  const scheduleApplication = liveApplication || selectedApplication
+  // Sorteio por aluno (P3-S11): vem na lista das aplicações (sorteioView).
+  const drawView = liveApplication?.sorteioView || selectedApplication?.sorteioView || null
   const selectedConfig = useMemo(() => {
     const current = selectedClass?.onlineExamConfigs?.[examKey] || {}
     if (!selectedApplication) return current
@@ -1011,14 +1036,16 @@ export default function MonitorPage() {
   // O erro do servidor fica no diálogo (ele continua aberto); a tentativa vencida que o
   // servidor entregou pelo fim do tempo fecha o diálogo com o aviso.
   function openStudentAction(kind, row) {
-    setActionDialog({ kind, email: row.email, name: row.name || displayEmail(row.email), value: kind === 'extra' ? '1' : '', row })
+    const initial = kind === 'extra' ? '1' : kind === 'invalidate' ? 'zero' : ''
+    setActionDialog({ kind, email: row.email, name: row.name || displayEmail(row.email), value: initial, row })
   }
 
   async function confirmStudentAction(motivo) {
     const dialog = actionDialog
     if (!dialog) return
-    const action = { collect: 'recolher', reopen: 'reabrir', extra: 'tentativa_extra' }[dialog.kind]
+    const action = { collect: 'recolher', reopen: 'reabrir', extra: 'tentativa_extra', invalidate: 'anular', undoInvalidate: 'desfazer_anulacao' }[dialog.kind]
     const body = { action, studentEmail: dialog.email, ...(motivo ? { motivo } : {}) }
+    if (dialog.kind === 'invalidate') body.decisao = dialog.value === 'desconsiderar' ? 'desconsiderar' : 'zero'
     if (dialog.kind === 'extra') {
       const extra = parseExtraAttempts(dialog.value)
       if (extra === null) return
@@ -1043,6 +1070,12 @@ export default function MonitorPage() {
     } else if (dialog.kind === 'reopen') {
       const minutes = response?.state?.remainingMinutes
       toast.success(minutes == null ? `Prova de ${who} reaberta.` : `Prova de ${who} reaberta com ${minutes} min para terminar.`)
+    } else if (dialog.kind === 'invalidate') {
+      const zero = response?.submission?.integrity === 'zero'
+      const collected = response?.submission?.recolhida ? 'A prova foi recolhida e a tentativa ' : 'A tentativa '
+      toast.success(`${collected}de ${who} foi anulada: ${zero ? 'vale nota zero' : 'não conta na nota'}.`)
+    } else if (dialog.kind === 'undoInvalidate') {
+      toast.success(`Anulação desfeita: a tentativa de ${who} volta a contar como antes.`)
     } else {
       const total = response?.maxAttempts
       toast.success(total ? `${who} pode fazer ${total} tentativas nesta aplicação.` : `Tentativa extra registrada para ${who}.`)
@@ -1051,12 +1084,20 @@ export default function MonitorPage() {
     refreshMonitor()
   }
 
+  // Anular por cola e desfazer (P3-S4a) mexem na nota: só com Resultados (page.results), e
+  // também depois de encerrar a aplicação (o caso típico é descobrir depois).
   function studentActions(row) {
-    if (applicationFinished || selectedConfig.status === 'cancelled') return []
+    if (selectedConfig.status === 'cancelled') return []
+    const invalidation = canResults ? [
+      row.canInvalidate && { id: 'invalidate', label: 'Anular tentativa', icon: Ban, onSelect: () => openStudentAction('invalidate', row) },
+      row.canUndoInvalidation && { id: 'undoInvalidate', label: 'Desfazer anulação', icon: RotateCcw, onSelect: () => openStudentAction('undoInvalidate', row) },
+    ] : []
+    if (applicationFinished) return invalidation.filter(Boolean)
     return [
       row.attemptInProgress && { id: 'collect', label: 'Recolher prova', icon: Inbox, onSelect: () => openStudentAction('collect', row) },
       row.canReopen && { id: 'reopen', label: 'Reabrir prova', icon: RotateCcw, onSelect: () => openStudentAction('reopen', row) },
       Number(row.maxAttempts) > 0 && row.activeStudent !== false && { id: 'extra', label: 'Dar tentativa extra', icon: PlusCircle, onSelect: () => openStudentAction('extra', row) },
+      ...invalidation,
     ].filter(Boolean)
   }
 
@@ -1084,8 +1125,10 @@ export default function MonitorPage() {
   }
 
   // Liberar notas (D20 do P3): o diálogo diz quantas notas vão para os alunos e quantas
-  // ficam de fora por estarem aguardando a correção do professor (correcao.situacao
-  // 'pendente'); liberar manda só as contadas.
+  // ficam de fora por estarem aguardando a correção do professor; liberar manda só as
+  // contadas. Quem espera a correção vem do servidor (awaitingCorrection, pela mesma regra
+  // do calculador de notas: C1 do P3), nunca de correcao lido aqui: a entrega sem correcao
+  // com questão para revisar espera; a anulada por cola não espera (vale a decisão).
   async function releaseGrades() {
     if (!applicationId) return
     setActionDialog({ kind: 'release', loading: true, ids: [], pendingCorrection: 0 })
@@ -1098,7 +1141,7 @@ export default function MonitorPage() {
       const list = await api.get(`/api/admin/submissions?${params.toString()}`)
       const subs = (Array.isArray(list) ? list : (list?.submissions || []))
         .filter((s) => String(s.applicationId || '') === String(applicationId) && s.gradePublished !== true)
-      const pending = subs.filter((s) => s.correcao && s.correcao.situacao === 'pendente')
+      const pending = subs.filter((s) => s.awaitingCorrection === true)
       const ids = subs.filter((s) => !pending.includes(s)).map((s) => s.id)
       setActionDialog((current) => current && current.kind === 'release' ? { ...current, loading: false, ids, pendingCorrection: pending.length } : current)
     } catch (e) {
@@ -1112,7 +1155,14 @@ export default function MonitorPage() {
     setReleaseBusy(true)
     try {
       const res = await api.post('/api/admin/submissions/publish', { ids, published: true })
-      toast.success(`${res.updated ?? ids.length} ${(res.updated ?? ids.length) === 1 ? 'nota liberada' : 'notas liberadas'} para os alunos.`)
+      let message = `${res.updated ?? ids.length} ${(res.updated ?? ids.length) === 1 ? 'nota liberada' : 'notas liberadas'} para os alunos.`
+      // O servidor confere de novo: a entrega que passou a aguardar correção depois da
+      // contagem (ou com nota inválida) fica de fora, e o professor fica sabendo.
+      const skippedPending = Number(res.skippedPendingCorrection || 0)
+      const skippedInvalid = Number(res.skippedInvalid || 0)
+      if (skippedPending) message += skippedPending === 1 ? ' 1 entrega aguarda correção e ficou de fora.' : ` ${skippedPending} entregas aguardam correção e ficaram de fora.`
+      if (skippedInvalid) message += skippedInvalid === 1 ? ' 1 entrega sem nota válida ficou de fora.' : ` ${skippedInvalid} entregas sem nota válida ficaram de fora.`
+      toast.success(message)
       setActionDialog(null)
     } finally {
       setReleaseBusy(false)
@@ -1266,10 +1316,32 @@ export default function MonitorPage() {
                     <span><strong>Aplicação encerrada.</strong> Os cronômetros foram congelados e o portal do aluno foi bloqueado. {finished} {finished === 1 ? 'entregou' : 'entregaram'} · {absent} {absent === 1 ? 'não entregou' : 'não entregaram'}.</span>
                   </div>
                 )}
-                {applicationPrepared && (
+                {applicationPrepared && scheduleApplication?.agendaView?.estado !== 'agendada' && (
                   <div className="mt-3 flex items-start gap-2 rounded-lg border border-warning/45 bg-warning-soft px-3 py-2.5 text-sm text-warning" role="status">
                     <AlertTriangle size={17} className="mt-0.5 shrink-0" />
                     <span><strong>Não visível aos alunos.</strong> “Preparar” monta a aplicação; o aviso só será enviado depois de clicar em “Iniciar prova e avisar alunos” ou “Sala de espera”.</span>
+                  </div>
+                )}
+                {drawView?.modo === 'por_aluno' && (
+                  <p className="mt-2 text-sm text-text" data-testid="monitor-draw">
+                    <strong>Sorteio por aluno:</strong> {drawSentence(drawView)} O progresso de cada um conta as questões que ele tirou.
+                  </p>
+                )}
+                {scheduleApplication?.agendaView && (
+                  <div className="mt-3">
+                    <ApplicationScheduleBanner
+                      application={scheduleApplication}
+                      toast={toast}
+                      canEdit={canSchedule}
+                      onChanged={(application) => {
+                        if (application) {
+                          setApplications((items) => items.map((item) => (item.id === application.id
+                            ? { ...item, status: application.status, updatedAt: application.updatedAt, agenda: application.agenda, agendaView: application.agendaView }
+                            : item)))
+                        }
+                        activeApplicationsRequest.refetch(true)
+                      }}
+                    />
                   </div>
                 )}
                 {outageNotice && (
@@ -1397,6 +1469,9 @@ export default function MonitorPage() {
             <Card className="p-4"><div className="flex items-center justify-between gap-2"><span className="text-xs text-muted">Alertas</span><AlertTriangle className="h-4 w-4 text-warning" /></div><div className="text-2xl font-bold text-warning tabular-nums">{alerts}</div><p className="text-xs text-subtle">{absent} ausentes</p></Card>
           </div>
           {err && <p className="text-sm text-danger">Erro ao atualizar: {err.message}</p>}
+          {rows.some((r) => r.networkSharedIp) && (
+            <p className="text-xs text-subtle" role="note">A rede da sala mostra o mesmo endereço para todos: o aviso de IP repetido fica desligado nesta prova.</p>
+          )}
           <Card className="overflow-x-auto">
             <table className="w-full text-sm">
               <thead><tr className="text-left text-muted border-b border-border bg-surface-2">
@@ -1410,7 +1485,12 @@ export default function MonitorPage() {
                   return (
                     <tr key={r.email || i} className="border-b border-border last:border-0">
                       <td className="px-4 py-3"><div className="font-medium text-text">{r.name || displayEmail(r.email)}</div><div className="text-xs text-muted">{displayEmail(r.email)}</div></td>
-                      <td className="px-4 py-3 font-mono text-xs text-muted">{r.ip || '-'}</td>
+                      <td className="px-4 py-3">
+                        <span className="font-mono text-xs text-muted">{r.ip || '-'}</span>
+                        {sameIpLabel(r, (person) => person?.name || displayEmail(person?.email)) && (
+                          <p className="mt-1" title="Dois ou três alunos desta prova estão no mesmo endereço de rede, numa sala em que os outros têm endereços diferentes. Pode ser o mesmo aparelho."><Badge tone="warning">{sameIpLabel(r, (person) => person?.name || displayEmail(person?.email))}</Badge></p>
+                        )}
+                      </td>
                       <td className="px-4 py-3">
                         <Badge tone={st[0]} dot>{st[1]}</Badge>
                         {attemptCountLabel(r) && <p className="mt-1 text-[11px] font-medium text-muted">{attemptCountLabel(r)}</p>}
@@ -1418,6 +1498,7 @@ export default function MonitorPage() {
                         {r.status === 'discarded' && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">Tentativa em andamento desconsiderada no encerramento</p>}
                         {r.status === 'finished' && deliveryLabel(r) && <p className={`mt-1 max-w-[220px] text-[11px] ${deliveryTone(r) === 'warning' ? 'text-warning' : 'text-subtle'}`}>{deliveryLabel(r)}</p>}
                         {r.status !== 'finished' && r.reopenedAt && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">{reopenedRowLabel(r)}</p>}
+                        {INTEGRITY_ROW_LABELS[r.integrity] && <p className="mt-1"><Badge tone="danger">{INTEGRITY_ROW_LABELS[r.integrity]}</Badge></p>}
                       </td>
                       <td className="px-4 py-3"><Button size="sm" variant="ghost" icon={GitBranch} onClick={() => assignVersion(r.email, r.assignedVersion)}>{r.assignedVersion || 'A'}</Button></td>
                       <td className={`px-4 py-3 ${notStarted ? 'text-xs text-subtle whitespace-nowrap' : 'font-mono text-muted'}`}>{rowTimerLabel(r, monitorTimer, fmt)}</td>
@@ -1437,9 +1518,12 @@ export default function MonitorPage() {
                         {r.focusLocked ? (
                           <div>
                             <Badge tone="danger">Bloqueado</Badge>
-                            {r.focusLockReason && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">{r.focusLockReason}</p>}
+                            {r.focusLockReason && <p className="mt-1 max-w-[220px] text-[11px] text-subtle">{lockReasonLabel(r.focusLockReason)}</p>}
                           </div>
                         ) : recentLogs.length > 0 ? <span className="text-xs text-muted">{recentLogs.join(' | ')}</span> : <span className="text-subtle">ok</span>}
+                        {sessionRowBadges(r).map((badge) => (
+                          <div key={badge.key} className="mt-1" title={badge.title}><Badge tone={badge.tone}>{badge.text}</Badge></div>
+                        ))}
                         {r.fullscreenUnsupported && (
                           <div className="mt-1" title="O navegador do aluno não permite tela cheia (iPhone). A prova seguiu sem ela; foco e aba continuam monitorados."><Badge tone="info">Sem tela cheia</Badge></div>
                         )}
@@ -1447,7 +1531,10 @@ export default function MonitorPage() {
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap gap-1">
                           {applicationFinished ? (
-                            canSeeAnswers && <Button size="sm" variant="secondary" icon={Eye} onClick={() => setAnswersFor(r)}>Ver respostas</Button>
+                            <>
+                              {canSeeAnswers && <Button size="sm" variant="secondary" icon={Eye} onClick={() => setAnswersFor(r)}>Ver respostas</Button>}
+                              {studentActions(r).length > 0 && <MonitorRowMenu label={`Mais ações de ${r.name || displayEmail(r.email)}`} items={studentActions(r)} />}
+                            </>
                           ) : (
                             <>
                               {canSeeAnswers && <Button size="sm" variant="secondary" icon={Eye} onClick={() => setAnswersFor(r)}>Ver respostas</Button>}
@@ -1655,6 +1742,20 @@ export default function MonitorPage() {
 
 // Limites do ajuste de tempo por aluno no diálogo (D20 do P3): de 30 minutos a menos a
 // 120 a mais, em minutos inteiros e diferente de zero.
+// O sorteio por aluno em uma frase (sorteioView do servidor). Um grupo sem filtro é a
+// montagem inteira: "cada aluno recebe 3 de 4 questões da montagem.".
+export function drawSentence(view) {
+  const grupos = Array.isArray(view?.grupos) ? view.grupos : []
+  const total = Number(view?.total) || 0
+  const noun = (count) => (count === 1 ? 'questão' : 'questões')
+  const unfiltered = (grupo) => !grupo?.filtro || Object.keys(grupo.filtro).length === 0
+  if (grupos.length === 1 && unfiltered(grupos[0])) {
+    return `cada aluno recebe ${grupos[0].quantidade} de ${grupos[0].disponiveis} ${noun(grupos[0].disponiveis)} da montagem.`
+  }
+  const partes = grupos.map((grupo) => `${grupo.quantidade} de ${grupo.disponiveis} ${grupo.descricao}`).join('; ')
+  return `cada aluno recebe ${total} ${noun(total)} da montagem (${partes}).`
+}
+
 export const ADJUST_MINUTES_MIN = -30
 export const ADJUST_MINUTES_MAX = 120
 export const MONITOR_MESSAGE_MAX = 500
@@ -1694,6 +1795,12 @@ function minutesText(minutes) {
   return `${minutes > 0 ? '+' : minutes < 0 ? '−' : ''}${Math.abs(minutes)} min`
 }
 
+// Entrega anulada por integridade (P3-S4a, P-B1): o que a linha do aluno mostra.
+const INTEGRITY_ROW_LABELS = {
+  zero: 'Tentativa anulada: nota zero',
+  desconsiderar: 'Tentativa anulada: não conta',
+}
+
 // Linha do aluno com a tentativa reaberta: pelo professor (Reabrir prova) ou pelo
 // "+N min" da turma.
 function reopenedRowLabel(row) {
@@ -1703,8 +1810,8 @@ function reopenedRowLabel(row) {
 
 // Os diálogos de ação do Monitor, todos no ConfirmDialog (C12): mensagem com modelos e o
 // destinatário, tempo com atalhos e motivo opcional, versão só entre as que existem,
-// liberar notas com a contagem (D20 do P3) e as ações por aluno (recolher, reabrir e
-// tentativa extra, D18).
+// liberar notas com a contagem (D20 do P3) e as ações por aluno (recolher, reabrir,
+// tentativa extra, anular e desfazer a anulação, D18).
 function MonitorActionDialog({ dialog, studentCount = 0, busy = false, onChange, onClose, onSendMessage, onAdjustTime, onAssignVersion, onReleaseGrades, onStudentAction }) {
   const kind = dialog?.kind
   const who = dialog?.name || displayEmail(dialog?.email || '')
@@ -1786,6 +1893,42 @@ function MonitorActionDialog({ dialog, studentCount = 0, busy = false, onChange,
         message="A entrega volta para a mesma tentativa, com as respostas dela e o tempo que faltava quando foi entregue. Não conta como tentativa nova. O motivo fica no registro da aplicação."
         requireReason reasonLabel="Motivo" reasonMaxLength={STUDENT_ACTION_REASON_MAX}
         reasonPlaceholder="Ex.: o computador desligou, enviou sem querer" confirmLabel="Reabrir prova" />
+    )
+  }
+  if (kind === 'invalidate') {
+    const decision = dialog.value === 'desconsiderar' ? 'desconsiderar' : 'zero'
+    const inProgress = dialog.row?.attemptInProgress === true
+    return (
+      <ConfirmDialog open onClose={onClose} onConfirm={onStudentAction} tone="danger"
+        title={`Anular a tentativa de ${who}?`}
+        message={`${inProgress ? 'A prova está em andamento: ela é recolhida agora, com as respostas salvas, e essa tentativa fica anulada.' : 'A última entrega desta aplicação fica anulada.'} A nota gravada não é apagada: você pode desfazer depois, e a nota volta a ser a de antes. O motivo fica na Auditoria; com a nota publicada, o aluno vê só que a tentativa foi anulada.`}
+        requireReason reasonLabel="Motivo" reasonMaxLength={STUDENT_ACTION_REASON_MAX}
+        reasonPlaceholder="Ex.: consultou o celular durante a prova" confirmLabel="Anular tentativa">
+        <fieldset className="space-y-2">
+          <legend className="text-sm font-medium text-text">O que acontece com a nota</legend>
+          {[
+            ['zero', 'Fica zero (recomendado)', 'A tentativa conta na nota com zero.'],
+            ['desconsiderar', 'Não conta', 'Como se o aluno não tivesse feito: a nota sai das médias. Ele pode fazer de novo com uma tentativa extra ou na segunda chamada.'],
+          ].map(([value, label, help]) => (
+            <label key={value} className="flex min-h-[44px] cursor-pointer items-start gap-2 rounded-md border border-border p-2">
+              <input type="radio" name="integrity-decision" value={value} checked={decision === value} onChange={() => onChange(value)} className="mt-1" />
+              <span className="min-w-0">
+                <span className="block text-sm font-medium text-text">{label}</span>
+                <span className="block text-xs text-muted">{help}</span>
+              </span>
+            </label>
+          ))}
+        </fieldset>
+      </ConfirmDialog>
+    )
+  }
+  if (kind === 'undoInvalidate') {
+    return (
+      <ConfirmDialog open onClose={onClose} onConfirm={onStudentAction} tone="primary"
+        title={`Desfazer a anulação da tentativa de ${who}?`}
+        message="A tentativa anulada volta a contar com a nota que tinha. O motivo fica na Auditoria, junto do motivo da anulação."
+        requireReason reasonLabel="Motivo" reasonMaxLength={STUDENT_ACTION_REASON_MAX}
+        reasonPlaceholder="Ex.: anulei o aluno errado" confirmLabel="Desfazer anulação" />
     )
   }
   if (kind === 'extra') {

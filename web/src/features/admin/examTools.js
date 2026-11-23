@@ -56,7 +56,9 @@ export function normalizeQuestion(question, index = 0) {
     return {
       letter,
       displayLetter: String(alt.displayLetter || letter).toUpperCase(),
-      text: alt.text || alt.label || String(alt),
+      // Alternativa vazia fica vazia (antes virava '[object Object]' e a impressa não
+      // passava na conferência do servidor).
+      text: alt && typeof alt === 'object' ? (alt.text || alt.label || '') : String(alt ?? ''),
       isCorrect: alt.isCorrect === true || (!!correct && letter === correct),
     }
   })

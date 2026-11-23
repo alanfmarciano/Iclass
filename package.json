@@ -10,6 +10,7 @@
   "scripts": {
     "start": "node backend/server.js",
     "start:supervised": "node backend/supervisor.js",
+    "launcher": "node backend/scripts/launcher.js",
     "build": "npm --prefix web run build",
     "dev:web": "npm --prefix web run dev",
     "setup": "npm install && npm --prefix web install",
@@ -29,7 +30,11 @@
     "test:backend": "node --test test/backend/*.test.js",
     "test:web": "npm --prefix web run test",
     "test:e2e": "playwright test",
-    "check": "npm run test:full"
+    "check": "npm run test:full",
+    "licencas": "node scripts/release/licencas.js",
+    "release": "node scripts/release/montar-pacote.js",
+    "release:linux": "node scripts/release/montar-pacote.js --plataforma linux-x64",
+    "test:release": "node scripts/release/montar-pacote.js --so-baixar --plataforma linux-x64 && node --test test/release/*.test.js"
   },
   "dependencies": {
     "adm-zip": "^0.6.1",

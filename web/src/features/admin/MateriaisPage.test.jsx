@@ -1,13 +1,15 @@
-import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import MateriaisPage, { batchReleaseKeys, examApplicationState } from './MateriaisPage'
+import { releaseScheduleText } from './ReleaseSchedule'
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
   post: vi.fn(),
   navigate: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
+  auth: {},
 }))
 
 vi.mock('react-router-dom', async () => {
@@ -16,6 +18,7 @@ vi.mock('react-router-dom', async () => {
 })
 vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post } }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
+vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: mocks.auth }) }))
 vi.mock('../../hooks/useAdminWorkspace', () => ({
   useAdminWorkspace: () => ({ courseId: 'DES', courseName: 'Técnico em TI', className: '1DES' }),
 }))
@@ -29,17 +32,17 @@ const STRUCTURE = [{
   ],
 }]
 
-function mockServer({ released = {}, configs = {}, applications = [] } = {}) {
+function mockServer({ released = {}, configs = {}, applications = [], releaseSchedule } = {}) {
   mocks.get.mockImplementation(async (url) => {
     if (url.includes('/structure')) return { structure: STRUCTURE }
     if (url.startsWith('/api/admin/exam-applications')) return { success: true, applications }
-    return { releasedItems: released, releaseMeta: {}, onlineExamConfigs: configs }
+    return { releasedItems: released, releaseMeta: {}, onlineExamConfigs: configs, ...(releaseSchedule ? { releaseSchedule } : {}) }
   })
   mocks.post.mockResolvedValue({ success: true })
 }
 
 describe('MateriaisPage', () => {
-  beforeEach(() => { vi.clearAllMocks() })
+  beforeEach(() => { vi.clearAllMocks(); mocks.auth = {} })
   afterEach(cleanup)
 
   it('[UC-APLICACAO-001] liberar em lote só libera apostilas e bloquear não mexe na prova online (AVA-X1)', () => {
@@ -130,5 +133,82 @@ describe('MateriaisPage', () => {
     expect(examApplicationState(applications, 'Avaliacao_U2')).toEqual({ status: 'none', applicationId: null })
     expect(examApplicationState([...applications, { id: 'a4', examKey: 'Avaliacao_U1', status: 'paused', createdAt: '2026-09-01T10:00:00Z' }], 'Avaliacao_U1'))
       .toEqual({ status: 'paused', applicationId: 'a4' })
+  })
+  it('[UC-PROVA-008] "Agendar" na apostila bloqueada manda dia e hora no relógio da escola e mostra "Libera sozinho em"', async () => {
+    const user = userEvent.setup()
+    mockServer()
+    render(<MateriaisPage />)
+    const row = await screen.findByTestId('release-row-Apostila_U1')
+    // A prova online não tem "Agendar" (abre pela aplicação).
+    expect(within(screen.getByTestId('exam-row-Avaliacao_U1')).queryByRole('button', { name: /Agendar/ })).toBeNull()
+    mocks.post.mockResolvedValueOnce({
+      success: true,
+      releaseSchedule: { Apostila_U1: { at: 1, atLabel: '24/11 às 07:30', atLocal: '2026-11-24T07:30', por: 'prof', adiado: false } },
+      avisos: [{ code: 'nao_letivo', texto: '24/11 não tem aula. O item é liberado do mesmo jeito.' }],
+    })
+    await user.click(within(row).getByRole('button', { name: /Agendar a liberação: Apostila de Unidade 1/ }))
+    await user.click(screen.getByRole('button', { name: 'Salvar horário' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Escolha o dia da liberação.')
+    fireEvent.change(screen.getByLabelText('Dia'), { target: { value: '2026-11-24' } })
+    fireEvent.change(screen.getByLabelText('Hora'), { target: { value: '07:30' } })
+    await user.click(screen.getByRole('button', { name: 'Salvar horário' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/release-item', { studentClass: '1DES', courseId: 'DES', itemKey: 'Apostila_U1', releaseAtLocal: '2026-11-24T07:30' }))
+    expect(mocks.toast.success).toHaveBeenCalledWith('Apostila agendado: libera em 24/11 às 07:30.')
+    expect(mocks.toast.info).toHaveBeenCalledWith('24/11 não tem aula. O item é liberado do mesmo jeito.')
+    expect(await screen.findByTestId('release-schedule-Apostila_U1')).toHaveTextContent('Libera sozinho em 24/11 às 07:30.')
+    expect(within(row).getByText('Agendado')).toBeInTheDocument()
+    expect(within(row).queryByRole('button', { name: /Agendar a liberação/ })).toBeNull()
+  })
+
+  it('[UC-PROVA-008] gabarito adiado avisa que sai no encerramento; cancelar e liberar na mão tiram a agenda', async () => {
+    const user = userEvent.setup()
+    const confirmSpy = vi.spyOn(window, 'confirm')
+    mockServer({
+      applications: [{ id: 'app1', examKey: 'Avaliacao_U1', status: 'running', createdAt: '2026-11-20T10:00:00Z' }],
+      releaseSchedule: {
+        Gabarito_Avaliacao_U1: { at: 1, atLabel: '20/11 às 10:00', atLocal: '2026-11-20T10:00', adiado: true },
+        Apostila_U2: { at: 2, atLabel: '25/11 às 07:30', atLocal: '2026-11-25T07:30', adiado: false },
+      },
+    })
+    render(<MateriaisPage />)
+    expect(await screen.findByTestId('release-schedule-Gabarito_Avaliacao_U1')).toHaveTextContent('Adiado: sai quando a prova for encerrada.')
+    // Com a agenda, o aviso de "bloqueado pela prova" dá lugar ao do adiamento.
+    expect(screen.queryByText(/Disponível depois que a aplicação/)).toBeNull()
+    mocks.post.mockResolvedValueOnce({ success: true, releaseSchedule: { Apostila_U2: { at: 2, atLabel: '25/11 às 07:30', atLocal: '2026-11-25T07:30', adiado: false } } })
+    await user.click(within(screen.getByTestId('release-schedule-Gabarito_Avaliacao_U1')).getByRole('button', { name: 'Cancelar' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/release-item', { studentClass: '1DES', courseId: 'DES', itemKey: 'Gabarito_Avaliacao_U1', cancelSchedule: true }))
+    await waitFor(() => expect(screen.queryByTestId('release-schedule-Gabarito_Avaliacao_U1')).toBeNull())
+    // Liberar a apostila agendada pelo interruptor: o servidor tira a agenda e devolve a nova.
+    mocks.post.mockResolvedValueOnce({ success: true, releaseSchedule: {}, scheduleDropped: true })
+    const row = screen.getByTestId('release-row-Apostila_U2')
+    await user.click(within(row).getByRole('switch'))
+    await waitFor(() => expect(mocks.toast.success).toHaveBeenCalledWith('Liberado agora; o agendamento foi retirado'))
+    expect(screen.queryByTestId('release-schedule-Apostila_U2')).toBeNull()
+    expect(confirmSpy).not.toHaveBeenCalled()
+    confirmSpy.mockRestore()
+  })
+  it('[UC-PROVA-008] gabarito preso por aplicação preparada que não abriu diz como destravar', async () => {
+    expect(releaseScheduleText({ adiado: true, espera: 'andamento' })).toBe('Adiado: sai quando a prova for encerrada.')
+    expect(releaseScheduleText({ adiado: true, espera: 'perdida' })).toMatch(/aplicação preparada que não abriu.*bloquear a prova aqui/)
+    expect(releaseScheduleText({ adiado: true, espera: 'preparada' })).toMatch(/aplicação preparada que não abriu/)
+    mockServer({
+      applications: [{ id: 'app1', examKey: 'Avaliacao_U1', status: 'prepared', createdAt: '2026-11-20T10:00:00Z' }],
+      releaseSchedule: { Gabarito_Avaliacao_U1: { at: 1, atLabel: '20/11 às 10:00', atLocal: '2026-11-20T10:00', adiado: true, espera: 'perdida' } },
+    })
+    render(<MateriaisPage />)
+    expect(await screen.findByTestId('release-schedule-Gabarito_Avaliacao_U1')).toHaveTextContent('aplicação preparada que não abriu')
+  })
+
+  it('[UC-PROVA-008] conta só de consulta vê o horário agendado sem "Agendar", "Mudar" e "Cancelar" (o servidor responde 403)', async () => {
+    mocks.auth = { accountRole: 'coordenacao', readOnly: true }
+    mockServer({
+      releaseSchedule: { Apostila_U2: { at: 2, atLabel: '25/11 às 07:30', atLocal: '2026-11-25T07:30', adiado: false } },
+    })
+    render(<MateriaisPage />)
+    const scheduled = await screen.findByTestId('release-schedule-Apostila_U2')
+    expect(scheduled).toHaveTextContent('Libera sozinho em 25/11 às 07:30.')
+    expect(within(scheduled).queryByRole('button')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Agendar a liberação/ })).toBeNull()
+    expect(screen.queryByText('Salvar horário')).toBeNull()
   })
 })

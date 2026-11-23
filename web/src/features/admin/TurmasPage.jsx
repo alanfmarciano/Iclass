@@ -13,6 +13,7 @@ import { useApi } from '../../hooks/useApi'
 import { matchesSearch, normalizeSearch } from '../../lib/textSearch'
 import { api } from '../../lib/api'
 import { useAuth } from '../../context/AuthProvider'
+import { CourseExportButton, CourseImportButton } from './CoursePackageDialog'
 import { useToast } from '../../context/ToastProvider'
 import { DisciplinasModal, GradeEditor } from './TurmaPresencaConfig'
 import { isFullAdmin, isProfessorRoleAccount } from '../../lib/adminPermissions'
@@ -215,6 +216,7 @@ export default function TurmasPage() {
         <div>
           <h1 className="text-[2rem] font-semibold tracking-[-0.045em] text-text">Cursos e turmas</h1>
           <p className="mt-1.5 text-sm text-muted">Gerencie cursos, turmas e o escopo de atuação dos professores.</p>
+          <CourseImportButton className="mt-3" schools={schools} onImported={course => { setStatusFilter('active'); setSelectedCourseId(course.id); refresh() }} />
         </div>
         {isAdmin && <div className="flex gap-2"><Button variant="secondary" icon={Plus} onClick={openNewCourse}>Novo curso</Button><Button icon={Plus} disabled={!selectedCourse || isDeleted(selectedCourse)} onClick={() => setClassForm({ mode: 'create', name: '', period: 'Manhã', registrationEnabled: true, attendanceConfig: { toleranciaMin: 10, limiarRiscoPct: 75, grade: {} } })}>Nova turma</Button></div>}
       </div>
@@ -251,6 +253,7 @@ export default function TurmasPage() {
                   {isAdmin && <div className="flex flex-wrap gap-2">{isDeleted(selectedCourse) ? <Button size="sm" icon={RotateCcw} onClick={() => run(() => api.put(`/api/admin/courses/${encodeURIComponent(selectedCourse.id)}`, { status: 'active', deleted: false, deletedAt: null }), 'Curso restaurado.')}>Restaurar</Button> : <><Button size="sm" variant="secondary" icon={Pencil} onClick={openEditCourse}>Editar</Button><Button size="sm" variant="secondary" icon={BookOpen} onClick={() => setDisciplinasForm(selectedCourse)}>Disciplinas</Button><Button size="sm" variant="secondary" icon={BookCopy} onClick={openCloneCourse}>Duplicar</Button><Button size="sm" variant="secondary" icon={Archive} onClick={() => setConfirm({ type: 'archive', target: selectedCourse })}>Arquivar</Button><Button size="sm" variant="destructive" icon={Trash2} onClick={() => setConfirm({ type: 'course', target: selectedCourse })}>Excluir</Button></>}</div>}
                 </div>
 
+                {!isDeleted(selectedCourse) && <CourseExportButton course={selectedCourse} />}
                 <div className="border-t border-border pt-4">
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-semibold text-text">Professores do curso</h3><p className="text-xs text-subtle">A etiqueta mostra se o acesso vem da escola, do curso ou de turma específica.</p></div>{isAdmin && !isDeleted(selectedCourse) && <Button size="sm" icon={UserPlus} onClick={() => openAssignments()}>Atribuir professor</Button>}</div>
                   {courseProfessors.length === 0 ? <p className="rounded-lg border border-dashed border-border p-3 text-sm text-muted">Nenhum professor atribuído.</p> : <div className="grid gap-2 md:grid-cols-2">{courseProfessors.map(professor => <button key={professor.email} disabled={!isAdmin || isDeleted(selectedCourse)} onClick={() => openAssignments(professor.email)} className="flex items-center justify-between gap-3 rounded-lg border border-border p-3 text-left hover:bg-surface-2 disabled:cursor-default"><span><span className="block text-sm font-medium text-text">{professor.name}</span><span className="text-xs text-subtle">{professor.email}</span></span><OriginBadges sources={teacherSources(professor, selectedCourse)} /></button>)}</div>}

@@ -7,6 +7,7 @@
 const { filterStudentExamAttempts } = require('./examAttempts.js');
 const { createSubmissionFromAttempt, gradeAttempt } = require('./examGrading.js');
 const { answerFingerprint, answersFromGradedAnswers, hasAnswer } = require('./examScoring.js');
+const { integrityDecision } = require('./submissionAttempts.js');
 const {
     ACTIVE_APPLICATION_STATUSES,
     CLOSED_ATTEMPT_STATUSES,
@@ -389,7 +390,7 @@ function archivedDelivery(submission) {
 // (reopenedDelivery): uma entrega nova da tentativa a substitui, e o descarte no
 // encerramento a devolve (restoreReopenedDelivery), então a entrega que o aluno já tinha
 // nunca se perde. Nunca reabre o envio feito pelo próprio aluno, entrega com nota
-// publicada ou arquivada, entrega mais antiga que a janela ou tentativa que o tempo
+// publicada, arquivada ou anulada por cola (integrityDecision), entrega mais antiga que a janela ou tentativa que o tempo
 // extra não alcança. Com 2+ tentativas (per_attempt), a tentativa seguinte que o aluno
 // ainda não começou (instruções, sem resposta) é descartada e a entrega reabre; se ele
 // já começou a seguinte, a entrega fica e ele é contado (o tempo extra vale para a
@@ -423,6 +424,10 @@ function reopenDeadlineDeliveries(memory, application, { now = Date.now(), actor
         const reopenable = snapshot && typeof snapshot === 'object' && snapshot.startedAt
             && submission.gradePublished !== true
             && !['archived', 'invalidated'].includes(submission.resultStatus)
+            // Anulada por cola (P3-S4a): reabrir apagaria a anulação em silêncio (a
+            // entrega sai da lista e a nova nasce sem ela, com a nota cheia). Fica e conta
+            // em deadlineKept, como no "Reabrir" do Monitor (reopenDeliveryByInstructor).
+            && !integrityDecision(submission)
             && deadlineAt > 0 && now - deadlineAt <= windowMs;
         const state = reopenable ? {
             ...JSON.parse(JSON.stringify(snapshot)),
@@ -493,7 +498,8 @@ function reopenDeadlineDeliveries(memory, application, { now = Date.now(), actor
 // a entrega sai da lista e fica guardada na tentativa (reopenedDelivery), então ela volta
 // se a tentativa reaberta terminar desconsiderada no encerramento, e a tentativa não
 // conta de novo no limite (é a mesma). Só com a aplicação em andamento e só a entrega sem
-// nota publicada, considerada (nem arquivada, nem anulada) e que guardou a tentativa
+// nota publicada, considerada (nem arquivada, nem anulada, nem anulada por integridade:
+// integrityDecision) e que guardou a tentativa
 // (reopenableState: as entregas feitas a partir desta versão; as de antes, não). A
 // tentativa seguinte que o aluno ainda não começou sai, como no "+N min". Devolve
 // { ok: true, state, key, submission, addedMinutes, remainingMs, discardedNext } ou
@@ -518,6 +524,11 @@ function reopenDeliveryByInstructor(memory, application, studentEmail, { now = D
     }
     if (['archived', 'invalidated'].includes(submission.resultStatus)) {
         return refuse('delivery_not_considered', 'Esta entrega está arquivada ou anulada e não pode ser reaberta.');
+    }
+    // Anulada por cola (P3-S4a): reabrir apagaria a anulação em silêncio (a entrega sai da
+    // lista e a nova não leva a decisão). Desfazer a anulação vem antes.
+    if (integrityDecision(submission)) {
+        return refuse('delivery_invalidated', 'Esta tentativa foi anulada por integridade e não volta para a prova. Para reabri-la, desfaça a anulação antes; para o aluno fazer de novo, dê uma tentativa extra.');
     }
     const snapshot = submission.reopenableState;
     if (!snapshot || typeof snapshot !== 'object' || !snapshot.startedAt) {

@@ -374,8 +374,11 @@ test('[UC-ERRO-001] os callbacks do multer e de validateAdmin das rotas reais fi
     // Únicas mensagens que podem ir direto: as fixas, em português, de validadores
     // conhecidos. validationError é o de validateStudentFields (utils/students.js) e
     // requiresInProgressPolicy marca a recusa do encerramento com prova em andamento
-    // (utils/examFinish.js). O resto usa sendRouteError (recusa com status 4xx).
-    const ALLOWED_MESSAGE_SOURCES = [/\bvalidationError\.message\b/, /requiresInProgressPolicy/];
+    // (utils/examFinish.js). formatError é a recusa do arquivo importado no banco de
+    // questões (QuestionFormatError de utils/questionFormats.js, P3-S9b), que vai com o
+    // código ("file_too_large", "import_changed"...). O resto usa sendRouteError (recusa
+    // com status 4xx).
+    const ALLOWED_MESSAGE_SOURCES = [/\bvalidationError\.message\b/, /requiresInProgressPolicy/, /\bformatError\.message\b/];
     for (const filename of fs.readdirSync(routesDir).filter(name => name.endsWith('.js'))) {
         fs.readFileSync(path.join(routesDir, filename), 'utf8').split('\n').forEach((line, index) => {
             if (/^\s*\/\//.test(line)) return;

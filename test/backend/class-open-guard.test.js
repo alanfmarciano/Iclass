@@ -62,6 +62,9 @@ const ROTAS_QUE_GRAVAM = [
     ['adminExamConfig.js', 'POST', '/api/admin/exam-applications/:applicationId/attempt-action'],
     // Corrigir o gabarito depois da prova (A8, P3-S6) recorrige as entregas da aplicação.
     ['adminExamConfig.js', 'POST', '/api/admin/exam-applications/:applicationId/answer-key-correction'],
+    // Correção manual no servidor (A9, P3-S4a): grava pontos, comentários e a conclusão
+    // da correção e recalcula a nota da entrega.
+    ['adminCorrections.js', 'POST', '/api/admin/submissions/:id/correction'],
     // Dias não letivos (B3 / P2-S5): o dia de uma turma marca a presença do login dela
     // (naoLetivoId); a turma do dia (de antes e de depois, no update) passa pelo portão.
     // O dia de curso, escola ou instituição chama com null (vale para muitas turmas; a

@@ -4,6 +4,7 @@ const os = require('os');
 const path = require('path');
 const db = require('../database.js');
 const runtimePaths = require('../runtimePaths.js');
+const buildIntegrity = require('../utils/buildIntegrity.js');
 const { DATA_DIR } = runtimePaths;
 const schemaMigrations = require('../utils/schemaMigrations.js');
 const { recordAudit } = require('../utils/audit.js');
@@ -178,8 +179,7 @@ function buildInfo() {
 // programa e sem o código da interface, D14 do P6); senão 'desenvolvimento' (pasta do git,
 // como a do Alan hoje).
 function installMode() {
-    const root = runtimePaths.PROJECT_ROOT;
-    return fs.existsSync(path.join(root, 'release-manifest.json')) && !fs.existsSync(path.join(root, 'web', 'src')) ? 'pacote' : 'desenvolvimento';
+    return buildIntegrity.buildMode(runtimePaths.PROJECT_ROOT);
 }
 
 // Versão dos dados (schemaMeta, A0): quantas migrações este banco tem, a última (com o

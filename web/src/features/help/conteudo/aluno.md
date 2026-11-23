@@ -32,6 +32,8 @@ Quando você entra com uma senha temporária, o IClass pede uma senha nova antes
 
 Se aparecer a faixa **Sem conexão com o servidor**, continue respondendo e não feche nem recarregue a página: as respostas são enviadas quando a conexão voltar. Se a faixa disser que o servidor está reiniciando, espere alguns segundos. Se nada mudar, chame o professor.
 
+Faça a prova num aparelho só. Se você entrar com a sua conta em outro aparelho no meio da prova (ou sair da conta e entrar de novo), ela pode travar até o professor liberar, e o primeiro aparelho sai da conta. Se precisar trocar de computador no meio da prova, avise o professor: ele libera a prova no aparelho novo. Trocar de rede no mesmo aparelho (do Wi-Fi para os dados do celular) não trava a prova.
+
 ## Aviso de conexão não segura e certificado {#conexao-segura}
 
 Quando a escola usa a conexão segura (o endereço começa com `https`), o navegador pode avisar que a conexão não é particular. Para o aviso sumir, instale o certificado da escola seguindo o guia da página [Certificado](/certificado). Na dúvida, peça ajuda ao professor.
@@ -49,6 +51,8 @@ Quando a escola usa a conexão segura (o endereço começa com `https`), o naveg
 ## Provas {#provas}
 
 <!-- P3 (A5, A19) e P2 (B9) escrevem aqui: prova com os tipos novos, Minhas notas e pedido de revisão. -->
+
+**Prova agendada.** Quando o professor agenda uma prova, ela aparece em **Provas** com a etiqueta **Agendada** e o horário ("A prova abre em 20/11 às 08:00 e fecha às 09:30"), e também no **Calendário**. Antes da hora ela não abre: volte em **Provas** no horário para começar. No horário de fechar, a prova é entregue com o que você salvou: durante a prova, o topo mostra **Fecha em ...**, mesmo que o cronômetro ainda tenha tempo.
 
 ### Como responder cada tipo de questão
 

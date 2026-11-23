@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import MonitorPage, { classifyKeystroke } from './MonitorPage'
+import MonitorPage, { classifyKeystroke, drawSentence } from './MonitorPage'
 import { keystrokeLiveEmptyText, keystrokeLiveTitle } from '../../lib/keystrokeModes'
 
 const mocks = vi.hoisted(() => ({
@@ -570,6 +570,56 @@ describe('[UC-TENTATIVA-004] MonitorPage · ações por aluno e diálogos própr
     expect(screen.queryByRole('button', { name: 'Mais ações de Elisa' })).toBeNull()
   })
 
+  // P3-S4a (A9): anular por cola e desfazer, com motivo obrigatório e a escolha da nota.
+  it('Anular tentativa: motivo obrigatório, "Não conta" vai como desconsiderar e o aviso diz o que aconteceu', async () => {
+    row = { ...base, attemptInProgress: true, canInvalidate: true }
+    mocks.post.mockResolvedValue({ success: true, submission: { integrity: 'desconsiderar', recolhida: true } })
+    renderMonitor()
+    await openMenuItem('Anular tentativa')
+    const dialog = screen.getByRole('dialog', { name: 'Anular a tentativa de Elisa?' })
+    expect(dialog).toHaveTextContent('ela é recolhida agora')
+    expect(within(dialog).getByRole('radio', { name: /Fica zero \(recomendado\)/ })).toBeChecked()
+    const confirm = within(dialog).getByRole('button', { name: 'Anular tentativa' })
+    expect(confirm).toBeDisabled()
+    fireEvent.click(within(dialog).getByRole('radio', { name: /Não conta/ }))
+    fireEvent.change(within(dialog).getByLabelText('Motivo'), { target: { value: 'Consultou o celular' } })
+    await act(async () => { fireEvent.click(confirm) })
+    await waitFor(() => expect(posts(actionUrl)).toHaveLength(1))
+    expect(posts(actionUrl)[0][1]).toEqual({ action: 'anular', studentEmail: 'elisa@x.local', motivo: 'Consultou o celular', decisao: 'desconsiderar' })
+    expect(mocks.toast.success).toHaveBeenCalledWith('A prova foi recolhida e a tentativa de Elisa foi anulada: não conta na nota.')
+  })
+
+  it('aplicação encerrada: só anular e desfazer, a linha mostra a anulação e desfazer pede o motivo', async () => {
+    row = { ...base, status: 'finished', attemptInProgress: false, canInvalidate: false, canUndoInvalidation: true, integrity: 'zero' }
+    list = applications.map((item) => (item.id === 'app-antiga' ? { ...item, status: 'finished' } : item))
+    mocks.liveApplications = list
+    renderMonitor()
+    expect(await screen.findByText('Tentativa anulada: nota zero')).toBeVisible()
+    fireEvent.click(await screen.findByRole('button', { name: 'Mais ações de Elisa' }))
+    expect(screen.queryByRole('menuitem', { name: 'Dar tentativa extra' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Anular tentativa' })).toBeNull()
+    fireEvent.click(screen.getByRole('menuitem', { name: 'Desfazer anulação' }))
+    const dialog = screen.getByRole('dialog', { name: 'Desfazer a anulação da tentativa de Elisa?' })
+    const confirm = within(dialog).getByRole('button', { name: 'Desfazer anulação' })
+    expect(confirm).toBeDisabled()
+    fireEvent.change(within(dialog).getByLabelText('Motivo'), { target: { value: 'Anulei o aluno errado' } })
+    await act(async () => { fireEvent.click(confirm) })
+    await waitFor(() => expect(posts(actionUrl)).toHaveLength(1))
+    expect(posts(actionUrl)[0][1]).toEqual({ action: 'desfazer_anulacao', studentEmail: 'elisa@x.local', motivo: 'Anulei o aluno errado' })
+    expect(mocks.toast.success).toHaveBeenCalledWith('Anulação desfeita: a tentativa de Elisa volta a contar como antes.')
+  })
+
+  it('o professor auxiliar (sem Resultados) não recebe anular nem desfazer', async () => {
+    mocks.auth = { accountRole: 'monitor', effectivePermissions: ['page.dashboard', 'page.classes', 'page.students', 'page.monitor'] }
+    row = { ...base, attemptInProgress: true, canInvalidate: true, canUndoInvalidation: true }
+    renderMonitor()
+    fireEvent.click(await screen.findByRole('button', { name: 'Mais ações de Elisa' }))
+    expect(screen.getByRole('menuitem', { name: 'Recolher prova' })).toBeVisible()
+    expect(screen.queryByRole('menuitem', { name: 'Anular tentativa' })).toBeNull()
+    expect(screen.queryByRole('menuitem', { name: 'Desfazer anulação' })).toBeNull()
+    mocks.auth = {}
+  })
+
   it('Mensagem: modelos prontos, várias linhas e o destinatário', async () => {
     renderMonitor()
     fireEvent.click(await screen.findByRole('button', { name: 'Msg' }))
@@ -649,24 +699,30 @@ describe('[UC-TENTATIVA-004] MonitorPage · ações por aluno e diálogos própr
       if (url.startsWith('/api/admin/question-reports/')) return { groups: [], totalOpen: 0 }
       if (url.startsWith('/api/admin/submissions?')) {
         return [
-          { id: 's1', applicationId: 'app-antiga', gradePublished: false },
-          { id: 's2', applicationId: 'app-antiga', gradePublished: false, correcao: { situacao: 'pendente' } },
-          { id: 's3', applicationId: 'app-antiga', gradePublished: false, correcao: { situacao: 'concluida' } },
+          { id: 's1', applicationId: 'app-antiga', gradePublished: false, awaitingCorrection: false },
+          { id: 's2', applicationId: 'app-antiga', gradePublished: false, correcao: { situacao: 'pendente' }, awaitingCorrection: true },
+          { id: 's3', applicationId: 'app-antiga', gradePublished: false, correcao: { situacao: 'concluida' }, awaitingCorrection: false },
           { id: 's4', applicationId: 'app-antiga', gradePublished: true },
+          // A9, ajuste 2: quem espera vem de awaitingCorrection (regra do servidor), não de
+          // correcao. Sem correcao, com questão para revisar: espera. Anulada com zero e
+          // correção pendente: não espera (vale a anulação) e vai na lista.
+          { id: 's5', applicationId: 'app-antiga', gradePublished: false, awaitingCorrection: true },
+          { id: 's6', applicationId: 'app-antiga', gradePublished: false, correcao: { situacao: 'pendente' }, integrityDecision: 'zero', awaitingCorrection: false },
         ]
       }
       return {}
     })
-    mocks.post.mockResolvedValue({ updated: 2 })
+    mocks.post.mockResolvedValue({ updated: 2, skippedPendingCorrection: 1 })
     renderMonitor()
     fireEvent.click(await screen.findByRole('button', { name: 'Liberar nota para o aluno' }))
     const dialog = screen.getByRole('dialog', { name: 'Liberar as notas desta aplicação?' })
-    await waitFor(() => expect(dialog).toHaveTextContent('2 notas serão liberadas'))
-    expect(dialog).toHaveTextContent('1 entrega aguardando correção fica de fora.')
+    await waitFor(() => expect(dialog).toHaveTextContent('3 notas serão liberadas'))
+    expect(dialog).toHaveTextContent('2 entregas aguardando correção ficam de fora.')
     await act(async () => { fireEvent.click(within(dialog).getByRole('button', { name: 'Liberar notas' })) })
     await waitFor(() => expect(posts('/api/admin/submissions/publish')).toHaveLength(1))
-    expect(posts('/api/admin/submissions/publish')[0][1]).toEqual({ ids: ['s1', 's3'], published: true })
-    expect(mocks.toast.success).toHaveBeenCalledWith('2 notas liberadas para os alunos.')
+    expect(posts('/api/admin/submissions/publish')[0][1]).toEqual({ ids: ['s1', 's3', 's6'], published: true })
+    // O servidor pulou uma que passou a aguardar correção depois da contagem: o aviso diz.
+    expect(mocks.toast.success).toHaveBeenCalledWith('2 notas liberadas para os alunos. 1 entrega aguarda correção e ficou de fora.')
   })
 })
 
@@ -934,5 +990,131 @@ describe('[UC-IDENT-003] MonitorPage · aluno sem e-mail', () => {
     expect(dialog.textContent).toContain('Aluno: Ana (ana@teste.local)')
     expect(dialog.textContent).toContain('Turma toda')
     expect(document.body.textContent).not.toMatch(/sem-email\.invalid/)
+  })
+})
+
+// Outro login e troca de IP durante a prova (fase 3, P3-S13: AVA-17; D28 e D29).
+describe('[UC-TENTATIVA-005] MonitorPage · outro aparelho, troca de IP e IP repetido', () => {
+  let rowsForTest = []
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.auth = {}
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications }
+      if (url.startsWith('/api/admin/monitor-status/')) return rowsForTest
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [], totalOpen: 0 }
+      return {}
+    })
+  })
+  afterEach(cleanup)
+
+  function renderMonitor() {
+    render(
+      <MemoryRouter initialEntries={['/monitor?courseId=C1&className=1DES&examKey=Avaliacao_Antiga&applicationId=app-antiga']}>
+        <Routes><Route path="/monitor" element={<MonitorPage />} /></Routes>
+      </MemoryRouter>,
+    )
+  }
+
+  it('linha travada pelo outro login: "Bloqueado", o motivo em português, o selo com a hora e "Mudou de IP"; IP repetido com o nome do colega', async () => {
+    const at = new Date(2026, 10, 22, 10, 42).getTime()
+    rowsForTest = [
+      { email: 'alice@x.local', name: 'Alice', ip: '10.0.0.9', status: 'focus_locked', focusLocked: true, focusLockReason: 'session_replaced', attemptInProgress: true, progress: '1/4', logs: [], sessionReplacedCount: 1, sessionReplacedAt: at, ipChangeCount: 1, ipChangedAt: at, sameIpAs: [{ email: 'bruno@x.local', name: 'Bruno' }], networkSharedIp: false },
+      { email: 'bruno@x.local', name: 'Bruno', ip: '10.0.0.9', status: 'online', attemptInProgress: true, progress: '2/4', logs: [], sessionReplacedCount: 0, ipChangeCount: 0, sameIpAs: [{ email: 'alice@x.local', name: 'Alice' }], networkSharedIp: false },
+    ]
+    renderMonitor()
+    expect(await screen.findByText('Entrou de outro aparelho às 10:42')).toBeTruthy()
+    const alice = screen.getByText('Entrou de outro aparelho às 10:42').closest('tr')
+    expect(within(alice).getByText('Bloqueado')).toBeTruthy()
+    expect(within(alice).getByText('Entrou de outro aparelho')).toBeTruthy()
+    expect(within(alice).queryByText('session_replaced')).toBeNull()
+    expect(within(alice).getByText('Mudou de IP')).toBeTruthy()
+    expect(within(alice).getByText('Mesmo IP de Bruno')).toBeTruthy()
+    const bruno = screen.getByText('Mesmo IP de Alice').closest('tr')
+    expect(within(bruno).queryByText(/Entrou de outro aparelho/)).toBeNull()
+    expect(screen.queryByText(/A rede da sala mostra o mesmo endereço para todos/)).toBeNull()
+  })
+
+  it('rede com NAT: nenhum "Mesmo IP de" e o aviso de que a rede mostra o mesmo endereço para todos', async () => {
+    rowsForTest = ['ana', 'beto', 'caio', 'duda'].map((name) => ({ email: `${name}@x.local`, name, ip: '192.168.0.1', status: 'online', attemptInProgress: true, progress: '0/4', logs: [], sameIpAs: [], networkSharedIp: true }))
+    renderMonitor()
+    expect(await screen.findByText(/A rede da sala mostra o mesmo endereço para todos/)).toBeTruthy()
+    expect(screen.queryByText(/Mesmo IP de/)).toBeNull()
+  })
+
+  it('painel do aluno: o outro login mostra o IP e o navegador e conta em "Entradas em outro aparelho", fora de "Saídas de foco" e de "Comandos suspeitos"', async () => {
+    const at = Date.now() - 5000
+    const replacedLog = { id: 'log-1', eventType: 'session_replaced', timestamp: at, sessionChange: { ipAntes: '10.0.0.5', ipDepois: '10.0.0.9', navegadorAntes: 'Celular da Alice', navegadorDepois: 'Computador do laboratório', travou: true } }
+    const ipLog = { id: 'log-2', eventType: 'ip_changed', timestamp: at + 1000, sessionChange: { ipAntes: '10.0.0.9', ipDepois: '10.0.0.10', navegadorAntes: 'Computador do laboratório', navegadorDepois: 'Computador do laboratório', travou: false } }
+    rowsForTest = [{ email: 'alice@x.local', name: 'Alice', ip: '10.0.0.10', status: 'focus_locked', focusLocked: true, focusLockReason: 'session_replaced', attemptInProgress: true, progress: '1/4', keystrokeCount: 0, logs: [replacedLog, ipLog], sessionReplacedCount: 1, sessionReplacedAt: at, lastSessionReplaced: replacedLog.sessionChange, ipChangeCount: 1, ipChangedAt: at + 1000, lastIpChange: ipLog.sessionChange, sameIpAs: [], networkSharedIp: false }]
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications }
+      if (url.startsWith('/api/admin/monitor-status/')) return rowsForTest
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [], totalOpen: 0 }
+      if (url.startsWith('/api/admin/exam-keystrokes/')) return { events: [], total: 0, cursor: null, hasMore: false, logs: [replacedLog, ipLog] }
+      return {}
+    })
+    renderMonitor()
+    const badge = await screen.findByText(/Entrou de outro aparelho às/)
+    expect(badge.closest('[title]').getAttribute('title')).toContain('IP: 10.0.0.5 → 10.0.0.9 · Navegador: Celular da Alice → Computador do laboratório')
+    fireEvent.click(screen.getByTitle(/^Ver (digitação|atalhos) ao vivo$/))
+    const details = await screen.findAllByTestId('session-change-detail')
+    expect(details.map((node) => node.textContent)).toEqual([
+      'IP: 10.0.0.5 → 10.0.0.9 · Navegador: Celular da Alice → Computador do laboratório',
+      'IP: 10.0.0.9 → 10.0.0.10 · Navegador: Computador do laboratório',
+    ])
+    expect(screen.getByText('Entradas em outro aparelho')).toBeTruthy()
+    const focusStat = screen.getAllByText('Saídas de foco')[0].parentElement
+    expect(focusStat.textContent).toContain('0')
+    const suspicious = screen.getByText('Comandos suspeitos').parentElement
+    expect(suspicious.textContent).toContain('0')
+  })
+
+  it('Monitor de antes desta versão (linhas sem os campos novos): nada muda', async () => {
+    rowsForTest = [{ email: 'ana@x.local', name: 'Ana', ip: '10.0.0.2', status: 'online', attemptInProgress: true, progress: '0/4', logs: [] }]
+    renderMonitor()
+    expect(await screen.findByText('10.0.0.2')).toBeTruthy()
+    expect(screen.queryByText(/Mesmo IP de|Entrou de outro aparelho|Mudou de IP|A rede da sala/)).toBeNull()
+  })
+})
+
+// Fase 3, P3-S11 (D24): a aplicação com sorteio por aluno diz no Monitor quantas questões
+// cada aluno recebe e de quais grupos.
+describe('[UC-PROVA-007] MonitorPage · sorteio por aluno', () => {
+  const drawApplications = applications.map((item) => (item.id !== 'app-antiga' ? item : {
+    ...item,
+    sorteioView: { modo: 'por_aluno', total: 3, grupos: [{ quantidade: 2, disponiveis: 4, descricao: 'questões fáceis' }, { quantidade: 1, disponiveis: 2, descricao: 'questões difíceis' }] },
+  }))
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.liveApplications = drawApplications
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications: drawApplications }
+      if (url.startsWith('/api/admin/monitor-status/')) return { monitorList: [] }
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [], totalOpen: 0 }
+      return {}
+    })
+  })
+  afterEach(() => {
+    mocks.liveApplications = null
+    cleanup()
+  })
+
+  it('mostra o total por aluno e os grupos', async () => {
+    render(
+      <MemoryRouter initialEntries={['/monitor?courseId=C1&className=1DES&examKey=Avaliacao_Antiga&applicationId=app-antiga']}>
+        <Routes><Route path="/monitor" element={<MonitorPage />} /></Routes>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByTestId('monitor-draw')).toHaveTextContent('Sorteio por aluno: cada aluno recebe 3 questões da montagem (2 de 4 questões fáceis; 1 de 2 questões difíceis).')
+  })
+
+  it('um grupo sem filtro é a montagem inteira: a frase não repete a conta', () => {
+    expect(drawSentence({ modo: 'por_aluno', total: 3, grupos: [{ filtro: {}, quantidade: 3, disponiveis: 4, descricao: 'questões' }] }))
+      .toBe('cada aluno recebe 3 de 4 questões da montagem.')
+    expect(drawSentence({ modo: 'por_aluno', total: 1, grupos: [{ filtro: {}, quantidade: 1, disponiveis: 1, descricao: 'questões' }] }))
+      .toBe('cada aluno recebe 1 de 1 questão da montagem.')
+    expect(drawSentence({ modo: 'por_aluno', total: 2, grupos: [{ filtro: { dificuldade: 'facil' }, quantidade: 2, disponiveis: 4, descricao: 'questões fáceis' }] }))
+      .toBe('cada aluno recebe 2 questões da montagem (2 de 4 questões fáceis).')
   })
 })

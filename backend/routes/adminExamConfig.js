@@ -1,12 +1,16 @@
 const express = require('express');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const runtimePaths = require('../runtimePaths.js');
+const { parseEvaluationMarkdown } = require('../utils/parser.js');
 const db = require('../database.js');
 const { ensureExamToken, hashExamToken, normalizeExamToken, sealExamToken, unsealExamToken, withoutSealedToken } = require('../utils/examToken.js');
 const { normalizeMaxAttempts, parseMaxAttempts } = require('../utils/examAttempts.js');
 const { keystrokeModeOf, normalizeKeystrokeMode, parseKeystrokeModeOption, withKeystrokeMode } = require('../utils/keystrokePolicy.js');
+const { SESSION_POLICIES, normalizeSessionPolicy, withSessionTrail } = require('../utils/examSessionIntegrity.js');
 const {
     attemptQuestion,
-    freezeSnapshotGrading,
     questionNumber,
     regradeSubmission,
     snapshotForAttempt,
@@ -53,7 +57,7 @@ const {
 const { markGradeChangeNotice } = require('../utils/gradeChangeNotices.js');
 const { compareText } = require('../utils/textSearch.js');
 const { bankItemQuestion } = require('../utils/questionBank.js');
-const { body, bool, either, int, list, num, shape, str } = require('../utils/inputSchema.js');
+const { body, bool, either, int, list, num, oneOf, query, shape, str } = require('../utils/inputSchema.js');
 const {
     AUDIENCE_INPUT_FIELDS,
     MAX_EXTRA_ATTEMPTS,
@@ -68,6 +72,14 @@ const {
     participantCandidates,
 } = require('../utils/examParticipants.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
+// Versões montadas e conferidas no servidor e sorteio por aluno (P3-S11: AVA-16; D23 e
+// D24 do desenho do P3).
+const examVersions = require('../utils/examVersions.js');
+const examDraw = require('../utils/examDraw.js');
+// Agendamento de prova e de material (P3-S12: AVA-20, UXI-17; D25 a D27). A varredura que
+// abre, fecha e libera roda no timer do servidor (server.js); aqui ficam as rotas.
+const examSchedule = require('../utils/examSchedule.js');
+const { recordAudit } = require('../utils/audit.js');
 const { displayName, normalizeEmail, studentInClass } = require('../utils/students.js');
 const { answerIdSecret } = require('../utils/examAnswerIds.js');
 const {
@@ -81,7 +93,8 @@ const {
     recordExamAudit: sharedRecordExamAudit,
     resolveInProgressAttempts,
 } = require('../utils/examFinish.js');
-const { buildApplicationAuditTrail, describeSubmissionGrade, examTitle, recordGradeAudit } = require('../utils/gradebook.js');
+const { buildApplicationAuditTrail, createResolvedGroupKey, describeSubmissionGrade, examTitle, formatGradeBR, recordGradeAudit } = require('../utils/gradebook.js');
+const { INTEGRITY_DECISIONS, calculateAttemptResult, integrityDecision } = require('../utils/submissionAttempts.js');
 const {
     validateAdmin,
     adminCanAccessClass,
@@ -99,7 +112,7 @@ const {
     questionWithoutAnswerKey,
 } = require('../utils/examAnswerKeyView.js');
 
-const VERSION_LABELS = ['A', 'B', 'C', 'D'];
+const VERSION_LABELS = examVersions.ONLINE_VERSION_LABELS;
 const DEFAULT_ONLINE_DURATION_MINUTES = 60;
 const DEFAULT_WAITING_ROOM_MINUTES = 10;
 const DEFAULT_MAX_ATTEMPTS = 1;
@@ -166,10 +179,27 @@ function buildPreparedOnlineExamConfig(historyEntry, previousConfig = {}, applic
         maxAttempts,
         // Registro do teclado (H8b): a rota confere a escolha antes (parseKeystrokeModeOption).
         keystrokeMode: normalizeKeystrokeMode(parseKeystrokeModeOption(applicationOptions).value),
+        // Outro aparelho no meio da prova (P3-S13, D28): 'travar' (padrão) ou 'avisar'.
+        sessionPolicy: normalizeSessionPolicy(applicationOptions.sessionPolicy),
         versionSnapshots,
         preparedAt: updatedAt,
         updatedAt,
     };
+}
+
+// A avaliação da prova (sem herdar de Object.prototype): a gravada ou, na prova antiga só
+// em .md (content/<prova>.md, sem entrada em evaluations), a lida do arquivo, como na
+// entrega do aluno (student.js). Só lê; null quando não há nenhuma.
+function evaluationFor(examKey) {
+    const evaluations = db.memory.evaluations || {};
+    if (Object.prototype.hasOwnProperty.call(evaluations, examKey)) return evaluations[examKey];
+    if (!/^[A-Za-z0-9_-]+$/.test(String(examKey || ''))) return null;
+    try {
+        const parsed = parseEvaluationMarkdown(fs.readFileSync(path.join(runtimePaths.CONTENT_DIR, `${examKey}.md`), 'utf8'), examKey);
+        return parsed && Array.isArray(parsed.questions) && parsed.questions.length ? parsed : null;
+    } catch (_) {
+        return null;
+    }
 }
 
 async function persistClasses(classes) {
@@ -259,11 +289,17 @@ function openExamFamilyApplication(cls, examKey) {
     }).find(application => family.has(String(application.examKey || ''))) || null;
 }
 
-function prepareApplicationFromHistory(cls, examKey, historyEntry, applicationOptions, req, audience = null) {
+function prepareApplicationFromHistory(cls, examKey, historyEntry, applicationOptions, req, audience = null, draw = null) {
     const options = applicationOptions || {};
     const preparedConfig = buildPreparedOnlineExamConfig(historyEntry, cls.onlineExamConfigs?.[examKey] || {}, options);
     // Para quem (P3-S7): já conferido pela rota (parseApplicationAudience).
     if (audience) Object.assign(preparedConfig, audience);
+    // Sorteio por aluno (P3-S11, D24): já conferido pela rota (examDraw.parseDrawInput). Cada
+    // aluno recebe draw.total questões (o Monitor conta "respondidas de N" por ele).
+    if (draw) {
+        preparedConfig.sorteio = draw;
+        preparedConfig.questionCount = draw.total;
+    }
     const rawToken = preparedConfig.accessToken;
     preparedConfig.accessTokenHash = hashExamToken(rawToken);
     preparedConfig.tokenEnabled = !!preparedConfig.accessTokenHash;
@@ -340,18 +376,76 @@ function recordAudienceAudit(application, actor, { participantsChanged = false, 
 
 // Tipo e tamanho do "Para quem" dentro das opções da preparação e no corpo da rota de
 // participantes (utils/inputSchema.js); as regras vêm em parseApplicationAudience.
+// Data e hora no relógio da escola ('AAAA-MM-DDTHH:MM'); a conta de fuso é a do
+// schoolTime.deadlineFromLocal (examSchedule.parseScheduleInput).
+const SCHEDULE_INPUT_FIELDS = Object.freeze({
+    abreEmLocal: str({ max: 20, nullable: true, label: 'abre em' }),
+    fechaEmLocal: str({ max: 20, nullable: true, label: 'fecha em' }),
+});
+// Agendar, mudar ou cancelar (P3-S12): { abreEmLocal, fechaEmLocal } ou { cancelar: true }.
+const SCHEDULE_SCHEMA = body({
+    ...SCHEDULE_INPUT_FIELDS,
+    cancelar: bool({ nullable: true, label: 'cancelar o agendamento' }),
+});
+// Liberação agendada de material (P3-S12, D27): releaseAtLocal agenda em vez de liberar
+// agora; cancelSchedule tira a agenda do item.
+const RELEASE_ITEM_SCHEMA = body({
+    releaseAtLocal: str({ max: 20, nullable: true, label: 'liberar em' }),
+    cancelSchedule: bool({ nullable: true, label: 'cancelar a liberação agendada' }),
+});
+
 const PREPARE_AUDIENCE_SCHEMA = body({
-    applicationOptions: shape(AUDIENCE_INPUT_FIELDS, { nullable: true, label: 'opções da aplicação' }),
+    applicationOptions: shape({
+        ...AUDIENCE_INPUT_FIELDS,
+        // "Outro aparelho no meio da prova" (P3-S13, D28): travar até o professor liberar
+        // (padrão) ou só avisar no Monitor.
+        sessionPolicy: oneOf(SESSION_POLICIES, { nullable: true, label: 'outro aparelho no meio da prova' }),
+        // "Quando" (P3-S12, D25): sem agenda (ausente ou null) a aplicação fica preparada
+        // esperando o "Iniciar" do Monitor, como sempre.
+        agenda: shape(SCHEDULE_INPUT_FIELDS, { nullable: true, label: 'agendamento' }),
+        // "Como montar" (P3-S11, D24): versões (padrão) ou sorteio por aluno. O tipo e o
+        // tamanho de cada campo aqui; os grupos contra a montagem em examDraw.parseDrawInput.
+        sorteio: shape({
+            modo: oneOf(examDraw.DRAW_MODES, { nullable: true, label: 'como montar' }),
+            grupos: list(shape({
+                filtro: shape({
+                    origem: str({ max: 20, nullable: true, label: 'origem' }),
+                    categoria: str({ max: 80, nullable: true, label: 'categoria' }),
+                    dificuldade: str({ max: 20, nullable: true, label: 'dificuldade' }),
+                    tag: str({ max: 40, nullable: true, label: 'etiqueta' }),
+                }, { nullable: true, label: 'filtro do grupo' }),
+                quantidade: int({ coerce: true, label: 'quantidade do grupo' }),
+            }, { label: 'grupo do sorteio' }), { max: examDraw.MAX_DRAW_GROUPS, nullable: true, label: 'grupos do sorteio' }),
+        }, { nullable: true, label: 'como montar' }),
+    }, { nullable: true, label: 'opções da aplicação' }),
 });
 const PARTICIPANTS_SCHEMA = body(AUDIENCE_INPUT_FIELDS);
 
+// Montagem online no servidor (P3-S11, D23): quantas versões montar. O tipo aqui (inteiro,
+// também em texto); de 1 a 4 em examVersions.buildOnlineVersions, com a mesma frase.
+const EXAM_HISTORY_ADD_SCHEMA = body({
+    versionCount: int({ coerce: true, nullable: true, label: 'versões online', typeMessage: examVersions.ONLINE_VERSION_COUNT_ERROR }),
+    onlineVersions: int({ coerce: true, nullable: true, label: 'versões online', typeMessage: examVersions.ONLINE_VERSION_COUNT_ERROR }),
+});
+
+// Questões que o sorteio pode usar (P3-S11, D24): numbers é a lista da montagem, '1,2,3'.
+const DRAW_POOL_QUERY = query({
+    studentClass: str({ max: 200, label: 'turma' }),
+    courseId: str({ max: 200, label: 'curso' }),
+    examKey: str({ max: 200, label: 'avaliação' }),
+    historyId: str({ max: 200, label: 'configuração salva' }),
+    numbers: str({ max: 4000, pattern: /^\d{1,6}(?:\s*,\s*\d{1,6})*$/, label: 'questões' }),
+});
+
 // Ações por aluno no Monitor (fase 3, P3-S8: AVA-14; D18 do desenho do P3), numa rota só:
-// recolher a prova em andamento, reabrir a entrega e dar uma tentativa extra. Anular por
-// cola e desfazer a anulação chegam no P3-S4a (A9), junto com a regra do calculador da
-// nota (X10 do plano): até lá a rota recusa as duas com 400. O guarda do painel já pede
-// page.monitor (e page.results para qualquer outra ação, adminPermissions.js).
-const ATTEMPT_ACTIONS = Object.freeze(['recolher', 'reabrir', 'tentativa_extra']);
+// recolher a prova em andamento, reabrir a entrega, dar uma tentativa extra, anular a
+// tentativa por integridade (cola) e desfazer a anulação. Anular e desfazer chegaram no
+// P3-S4a (A9), junto com a regra do calculador da nota (X10 do plano: a entrega anulada
+// nunca conta com a nota original). O guarda do painel pede page.monitor e, para anular e
+// desfazer, também page.results (adminPermissions.js).
+const ATTEMPT_ACTIONS = Object.freeze(['recolher', 'reabrir', 'tentativa_extra', 'anular', 'desfazer_anulacao']);
 const ATTEMPT_ACTION_REASON_MAX = 500;
+const ATTEMPT_ACTION_REASON_MIN = 3;
 const ATTEMPT_ACTION_SCHEMA = body({
     action: str({ max: 40, required: true, label: 'ação' }),
     // O emailField do "Para quem" (sem espaço, vírgula, ponto e vírgula nem <>): e-mail
@@ -359,11 +453,176 @@ const ATTEMPT_ACTION_SCHEMA = body({
     studentEmail: emailField('aluno', { required: true }),
     motivo: str({ max: ATTEMPT_ACTION_REASON_MAX, nullable: true, label: 'motivo' }),
     extraAttempts: int({ min: 1, max: MAX_EXTRA_ATTEMPTS, coerce: true, nullable: true, label: 'tentativas extras' }),
+    // Anular (P-B1): 'zero' (padrão: a tentativa vale 0) ou 'desconsiderar' (não conta,
+    // como se o aluno não tivesse feito). submissionId escolhe a entrega; sem ele, vale a
+    // tentativa em andamento (recolhida antes) ou a entrega mais recente do aluno.
+    decisao: oneOf(INTEGRITY_DECISIONS, { nullable: true, label: 'decisão' }),
+    submissionId: str({ max: 200, nullable: true, label: 'entrega' }),
 });
 
+const INTEGRITY_DECISION_LABELS = Object.freeze({ zero: 'nota zero', desconsiderar: 'não conta (como se não tivesse feito)' });
+
+// Entregas do aluno nesta aplicação, da mais recente para a mais antiga.
+function applicationSubmissionsOf(application, email) {
+    return (db.memory.submissions || [])
+        .filter(item => item && String(item.applicationId || '') === String(application.id)
+            && normalizeEmail(item.student?.email || item.studentEmail) === email)
+        .sort((a, b) => (Date.parse(b.timestamp) || 0) - (Date.parse(a.timestamp) || 0));
+}
+
+// Nota consolidada do grupo da entrega (aluno + curso + turma + aplicação), a mesma de
+// Resultados (submissionAttempts.calculateAttemptResult).
+function consolidatedResultFor(submission) {
+    const groups = createResolvedGroupKey({ students: db.memory.students || [], classes: db.memory.classes || [] });
+    const key = groups.key(submission);
+    const group = (db.memory.submissions || []).filter(item => item && groups.key(item) === key).map(groups.resolved);
+    return calculateAttemptResult(group);
+}
+
+function consolidatedLabel(result) {
+    if (!result) return 'sem nota';
+    if (result.score === null) return result.aguardandoCorrecao ? 'aguardando correção' : 'sem nota';
+    return `${formatGradeBR(result.score)}${result.aguardandoCorrecao ? ' (outra tentativa aguardando correção)' : ''}`;
+}
+
+// Anular a tentativa por integridade e desfazer a anulação (attempt-action, P3-S4a; D18 e
+// P-B1 do P3). submission.integrity = { decisao, motivo, por, em } (em em ms); desfazer
+// grava desfeitaEm, desfeitaPor e motivoDesfeita e a entrega volta a contar como era.
+// A nota gravada (score) nunca muda: quem aplica a decisão é calculateAttemptResult
+// ('zero' entra com 0, 'desconsiderar' fica fora). Anular a prova que o aluno está fazendo
+// recolhe a tentativa antes (com as respostas salvas, como o "Recolher prova").
+// Auditoria grade_invalidated / grade_invalidation_undone (nota consolidada antes e
+// depois, motivo) e attempt_invalidated no registro do monitoramento, na mesma gravação.
+async function invalidationAction({ req, res, action, application, cls, email, student, motivo, actor, now, matchedAdmin, applicationForAccount }) {
+    // Aplicação cancelada: o Monitor não oferece anular (canInvalidate) e o servidor recusa
+    // igual. Desfazer uma anulação de antes do cancelamento continua valendo.
+    if (action === 'anular' && application.status === 'cancelled') {
+        return attemptActionRefusal(res, 409, 'application_cancelled', 'Esta aplicação foi cancelada: não há tentativa para anular nela.');
+    }
+    const requestedId = String(req.body.submissionId || '').trim();
+    const own = applicationSubmissionsOf(application, email);
+    let collected = null;
+    let target = null;
+    if (requestedId) {
+        target = own.find(item => String(item.id) === requestedId) || null;
+        if (!target) return attemptActionRefusal(res, 404, 'submission_not_found', 'Entrega não encontrada para este aluno nesta aplicação.');
+    } else if (action === 'desfazer_anulacao') {
+        target = own.find(item => integrityDecision(item) !== null) || null;
+        if (!target) return attemptActionRefusal(res, 409, 'not_invalidated', 'Este aluno não tem tentativa anulada nesta aplicação.');
+    } else {
+        // A prova em andamento é recolhida antes (a tentativa vencida é entregue pelo fim
+        // do tempo, como sempre): é ela que fica anulada.
+        let settledChanged = false;
+        if (ACTIVE_APPLICATION_STATUSES.has(application.status)) {
+            settledChanged = !!settleExpiredAttempts(db.memory, { applicationId: application.id, studentEmail: email, graceMs: 0 }).changed;
+            const open = findOpenAttemptState(db.memory.studentExamState, { applicationId: application.id, studentEmail: email });
+            if (open && Number(open.state.startedAt) > 0) {
+                const { deadlineAt } = attemptOverdueMs(open.state, application, now);
+                collected = finalizeAttemptState(db.memory, {
+                    key: open.key,
+                    state: open.state,
+                    application,
+                    now,
+                    deadlineAt,
+                    source: INSTRUCTOR_COLLECT_SOURCE,
+                });
+                if (collected) {
+                    collected.collectedBy = actor;
+                    collected.collectedAt = new Date(now).toISOString();
+                    recordExamAudit('exam_attempt_collected', application, actor, {
+                        attemptId: collected.attemptId || null,
+                        attemptNumber: collected.attemptNumber || null,
+                        submissionId: collected.id,
+                        answeredCount: collected.answeredCount,
+                        motivo: 'Recolhida para anular a tentativa',
+                    }, { studentEmail: email });
+                    pushAttemptLog(application, email, collected.attemptId, 'attempt_collected', 'Prova recolhida pelo professor com as respostas salvas');
+                }
+            }
+        }
+        target = collected || applicationSubmissionsOf(application, email)[0] || null;
+        if (!target) {
+            if (settledChanged) await db.save();
+            return attemptActionRefusal(res, 409, 'no_submission', 'Este aluno ainda não entregou esta prova: não há tentativa para anular.');
+        }
+    }
+
+    const title = examTitle(target.examKey, { evaluations: db.memory.evaluations || {} });
+    const before = consolidatedResultFor(target);
+    const current = integrityDecision(target);
+    const attemptLabel = `tentativa ${target.attemptNumber || 1}`;
+    if (action === 'anular') {
+        if (current) {
+            if (collected) await db.save();
+            return attemptActionRefusal(res, 409, 'already_invalidated', `Esta tentativa já está anulada (${INTEGRITY_DECISION_LABELS[current]}). Para mudar a decisão, desfaça a anulação antes.`);
+        }
+        const decisao = INTEGRITY_DECISIONS.includes(req.body.decisao) ? req.body.decisao : 'zero';
+        const previous = target.integrity && typeof target.integrity === 'object' && !Array.isArray(target.integrity) ? target.integrity : null;
+        target.integrity = {
+            decisao,
+            motivo: motivo.slice(0, ATTEMPT_ACTION_REASON_MAX),
+            por: actor,
+            em: now,
+            // Anulação desfeita antes: fica a anterior, para o histórico da entrega.
+            ...(previous ? { anteriores: [...(Array.isArray(previous.anteriores) ? previous.anteriores : []), { ...previous, anteriores: undefined }].slice(-5) } : {}),
+        };
+    } else {
+        if (!current) return attemptActionRefusal(res, 409, 'not_invalidated', 'Esta tentativa não está anulada.');
+        target.integrity = {
+            ...target.integrity,
+            desfeitaEm: now,
+            desfeitaPor: actor,
+            motivoDesfeita: motivo.slice(0, ATTEMPT_ACTION_REASON_MAX),
+        };
+    }
+    const after = consolidatedResultFor(target);
+    const decisionLabel = INTEGRITY_DECISION_LABELS[action === 'anular' ? target.integrity.decisao : current];
+    recordGradeAudit(db.memory, {
+        req,
+        actor: matchedAdmin,
+        submission: target,
+        action: action === 'anular' ? 'grade_invalidated' : 'grade_invalidation_undone',
+        field: 'Integridade da prova',
+        oldValue: `${title}: ${consolidatedLabel(before)}`,
+        newValue: action === 'anular'
+            ? `${consolidatedLabel(after)} · ${attemptLabel} anulada (${decisionLabel})`
+            : `${consolidatedLabel(after)} · anulação da ${attemptLabel} desfeita (era ${decisionLabel})`,
+        reason: motivo,
+        details: {
+            decisao: action === 'anular' ? target.integrity.decisao : current,
+            attemptNumber: target.attemptNumber || 1,
+            scoreAntes: before.score,
+            scoreDepois: after.score,
+            ...(collected ? { recolhida: true } : {}),
+        },
+    });
+    pushAttemptLog(application, email, target.attemptId, action === 'anular' ? 'attempt_invalidated' : 'attempt_invalidation_undone',
+        action === 'anular' ? `Tentativa anulada pelo professor (${decisionLabel})` : 'Anulação da tentativa desfeita pelo professor');
+    application.updatedAt = new Date(now).toISOString();
+    application.updatedBy = actor;
+    // A entrega já existia (coleção que só cresce, linha antiga alterada): gravação completa.
+    await db.save();
+    return res.json({
+        success: true,
+        action,
+        application: applicationForAccount(application),
+        submission: {
+            id: target.id,
+            attemptId: target.attemptId || null,
+            attemptNumber: target.attemptNumber || 1,
+            integrity: integrityDecision(target),
+            recolhida: !!collected,
+        },
+        consolidated: { before: before.score, after: after.score, aguardandoCorrecao: after.aguardandoCorrecao === true },
+        studentName: displayName(student) || email,
+        studentClass: cls.name,
+    });
+}
+
 // Registro do monitoramento da prova (evidência, com a retenção dela; aparece no Monitor
-// e na digitação ao vivo): attempt_collected e attempt_reopened. O texto não leva o motivo
-// (o motivo fica na auditoria, que só o professor lê).
+// e na digitação ao vivo): attempt_collected, attempt_reopened, attempt_invalidated e
+// attempt_invalidation_undone. O texto não leva o motivo (o motivo fica na auditoria, que
+// só o professor lê).
 function pushAttemptLog(application, email, attemptId, eventType, details) {
     if (!Array.isArray(db.memory.proctoringLogs)) db.memory.proctoringLogs = [];
     db.memory.proctoringLogs.push({
@@ -583,8 +842,18 @@ function revealApplicationToken(application) {
     return token && hashExamToken(token) === application.accessTokenHash ? token : null;
 }
 
+// A aplicação para o painel: sem o token selado e, com agenda, agendaView (a situação e
+// os horários no relógio da escola: "Abre sozinha às 08:00", "Fecha sozinha às 09:30").
+// No sorteio por aluno (P3-S11), sorteioView: os grupos em palavras.
+function withAgendaView(view, application) {
+    if (!view) return view;
+    const agendaView = examSchedule.scheduleView(application);
+    const withAgenda = agendaView ? { ...view, agendaView } : view;
+    return examDraw.isPerStudentDraw(application) ? { ...withAgenda, sorteioView: examDraw.drawSummary(application) } : withAgenda;
+}
+
 function adminApplicationView(application) {
-    return withoutSealedToken(withKeystrokeMode(application));
+    return withAgendaView(withoutSealedToken(withKeystrokeMode(application)), application);
 }
 
 // Letras das versões da aplicação (A, B...), para o Monitor oferecer só as que existem.
@@ -617,6 +886,14 @@ const DESCRIBED_HERE = new Set([
     'exam_access_token_revealed',
     'exam_application_token_regenerated',
     'exam_answer_key_corrected',
+    'exam_application_scheduled',
+    'exam_application_schedule_changed',
+    'exam_application_auto_opened',
+    'exam_application_auto_finished',
+    'exam_application_schedule_missed',
+    // Só o encerramento feito pela agenda (reason 'agendamento', ator 'sistema'); o do
+    // professor continua com o texto de utils/gradebook.js.
+    'exam_application_finished',
 ]);
 
 function describeMonitorActionAudit(entry, nameByEmail) {
@@ -652,6 +929,46 @@ function describeMonitorActionAudit(entry, nameByEmail) {
         };
     }
     if (entry.type === 'exam_application_token_regenerated') return { title: 'Token da prova trocado', detail: '' };
+    // Agendamento (P3-S12).
+    const when = ms => examSchedule.formatWhen(ms) || '—';
+    if (entry.type === 'exam_application_scheduled') {
+        return { title: 'Prova agendada', detail: examSchedule.describeWindow(details.abreEm, details.fechaEm) };
+    }
+    if (entry.type === 'exam_application_schedule_changed') {
+        if (details.fechamentoCancelado) return { title: 'Fechamento automático retirado', detail: 'a prova não encerra mais sozinha' };
+        if (!details.depois) return { title: 'Agendamento cancelado', detail: details.antes ? `era: ${examSchedule.describeWindow(details.antes.abreEm, details.antes.fechaEm)}` : '' };
+        return {
+            title: 'Agendamento alterado',
+            detail: join(details.antes ? `antes: ${examSchedule.describeWindow(details.antes.abreEm, details.antes.fechaEm)}` : '', `agora: ${examSchedule.describeWindow(details.depois.abreEm, details.depois.fechaEm)}`),
+        };
+    }
+    if (entry.type === 'exam_application_auto_opened') {
+        const late = Number(details.atrasoSegundos) || 0;
+        return {
+            title: 'Prova aberta pelo agendamento',
+            // formatWhen já diz "20/11 às 08:00" (antes saía "às 20/11 às 08:00").
+            detail: late > 60 ? `${Math.round(late / 60)} min depois de ${when(details.abreEm)} (o computador estava desligado)` : `em ${when(details.abreEm)}, no horário marcado`,
+        };
+    }
+    if (entry.type === 'exam_application_auto_finished') {
+        const delivered = Number(details.entregues) || 0;
+        return { title: 'Prova encerrada pelo agendamento', detail: `${delivered} ${delivered === 1 ? 'prova em andamento entregue' : 'provas em andamento entregues'} com o que estava salvo` };
+    }
+    // O encerramento da agenda (finishApplication com o ator 'sistema'): antes o registro
+    // dizia "provas em andamento enviadas pelo professor".
+    if (entry.type === 'exam_application_finished') {
+        if (details.reason !== 'agendamento') return null;
+        const submitted = Number(details.submitted) || 0;
+        return {
+            title: 'Aplicação encerrada no horário marcado',
+            detail: submitted > 0
+                ? `${submitted} ${submitted === 1 ? 'prova em andamento enviada' : 'provas em andamento enviadas'} pelo agendamento, com o que estava salvo`
+                : '',
+        };
+    }
+    if (entry.type === 'exam_application_schedule_missed') {
+        return { title: 'Agendamento perdido: a prova não abriu', detail: `o computador estava desligado entre ${when(details.abreEm)} e ${when(details.fechaEm)}` };
+    }
     return null;
 }
 
@@ -668,9 +985,90 @@ function describeAudienceEntries(rows) {
     });
 }
 
+// Avisos do agendamento (nunca bloqueiam): o dia de abrir é não letivo para a turma e a
+// janela é menor que a duração da prova (quem ainda estiver fazendo a prova no fechamento
+// tem a prova entregue com o que salvou).
+function scheduleWarnings(cls, application) {
+    const agenda = application && application.agenda;
+    const avisos = [];
+    if (!agenda || !(Number(agenda.abreEm) > 0)) return avisos;
+    const day = examSchedule.nonSchoolDayWarning(db.memory, cls, Number(agenda.abreEm));
+    if (day) avisos.push({ code: 'nao_letivo', texto: day.texto, nome: day.nome, date: day.date });
+    const windowMinutes = (Number(agenda.fechaEm) - Number(agenda.abreEm)) / 60000;
+    const duration = Number(application.durationMinutes);
+    if (application.timerEnabled !== false && duration > 0 && windowMinutes > 0 && Number(agenda.fechaEm) > Number(agenda.abreEm) + 1 && windowMinutes < duration) {
+        avisos.push({ code: 'janela_curta', texto: `A prova fica aberta ${Math.round(windowMinutes)} min e dura ${duration} min: quem ainda estiver fazendo a prova no horário de fechar tem a prova entregue com o que salvou.` });
+    }
+    return avisos;
+}
+
 // Escopo do professor na turma da aplicação (o guarda já conferiu a permissão).
 function canManageApplication(matchedAdmin, application) {
     return adminCanAccessClass(matchedAdmin, application.studentClass, application.courseId);
+}
+
+// Tira a liberação agendada do item (sem auditoria: quem chama já registra o que fez).
+function dropItemSchedule(cls, itemKey) {
+    if (!cls.releaseSchedule || typeof cls.releaseSchedule !== 'object' || !Object.prototype.hasOwnProperty.call(cls.releaseSchedule, itemKey)) return false;
+    delete cls.releaseSchedule[itemKey];
+    return true;
+}
+
+// Agendar ({ releaseAtLocal }) ou cancelar ({ cancelSchedule: true }) a liberação de um
+// item da turma (P3-S12, D27). Só a turma inteira (a liberação para um aluno continua na
+// hora); a prova online nunca (abre por aplicação); item já liberado não precisa de agenda.
+async function scheduleItemRelease(req, res, cls, itemKey, studentEmail) {
+    if (studentEmail) return res.status(400).json({ error: 'A liberação agendada vale para a turma inteira, não para um aluno só.' });
+    if (!examSchedule.releaseScheduleAllowed(itemKey)) {
+        return res.status(400).json({ error: 'A prova online não é liberada por agenda: prepare a aplicação em Provas e use o "Quando" para agendar.', code: 'schedule_not_allowed' });
+    }
+    const actor = adminActor(req);
+    const actorName = (req.adminAccount && (req.adminAccount.name || req.adminAccount.email)) || 'Administrador';
+    const previous = cls.releaseSchedule && Object.prototype.hasOwnProperty.call(cls.releaseSchedule, itemKey) ? cls.releaseSchedule[itemKey] : null;
+    const describe = entry => (entry && Number(entry.at) > 0 ? examSchedule.formatWhen(Number(entry.at)) : '');
+    if (req.body.cancelSchedule === true) {
+        if (!previous) return res.json({ success: true, unchanged: true, releaseSchedule: examSchedule.releaseScheduleView(cls, { memory: db.memory }) });
+        dropItemSchedule(cls, itemKey);
+        recordAudit(db.memory, {
+            action: 'content_release_scheduled',
+            req,
+            courseId: cls.courseId || null,
+            studentClass: cls.name,
+            field: itemKey,
+            oldValue: describe(previous),
+            newValue: 'cancelada',
+            details: { itemKey, at: null, antes: Number(previous.at) || null, cancelado: true },
+        });
+        await persistClasses(db.memory.classes || []);
+        return res.json({ success: true, releaseSchedule: examSchedule.releaseScheduleView(cls, { memory: db.memory }) });
+    }
+    if (req.body.released === false) return res.status(400).json({ error: 'A agenda só libera o item. Para bloquear, use o interruptor.' });
+    const parsed = examSchedule.parseReleaseAt(req.body.releaseAtLocal);
+    if (!parsed.ok) return res.status(400).json({ success: false, error: parsed.error, field: 'releaseAtLocal' });
+    if (cls.releasedItems && cls.releasedItems[itemKey] === true) {
+        return res.status(409).json({ error: 'Este item já está liberado para a turma.', code: 'already_released' });
+    }
+    if (!cls.releaseSchedule || typeof cls.releaseSchedule !== 'object' || Array.isArray(cls.releaseSchedule)) cls.releaseSchedule = {};
+    cls.releaseSchedule[itemKey] = { at: parsed.value, released: true, por: actor, porNome: actorName, criadoEm: Date.now() };
+    recordAudit(db.memory, {
+        action: 'content_release_scheduled',
+        req,
+        courseId: cls.courseId || null,
+        studentClass: cls.name,
+        field: itemKey,
+        oldValue: previous ? describe(previous) : null,
+        newValue: describe(cls.releaseSchedule[itemKey]),
+        details: { itemKey, at: parsed.value, ...(previous ? { antes: Number(previous.at) || null } : {}) },
+    });
+    await persistClasses(db.memory.classes || []);
+    const avisos = [];
+    const day = examSchedule.nonSchoolDayWarning(db.memory, cls, parsed.value);
+    if (day) avisos.push({ code: 'nao_letivo', texto: day.texto.replace('A prova abre do mesmo jeito.', 'O item é liberado do mesmo jeito.'), nome: day.nome, date: day.date });
+    // Gabarito com aplicação aberta: a hora chega e a liberação espera o encerramento.
+    if (itemKey.startsWith('Gabarito_') && openExamFamilyApplication(cls, itemKey.slice('Gabarito_'.length))) {
+        avisos.push({ code: 'gabarito_espera', texto: 'A prova ainda tem uma aplicação preparada ou em andamento: se ela não estiver encerrada no horário, o gabarito sai assim que for encerrada.' });
+    }
+    res.json({ success: true, releaseSchedule: examSchedule.releaseScheduleView(cls, { memory: db.memory }), ...(avisos.length ? { avisos } : {}) });
 }
 
 function createAdminExamConfigRouter() {
@@ -680,6 +1078,75 @@ function createAdminExamConfigRouter() {
     // (já tem entrega que conta numa aplicação regular da prova) e, com applicationId, se
     // está na lista dela e a exceção dele. segundaChamada é a lista pré-marcada: quem não
     // fez. Declarada antes de /exam-applications/:applicationId.
+    // Avisos do "Quando" antes de agendar (P3-S12, contrato C5): o dia de abrir é não
+    // letivo para a turma (isNonSchoolDay) ou a janela é menor que a duração da prova. Só
+    // avisa, nunca bloqueia. Declarada antes de /exam-applications/:applicationId.
+    router.get('/api/admin/exam-applications/schedule-check', (req, res) => {
+        validateAdmin(req, res, (config, matchedAdmin) => {
+            const cls = findClassByNameAndCourse(db.memory.classes || [], String(req.query.studentClass || '').trim(), req.query.courseId);
+            if (!cls) return res.status(404).json({ error: 'Turma não encontrada.' });
+            if (!adminCanAccessClass(matchedAdmin, cls.name, cls.courseId)) {
+                return res.status(403).json({ error: 'A turma não está atribuída a esta conta.' });
+            }
+            const abreEm = examSchedule.parseLocalDateTime(req.query.abreEmLocal);
+            const fechaEm = examSchedule.parseLocalDateTime(req.query.fechaEmLocal);
+            const duration = Number(req.query.durationMinutes);
+            const avisos = scheduleWarnings(cls, {
+                agenda: abreEm && fechaEm ? { abreEm, fechaEm } : (abreEm ? { abreEm, fechaEm: abreEm + 1 } : null),
+                durationMinutes: Number.isFinite(duration) && duration > 0 ? duration : null,
+                timerEnabled: req.query.timerEnabled !== 'false',
+            });
+            res.json({ success: true, avisos, janela: abreEm && fechaEm && fechaEm > abreEm ? examSchedule.describeWindow(abreEm, fechaEm) : '' });
+        });
+    });
+
+    // Questões que o sorteio por aluno pode usar (P3-S11, D24): as da configuração salva
+    // (historyId) ou as escolhidas na montagem (numbers=1,2,3), com o que o filtro dos grupos
+    // olha (origem, categoria do banco, dificuldade e etiquetas). A tela conta quantas cabem
+    // em cada grupo; quem confere de verdade é a preparação (parseDrawInput). Só leitura.
+    router.get('/api/admin/exam-applications/draw-pool', (req, res) => {
+        validateAdmin(req, res, (config, matchedAdmin) => {
+            const params = DRAW_POOL_QUERY.check(req, res);
+            if (!params) return;
+            const cls = findClassByNameAndCourse(db.memory.classes || [], params.studentClass || '', params.courseId);
+            if (!cls) return res.status(404).json({ error: 'Turma não encontrada.' });
+            if (!adminCanAccessClass(matchedAdmin, cls.name, cls.courseId)) {
+                return res.status(403).json({ error: 'A turma não está atribuída a esta conta.' });
+            }
+            const examKey = params.examKey || '';
+            if (!examKey || !isCourseExamKey(cls, examKey)) return res.status(400).json({ error: 'Avaliação não pertence ao curso da turma.' });
+            const evaluation = evaluationFor(examKey);
+            const historyId = params.historyId || '';
+            let snapshots;
+            if (historyId) {
+                const entry = findOnlineHistoryEntry(cls, examKey, historyId);
+                if (!entry) return res.status(404).json({ error: 'Configuração salva não encontrada ou sem questões.' });
+                snapshots = getHistoryVersionSnapshots(entry);
+            } else {
+                const wanted = (params.numbers ? params.numbers.split(',') : []).map(item => Number(item.trim()));
+                const evaluationQuestions = Array.isArray(evaluation?.questions) ? evaluation.questions : [];
+                const chosen = wanted.length ? new Set(wanted) : null;
+                snapshots = [{ questions: evaluationQuestions.filter((question, index) => !chosen || chosen.has(questionNumber(question, index))) }];
+            }
+            const pool = examDraw.drawPool(snapshots, evaluation, db.memory);
+            const distinct = values => {
+                const seen = new Map();
+                values.forEach(value => {
+                    const key = String(value || '').trim();
+                    if (key && !seen.has(key.toLowerCase())) seen.set(key.toLowerCase(), key);
+                });
+                return [...seen.values()].sort(compareText);
+            };
+            res.set('Cache-Control', 'no-store');
+            res.json({
+                success: true,
+                questions: pool,
+                categorias: distinct(pool.map(item => item.categoria)),
+                etiquetas: distinct(pool.flatMap(item => item.tags)),
+            });
+        });
+    });
+
     router.get('/api/admin/exam-applications/participant-candidates', (req, res) => {
         validateAdmin(req, res, (config, matchedAdmin) => {
             const studentClass = String(req.query.studentClass || '').trim();
@@ -786,7 +1253,14 @@ function createAdminExamConfigRouter() {
                     status: application.status,
                     createdAt: application.createdAt || null,
                 },
-                entries: describeAudienceEntries(buildApplicationAuditTrail(application, db.memory.auditLogs || [], { students: db.memory.students || [] })),
+                // O outro login e a troca de IP (P3-S13) ficam em proctoringLogs, fora da
+                // auditoria, e entram aqui junto com o resto do registro.
+                entries: describeAudienceEntries(withSessionTrail(
+                    buildApplicationAuditTrail(application, db.memory.auditLogs || [], { students: db.memory.students || [] }),
+                    application,
+                    db.memory.proctoringLogs || [],
+                    { students: db.memory.students || [] },
+                )),
             });
         });
     });
@@ -886,6 +1360,20 @@ function createAdminExamConfigRouter() {
             const historyEntry = findOnlineHistoryEntry(cls, examKey, historyId);
             if (!historyEntry) return res.status(400).json({ error: 'Configuração salva não encontrada ou sem questões.' });
             const options = req.body.applicationOptions || {};
+            // Versões online: no máximo 4 (A a D); antes o servidor cortava sem avisar (AVA-16).
+            if (Number(options.onlineVersions) > examVersions.ONLINE_VERSIONS_MAX) {
+                return res.status(400).json({ success: false, error: examVersions.ONLINE_VERSIONS_ERROR, field: 'applicationOptions.onlineVersions', code: 'too_many_versions' });
+            }
+            // Configuração salva antes da conferência do gabarito (D23): a resposta certa de
+            // cada questão precisa ser a da prova de hoje.
+            const answerKeyProblem = examVersions.preparationAnswerKeyProblem(historyEntry, evaluationFor(examKey));
+            if (answerKeyProblem) return res.status(409).json({ success: false, ...answerKeyProblem });
+            // Como montar (D24): versões (padrão) ou sorteio por aluno sobre as questões da
+            // configuração salva.
+            const draw = examDraw.parseDrawInput(options.sorteio, {
+                pool: examDraw.drawPool(getHistoryVersionSnapshots(historyEntry), evaluationFor(examKey), db.memory),
+            });
+            if (!draw.ok) return res.status(400).json({ success: false, error: draw.error, field: `applicationOptions.${draw.field}` });
             if (options.tokenEnabled === true && !normalizeExamToken(options.accessToken)) {
                 return res.status(400).json({ error: 'O token deve conter exatamente 5 letras maiúsculas.' });
             }
@@ -912,11 +1400,33 @@ function createAdminExamConfigRouter() {
                 actor: adminActor(req),
             });
             if (!audience.ok) return res.status(400).json({ success: false, error: audience.error, field: audience.field ? `applicationOptions.${audience.field}` : undefined });
+            // "Quando" (P3-S12, D25): agendada, a aplicação abre e fecha sozinha. Conferida
+            // antes de preparar: a agenda inválida não substitui a preparação de antes.
+            let schedule = null;
+            if (options.agenda) {
+                const parsed = examSchedule.parseScheduleInput(options.agenda);
+                if (!parsed.ok) return res.status(400).json({ success: false, error: parsed.error, field: `applicationOptions.agenda.${parsed.field}` });
+                schedule = parsed.value;
+            }
             if (!cls.onlineExamConfigs) cls.onlineExamConfigs = {};
             if (!cls.releasedItems) cls.releasedItems = {};
-            const prepared = prepareApplicationFromHistory(cls, examKey, historyEntry, options, req, audience.value);
+            const prepared = prepareApplicationFromHistory(cls, examKey, historyEntry, options, req, audience.value, draw.value);
+            // Sorteio por aluno (D24): os grupos em palavras e quantas questões cada um tinha.
+            if (draw.value) {
+                const summary = examDraw.drawSummary(prepared.application);
+                recordExamAudit('exam_application_draw_set', prepared.application, adminActor(req), {
+                    total: summary.total,
+                    grupos: summary.grupos.map(group => ({ descricao: group.descricao, quantidade: group.quantidade, disponiveis: group.disponiveis })),
+                });
+            }
+            let avisos = [];
+            if (schedule) {
+                prepared.application.agenda = examSchedule.createAgenda(schedule, { actor: adminActor(req) });
+                recordExamAudit('exam_application_scheduled', prepared.application, adminActor(req), { abreEm: schedule.abreEm, fechaEm: schedule.fechaEm });
+                avisos = scheduleWarnings(cls, prepared.application);
+            }
             await persistClasses(db.memory.classes || []);
-            res.status(201).json({ success: true, ...prepared, application: withoutSealedToken(prepared.application), onlineExamConfig: cls.onlineExamConfigs[examKey] });
+            res.status(201).json({ success: true, ...prepared, application: withAgendaView(withoutSealedToken(prepared.application), prepared.application), onlineExamConfig: cls.onlineExamConfigs[examKey], ...(avisos.length ? { avisos } : {}) });
         });
     });
 
@@ -965,6 +1475,70 @@ function createAdminExamConfigRouter() {
             recordAudienceAudit(application, actor, { participantsChanged, before });
             await db.save({ only: ['examApplications', 'auditLogs'] });
             res.json({ success: true, application: adminApplicationView(application) });
+        });
+    });
+
+    // Agendar, mudar ou cancelar a abertura e o fechamento automáticos (P3-S12, D25).
+    // Preparada: { abreEmLocal, fechaEmLocal } agenda (ou muda, e a agenda perdida volta a
+    // valer com o horário novo) e { cancelar: true } tira a agenda (a aplicação continua
+    // preparada, esperando o "Iniciar" do Monitor). Em andamento: só { cancelar: true },
+    // que tira o fechamento automático ("Não encerrar sozinha"). Não mexe em nota: grava só
+    // a aplicação e a auditoria.
+    router.post('/api/admin/exam-applications/:applicationId/schedule', (req, res) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            if (!SCHEDULE_SCHEMA.check(req, res)) return;
+            const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
+            if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
+            if (!canManageApplication(matchedAdmin, application)) {
+                return res.status(403).json({ error: 'A turma desta aplicação não está atribuída a esta conta.' });
+            }
+            const cls = findClassByNameAndCourse(db.memory.classes || [], application.studentClass, application.courseId);
+            if (!cls) return res.status(404).json({ error: 'Turma da aplicação não encontrada.' });
+            const input = req.body || {};
+            const actor = adminActor(req);
+            const current = examSchedule.applicationAgenda(application);
+            const snapshot = agenda => (agenda ? { abreEm: Number(agenda.abreEm), fechaEm: Number(agenda.fechaEm), ...(agenda.perdida === true ? { perdida: true } : {}) } : null);
+            const now = Date.now();
+            if (ACTIVE_APPLICATION_STATUSES.has(application.status)) {
+                if (input.cancelar !== true) {
+                    return res.status(409).json({ error: 'A prova já abriu: o horário não muda mais. Dá para tirar o fechamento automático ("Não encerrar sozinha") ou encerrar pelo Monitor.', code: 'schedule_started' });
+                }
+                if (!examSchedule.closesAutomatically(application, current)) {
+                    return res.json({ success: true, unchanged: true, application: adminApplicationView(application) });
+                }
+                current.fechamentoCanceladoEm = now;
+                current.fechamentoCanceladoPor = actor;
+                application.updatedAt = new Date(now).toISOString();
+                application.updatedBy = actor;
+                recordExamAudit('exam_application_schedule_changed', application, actor, { antes: snapshot(current), depois: snapshot(current), fechamentoCancelado: true });
+                await db.save({ only: ['examApplications', 'auditLogs'] });
+                return res.json({ success: true, application: adminApplicationView(application) });
+            }
+            if (application.status !== 'prepared') {
+                return res.status(409).json({ error: 'Esta aplicação já foi encerrada ou cancelada; o agendamento não muda mais.', code: 'application_closed', applicationClosed: true });
+            }
+            if (input.cancelar === true) {
+                if (!current) return res.json({ success: true, unchanged: true, application: adminApplicationView(application) });
+                delete application.agenda;
+                application.updatedAt = new Date(now).toISOString();
+                application.updatedBy = actor;
+                recordExamAudit('exam_application_schedule_changed', application, actor, { antes: snapshot(current), depois: null });
+                await db.save({ only: ['examApplications', 'auditLogs'] });
+                return res.json({ success: true, application: adminApplicationView(application) });
+            }
+            const parsed = examSchedule.parseScheduleInput(input, { now });
+            if (!parsed.ok) return res.status(400).json({ success: false, error: parsed.error, field: parsed.field });
+            if (current && current.perdida !== true && Number(current.abreEm) === parsed.value.abreEm && Number(current.fechaEm) === parsed.value.fechaEm) {
+                return res.json({ success: true, unchanged: true, application: adminApplicationView(application), avisos: scheduleWarnings(cls, application) });
+            }
+            application.agenda = examSchedule.createAgenda(parsed.value, { actor, now });
+            application.updatedAt = new Date(now).toISOString();
+            application.updatedBy = actor;
+            if (current) recordExamAudit('exam_application_schedule_changed', application, actor, { antes: snapshot(current), depois: snapshot(application.agenda) });
+            else recordExamAudit('exam_application_scheduled', application, actor, { abreEm: parsed.value.abreEm, fechaEm: parsed.value.fechaEm });
+            await db.save({ only: ['examApplications', 'auditLogs'] });
+            const avisos = scheduleWarnings(cls, application);
+            res.json({ success: true, application: adminApplicationView(application), ...(avisos.length ? { avisos } : {}) });
         });
     });
 
@@ -1120,7 +1694,7 @@ function createAdminExamConfigRouter() {
             const applicationForAccount = application => (withAnswerKeys ? withoutSealedToken(application) : applicationSummary(application));
             const action = String(req.body.action || '').trim().toLowerCase();
             if (!ATTEMPT_ACTIONS.includes(action)) {
-                return res.status(400).json({ success: false, error: 'Ação inválida. Use recolher, reabrir ou tentativa_extra.', field: 'action' });
+                return res.status(400).json({ success: false, error: 'Ação inválida. Use recolher, reabrir, tentativa_extra, anular ou desfazer_anulacao.', field: 'action' });
             }
             const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
             if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
@@ -1137,6 +1711,16 @@ function createAdminExamConfigRouter() {
             const motivo = String(req.body.motivo || '').trim();
             if (action === 'reabrir' && !motivo) {
                 return res.status(400).json({ success: false, error: 'Informe o motivo para reabrir a prova do aluno.', field: 'motivo' });
+            }
+            // Anular e desfazer mexem na nota: o motivo vai para a Auditoria (o aluno não o vê).
+            if ((action === 'anular' || action === 'desfazer_anulacao') && motivo.length < ATTEMPT_ACTION_REASON_MIN) {
+                return res.status(400).json({
+                    success: false,
+                    error: action === 'anular'
+                        ? 'Informe o motivo da anulação (pelo menos 3 letras). Ele fica na Auditoria.'
+                        : 'Informe o motivo para desfazer a anulação (pelo menos 3 letras). Ele fica na Auditoria.',
+                    field: 'motivo',
+                });
             }
             if (!assertClassOpen(cls, { res })) return;
             const actor = adminActor(req);
@@ -1232,6 +1816,10 @@ function createAdminExamConfigRouter() {
                         addedMinutes: reopened.addedMinutes,
                     },
                 });
+            }
+
+            if (action === 'anular' || action === 'desfazer_anulacao') {
+                return invalidationAction({ req, res, action, application, cls, email, student, motivo, actor, now, matchedAdmin, applicationForAccount });
             }
 
             // tentativa_extra
@@ -1506,12 +2094,24 @@ function createAdminExamConfigRouter() {
                         at: new Date().toISOString(),
                     });
                 }
+                const perStudentDraw = examDraw.isPerStudentDraw(application);
                 applicationStateEntries(application.id).forEach(([, state]) => {
-                    if (!Array.isArray(state.assignedQuestionNumbers)) state.assignedQuestionNumbers = [];
-                    if (!state.assignedQuestionNumbers.includes(replacementNumber)) state.assignedQuestionNumbers.push(replacementNumber);
+                    // Sorteio por aluno (P3-S11): a questão nova vai só para quem tirou a trocada;
+                    // a tentativa ainda sem sorteio recebe a nova quando sortear.
+                    if (perStudentDraw) {
+                        if (Array.isArray(state.assignedQuestionNumbers)
+                            && state.assignedQuestionNumbers.map(Number).includes(originalNumber)
+                            && !state.assignedQuestionNumbers.map(Number).includes(replacementNumber)) {
+                            state.assignedQuestionNumbers.push(replacementNumber);
+                        }
+                    } else {
+                        if (!Array.isArray(state.assignedQuestionNumbers)) state.assignedQuestionNumbers = [];
+                        if (!state.assignedQuestionNumbers.includes(replacementNumber)) state.assignedQuestionNumbers.push(replacementNumber);
+                    }
                     if (extraMinutes > 0 && Number(state.deadlineAt) > 0) state.deadlineAt += extraMinutes * 60000;
                 });
-                application.questionCount = Number(application.questionCount || 0) + 1;
+                // No sorteio por aluno o total é por tentativa (quem tirou a trocada ganha uma).
+                if (!perStudentDraw) application.questionCount = Number(application.questionCount || 0) + 1;
                 application.globalTimeAdjustment = Number(application.globalTimeAdjustment || 0) + extraMinutes;
                 application.updatedAt = new Date().toISOString();
                 markQuestionReports(application, originalNumber, 'replaced', adminActor(req));
@@ -1872,6 +2472,7 @@ function createAdminExamConfigRouter() {
 
     router.post('/api/admin/release-item', (req, res) => {
         validateAdmin(req, res, async () => {
+            if (!RELEASE_ITEM_SCHEMA.check(req, res)) return;
             const { studentClass, courseId, itemKey, released, studentEmail, historyId, applicationOptions } = req.body;
             if (!studentClass) return res.status(400).json({ error: 'Turma não informada.' });
             if (!itemKey) return res.status(400).json({ error: 'Chave do item não informada.' });
@@ -1887,6 +2488,11 @@ function createAdminExamConfigRouter() {
                 return res.status(400).json({ error: 'Aluno inválido.' });
             }
             const actor = adminActor(req);
+            // Liberação agendada (P3-S12, D27): agendar ou cancelar não liga nem desliga
+            // nada agora; a varredura do servidor libera na hora (utils/examSchedule.js).
+            if (req.body.cancelSchedule === true || (req.body.releaseAtLocal !== undefined && req.body.releaseAtLocal !== null && req.body.releaseAtLocal !== '')) {
+                return scheduleItemRelease(req, res, cls, String(itemKey), normalizedStudentEmail);
+            }
             // Gabarito só é liberado pela chave própria e nunca enquanto a prova tem
             // aplicação preparada ou em andamento na turma (G2: gabarito na reaplicação).
             if (released && itemKey.startsWith('Gabarito_')) {
@@ -1935,6 +2541,8 @@ function createAdminExamConfigRouter() {
                         if (!historyEntry) {
                             return res.status(400).json({ error: 'Nenhuma aplicação salva com questões foi encontrada para preparar esta prova.' });
                         }
+                        const answerKeyProblem = examVersions.preparationAnswerKeyProblem(historyEntry, evaluationFor(itemKey));
+                        if (answerKeyProblem) return res.status(409).json({ success: false, ...answerKeyProblem });
                         if (applicationOptions?.tokenEnabled === true && !normalizeExamToken(applicationOptions.accessToken)) {
                             return res.status(400).json({ error: 'O token deve conter exatamente 5 letras maiúsculas.' });
                         }
@@ -2012,6 +2620,11 @@ function createAdminExamConfigRouter() {
                 });
             }
 
+            // Liberado agora pelo interruptor: a liberação agendada do item não tem mais o
+            // que fazer e sai da agenda (bloquear mantém a agenda: o selo continua na tela).
+            const droppedSchedule = !normalizedStudentEmail && released
+                ? [itemKey, ...familyAnswerKeys].filter(key => dropItemSchedule(cls, key)).length > 0
+                : false;
             if (!normalizedStudentEmail) {
                 if (!cls.releaseMeta) cls.releaseMeta = {};
                 const releaseActor = (req.adminAccount && (req.adminAccount.name || req.adminAccount.email)) || 'Administrador';
@@ -2026,12 +2639,14 @@ function createAdminExamConfigRouter() {
                 scope: normalizedStudentEmail ? 'student' : 'class',
                 releasedItems: getReleasedItemsForClass(cls, normalizedStudentEmail),
                 application: withoutSealedToken(affectedApplication),
+                ...(droppedSchedule ? { releaseSchedule: examSchedule.releaseScheduleView(cls, { memory: db.memory }), scheduleDropped: true } : {}),
             });
         });
     });
 
     router.post('/api/admin/exam-history/add', (req, res) => {
         validateAdmin(req, res, async () => {
+            if (!EXAM_HISTORY_ADD_SCHEMA.check(req, res)) return;
             const { studentClass, courseId, examKey, type, label, questionNumbers, examCode, printSnapshot, questionCount, excludedQuestions, shuffleQuestions, shuffleAnswers, durationMinutes, timerEnabled, waitingRoomMinutes, maxAttempts, tokenEnabled } = req.body;
             if (!studentClass || !examKey || !Array.isArray(questionNumbers) || questionNumbers.length === 0) {
                 return res.status(400).json({ error: 'Dados incompletos para registrar histórico.' });
@@ -2047,22 +2662,61 @@ function createAdminExamConfigRouter() {
             if (!cls.examHistory) cls.examHistory = {};
             if (!cls.examHistory[examKey]) cls.examHistory[examKey] = [];
             const parsedWaitingRoom = parseInt(waitingRoomMinutes, 10);
+            const entryType = type || 'online';
+            const evaluation = evaluationFor(examKey);
+            // Versões montadas e conferidas no servidor (P3-S11, D23). Online sem as versões no
+            // pedido: o servidor monta, pela avaliação, as questões escolhidas na montagem
+            // (versionCount de 1 a 4). Com as versões no pedido (a prova impressa, montada no
+            // navegador para imprimir na hora, ou um cliente de antes): cada questão é
+            // conferida com a avaliação e a resposta certa e o gabarito impresso passam a ser
+            // os calculados aqui; diferença é recusada (400 snapshot_mismatch).
+            let snapshots = null;
+            let builtOnServer = false;
+            const versionLimit = entryType === 'online' ? examVersions.ONLINE_VERSIONS_MAX : examVersions.PRINT_VERSIONS_MAX;
+            if (Array.isArray(printSnapshot) && printSnapshot.length > versionLimit) {
+                return res.status(400).json({
+                    success: false,
+                    error: entryType === 'online' ? examVersions.ONLINE_VERSIONS_ERROR : `No máximo ${versionLimit} versões impressas.`,
+                    code: 'too_many_versions',
+                    field: 'printSnapshot',
+                });
+            }
+            if (entryType === 'online' && !Array.isArray(printSnapshot)) {
+                const built = examVersions.buildOnlineVersions(evaluation, {
+                    questionNumbers,
+                    versionCount: req.body.versionCount ?? req.body.onlineVersions ?? 1,
+                    shuffleQuestions: shuffleQuestions !== false,
+                    shuffleAnswers: shuffleAnswers !== false,
+                });
+                if (!built.ok) return res.status(400).json({ success: false, error: built.error, field: built.field, ...(built.code ? { code: built.code } : {}) });
+                snapshots = built.versions;
+                builtOnServer = true;
+            } else if (Array.isArray(printSnapshot) && evaluation) {
+                const checked = examVersions.conferVersionSnapshots(printSnapshot, evaluation, { maxVersions: versionLimit });
+                if (!checked.ok) return res.status(400).json({ success: false, error: checked.error, code: checked.code, field: checked.field || 'printSnapshot', ...(checked.problems ? { problems: checked.problems } : {}) });
+                snapshots = checked.snapshots;
+            }
             const entry = {
                 id: 'eh_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
-                type: type || 'online',
+                type: entryType,
                 label: label || null,
-                questionNumbers: questionNumbers.map(Number),
-                examCode: examCode || null,
-                printSnapshot: printSnapshot || null,
+                questionNumbers: snapshots
+                    ? [...new Set(snapshots.flatMap(snapshot => snapshot.questions.map((question, index) => questionNumber(question, index))))]
+                    : questionNumbers.map(Number),
+                examCode: (builtOnServer ? snapshots[0]?.examCode : examCode) || null,
+                printSnapshot: snapshots || printSnapshot || null,
                 // Tipo, pontos e gabarito de cada questão como estão na avaliação agora: a
                 // aplicação corrige por eles daqui em diante, mesmo que a avaliação mude.
-                versionSnapshots: Array.isArray(printSnapshot)
-                    ? freezeSnapshotGrading(
-                        printSnapshot.slice(0, VERSION_LABELS.length).map((snapshot, index) => ({ version: VERSION_LABELS[index], ...snapshot })),
-                        Object.prototype.hasOwnProperty.call(db.memory.evaluations || {}, examKey) ? db.memory.evaluations[examKey] : null
-                    )
-                    : [],
-                questionCount: parseInt(questionCount, 10) || questionNumbers.length,
+                // Sem avaliação nenhuma (nem gravada nem em .md) não há o que conferir: as
+                // versões ficam como vieram, como antes (e sem gabaritoConferidoEm).
+                versionSnapshots: snapshots
+                    ? examVersions.frozenVersionSnapshots(snapshots, evaluation)
+                    : (Array.isArray(printSnapshot) ? examVersions.frozenVersionSnapshots(printSnapshot, null) : []),
+                // O gabarito desta configuração foi calculado (online) ou conferido (impressa)
+                // pelo servidor: preparar por ela não confere de novo (D23).
+                ...(snapshots ? { gabaritoConferidoEm: new Date().toISOString() } : {}),
+                ...(builtOnServer ? { montadaNoServidor: true, versionCount: snapshots.length } : {}),
+                questionCount: builtOnServer ? snapshots[0].questions.length : (parseInt(questionCount, 10) || questionNumbers.length),
                 excludedQuestions: Array.isArray(excludedQuestions) ? excludedQuestions.map(Number) : [],
                 shuffleQuestions: shuffleQuestions !== false,
                 shuffleAnswers: shuffleAnswers !== false,

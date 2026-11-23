@@ -87,7 +87,83 @@ export function bankAccuracyText(stats) {
 }
 
 // Texto curto do enunciado para a lista (o Markdown aparece como foi escrito).
+// Começo do enunciado em texto corrido, sem as marcas do Markdown (o cartão do banco e a
+// prévia da importação mostram "Qual porta o HTTP usa?", não "Qual porta o **HTTP**
+// usa?"); a imagem vira "[imagem]".
+export function markdownPlain(text) {
+  return String(text || '')
+    .replace(/```[^\n]*\n?/g, '')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, (match, alt) => (alt.trim() ? `[imagem: ${alt.trim()}]` : '[imagem]'))
+    .replace(/\[([^\]]+)\]\([^)]*\)/g, '$1')
+    .replace(/(\*\*|__)(?=\S)([\s\S]*?\S)\1/g, '$2')
+    .replace(/(^|[^*\w])\*(?=\S)([^*\n]*?\S)\*(?!\*)/g, '$1$2')
+    .replace(/`([^`\n]+)`/g, '$1')
+    .replace(/^\s{0,3}(?:#{1,6}\s+|>\s?|[-*+]\s+(?=\S))/gm, '')
+}
+
 export function bankExcerpt(text, max = 180) {
-  const clean = String(text || '').replace(/\s+/g, ' ').trim()
+  const clean = markdownPlain(text).replace(/\s+/g, ' ').trim()
   return clean.length > max ? `${clean.slice(0, max - 3)}...` : clean
+}
+
+// ---------------------------------------------------------------- importar e exportar
+// (fase 3, P3-S9b: AVA-15; D22). GIFT (Moodle e outro IClass) e planilha CSV (o .xlsx no
+// banco de questões ficou fora da fase 3), sempre com prévia no servidor antes de gravar.
+export const BANK_IMPORT_MAX_BYTES = 2 * 1024 * 1024
+export const BANK_IMPORT_FORMATS = Object.freeze([
+  Object.freeze({ value: 'gift', label: 'GIFT (Moodle ou outro IClass)', accept: '.txt,.gift', exportLabel: 'Baixar em GIFT' }),
+  Object.freeze({ value: 'csv', label: 'Planilha (CSV)', accept: '.csv,.txt', exportLabel: 'Baixar planilha (CSV)' }),
+])
+// Planilha do Excel (.xlsx, .xls): o banco lê só CSV; a tela avisa antes de mandar.
+export const BANK_IMPORT_EXCEL_MESSAGE = 'O banco de questões lê a planilha em CSV. No Excel, use "Salvar como" e escolha "CSV UTF-8 (separado por vírgulas)"; depois importe esse arquivo.'
+export function isExcelWorkbookName(name) {
+  return /\.xls[xmb]?$/i.test(String(name || '').trim())
+}
+export const BANK_IMPORT_PREVIEW_MAX = 50
+
+// '/api/admin/question-bank/export?formato=gift&categoria=...': os mesmos filtros da lista.
+export function bankExportPath(filters = {}, formato = 'gift') {
+  const query = bankQuery(filters)
+  return `/api/admin/question-bank/export?formato=${encodeURIComponent(formato)}${query ? `&${query.slice(1)}` : ''}`
+}
+
+// Quantas questões a confirmação grava: as sem erro, menos as repetidas (a não ser que o
+// professor peça para importar também as repetidas).
+export function importCount(preview, includeDuplicates = false) {
+  if (!preview) return 0
+  const valid = Number(preview.validas) || 0
+  return includeDuplicates ? valid + (Number(preview.duplicadas) || 0) : valid
+}
+
+export function importConfirmLabel(count) {
+  if (!count) return 'Nada para importar'
+  return count === 1 ? 'Importar 1 questão' : `Importar ${count} questões`
+}
+
+// "47 questões prontas para importar, 2 já estão no banco e 3 com erro."
+export function importSummaryText(preview) {
+  if (!preview) return ''
+  const valid = Number(preview.validas) || 0
+  const duplicates = Number(preview.duplicadas) || 0
+  const errors = Number(preview.comErro) || 0
+  const parts = [valid === 1 ? '1 questão pronta para importar' : `${valid} questões prontas para importar`]
+  if (duplicates) parts.push(duplicates === 1 ? '1 repetida (já está no banco ou mais acima no arquivo)' : `${duplicates} repetidas (já estão no banco ou mais acima no arquivo)`)
+  if (errors) parts.push(errors === 1 ? '1 com erro' : `${errors} com erro`)
+  const last = parts.pop()
+  return `${parts.length ? `${parts.join(', ')} e ${last}` : last}.`
+}
+
+// Marca de repetida de uma questão da prévia.
+export function importDuplicateText(item) {
+  if (!item?.duplicada) return ''
+  if (item.noArquivo) return `Repetida da linha ${item.noArquivo}`
+  return item.arquivada ? 'Já está no banco (arquivada)' : 'Já está no banco'
+}
+
+// Questões da lista com imagem enviada: a imagem não vai no arquivo exportado (só o
+// endereço dela no Markdown). Quem diz é o servidor: cada item do GET traz `imagens`, os
+// arquivos citados no enunciado, nas alternativas, na explicação e na resposta esperada
+// (referencedExamUploads, contrato C8 do desenho P3).
+export function questionsWithImages(questions = []) {
+  return (Array.isArray(questions) ? questions : []).filter((question) => Array.isArray(question?.imagens) && question.imagens.length > 0).length
 }

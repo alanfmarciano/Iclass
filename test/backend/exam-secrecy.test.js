@@ -117,10 +117,12 @@ async function prepareApplication({ tokenEnabled = false } = {}) {
             { letter: 'B', displayLetter: 'B', text: `${version}${number} alternativa B`, isCorrect: number === 1 },
         ],
     }));
-    const history = await request(app).post('/api/admin/exam-history/add').set('x-admin-session', adminToken).send({
-        studentClass: classA,
-        courseId: courseA,
-        examKey,
+    // Versões de texto diferente não saem de uma montagem de verdade: desde o P3-S11 o
+    // exam-history/add confere o enunciado de cada versão com a avaliação (D23). A
+    // configuração entra pronta na turma, como uma salva antes da conferência (o preparar
+    // confere só o gabarito dela, que é o da avaliação).
+    const entry = {
+        id: `eh_sigilo_${Date.now()}_${Math.random().toString(36).slice(2, 7)}`,
         type: 'online',
         questionNumbers: [1, 2],
         printSnapshot: [
@@ -130,7 +132,13 @@ async function prepareApplication({ tokenEnabled = false } = {}) {
         durationMinutes: 30,
         waitingRoomMinutes: 0,
         maxAttempts: 1,
-    }).expect(200);
+        createdAt: new Date().toISOString(),
+    };
+    entry.versionSnapshots = JSON.parse(JSON.stringify(entry.printSnapshot));
+    const turma = db.memory.classes.find(item => item.name === classA && item.courseId === courseA);
+    if (!turma.examHistory) turma.examHistory = {};
+    turma.examHistory[examKey] = [...(turma.examHistory[examKey] || []), entry];
+    const history = { body: { entry } };
     const created = await request(app).post('/api/admin/exam-applications').set('x-admin-session', adminToken).send({
         studentClass: classA,
         courseId: courseA,

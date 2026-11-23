@@ -10,6 +10,8 @@ import { api } from '../../lib/api'
 import { matchesSearch } from '../../lib/textSearch'
 import { displayEmail, isPlaceholderEmail } from '../../lib/studentProfile'
 import { DEFAULT_KEYSTROKE_MODE, KEYSTROKE_MODE_OPTIONS, keystrokeModeDescription } from '../../lib/keystrokeModes'
+import { ApplicationScheduleFields } from './ApplicationSchedule'
+import { ApplicationDrawFields, initialDraw, isPerStudent, useDrawPool } from './ApplicationDraw'
 
 // Preparar a aplicação da prova (fase 3, P3-S7: AVA-09; D15, D16 e D17 do desenho do P3).
 // Extraído da tela Provas: os campos da aplicação ("Aplicar prova novamente") e o "Para
@@ -427,11 +429,55 @@ export function KeystrokeModeSelect({ value, onChange }) {
   )
 }
 
+// "Outro aparelho no meio da prova" (P3-S13, D28): o que acontece quando a conta do aluno
+// entra em outro aparelho com a prova dele em andamento. Troca de endereço de rede (celular
+// que passa do Wi-Fi para o 4G) nunca trava: só aparece no Monitor.
+export const DEFAULT_SESSION_POLICY = 'travar'
+export const SESSION_POLICY_OPTIONS = [
+  { value: 'travar', label: 'Travar até eu liberar (recomendado)' },
+  { value: 'avisar', label: 'Só avisar no Monitor' },
+]
+
+export function sessionPolicyDescription(value) {
+  return value === 'avisar'
+    ? 'A prova continua no aparelho novo e o Monitor mostra "Entrou de outro aparelho".'
+    : 'A prova trava no aparelho novo até você liberar pelo Monitor, que mostra "Entrou de outro aparelho".'
+}
+
+export function SessionPolicySelect({ value, onChange }) {
+  const current = value === 'avisar' ? 'avisar' : DEFAULT_SESSION_POLICY
+  return (
+    <div className="flex flex-col gap-1">
+      <Select label="Outro aparelho no meio da prova" value={current} onChange={(e) => onChange(e.target.value)}>
+        {SESSION_POLICY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
+      </Select>
+      <span className="text-xs text-subtle">{sessionPolicyDescription(current)}</span>
+    </div>
+  )
+}
+
 // Campos de "Aplicar prova novamente" (extraídos da tela Provas): versões, duração, sala
-// de espera, cronômetro, tentativas, teclado, token e o "Para quem". value/onChange: o
-// estado applyHistory da tela; tokenTools: { normalize, generate } do token.
-export function PrepareApplicationForm({ value, onChange, candidates, tokenTools }) {
+// de espera, cronômetro, tentativas, teclado, token, o "Para quem" e o "Quando" (P3-S12).
+// value/onChange: o estado applyHistory da tela; tokenTools: { normalize, generate } do
+// token; studentClass e courseId: a turma (os avisos do "Quando").
+export function PrepareApplicationForm({ value, onChange, candidates, tokenTools, studentClass, courseId, examKey }) {
   const set = (patch) => onChange({ ...value, ...patch })
+  // "Como montar" (P3-S11, D24): versões da configuração salva ou sorteio por aluno sobre
+  // as questões dela. O pool só é lido no modo sorteio.
+  const draw = value.draw || initialDraw()
+  const perStudent = isPerStudent(draw)
+  const drawPool = useDrawPool({ studentClass, courseId, examKey, historyId: value.entry?.id, enabled: perStudent && !!examKey })
+  const versionsField = (
+    <Input
+      label="Versões online"
+      type="number"
+      min="1"
+      max={value.availableVersions}
+      value={value.onlineVersions}
+      helper={value.availableVersions === 1 ? 'A configuração salva tem 1 versão.' : `A configuração salva tem ${value.availableVersions} versões (máx. 4).`}
+      onChange={(e) => set({ onlineVersions: Math.max(1, Math.min(value.availableVersions, Number(e.target.value) || 1)) })}
+    />
+  )
   return (
     <div className="space-y-4">
       <div className="rounded-lg border border-border bg-surface-2/60 p-3">
@@ -442,8 +488,17 @@ export function PrepareApplicationForm({ value, onChange, candidates, tokenTools
         </div>
       </div>
 
+      <div className="rounded-lg border border-border p-3">
+        <ApplicationDrawFields
+          value={draw}
+          onChange={(next) => set({ draw: next })}
+          pool={drawPool}
+          poolSize={value.entry?.questionCount || value.entry?.questionNumbers?.length || null}
+          versionsField={versionsField}
+        />
+      </div>
+
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <Input label="Versões online" type="number" min="1" max={value.availableVersions} value={value.onlineVersions} onChange={(e) => set({ onlineVersions: Math.max(1, Math.min(value.availableVersions, Number(e.target.value) || 1)) })} />
         <Input label="Duração (min)" type="number" min="1" value={value.durationMinutes} onChange={(e) => set({ durationMinutes: e.target.value })} />
         <Input label="Sala de espera (min)" type="number" min="0" value={value.waitingRoomMinutes} helper="Padrão: 10 minutos" onChange={(e) => set({ waitingRoomMinutes: e.target.value })} />
         <Select label="Início do cronômetro" value={value.timerMode} onChange={(e) => set({ timerMode: e.target.value })}>
@@ -455,6 +510,9 @@ export function PrepareApplicationForm({ value, onChange, candidates, tokenTools
         </div>
         <div className="sm:col-span-2">
           <KeystrokeModeSelect value={value.keystrokeMode} onChange={(keystrokeMode) => set({ keystrokeMode })} />
+        </div>
+        <div className="sm:col-span-2">
+          <SessionPolicySelect value={value.sessionPolicy} onChange={(sessionPolicy) => set({ sessionPolicy })} />
         </div>
         {value.tokenEnabled && <div className="grid grid-cols-[minmax(0,1fr)_auto] items-end gap-2">
           <Input label="Token de acesso" value={value.accessToken} maxLength={5} autoComplete="off" spellCheck={false} className="font-mono text-base font-semibold tracking-[0.2em]" helper="Obrigatório · 5 letras" onChange={(e) => set({ accessToken: tokenTools.normalize(e.target.value) })} />
@@ -479,6 +537,19 @@ export function PrepareApplicationForm({ value, onChange, candidates, tokenTools
         onRetry={candidates.refetch}
         timerMode={value.timerMode}
       />
+
+      {value.schedule && (
+        <div className="rounded-lg border border-border p-3">
+          <ApplicationScheduleFields
+            value={value.schedule}
+            onChange={(schedule) => set({ schedule })}
+            studentClass={studentClass}
+            courseId={courseId}
+            durationMinutes={value.durationMinutes}
+            timerEnabled={value.timerEnabled}
+          />
+        </div>
+      )}
     </div>
   )
 }

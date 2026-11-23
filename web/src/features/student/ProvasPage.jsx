@@ -15,6 +15,7 @@ import { useState, useEffect, useMemo, useRef } from 'react'
 import { usePolling } from '../../hooks/usePolling'
 import { useNavigate } from 'react-router-dom'
 import { matchesSearch } from '../../lib/textSearch'
+import { ScheduledExams } from './ScheduledExams'
 
 // Nota e armazenada em escala 0-100 e exibida em 0-10.
 const toGrade = (score) => Number(score) / 10
@@ -547,7 +548,8 @@ export default function ProvasPage() {
         )}
 
         <div className="mt-6 space-y-3">
-          {availableApplications.length === 0 && <Card><EmptyState icon={ClipboardList} title="Nenhuma prova disponível" description="Quando o instrutor iniciar uma aplicação, ela aparecerá aqui em destaque." /></Card>}
+          <ScheduledExams items={applications.data?.agendadas} />
+          {availableApplications.length === 0 && !applications.data?.agendadas?.length && <Card><EmptyState icon={ClipboardList} title="Nenhuma prova disponível" description="Quando o instrutor iniciar uma aplicação, ela aparecerá aqui em destaque." /></Card>}
           {availableApplications.map((application) => {
             const k = application.examKey
             const cfg = application.config || {}

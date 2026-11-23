@@ -17,7 +17,8 @@ import { useAuth } from '../../context/AuthProvider'
 import { StudentAuditPanel } from './StudentAuditPanel'
 import { Modal } from '../../components/ui/Modal'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
-import { boletimChoiceOptions, boletimContext, fmtGrade, fmtGradeValue, gradeOf, gradeTone } from '../../lib/grades'
+import { AcademicGradeBadge, academicGradeText } from './AcademicGradeBadge'
+import { boletimChoiceOptions, boletimContext, fmtGradeValue, gradeOf } from '../../lib/grades'
 import { acceptanceText, birthDateText } from '../../lib/legalAcceptance'
 import { ANONYMIZED_STATUS, isAnonymizedStatus } from './studentDeletion'
 import { downloadDataExport, openPrintWindow, printDataExport } from '../../lib/dataExportPrint'
@@ -182,7 +183,7 @@ export default function AlunoDetailPage() {
   const modulos = Array.isArray(dash?.modulos) ? dash.modulos : []
   const timeline = useMemo(() => {
     const ev = []
-    subs.forEach((s) => ev.push({ id: 'g' + s.id, t: new Date(s.timestamp || 0).getTime(), tone: 'bg-success', title: `Prova ${s.examKey} · nota ${fmtGrade(s.score)}`, time: fmtDate(s.timestamp) }))
+    subs.forEach((s) => ev.push({ id: 'g' + s.id, t: new Date(s.timestamp || 0).getTime(), tone: 'bg-success', title: `Prova ${s.examKey} · ${academicGradeText(s)}`, time: fmtDate(s.timestamp) }))
     ;(academic?.moduleAccess || []).forEach((m) => ev.push({ id: 'a' + m.id, t: m.timestamp, tone: 'bg-primary', title: `Abriu ${String(m.key).replace(/_/g, ' ')}`, time: fmtDateTime(m.timestamp) }))
     ;(academic?.attendance?.recent || []).forEach((a) => ev.push({ id: 'p' + a.id, t: a.timestamp, tone: 'bg-surface-2', title: `Presença (${a.origin === 'login' ? (a.naoLetivoId ? 'automática, dia não letivo: não conta' : 'automática') : a.origin === 'chamada' ? 'chamada' : 'manual'})`, time: a.date }))
     return ev.sort((x, y) => y.t - x.t).slice(0, 8)
@@ -322,11 +323,9 @@ export default function AlunoDetailPage() {
                 {subs.length ? (
                   <div className="divide-y divide-border">
                     {[...subs].sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0)).map((s) => (
-                      <div key={s.id} className="flex items-center justify-between py-2.5 text-sm">
-                        <div><p className="text-text">{s.examKey}</p><p className="text-xs text-subtle">{Number.isInteger(s.correctCount) && Number.isInteger(s.totalCount) ? `${s.correctCount}/${s.totalCount} acertos · ` : ''}{fmtDate(s.timestamp)}</p></div>
-                        {gradeOf(s.score) === null
-                          ? <Badge tone="neutral" title="Registro antigo com nota vazia ou fora de 0 a 10">nota inválida</Badge>
-                          : <Badge tone={gradeTone(gradeOf(s.score), criterio, 'simples', 'warning')}>{fmtGrade(s.score)}</Badge>}
+                      <div key={s.id} className="flex items-center justify-between gap-2 py-2.5 text-sm">
+                        <div className="min-w-0"><p className="text-text break-words">{s.examKey}</p><p className="text-xs text-subtle">{Number.isInteger(s.correctCount) && Number.isInteger(s.totalCount) ? `${s.correctCount}/${s.totalCount} acertos · ` : ''}{fmtDate(s.timestamp)}</p></div>
+                        <AcademicGradeBadge submission={s} criterio={criterio} />
                       </div>
                     ))}
                   </div>

@@ -160,6 +160,26 @@ test('[UC-ERRO-003] body(): corpo que não é objeto recebe 400 sem campo; campo
     assert.deepEqual(req.body, { name: 'Ana', outro: 1 });
 });
 
+test('[UC-ERRO-003] query(): parâmetros da URL conferidos numa cópia; erro com o campo enviado', () => {
+    const checker = schema.query({ numbers: schema.str({ max: 20, pattern: /^\d+(?:,\d+)*$/, label: 'questões' }), page: schema.int({ coerce: true, label: 'página' }) });
+    const responder = () => {
+        const out = {};
+        return { out, status(code) { out.status = code; return this; }, json(payload) { out.body = payload; return this; } };
+    };
+    const query = Object.assign(Object.create(null), { numbers: ' 1,2 ', page: '3', outro: 'x' });
+    const req = { query };
+    const params = checker.check(req, responder());
+    assert.deepEqual({ ...params }, { numbers: '1,2', page: 3, outro: 'x' });
+    assert.equal(req.query.numbers, ' 1,2 ', 'req.query fica como veio (o Express 5 lê de novo a cada acesso)');
+    const bad = responder();
+    assert.equal(checker.check({ query: { numbers: '1;2' } }, bad), null);
+    assert.deepEqual(bad.out, { status: 400, body: { success: false, error: 'O campo "questões" tem caracteres não permitidos.', field: 'numbers' } });
+    const badPage = responder();
+    assert.equal(checker.check({ query: { page: 'dois' } }, badPage), null);
+    assert.equal(badPage.out.body.field, 'page');
+    assert.deepEqual({ ...checker.check({}, responder()) }, {}, 'sem query nenhuma');
+});
+
 // ---------------------------------------------------------------- rotas do aluno e públicas
 
 test('[UC-ERRO-003] login e cadastro: campo de outro tipo recebe 400 com o campo, sem 500', async () => {

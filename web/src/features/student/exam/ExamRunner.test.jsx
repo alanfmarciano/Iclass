@@ -13,7 +13,7 @@ vi.mock('../../../lib/api', () => ({ api: apiMock, hasActiveSession: sessionMock
 vi.mock('../useStudent', () => ({ useStudent: () => ({ email: 'ana@escola.local', studentClass: '1DES', courseId: 'curso' }) }))
 vi.mock('../../../context/ToastProvider', () => ({ useToast: () => toast }))
 
-import ExamRunner, { KEYSTROKE_BATCH_MAX, KEYSTROKE_KEEPALIVE_MAX_BYTES, keepaliveKeystrokeBatch, keystrokeRetryDelay } from './ExamRunner'
+import ExamRunner, { KEYSTROKE_BATCH_MAX, KEYSTROKE_KEEPALIVE_MAX_BYTES, keepaliveKeystrokeBatch, keystrokeRetryDelay, sessionPolicyNotice } from './ExamRunner'
 import { AppErrorBoundary } from '../../../components/ui/ErrorScreen'
 import { ExamErrorScreen } from './ExamErrorScreen'
 import { clearInterruptedExam, clearRenderError } from '../../../lib/renderErrors'
@@ -47,7 +47,7 @@ function attemptQuestions() {
 // usam 'tudo', porque digitam teclas comuns.
 const syncDefaults = { keystrokeMode: undefined, proctoringRetentionDays: undefined }
 
-function syncResponse({ timerRemaining = 600, answers = {}, attemptOutcome = null, startedAt = Date.now() - 1000, status = 'running', finishOutcome = null, localCopyKey, timeOver = false, reopenedAt = null, keystrokeMode = syncDefaults.keystrokeMode, proctoringRetentionDays = syncDefaults.proctoringRetentionDays } = {}) {
+function syncResponse({ timerRemaining = 600, answers = {}, attemptOutcome = null, startedAt = Date.now() - 1000, status = 'running', finishOutcome = null, localCopyKey, timeOver = false, reopenedAt = null, keystrokeMode = syncDefaults.keystrokeMode, proctoringRetentionDays = syncDefaults.proctoringRetentionDays, sessionPolicy } = {}) {
   return {
     success: true,
     onlineExamConfigs: {
@@ -60,6 +60,7 @@ function syncResponse({ timerRemaining = 600, answers = {}, attemptOutcome = nul
         timerMode: 'per_attempt',
         maxAttempts: 1,
         ...(keystrokeMode !== undefined ? { keystrokeMode } : {}),
+        ...(sessionPolicy !== undefined ? { sessionPolicy } : {}),
       },
     },
     ...(proctoringRetentionDays !== undefined ? { proctoringRetentionDays } : {}),
@@ -1971,6 +1972,33 @@ describe('[UC-PROVA-006] ExamRunner: aplicação só para alguns alunos e prazo 
     expect(screen.getByTestId('start-deadline')).toHaveTextContent('Você pode começar esta prova até 20/11 às 08:00')
   })
 
+  it('[UC-PROVA-008] prova agendada: instruções e topo mostram o horário em que a aplicação fecha sozinha', async () => {
+    apiMock.get.mockResolvedValue({ ...syncResponse({ startedAt: null }), scheduleCloseAt: Date.now() + 300000, scheduleCloseLabel: '23/11 às 23:46' })
+    const first = renderRunner()
+    expect(await screen.findByTestId('schedule-close-notice')).toHaveTextContent('Esta prova fecha sozinha em 23/11 às 23:46')
+    expect(screen.getByTestId('schedule-close-notice')).toHaveTextContent('mesmo que o seu tempo ainda não tenha acabado')
+    first.unmountView()
+    apiMock.get.mockResolvedValue({ ...syncResponse(), scheduleCloseAt: Date.now() + 300000, scheduleCloseLabel: '23/11 às 23:46' })
+    renderRunner()
+    enterFullscreen()
+    expect(await screen.findByText('0/1 respondidas')).toBeVisible()
+    expect(screen.getByTestId('schedule-close')).toHaveTextContent('Fecha em 23/11 às 23:46')
+  })
+
+  it('[UC-PROVA-008] encerrada pelo horário da agenda: a tela final não diz que foi o professor', async () => {
+    apiMock.get.mockResolvedValue({
+      ...syncResponse({ startedAt: null, status: 'finished', finishOutcome: 'submitted', attemptOutcome: { attemptId: 'att-1', source: 'instructor_finish', answeredCount: 1 } }),
+      finishedBySchedule: true,
+    })
+    const first = renderRunner()
+    expect(await screen.findByText('A prova fechou no horário marcado e o que você havia respondido foi salvo e entregue.')).toBeVisible()
+    expect(screen.queryByText(/O professor encerrou/)).not.toBeInTheDocument()
+    first.unmountView()
+    apiMock.get.mockResolvedValue({ ...syncResponse({ startedAt: null, status: 'finished', finishOutcome: null }), finishedBySchedule: true })
+    renderRunner()
+    expect(await screen.findByText('Esta aplicação foi encerrada no horário marcado pelo professor.')).toBeVisible()
+  })
+
   it('instruções sem exceção: o limite da turma e nenhum prazo', async () => {
     apiMock.get.mockResolvedValue(syncResponse({ startedAt: null }))
     renderRunner()
@@ -2322,5 +2350,56 @@ describe('[UC-PROVA-004] ExamRunner: um campo para cada tipo de questão', () =>
     await user.click(await screen.findByRole('button', { name: 'Enviar prova' }))
     expect(await screen.findByText(/Sua nota será exibida depois da publicação pelo professor/)).toBeVisible()
     expect(screen.queryByTestId('awaiting-correction')).not.toBeInTheDocument()
+  })
+})
+
+// Outro login no meio da prova (fase 3, P3-S13: AVA-17; D28): a tentativa travada porque a
+// conta entrou em outro aparelho diz isso ao aluno, e não "saiu da tela cheia".
+describe('[UC-TENTATIVA-005] ExamRunner: prova travada pelo outro aparelho', () => {
+  function lockedSync(reason) {
+    const response = syncResponse({ timerRemaining: 600 })
+    response.state = { ...response.state, focusLocked: true, focusLockedAt: Date.now(), focusLockReason: reason }
+    return response
+  }
+
+  it('travada por outro login: a tela diz que a prova foi aberta em outro aparelho', async () => {
+    apiMock.get.mockResolvedValue(lockedSync('session_replaced'))
+    renderRunner()
+    expect(await screen.findByRole('heading', { name: 'Prova pausada' })).toBeVisible()
+    expect(screen.getByText(/Esta prova foi aberta em outro aparelho com a sua conta/)).toBeVisible()
+    expect(screen.queryByText(/saiu da tela cheia, da aba ou da janela/)).not.toBeInTheDocument()
+  })
+
+  it('travada por saída da prova: continua o texto de sempre', async () => {
+    apiMock.get.mockResolvedValue(lockedSync('Saiu da aba'))
+    renderRunner()
+    expect(await screen.findByRole('heading', { name: 'Prova pausada' })).toBeVisible()
+    expect(screen.getByText(/saiu da tela cheia, da aba ou da janela/)).toBeVisible()
+    expect(screen.queryByText(/aberta em outro aparelho/)).not.toBeInTheDocument()
+  })
+})
+
+// As instruções dizem o que é registrado do aparelho e da rede e o que acontece no outro
+// aparelho, pela política da aplicação (P3-S13; Termos §3).
+describe('[UC-TENTATIVA-005] ExamRunner: instruções falam do IP, do aparelho e da trava', () => {
+  it('padrão (travar): a prova pausa em outro aparelho e a troca de rede só fica registrada', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ startedAt: null, sessionPolicy: 'travar' }))
+    renderRunner()
+    const notice = await screen.findByTestId('session-notice')
+    expect(notice).toHaveTextContent('O endereço de rede (IP) e o aparelho de cada entrada na sua conta durante a prova ficam registrados')
+    expect(notice).toHaveTextContent('a prova é pausada até a liberação do professor')
+    expect(notice).toHaveTextContent('não pausa a prova')
+  })
+
+  it('"Só avisar": o professor é avisado, sem pausa', async () => {
+    apiMock.get.mockResolvedValue(syncResponse({ startedAt: null, sessionPolicy: 'avisar' }))
+    renderRunner()
+    const notice = await screen.findByTestId('session-notice')
+    expect(notice).toHaveTextContent('o professor é avisado')
+    expect(notice).not.toHaveTextContent('a prova é pausada até')
+  })
+
+  it('servidor sem o campo (versão anterior): vale o padrão', () => {
+    expect(sessionPolicyNotice(undefined)).toMatch(/a prova é pausada até a liberação do professor/)
   })
 })

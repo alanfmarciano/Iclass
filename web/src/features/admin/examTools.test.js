@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
-import { ONLINE_VERSIONS_MAX, buildExamVersions, examPrintHtml, liveCorrectionDraft, runningApplicationOf, snapshotsFromHistory } from './examTools'
+import { createRequire } from 'node:module'
+import { ONLINE_VERSIONS_MAX, buildExamVersions, examPrintHtml, liveCorrectionDraft, normalizeQuestion, runningApplicationOf, snapshotsFromHistory } from './examTools'
 import { editorQuestion, editorQuestionPayload } from './questionEditorModel'
 
 describe('runningApplicationOf', () => {
@@ -185,5 +186,63 @@ describe('versões e impressão com os tipos novos', () => {
     expect(page).not.toContain('<Centro>')
     // A tabela do Markdown não pega o estilo das tabelas do documento (cabeçalho escuro).
     expect(page).toContain('.md thead th{background:#eef1f6')
+  })
+})
+
+// Fase 3, P3-S11 (AVA-16; D23): a prova impressa continua montada aqui (imprime na hora,
+// sem rede), mas o servidor confere cada questão com a prova gravada antes de guardar. A
+// montagem da tela passa na conferência sem mudar nada: o gabarito impresso é o mesmo; a
+// versão online é montada no servidor (backend/utils/examVersions.js), no máximo 4.
+const serverVersions = createRequire(import.meta.url)('../../../../backend/utils/examVersions.js')
+
+describe('versões conferidas no servidor', () => {
+  const choiceEvaluation = {
+    title: 'Prova de redes',
+    questions: [1, 2, 3, 4, 5].map((number) => ({
+      number,
+      originalNumber: number,
+      type: 'multiple_choice',
+      points: 1,
+      text: `Questão ${number} de redes`,
+      correctAnswer: 'C',
+      alternatives: ['A', 'B', 'C', 'D'].map((letter) => ({ letter, text: `Q${number}${letter}`, isCorrect: letter === 'C' })),
+    })),
+  }
+
+  it('[UC-PROVA-007] a impressa continua igual: as versões da tela passam na conferência do servidor com o mesmo gabarito impresso', () => {
+    for (let seed = 0; seed < 10; seed += 1) {
+      const printed = buildExamVersions(choiceEvaluation, { questionCount: 4, shuffleQuestions: true, shuffleAnswers: true, versionCount: 6, seed })
+      const checked = serverVersions.conferVersionSnapshots(printed, choiceEvaluation, { maxVersions: serverVersions.PRINT_VERSIONS_MAX })
+      expect(checked.ok).toBe(true)
+      expect(checked.snapshots.map((snapshot) => snapshot.answerKey)).toEqual(printed.map((snapshot) => snapshot.answerKey))
+      expect(checked.snapshots.map((snapshot) => snapshot.questions.map((q) => q.originalNumber))).toEqual(printed.map((snapshot) => snapshot.questions.map((q) => q.originalNumber)))
+    }
+  })
+
+  it('[UC-PROVA-007] gabarito trocado no navegador não passa; a online sai do servidor com as mesmas questões e no máximo 4 versões', () => {
+    const [version] = buildExamVersions(choiceEvaluation, { questionCount: 2, shuffleQuestions: false, shuffleAnswers: false, versionCount: 1, seed: 1 })
+    const tampered = { ...version, answerKey: { 1: 'A', 2: 'C' } }
+    expect(serverVersions.conferVersionSnapshots([tampered], choiceEvaluation, {}).ok).toBe(false)
+
+    const built = serverVersions.buildOnlineVersions(choiceEvaluation, { questionNumbers: [2, 4], versionCount: ONLINE_VERSIONS_MAX, shuffleQuestions: true, shuffleAnswers: true })
+    expect(built.ok).toBe(true)
+    expect(built.versions.map((snapshot) => snapshot.version)).toEqual(['A', 'B', 'C', 'D'])
+    built.versions.forEach((snapshot) => expect(snapshot.questions.map((q) => q.originalNumber).sort()).toEqual([2, 4]))
+    expect(serverVersions.buildOnlineVersions(choiceEvaluation, { questionNumbers: [2, 4], versionCount: ONLINE_VERSIONS_MAX + 1 }).ok).toBe(false)
+    expect(serverVersions.ONLINE_VERSIONS_MAX).toBe(ONLINE_VERSIONS_MAX)
+  })
+
+  it('[UC-PROVA-007] alternativa vazia na prova fica vazia na impressa e passa na conferência do servidor', () => {
+    const withBlank = {
+      ...choiceEvaluation,
+      questions: choiceEvaluation.questions.map((question, index) => (index === 0
+        ? { ...question, alternatives: question.alternatives.map((alt) => (alt.letter === 'D' ? { ...alt, text: '' } : alt)) }
+        : question)),
+    }
+    expect(normalizeQuestion(withBlank.questions[0]).alternatives.find((alt) => alt.letter === 'D').text).toBe('')
+    expect(normalizeQuestion({ alternatives: { A: 'Sim', B: 'Não' } }).alternatives.map((alt) => alt.text)).toEqual(['Sim', 'Não'])
+    const printed = buildExamVersions(withBlank, { questionCount: 5, shuffleQuestions: true, shuffleAnswers: true, versionCount: 3, seed: 7 })
+    printed.forEach((snapshot) => snapshot.questions.forEach((question) => question.alternatives.forEach((alt) => expect(alt.text).not.toBe('[object Object]'))))
+    expect(serverVersions.conferVersionSnapshots(printed, withBlank, { maxVersions: serverVersions.PRINT_VERSIONS_MAX }).ok).toBe(true)
   })
 })

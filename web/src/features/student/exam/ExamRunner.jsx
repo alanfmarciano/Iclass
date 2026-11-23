@@ -187,6 +187,17 @@ function modsOf(e) {
   return [e.ctrlKey && 'Ctrl', e.altKey && 'Alt', e.shiftKey && 'Shift', e.metaKey && 'Meta'].filter(Boolean).join('+')
 }
 
+// O que as instruções dizem do aparelho e da rede (P3-S13, D28): o IP e o aparelho de cada
+// entrada na conta ficam registrados; entrar em outro aparelho trava a prova ('travar', o
+// padrão) ou só avisa o professor ('avisar'); trocar de rede nunca trava.
+export function sessionPolicyNotice(policy) {
+  const base = 'O endereço de rede (IP) e o aparelho de cada entrada na sua conta durante a prova ficam registrados para o professor.'
+  const other = policy === 'avisar'
+    ? 'Se a sua conta entrar em outro aparelho, o professor é avisado.'
+    : 'Se a sua conta entrar em outro aparelho (ou se você sair da conta e entrar de novo), a prova é pausada até a liberação do professor.'
+  return `${base} ${other} Trocar de rede (do Wi-Fi para os dados do celular, por exemplo) só fica registrado e não pausa a prova.`
+}
+
 export default function ExamRunner() {
   const { examKey } = useParams()
   const [searchParams] = useSearchParams()
@@ -223,6 +234,9 @@ export default function ExamRunner() {
   // prazo), já formatado no relógio da escola.
   const [studentAttempts, setStudentAttempts] = useState({ limit: null, used: 0 })
   const [startDeadlineLabel, setStartDeadlineLabel] = useState(null)
+  // Aplicação agendada que fecha sozinha (P3-S12): "Fecha em 20/11 às 09:30". O cronômetro
+  // conta a duração do aluno; no horário de fechar, o que estiver salvo é entregue.
+  const [scheduleCloseLabel, setScheduleCloseLabel] = useState(null)
   const [attemptId, setAttemptId] = useState(null)
   const [extraMinutes, setExtraMinutes] = useState(0) // tempo adicional de acessibilidade
   const [instructionsAccepted, setInstructionsAccepted] = useState(false)
@@ -238,6 +252,9 @@ export default function ExamRunner() {
   // com aviso ao aluno e registro no Monitor (UXA-02). Foco e aba seguem monitorados.
   const [noFullscreen] = useState(() => !fullscreenSupported())
   const [timeupInfo, setTimeupInfo] = useState(null)
+  // Motivo da trava que o servidor mandou: 'session_replaced' quando a conta entrou em
+  // outro aparelho no meio da prova (P3-S13); os outros textos são de saída da prova.
+  const [lockReason, setLockReason] = useState('')
   const answersRef = useRef(answers)
   const submittedRef = useRef(false)
   const keyBufferRef = useRef([])
@@ -922,6 +939,7 @@ export default function ExamRunner() {
         setStudentAttempts({ limit: Number.isInteger(limit) && limit >= 1 ? limit : null, used: Number(r.attemptsUsed) || 0 })
       }
       setStartDeadlineLabel(r.startDeadlineLabel || null)
+      setScheduleCloseLabel(r.scheduleCloseLabel || null)
       if (r.examTitle) setExamTitle(r.examTitle)
       if (r.tokenAccepted === true) setTokenOk(true)
 
@@ -1023,13 +1041,16 @@ export default function ExamRunner() {
             answeredCount: delivered?.answeredCount ?? null,
             lateBySeconds: delivered?.lateBySeconds || 0,
             awaitingCorrection: delivered?.awaitingCorrection === true,
+            closedBySchedule: r.finishedBySchedule === true,
           })
         } else {
           clearExamDraftsForApplication(applicationId)
           timeOverScreenRef.current = false
           setFatal(r.finishOutcome === 'discarded'
             ? 'A aplicação foi encerrada e o professor desconsiderou as tentativas que estavam em andamento.'
-            : 'Esta aplicação foi encerrada pelo professor.')
+            : r.finishedBySchedule === true
+              ? 'Esta aplicação foi encerrada no horário marcado pelo professor.'
+              : 'Esta aplicação foi encerrada pelo professor.')
           setPhase('error')
         }
         return
@@ -1064,6 +1085,7 @@ export default function ExamRunner() {
         setPhase('error')
         return
       }
+      setLockReason(st.focusLocked === true ? String(st.focusLockReason || '') : '')
       if (st.focusLocked === true) {
         setPhase('paused')
         return
@@ -1469,7 +1491,9 @@ export default function ExamRunner() {
   const doneNotice = (result?.collectedByInstructor
     ? ['O professor recolheu a sua prova e entregou as respostas que já estavam salvas.', doneGradeLater]
     : result?.submittedByInstructor
-      ? ['O professor encerrou a aplicação e salvou o que você havia respondido.']
+      ? [result?.closedBySchedule
+        ? 'A prova fechou no horário marcado e o que você havia respondido foi salvo e entregue.'
+        : 'O professor encerrou a aplicação e salvou o que você havia respondido.']
       : result?.finalizedByServer
         ? ['O tempo acabou e as respostas salvas no servidor foram entregues automaticamente.', doneGradeLater]
         : [result?.auto ? 'O tempo acabou e suas respostas foram enviadas automaticamente.' : '', doneGradeLater]
@@ -1548,6 +1572,11 @@ export default function ExamRunner() {
               : <><p className="text-xs text-subtle">Tentativas</p><p className="font-semibold text-text">Sem limite</p></>}
           </div>
         </div>
+        {scheduleCloseLabel && (
+          <p className="mt-3 rounded-lg border border-warning/40 bg-warning-soft p-3 text-sm text-text" data-testid="schedule-close-notice">
+            Esta prova fecha sozinha em <strong>{scheduleCloseLabel}</strong>. Nesse horário, o que estiver salvo é entregue, mesmo que o seu tempo ainda não tenha acabado.
+          </p>
+        )}
         {startDeadlineLabel && (
           <p className="mt-3 rounded-lg border border-warning/40 bg-warning-soft p-3 text-sm text-text" data-testid="start-deadline">
             Você pode começar esta prova até <strong>{startDeadlineLabel}</strong>. Depois disso, só com o professor.
@@ -1559,6 +1588,7 @@ export default function ExamRunner() {
             ? <li>Este aparelho não permite <strong>tela cheia</strong>: a prova abre sem ela e o professor é avisado. Sair da aba ou da janela é registrado e bloqueia a prova até a liberação do professor.</li>
             : <li>A prova roda em <strong>tela cheia</strong>. Sair da tela cheia, da aba ou da janela é registrado e bloqueia a prova até a liberação do professor.</li>}
           <li data-testid="keystroke-notice">{keystrokeNotice(cfg?.keystrokeMode, proctoringRetentionDays)}</li>
+          <li data-testid="session-notice">{sessionPolicyNotice(cfg?.sessionPolicy)}</li>
           <li>Durante a prova, o menu do portal fica indisponível. Sair da prova (pelo botão Sair ou pelo voltar do navegador) pede confirmação, fica registrado para o professor e bloqueia a prova até a liberação dele.</li>
           <li>Depois de sair, você retorna à mesma tentativa, com as respostas salvas, enquanto houver tempo e a aplicação estiver aberta.</li>
           <li>Revise as respostas antes de confirmar o envio final.</li>
@@ -1618,7 +1648,9 @@ export default function ExamRunner() {
       <div className="text-center max-w-md">
         <div className="w-16 h-16 grid place-items-center rounded-full bg-danger-soft text-danger mb-4 mx-auto"><ShieldAlert size={32} /></div>
         <h2 className="text-xl font-bold text-text">Prova pausada</h2>
-        <p className="text-sm text-muted mt-2">Detectamos que você saiu da tela cheia, da aba ou da janela da prova. Por segurança, a prova foi pausada e o instrutor foi notificado.</p>
+        {lockReason === 'session_replaced'
+          ? <p className="text-sm text-muted mt-2">Esta prova foi aberta em outro aparelho com a sua conta. Por segurança, a prova foi pausada e o instrutor foi notificado.</p>
+          : <p className="text-sm text-muted mt-2">Detectamos que você saiu da tela cheia, da aba ou da janela da prova. Por segurança, a prova foi pausada e o instrutor foi notificado.</p>}
         <p className="text-sm text-muted mt-2">Aguarde a liberação do instrutor para continuar. Suas respostas foram salvas.</p>
         <div className="mt-4 flex items-center justify-center gap-2 text-warning"><Loader2 className="w-4 h-4 animate-spin" /> <span className="text-sm">Aguardando liberação...</span></div>
         <Button className="mt-6" variant="secondary" icon={ArrowLeft} onClick={leaveToExamList}>Sair e voltar às provas</Button>
@@ -1701,6 +1733,7 @@ export default function ExamRunner() {
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 sm:contents">
             <div className="min-w-0 flex-1 basis-24 sm:col-start-1 sm:row-start-2 flex flex-wrap items-baseline gap-x-2">
               <p className="text-xs text-subtle">{answeredCount}/{questions.length} respondidas</p>
+              {scheduleCloseLabel && <p className="text-[11px] font-medium text-warning" data-testid="schedule-close">Fecha em {scheduleCloseLabel}</p>}
               <p className={`text-[11px] ${saveState.status === 'error' ? 'text-danger' : saveState.status === 'offline' || saveState.status === 'retrying' ? 'text-warning' : 'text-subtle'}`} aria-live="polite">
                 {saveState.status === 'saving' && 'Salvando respostas...'}
                 {saveState.status === 'saved' && `Salvo às ${saveState.at?.toLocaleTimeString('pt-BR')}`}

@@ -295,6 +295,9 @@ module.exports = {
     deferPasswordChange,
     isPasswordChangeDeferred,
     isStudentExamSessionPath,
+    // Fim da janela de uma tentativa aberta: também é o que conta como "prova em andamento"
+    // para o outro login e a troca de IP (utils/examSessionIntegrity.js, P3-S13).
+    openAttemptWindowEnd,
     passwordChangeReason,
     passwordChangeRequiredBody,
     passwordChangeRuleActive,

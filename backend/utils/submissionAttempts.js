@@ -54,17 +54,67 @@ function isArchived(submission) {
     return submission?.resultStatus === 'archived' || submission?.archived === true;
 }
 
+// Anulação por integridade (fase 3, P3-S4a; D18 e P-B1 do desenho do P3):
+// submission.integrity = { decisao: 'zero' | 'desconsiderar', motivo, por, em,
+// desfeitaEm?, desfeitaPor? }. Só vale enquanto não foi desfeita; decisão desconhecida
+// (dado estranho) não muda nada. 'zero': a entrega conta com nota 0; 'desconsiderar': a
+// entrega fica fora da conta, como se o aluno não tivesse feito.
+const INTEGRITY_DECISIONS = Object.freeze(['zero', 'desconsiderar']);
+function integrityDecision(submission) {
+    const integrity = submission?.integrity;
+    if (!integrity || typeof integrity !== 'object' || Array.isArray(integrity)) return null;
+    if (integrity.desfeitaEm) return null;
+    return INTEGRITY_DECISIONS.includes(integrity.decisao) ? integrity.decisao : null;
+}
+
+// Correção do professor (D7 e D8): submission.correcao = { situacao: 'pendente' |
+// 'concluida', versao, itens, comentarioGeral, concluidaPor, concluidaEm }. Entrega sem
+// correcao é concluída (todas as de antes da fase 3), a não ser a que tem resposta
+// esperando o professor em gradedAnswers (pending): entregas gravadas entre os tipos
+// novos (P3-S1) e esta regra nasceram sem o campo, e a nota delas é só a das objetivas.
+// Esta é a única leitura de correcao para a conta da nota (contrato C1 do P3).
+function hasPendingAnswer(submission) {
+    return (Array.isArray(submission?.gradedAnswers) ? submission.gradedAnswers : [])
+        .some(answer => answer && answer.pending === true && answer.annulled !== true);
+}
+
+function isAwaitingCorrection(submission) {
+    const correcao = submission?.correcao;
+    if (correcao && typeof correcao === 'object' && !Array.isArray(correcao)) {
+        if (correcao.situacao === 'pendente') return true;
+        if (correcao.situacao === 'concluida') return false;
+    }
+    return hasPendingAnswer(submission);
+}
+
+// Nota que a entrega leva para a conta: 0 na anulada com 'zero'; a gravada (0 a 100) nas
+// outras; null quando ela não entra (desconsiderada, aguardando correção ou nota
+// inválida).
+function effectiveScore(submission) {
+    const decision = integrityDecision(submission);
+    if (decision === 'zero') return 0;
+    if (decision === 'desconsiderar') return null;
+    if (isAwaitingCorrection(submission)) return null;
+    return normalizeScore(submission?.score);
+}
+
 function policyFor(attempts) {
     const ordered = [...attempts].sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
     const configured = ordered.find(item => VALID_POLICIES.has(item.aggregationPolicy))?.aggregationPolicy;
     return configured || 'highest';
 }
 
+// Regra da nota de um grupo de tentativas. Fora da conta: arquivada, nota inválida,
+// anulada com 'desconsiderar' e aguardando a correção do professor (esta deixa o grupo
+// com aguardandoCorrecao: true, para as telas dizerem "Aguardando correção" em vez da
+// nota). A anulada com 'zero' entra com 0 (contrato C1 do P3).
 function calculateAttemptResult(attempts) {
     const policy = policyFor(attempts);
-    const considered = attempts.filter(item => !isArchived(item) && normalizeScore(item.score) !== null);
+    const live = attempts.filter(item => !isArchived(item) && integrityDecision(item) !== 'desconsiderar');
+    const aguardandoCorrecao = live.some(item => integrityDecision(item) !== 'zero' && isAwaitingCorrection(item));
+    const considered = live.filter(item => effectiveScore(item) !== null);
     if (considered.length === 0) {
-        return { policy, score: null, selectedSubmissionId: null, contributingIds: [] };
+        return { policy, score: null, selectedSubmissionId: null, contributingIds: [], aguardandoCorrecao };
     }
 
     const latest = [...considered].sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
@@ -80,16 +130,17 @@ function calculateAttemptResult(attempts) {
         selected = considered.find(item => item.selectedForResult === true) || latest[0];
         contributing = [selected];
     } else {
-        selected = [...considered].sort((a, b) => normalizeScore(b.score) - normalizeScore(a.score) || new Date(b.timestamp || 0) - new Date(a.timestamp || 0))[0];
+        selected = [...considered].sort((a, b) => effectiveScore(b) - effectiveScore(a) || new Date(b.timestamp || 0) - new Date(a.timestamp || 0))[0];
         contributing = [selected];
     }
 
-    const score = contributing.reduce((sum, item) => sum + normalizeScore(item.score), 0) / contributing.length;
+    const score = contributing.reduce((sum, item) => sum + effectiveScore(item), 0) / contributing.length;
     return {
         policy,
         score,
         selectedSubmissionId: selected?.id || null,
         contributingIds: contributing.map(item => String(item.id)),
+        aguardandoCorrecao,
     };
 }
 
@@ -114,19 +165,29 @@ function enrichSubmissionsWithAttemptResult(submissions) {
             countsTowardResult: contributing.has(String(attempt.id)),
             selectedSubmissionId: group.selectedSubmissionId,
             scoreInvalid: isScoreInvalid(attempt),
+            // Fase 3 (P3-S4a): a tentativa espera a correção do professor; a anulação por
+            // integridade que vale ('zero' ou 'desconsiderar', null sem anulação); e se o
+            // grupo dela tem alguma tentativa esperando correção.
+            awaitingCorrection: integrityDecision(attempt) === null && isAwaitingCorrection(attempt),
+            integrityDecision: integrityDecision(attempt),
+            aguardandoCorrecao: group.aguardandoCorrecao === true,
         }));
     });
     return (submissions || []).map(submission => ({ ...submission, ...(resultById.get(String(submission.id)) || {}) }));
 }
 
 module.exports = {
+    INTEGRITY_DECISIONS,
     SCORE_MAX,
     VALID_POLICIES,
     attemptGroupKey,
     calculateAttemptResult,
     consolidateSubmissions,
+    effectiveScore,
     enrichSubmissionsWithAttemptResult,
+    integrityDecision,
     isArchived,
+    isAwaitingCorrection,
     isScoreInvalid,
     normalizeScore,
     roundGrade,

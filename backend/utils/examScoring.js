@@ -220,7 +220,10 @@ function manualPoints(manual, possible) {
 // options.annulment: a anulação da aplicação ({ mode }); options.manual: o item da
 // correção do professor ({ pontos }), que vale por cima da conta automática.
 // Devolve { pointsEarned, pointsPossible, isCorrect (true|false|null), pending }.
-function scoreQuestion(question, answer, { annulment = null, manual = null } = {}) {
+// options.onPaper: a resposta está no papel (prova impressa lançada pelo cartão-resposta,
+// P3-S4a): o cartão só traz a letra das questões de escolha única; as outras esperam o
+// professor (dissertativa, numérica, resposta curta e várias corretas).
+function scoreQuestion(question, answer, { annulment = null, manual = null, onPaper = false } = {}) {
     const type = questionType(question);
     const points = questionPoints(question);
     const normalized = normalizeStoredAnswer(question, answer);
@@ -240,6 +243,7 @@ function scoreQuestion(question, answer, { annulment = null, manual = null } = {
         isCorrect,
         pending,
     });
+    if (onPaper && !isSingleChoiceType(type)) return result(0, null, true);
     if (isSingleChoiceType(type)) {
         const correct = correctLetterFor(question);
         const right = !!correct && normalized === correct;
@@ -280,10 +284,10 @@ function scoreQuestion(question, answer, { annulment = null, manual = null } = {
 }
 
 // Linha de gradedAnswers de uma questão (contrato C3).
-function gradedAnswerFor(question, number, answer, { annulment = null, manual = null } = {}) {
+function gradedAnswerFor(question, number, answer, { annulment = null, manual = null, onPaper = false } = {}) {
     const type = questionType(question);
     const normalized = normalizeStoredAnswer(question, answer);
-    const scored = scoreQuestion(question, normalized, { annulment, manual });
+    const scored = scoreQuestion(question, normalized, { annulment, manual, onPaper });
     const single = isSingleChoiceType(type);
     const correctAnswers = type === 'multiple_answer' ? correctLettersFor(question) : [];
     return {

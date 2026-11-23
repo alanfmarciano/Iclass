@@ -23,6 +23,7 @@ const { SERVER_INSTANCE_ID, SESSION_RESUME_MAX_DOWNTIME_MS } = require('./utils/
 const { compressTextResponses } = require('./utils/httpCompression.js');
 const { serveBuildAssets, sendAssetNotFound, setNoStore } = require('./utils/staticAssets.js');
 const serverLifecycle = require('./utils/serverLifecycle.js');
+const { keepAwake } = require('./utils/keepAwake.js');
 const { SYNCED_FOLDER_WARNING } = require('./utils/syncedFolder.js');
 const { createNetworkPolicy, networkHttpsStatus, studentsHttpsEnabled } = require('./utils/networkPolicy.js');
 const { consoleLines, createAddressWatcher, networkAddresses, WATCH_INTERVAL_MS: NETWORK_WATCH_INTERVAL_MS } = require('./utils/networkAddresses.js');
@@ -488,6 +489,14 @@ async function prepareServer() {
         if (removed) console.log(`🧹 Entregas: ${removed} envio(s) interrompido(s) removido(s) de .recebendo.`);
     } catch (e) { logCrash('limpeza de envios interrompidos', e); }
 
+    // 5c) Importação de pacote de curso que caiu no meio (fase 3, A14): a pasta de
+    // trabalho .pacote-<id> dentro de content/ e de uploads/ sai no boot, inteira (nenhuma
+    // importação está rodando agora). Só a pasta de trabalho: nada fora dela é tocado.
+    try {
+        const removed = require('./utils/coursePackage.js').cleanStaleStaging(undefined, Date.now(), 0);
+        if (removed) console.log(`🧹 Pacote de curso: ${removed} pasta(s) de importação interrompida removida(s).`);
+    } catch (e) { logCrash('limpeza de importações de pacote interrompidas', e); }
+
     // 6) e 7) O tempo em que o servidor ficou fora do ar (do último heartbeat até agora)
     // vira pausa das provas em andamento, até 15 min (utils/serverLifecycle.js), e é
     // gravado antes da primeira varredura. Falha de gravação não impede o boot: a memória
@@ -501,12 +510,41 @@ async function prepareServer() {
     // respostas salvas, mesmo que o aluno nunca mais sincronize (sem rede, sem bateria).
     // No boot também recupera tentativas 'expired' deixadas por versões antigas.
     const { settleExpiredAttempts } = require('./utils/examDeadline.js');
+    // 8b) Agendamento de prova e de material (P3-S12, D25 a D27; contrato C10): na mesma
+    // volta, depois da devolução do tempo parado e antes do fim do tempo das tentativas, a
+    // aplicação agendada abre (ou fica "perdida", D26: o servidor estava desligado em toda
+    // a janela), fecha entregando o que foi salvo e o material agendado é liberado. A
+    // primeira volta é a do boot: o servidor que ligou no meio da janela abre a prova na
+    // hora e avisa o professor no "Precisa de você".
+    const examSchedule = require('./utils/examSchedule.js');
+    function sweepSchedules() {
+        try {
+            const outcome = examSchedule.sweepSchedules(db.memory, { now: Date.now() });
+            if (outcome.opened.length) {
+                // Atrasada: o servidor estava desligado ou suspenso na hora de abrir (D26).
+                const late = outcome.opened.filter(item => Number(item.atrasoSegundos) * 1000 > examSchedule.LATE_OPEN_WARN_MS).length;
+                console.log('🗓️  Agendamento: ' + outcome.opened.length + ' prova(s) aberta(s) pelo agendamento'
+                    + (late ? ' (' + late + ' depois do horário, porque o servidor estava desligado; veja o "Precisa de você").' : ' no horário marcado.'));
+            }
+            if (outcome.finished.length) console.log('🗓️  Agendamento: ' + outcome.finished.length + ' prova(s) encerrada(s) no horário marcado (entregue o que estava salvo).');
+            if (outcome.missed.length) console.log('⚠️ Agendamento: ' + outcome.missed.length + ' prova(s) não abriram porque o servidor estava desligado em todo o horário marcado. Veja o "Precisa de você".');
+            if (outcome.released.length) console.log('🗓️  Agendamento: ' + outcome.released.length + ' material(is) liberado(s) no horário marcado.');
+            (outcome.errors || []).forEach(item => logCrash('agendamento da prova ' + item.applicationId, new Error(item.error || 'falha')));
+            return outcome.changed;
+        } catch (e) {
+            logCrash('agendamento de prova e de material', e);
+            return false;
+        }
+    }
     function sweepExpiredAttempts() {
         try {
             // Computador suspenso ou processo parado desde a última volta: o tempo parado
             // é devolvido antes de qualquer tentativa ser finalizada.
             serverLifecycle.detectGap(Date.now());
-            const { finalized, discarded, changed } = settleExpiredAttempts(db.memory);
+            const scheduleChanged = sweepSchedules();
+            const settled = settleExpiredAttempts(db.memory);
+            const { finalized, discarded } = settled;
+            const changed = settled.changed || scheduleChanged;
             const recovered = finalized.filter(item => item.recoveredAfterFinish).length;
             if (finalized.length > recovered) console.log('⏱️  Fim do tempo: ' + (finalized.length - recovered) + ' tentativa(s) entregue(s) automaticamente.');
             // Tentativas sem entrega deixadas por versões antigas em aplicações já encerradas:
@@ -519,6 +557,10 @@ async function prepareServer() {
             // crash.log pelo motor (uma linha por minuto) e é regravada sozinha.
             if (changed) db.save({ detached: true }).catch(err => { if (!err || err.code !== 'ICLASS_DB_WRITE') logCrash('finalização de tentativas vencidas', err); });
         } catch (e) { logCrash('finalização de tentativas vencidas', e); }
+        // Com prova em andamento, o computador não dorme (A17 / P6-S5, D13): o pedido ao
+        // Windows abre na primeira aplicação em andamento e fecha depois da última (fora
+        // do Windows não faz nada). Na mesma volta do timer, depois das contas da agenda.
+        try { keepAwake.sync(db.memory); } catch (e) { logCrash('computador acordado durante a prova', e); }
     }
     serverLifecycle.setBootPhase('checking');
     sweepExpiredAttempts();
@@ -656,7 +698,7 @@ const BOOT_HTML = `<!doctype html>
 // app; /api/health com a fase do boot; o resto de /api com 503 {starting:true} e
 // Retry-After 3; as páginas com o aviso "iniciando" em HTML que se recarrega sozinho.
 function createBootApp() {
-    const { startingHealthBody, handleSystemControl } = require('./routes/systemHealth.js');
+    const { startingHealthBody, handleControlStatus, handleSystemControl } = require('./routes/systemHealth.js');
     const { errorHandler } = require('./middlewares.js');
     const boot = express();
     boot.disable('x-powered-by');
@@ -667,6 +709,8 @@ function createBootApp() {
     // A rota de controle do launcher vale também durante o boot: parar ou reiniciar um
     // servidor que ainda carrega o banco sem precisar do taskkill.
     boot.post('/api/system/control', express.json({ limit: '1kb' }), handleSystemControl);
+    // E a situação para o launcher (A16): a fase do boot, sem provas nem alunos ainda.
+    boot.get('/api/system/control/status', handleControlStatus);
     boot.get('/api/health', (req, res) => {
         res.set('Cache-Control', 'no-store');
         res.set('Retry-After', '3');
@@ -696,6 +740,25 @@ function describeBootFailure(cause, err, { port = PORT } = {}) {
     const code = err && typeof err === 'object' ? String(err.code || '') : '';
     const detail = err && typeof err === 'object' && err.message ? err.message : String(err);
     if (cause === 'build') {
+        // Pacote de release (A15, D14 do P6): o web/dist não bate com o release-manifest.json.
+        // Compilar não resolve (o pacote nem tem web/src): o caminho é reinstalar a versão.
+        if (code === 'ICLASS_BUILD_TAMPERED') {
+            const details = err && err.details && typeof err.details === 'object' ? err.details : {};
+            const listed = [
+                ...(Array.isArray(details.faltando) ? details.faltando.map(file => `${file} (faltando)`) : []),
+                ...(Array.isArray(details.alterados) ? details.alterados.map(file => `${file} (alterado)`) : []),
+            ];
+            const more = listed.length > 3 ? ` e mais ${listed.length - 3}` : '';
+            const files = listed.length ? `\n   Arquivos: ${listed.slice(0, 3).join(', ')}${more}.` : '';
+            return { exitCode: EXIT_CODES.CONFIG, kind: 'boot-build', message: `⛔ ${detail}${files}` };
+        }
+        if (code === 'ICLASS_BUILD_NO_SOURCE') {
+            return {
+                exitCode: EXIT_CODES.CONFIG,
+                kind: 'boot-build',
+                message: '⛔ Esta pasta do IClass está incompleta: não tem o código da interface (web/src) nem o release-manifest.json do pacote. Reinstale o IClass pelo pacote ou baixe o código de novo.',
+            };
+        }
         const what = code === 'ICLASS_BUILD_OUTDATED'
             ? 'O site do IClass está desatualizado: o código foi atualizado e o site não foi compilado de novo.'
             : 'O site do IClass não está compilado (falta a pasta web/dist ou ela está incompleta).';
@@ -1003,6 +1066,8 @@ async function performShutdown({ restart = false, reason = 'stop' } = {}) {
         process.exit(EXIT_CODES.ERROR);
     }, serverLifecycle.SHUTDOWN_TIMEOUT_MS);
     serverLifecycle.clearTimers();
+    // O pedido para o computador não dormir sai junto com os timers (A17).
+    try { keepAwake.stop(); } catch (e) { /* desligando */ }
     // Ainda no boot: a memória pode não estar carregada, e uma gravação completa agora
     // apagaria do disco o que não foi lido. Sai sem gravar (o que o boot já gravou foi em
     // transações completas) e sem marcar parada limpa: o heartbeat para (stopHeartbeat),
@@ -1133,7 +1198,9 @@ async function startServer({ port = PORT, host = '0.0.0.0' } = {}) {
     }
     serverInstance.on('error', err => logCrash('servidor http/https', err));
     const actualPort = serverInstance.address() && serverInstance.address().port;
-    serverLifecycle.writeControlToken();
+    // O token da rota de controle e o runtime/servidor.json (pid e porta de verdade, que o
+    // launcher lê para achar este servidor, A16).
+    serverLifecycle.writeControlToken({ port: actualPort, version: require('../package.json').version });
     console.log(`⏳ Carregando os dados do IClass (porta ${actualPort} já respondendo "iniciando")...`);
 
     let prepared;

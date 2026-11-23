@@ -45,6 +45,7 @@ require('../utils/gradeChangeNotices.js');
 const attendanceUtil = require('../utils/attendance.js');
 const { lessonsForDate } = require('../utils/academicCalendar.js');
 const { studentCalendarEvents } = require('../utils/calendarFeed.js');
+const examSchedule = require('../utils/examSchedule.js');
 const settingsUtil = require('../utils/settings.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
 const { parseEvaluationMarkdown } = require('../utils/parser.js');
@@ -69,9 +70,10 @@ const {
     filterStudentExamAttempts,
     normalizeMaxAttempts,
 } = require('../utils/examAttempts.js');
-const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, normalizeScore, roundGrade } = require('../utils/submissionAttempts.js');
+const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, integrityDecision, isAwaitingCorrection, normalizeScore, roundGrade } = require('../utils/submissionAttempts.js');
 const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
-const { createStudentSession, revokeStudentSession, pruneExpiredSessions, studentSessionByEmail } = require('../utils/authSessions.js');
+const { createStudentSession, hasSessionCredential, revokeStudentSession, pruneExpiredSessions, studentSessionByEmail } = require('../utils/authSessions.js');
+const { applicationSessionPolicy, lockedAttemptMessage, noteAttemptIp, noteSessionEnded, recordSessionReplaced, requestUserAgent } = require('../utils/examSessionIntegrity.js');
 const { attemptPasswordLogin } = require('../utils/passwordLogin.js');
 const { studentSessionProfile } = require('../utils/studentProfile.js');
 const studentIdentity = require('../utils/studentIdentity.js');
@@ -440,6 +442,10 @@ async function endStudentSession(req, res) {
     // O motivo fica guardado: o pedido seguinte do token antigo (outra aba) recebe 401
     // com reason 'logout'. A sessão sai também da tabela auth_sessions (H3a-2): sem a
     // gravação ela voltaria depois de um reinício do servidor.
+    // Com a prova em andamento, a tentativa guarda o aparelho que saiu: o login seguinte
+    // conta como outro aparelho (P3-S13, D28). Sem isso, "Sair" numa segunda aba e entrar
+    // em outro aparelho contornava a trava e o registro do outro login.
+    noteSessionEnded(db.memory, { email: req.studentEmail, session: req.studentSession, reason: 'logout' });
     revokeStudentSession(db.memory, req.studentEmail, { reason: 'logout' });
     await db.save();
     res.json({ success: true });
@@ -532,7 +538,9 @@ router.get('/api/status', validateAnySession, (req, res) => {
         examConfigs: cls.examConfigs || {},
         onlineExamConfigs: sanitizeOnlineExamConfigsForStudent(cls.onlineExamConfigs),
         releasedItems: isAdmin ? getReleasedItemsForClass(cls, studentEmail) : getStudentReleasedItems(cls, studentEmail),
-        releaseMeta: cls.releaseMeta || {}
+        releaseMeta: cls.releaseMeta || {},
+        // Liberações agendadas da turma (P3-S12, D27), só para o painel (Materiais).
+        ...(isAdmin ? { releaseSchedule: examSchedule.releaseScheduleView(cls, { memory: db.memory }) } : {}),
     });
 });
 
@@ -658,10 +666,29 @@ router.get('/api/student/exam-applications', validateStudentSession, (req, res) 
         })
         .sort((a, b) => String(b.application.createdAt || '').localeCompare(String(a.application.createdAt || '')))
         .map(({ application, cls }) => applicationForStudent(application, cls, req.studentEmail));
+    // Provas agendadas (P3-S12, D25): preparadas que abrem sozinhas, numa lista à parte
+    // ("Abre em 20/11 às 08:00 e fecha às 09:30"), sem questões, configuração nem token.
+    // A tela antiga, que só lê applications, continua sem vê-las.
+    const scheduledSeen = new Set();
+    const agendadas = scopedClasses
+        .flatMap(cls => examSchedule.studentScheduledApplications(db.memory, { cls, email: req.studentEmail }))
+        .filter(item => !scheduledSeen.has(item.id) && scheduledSeen.add(item.id))
+        .sort((a, b) => a.abreEm - b.abreEm)
+        .map(({ criadoEm, ...item }) => item);
 
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-    res.json({ success: true, applications });
+    res.json({ success: true, applications, agendadas });
 });
+
+// Horário em que a aplicação agendada fecha sozinha, para a prova do aluno (P3-S12):
+// { scheduleCloseAt, scheduleCloseLabel } ou nada (sem agenda, "Não encerrar sozinha",
+// encerrada).
+function scheduleCloseInfo(application, now) {
+    if (!application) return {};
+    const closeAt = examSchedule.effectiveCloseAt(application, now);
+    if (!closeAt) return {};
+    return { scheduleCloseAt: closeAt, scheduleCloseLabel: examSchedule.formatWhen(closeAt) };
+}
 
 // Sincronização unificada durante a prova: estado, mensagens pop-up, configuração da
 // prova e itens liberados em UMA única requisição (reduz a carga de polling na rede
@@ -747,6 +774,9 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                 && onlineCfg?.applicationId !== application.id) {
                 studentConfigs[examKey] = { ...studentConfigs[examKey], applicationId: application.id, status: application.status, onlineActive: false };
             }
+            // Outro aparelho no meio da prova (P3-S13): as instruções dizem se a prova trava
+            // ou só avisa o professor (aplicação antiga: o padrão).
+            if (application && studentConfigs[examKey]) studentConfigs[examKey].sessionPolicy = applicationSessionPolicy(application);
             // Tentativa vencida vira entrega (com as respostas salvas) antes de qualquer
             // outra decisão: assim ela conta como usada e nunca é recriada vazia. Na
             // pré-visualização (req.preview) o sync só lê: nada de entrega, tentativa,
@@ -810,6 +840,11 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
                 db.save({ only: SYNC_SAVE_COLLECTIONS });
             }
             if (!preview && application && context.state && applyPageReturn(rawState, { sessionToken: req.studentSessionToken, application, cls, examKey })) db.save({ only: SYNC_SAVE_COLLECTIONS });
+            // Troca de IP com a tentativa aberta (P3-S13, D28): registrada no Monitor uma vez
+            // por IP novo, sem travar (utils/examSessionIntegrity.js).
+            if (!preview && application && context.state && noteAttemptIp(db.memory, {
+                state: rawState, application, clientIp: req.clientIp, sessionIpChange: req.sessionIpChange, userAgent: requestUserAgent(req), sessionUserAgent: req.studentSession && req.studentSession.userAgent,
+            })) db.save({ only: SYNC_SAVE_COLLECTIONS });
             // Chave da cópia local cifrada (AVA-11): tentativas iniciadas antes desta
             // versão ganham a chave aqui. Ela só sai no campo próprio, para o dono.
             if (!preview && application && context.state && ensureLocalCopyKey(rawState)) db.save({ only: SYNC_SAVE_COLLECTIONS });
@@ -916,8 +951,15 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             tokenAccepted,
             questionReports,
             finishOutcome,
+            // Encerrada pela agenda no horário marcado (P3-S12): a tela final não diz que
+            // foi o professor.
+            ...(finishOutcome && application?.finishResolution?.reason === 'agendamento' ? { finishedBySchedule: true } : {}),
             attemptOutcome,
             timeOver,
+            // Fechamento automático da aplicação agendada (P3-S12): o cronômetro do aluno
+            // conta a duração dele, mas a prova é recolhida neste horário, então a tela
+            // mostra "Fecha às 09:30" (com o "+N min" e as pausas já contados).
+            ...scheduleCloseInfo(application, Date.now()),
             // Prazo do aluno para começar já passou (exceção por aluno): a tela mostra o aviso.
             startDeadlinePassed: !!startDeadlinePassedAt,
             startDeadlineMessage: startDeadlinePassedAt ? startDeadlineResponse(startDeadlinePassedAt).error : null,
@@ -1294,16 +1336,36 @@ router.post('/api/student/login', STUDENT_SCHEMAS.login, async (req, res) => {
     // Sessão única: gera um token novo a cada login. Logins anteriores (em outros
     // dispositivos) deixam de valer porque o token guardado neles passa a divergir.
     // O servidor guarda só o hash do token (utils/authSessions.js).
+    // Outro login no meio da prova (P3-S13, D28): a sessão que este login substitui (IP e
+    // navegador) vai para o registro da prova e, pela política da aplicação, a tentativa
+    // em andamento trava até o professor liberar (utils/examSessionIntegrity.js). Sem
+    // sessão de verdade antes (Sair, reinício longo) não há o que registrar.
+    const loginIp = normalizeIp(req.ip || req.socket.remoteAddress);
+    const loginUserAgent = requestUserAgent(req);
+    const replacedSession = studentSessionByEmail(db.memory, normalizedEmail);
+    const previousDevice = hasSessionCredential(replacedSession)
+        ? { ip: normalizeIp(replacedSession.ip), userAgent: replacedSession.userAgent || '' }
+        : null;
+    const loginNow = Date.now();
     const sessionToken = createStudentSession(db.memory, normalizedEmail, {
-        ip: normalizeIp(req.ip || req.socket.remoteAddress),
-        now: Date.now(),
+        ip: loginIp,
+        now: loginNow,
+        userAgent: loginUserAgent,
+    });
+    recordSessionReplaced(db.memory, {
+        email: normalizedEmail,
+        previous: previousDevice,
+        current: { ip: loginIp, userAgent: loginUserAgent },
+        now: loginNow,
     });
     const passwordChange = studentPasswordChangeState(db.memory, student, studentSessionByEmail(db.memory, normalizedEmail));
     // Rota quente no começo da aula (H1-c, DES-01): a conta (hora do login, hash novo,
     // troca obrigatória), o registro do login, a presença automática e a sessão gravada
     // (contrato: rota anotada que cria sessão leva 'authSessions'; a que audita leva
     // 'auditLogs').
-    await db.save({ only: ['students', 'loginLogs', 'attendance', 'authSessions', 'auditLogs'] });
+    // Com uma prova em andamento, o registro do outro login e a trava da tentativa
+    // (proctoringLogs, studentExamState) vão na mesma gravação.
+    await db.save({ only: ['students', 'loginLogs', 'attendance', 'authSessions', 'auditLogs', 'proctoringLogs', 'studentExamState'] });
 
     // Retorna dados do estudante sem expor o campo de senha
     const { password: _, ...safeStudent } = student;
@@ -1864,7 +1926,7 @@ router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submi
         if (finalized) await db.save();
         return res.status(408).json({
             error: finalized
-                ? 'O tempo acabou com a prova bloqueada por perda de foco. As respostas salvas antes do bloqueio foram entregues automaticamente.'
+                ? lockedAttemptMessage(lockedState, 'deadline')
                 : 'O prazo da prova terminou.',
             deadlineExceeded: true,
             focusLocked: true,
@@ -1907,8 +1969,9 @@ router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submi
 
     if (lockedState.focusLocked === true) {
         return res.status(423).json({
-            error: 'Sua prova foi bloqueada por perda de foco. Aguarde o professor desbloquear pelo monitor.',
-            focusLocked: true
+            error: lockedAttemptMessage(lockedState, 'submit'),
+            focusLocked: true,
+            focusLockReason: lockedState.focusLockReason || '',
         });
     }
 
@@ -2171,8 +2234,12 @@ router.get('/api/student/notifications', validateStudentSession, (req, res) => {
     // com o mesmo recorte de contexto da tela Notas (my-submissions): registro antigo sem
     // curso ou turma entra só no contexto da matrícula do aluno. Antes ele aparecia no sino
     // de todas as turmas do aluno, e o clique levava a uma tela Notas sem aquela nota.
+    // Fase 3 (P3-S4a): a nota que o aluno não vê também não avisa: a anulada com
+    // 'desconsiderar' (não tem nota) e a que voltou a aguardar a correção do professor
+    // (sanitizeSubmissionForStudent mostra as duas sem nota).
     scopeSubmissionsToContext(
         (db.memory.submissions || []).filter(s => s && s.gradePublished === true && normalizeScore(s.score) !== null
+            && integrityDecision(s) !== 'desconsiderar' && (integrityDecision(s) === 'zero' || !isAwaitingCorrection(s))
             && String(s.student?.email || '').toLowerCase() === email),
         { courseId, studentClass: className, students: db.memory.students || [], classes: db.memory.classes || [] },
     )

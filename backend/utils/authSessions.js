@@ -180,12 +180,22 @@ function markStudentPresence(memory, email, lastSeen = Date.now()) {
 
 // Sessão única: um login novo substitui a sessão anterior do mesmo e-mail (o token do
 // outro aparelho deixa de valer). Devolve o token cru, que só vai na resposta.
-function createStudentSession(memory, email, { ip = '', now = Date.now(), origin = DEFAULT_ORIGIN } = {}) {
+// userAgent: o navegador do login, cortado em 120 caracteres (P3-S13: o outro login durante
+// a prova registra o aparelho de antes e o de agora).
+const SESSION_USER_AGENT_MAX = 120;
+
+function sessionUserAgent(value) {
+    return String(value || '').replace(/\s+/g, ' ').trim().slice(0, SESSION_USER_AGENT_MAX).trim();
+}
+
+function createStudentSession(memory, email, { ip = '', now = Date.now(), origin = DEFAULT_ORIGIN, userAgent = '' } = {}) {
     const normalizedEmail = normalizeEmail(email);
     assertStorableEmail(normalizedEmail);
     const token = newSessionToken();
     if (!memory.sessions || typeof memory.sessions !== 'object') memory.sessions = {};
     const session = { tokenHash: hashSessionToken(token), createdAt: now, lastSeen: now, lastActivityAt: now, ip: String(ip || '') };
+    const agent = sessionUserAgent(userAgent);
+    if (agent) session.userAgent = agent;
     if (origin && origin !== DEFAULT_ORIGIN) session.origin = String(origin);
     // O token do outro aparelho fica com o motivo 'replaced': o pedido seguinte dele recebe
     // o 401 'replaced' também nas rotas sem e-mail (antes, 400 "E-mail do estudante é
@@ -644,6 +654,8 @@ function persistedSessionRows(memory) {
         if (!hash || !createdAt || !email || isInheritedKey(email)) return;
         const value = { kind: 'student', email, createdAt };
         if (session.ip) value.ip = String(session.ip);
+        // Navegador do login (P3-S13). A versão 281029f ignora o campo ao ler a linha.
+        if (session.userAgent) value.userAgent = sessionUserAgent(session.userAgent);
         if (session.origin && session.origin !== DEFAULT_ORIGIN) value.origin = String(session.origin);
         push(hash, value);
     });
@@ -673,7 +685,7 @@ function parseSessionRow(row) {
     const email = normalizeEmail(value.email);
     const createdAt = validTimestamp(value.createdAt);
     if (!email || isInheritedKey(email) || !createdAt) return null;
-    return { hash, kind: value.kind, email, createdAt, ip: value.ip ? String(value.ip) : '', origin: value.origin ? String(value.origin) : '' };
+    return { hash, kind: value.kind, email, createdAt, ip: value.ip ? String(value.ip) : '', userAgent: sessionUserAgent(value.userAgent), origin: value.origin ? String(value.origin) : '' };
 }
 
 // A linha gravada ({ key, value }, value em texto JSON ou objeto) é de uma sessão desta
@@ -776,7 +788,8 @@ function restoreSessions(memory, rows, options = {}) {
             result.dropped += 1;
             if (previous.createdAt >= createdAt) return;
         }
-        students.set(parsed.email, { tokenHash: parsed.hash, createdAt, lastSeen: null, lastActivityAt: now, ip: parsed.ip, ...origin });
+        const agent = parsed.userAgent ? { userAgent: parsed.userAgent } : {};
+        students.set(parsed.email, { tokenHash: parsed.hash, createdAt, lastSeen: null, lastActivityAt: now, ip: parsed.ip, ...agent, ...origin });
     });
     students.forEach((session, email) => { memory.sessions[email] = session; });
     result.students = students.size;

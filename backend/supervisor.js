@@ -19,7 +19,8 @@
 //   servidor pelo IPC ({type:'shutdown'}) e, se ele não sair em 15 s, o encerra à força.
 //   Nunca religa enquanto está parando;
 // - grava o próprio pid em DATA_DIR/runtime/supervisor.pid (apaga ao sair), para o
-//   launcher encerrar a árvore certa.
+//   launcher encerrar a árvore certa, e o código com que saiu em
+//   DATA_DIR/runtime/supervisor-saida.json (o launcher lê no Windows, A16).
 // O servidor recebe ICLASS_SUPERVISED=1 e, a cada início, quantos reinícios houve
 // (ICLASS_SUPERVISOR_RESTARTS), como o anterior saiu (ICLASS_SUPERVISOR_LAST_EXIT) e
 // quantas quedas fatais houve nos últimos 10 min (ICLASS_SUPERVISOR_RECENT_FATALS).
@@ -42,6 +43,10 @@ const LOG_KEEP = 3;
 function logsDir() { return path.join(runtimePaths.DATA_DIR, 'logs'); }
 function logFile() { return path.join(logsDir(), 'servidor.log'); }
 function pidFile() { return path.join(runtimePaths.DATA_DIR, 'runtime', 'supervisor.pid'); }
+// Como o supervisor saiu (A16): o launcher abre o supervisor numa janela própria e, no
+// Windows, não recebe o código de saída dele (a janela é aberta pelo "start" do cmd).
+// { pid, codigo, em } em runtime/supervisor-saida.json, gravado antes de sair.
+function exitFile() { return path.join(runtimePaths.DATA_DIR, 'runtime', 'supervisor-saida.json'); }
 
 // Cores (CSI) e links (OSC 8) do terminal saem do arquivo de log.
 // eslint-disable-next-line no-control-regex
@@ -128,7 +133,7 @@ function describeExit(code, signal) {
     return signal ? `sinal ${signal}` : `código ${code}`;
 }
 
-function createSupervisor({ serverScript = SERVER_SCRIPT, env = process.env, execArgv = [] } = {}) {
+function createSupervisor({ serverScript = SERVER_SCRIPT, env = process.env, execArgv = [], platform = process.platform } = {}) {
     const state = {
         child: null,
         stopping: false,
@@ -156,11 +161,19 @@ function createSupervisor({ serverScript = SERVER_SCRIPT, env = process.env, exe
         } catch (e) { /* já não existe */ }
     }
 
+    function writeExit(exitCode) {
+        try {
+            fs.mkdirSync(path.dirname(exitFile()), { recursive: true });
+            fs.writeFileSync(exitFile(), `${JSON.stringify({ pid: process.pid, codigo: exitCode, em: new Date().toISOString() })}\n`);
+        } catch (e) { /* o launcher mostra o fim do servidor.log */ }
+    }
+
     function finish(exitCode) {
         if (state.finished) return;
         state.finished = true;
         clearTimeout(state.restartTimer);
         clearTimeout(state.killTimer);
+        writeExit(exitCode);
         removePid();
         process.exit(exitCode);
     }
@@ -255,6 +268,14 @@ function createSupervisor({ serverScript = SERVER_SCRIPT, env = process.env, exe
     }
 
     function run() {
+        // Título da janela própria que o launcher abre (A16): "Servidor do IClass", para o
+        // professor reconhecer a janela que não deve fechar. Só no Windows, onde o título é
+        // o da janela do console: no Linux o process.title reescreve a linha de comando do
+        // processo (o ps e o /proc/<pid>/cmdline deixam de mostrar o node).
+        const title = String(env.ICLASS_JANELA_TITULO || '').trim();
+        if (title && platform === 'win32') {
+            try { process.title = title.slice(0, 80); } catch (e) { /* plataforma sem título */ }
+        }
         writePid();
         process.on('exit', removePid);
         ['SIGINT', 'SIGTERM', 'SIGHUP', 'SIGBREAK'].forEach(signal => {

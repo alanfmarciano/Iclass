@@ -33,6 +33,9 @@ const acceptance = require('../../backend/utils/legalAcceptance.js');
 const db = require('../../backend/database.js');
 const { createApp } = require('../../backend/server.js');
 const { createAdminSession, createStudentSession } = require('../../backend/utils/authSessions.js');
+// O modelo dos documentos muda de identificador quando o texto muda (legalTemplates.js:
+// 'modelo-2026.2' desde o P3-S13); o teste segue o modelo de agora.
+const { MODEL_ID } = require('../../backend/utils/legalTemplates.js');
 
 const ADMIN = 'adm@primeiro.local';
 const PROF = 'prof@primeiro.local';
@@ -167,13 +170,13 @@ test('[UC-LGPD-006] autocadastro pede a data de nascimento e, para menor, o resp
 
 test('[UC-LGPD-006] autocadastro grava o aceite do documento exato (modelo antes de publicar), sem a versão 1.0', async () => {
     const res = await request(app).post('/api/student/register').set('User-Agent', 'Mozilla/5.0 (Linux; Android 14) Chrome/120 Mobile')
-        .send(registerBody({ birthDate: '1999-04-03', termsDocumentId: 'modelo-2026.1:termos', privacyDocumentId: 'modelo-2026.1:privacidade' }));
+        .send(registerBody({ birthDate: '1999-04-03', termsDocumentId: `${MODEL_ID}:termos`, privacyDocumentId: `${MODEL_ID}:privacidade` }));
     assert.equal(res.status, 200, res.body.error);
     const bia = findStudent('bia@primeiro.local');
-    assert.equal(bia.termsAcceptance.documentId, 'modelo-2026.1:termos', 'antes: { version: "1.0" }');
+    assert.equal(bia.termsAcceptance.documentId, `${MODEL_ID}:termos`, 'antes: { version: "1.0" }');
     assert.equal(bia.termsAcceptance.version, null);
     assert.equal(bia.termsAcceptance.schoolId, 'escola_b', 'a escola do curso escolhido');
-    assert.equal(bia.privacyAcceptance.documentId, 'modelo-2026.1:privacidade');
+    assert.equal(bia.privacyAcceptance.documentId, `${MODEL_ID}:privacidade`);
     assert.ok(bia.termsAcceptance.at && bia.termsAcceptance.ip && /Android/.test(bia.termsAcceptance.device));
     assert.doesNotMatch(JSON.stringify(bia), /"version":"1\.0"/);
     const audit = auditOf('privacy_accept');
@@ -181,7 +184,7 @@ test('[UC-LGPD-006] autocadastro grava o aceite do documento exato (modelo antes
     assert.equal(audit[0].category, 'privacy');
     assert.equal(audit[0].studentEmail, bia.email);
     assert.equal(audit[0].details.source, 'cadastro');
-    assert.equal(audit[0].details.terms.documentId, 'modelo-2026.1:termos');
+    assert.equal(audit[0].details.terms.documentId, `${MODEL_ID}:termos`);
     // O mesmo papel do aceite pelo portão (antes, actorRole vazio: não há sessão no cadastro).
     assert.equal(audit[0].actor, bia.email);
     assert.equal(audit[0].actorRole, 'aluno');
@@ -190,7 +193,7 @@ test('[UC-LGPD-006] autocadastro grava o aceite do documento exato (modelo antes
 test('[UC-LGPD-006] autocadastro com documento trocado responde 409; tela antiga sem os ids aceita os atuais', async () => {
     await publish('termos');
     const stale = await request(app).post('/api/student/register')
-        .send(registerBody({ birthDate: '1999-04-03', termsDocumentId: 'modelo-2026.1:termos', privacyDocumentId: 'modelo-2026.1:privacidade' }));
+        .send(registerBody({ birthDate: '1999-04-03', termsDocumentId: `${MODEL_ID}:termos`, privacyDocumentId: `${MODEL_ID}:privacidade` }));
     assert.equal(stale.status, 409);
     assert.equal(stale.body.code, 'documents_changed');
     assert.equal(stale.body.error, 'Os documentos foram atualizados. Leia a nova versão e marque o aceite de novo.');
@@ -251,7 +254,7 @@ test('[UC-LGPD-007] aceite pelo portão: ids conferidos, 409 com o texto novo e 
     const missing = await request(app).post('/api/student/privacy/accept').set(headers).send({ termsDocumentId: 'termos_v1' });
     assert.equal(missing.status, 400);
     assert.equal(missing.body.field, 'privacyDocumentId');
-    const stale = await request(app).post('/api/student/privacy/accept').set(headers).send({ termsDocumentId: 'modelo-2026.1:termos', privacyDocumentId: 'privacidade_v1' });
+    const stale = await request(app).post('/api/student/privacy/accept').set(headers).send({ termsDocumentId: `${MODEL_ID}:termos`, privacyDocumentId: 'privacidade_v1' });
     assert.equal(stale.status, 409);
     assert.equal(stale.body.code, 'documents_changed');
     assert.equal(stale.body.status.documents.terms.documentId, 'termos_v1', 'a resposta já traz o documento atual');

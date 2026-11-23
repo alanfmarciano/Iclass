@@ -323,6 +323,31 @@ test('[UC-TENTATIVA-004] reabrir recusa: aplicação encerrada, nota publicada, 
     assert.equal(db.memory.auditLogs.some(entry => entry.type === 'exam_attempt_reopened_by_instructor'), false);
 });
 
+// A9, ajuste 1: a entrega anulada por cola não volta para a prova pelo "Reabrir" (a
+// anulação sumiria em silêncio, sem a decisão na entrega nova). Desfeita a anulação, pode.
+test('[UC-TENTATIVA-004] reabrir recusa a entrega anulada por integridade; depois de desfazer, reabre', async () => {
+    const application = await running();
+    const started = await begin(ALICE, application.id);
+    await submit(ALICE, application.id, started, {});
+    const [delivery] = deliveries(application.id, ALICE);
+    assert.ok(delivery.reopenableState && delivery.reopenableState.startedAt);
+    for (const decisao of ['zero', 'desconsiderar']) {
+        await action(application.id, { action: 'anular', studentEmail: ALICE, motivo: 'Cola com celular', decisao }).expect(200);
+        assert.equal((await monitorRow(application.id, ALICE)).canReopen, false, decisao);
+        const refused = await action(application.id, { action: 'reabrir', studentEmail: ALICE, motivo: 'Pedido do aluno' }).expect(409);
+        assert.equal(refused.body.code, 'delivery_invalidated', decisao);
+        assert.match(refused.body.error, /desfaça a anulação/);
+        const still = deliveries(application.id, ALICE);
+        assert.equal(still.length, 1, 'a entrega anulada continua na lista');
+        assert.equal(still[0].integrity.decisao, decisao);
+        assert.equal(openState(ALICE, application.id), undefined, 'nenhuma tentativa reaberta');
+        await action(application.id, { action: 'desfazer_anulacao', studentEmail: ALICE, motivo: 'Engano na sala' }).expect(200);
+    }
+    assert.equal(db.memory.auditLogs.some(entry => entry.type === 'exam_attempt_reopened_by_instructor'), false);
+    assert.equal((await monitorRow(application.id, ALICE)).canReopen, true);
+    await action(application.id, { action: 'reabrir', studentEmail: ALICE, motivo: 'Pedido do aluno' }).expect(200);
+});
+
 test('[UC-TENTATIVA-004] reaberta pelo professor e desconsiderada no encerramento: a entrega anterior volta', async () => {
     const application = await running();
     const started = await begin(ALICE, application.id);
@@ -386,7 +411,7 @@ test('[UC-TENTATIVA-004] tentativa extra sem limite de tentativas é recusada', 
     assert.equal(effectiveFor(application.id, ALICE), undefined);
 });
 
-test('[UC-TENTATIVA-004] ações por aluno: escopo, aluno de outra turma, ação inválida e anular fica para depois', async () => {
+test('[UC-TENTATIVA-004] ações por aluno: escopo, aluno de outra turma e ação inválida', async () => {
     const application = await running();
     await begin(ALICE, application.id);
 
@@ -395,9 +420,12 @@ test('[UC-TENTATIVA-004] ações por aluno: escopo, aluno de outra turma, ação
     const outsider = await action(application.id, { action: 'tentativa_extra', studentEmail: DIEGO }).expect(404);
     assert.equal(outsider.body.field, 'studentEmail');
     await action('app_inexistente', { action: 'recolher', studentEmail: ALICE }).expect(404);
-    for (const name of ['anular', 'desfazer_anulacao', 'apagar']) {
-        const refused = await action(application.id, { action: name, studentEmail: ALICE }).expect(400);
-        assert.equal(refused.body.field, 'action');
+    const refused = await action(application.id, { action: 'apagar', studentEmail: ALICE }).expect(400);
+    assert.equal(refused.body.field, 'action');
+    // Anular e desfazer (P3-S4a) pedem motivo; sem ele, nada muda.
+    for (const name of ['anular', 'desfazer_anulacao']) {
+        const noReason = await action(application.id, { action: name, studentEmail: ALICE }).expect(400);
+        assert.equal(noReason.body.field, 'motivo');
     }
     await action(application.id, { studentEmail: ALICE }).expect(400);
     assert.ok(openState(ALICE, application.id), 'nenhuma recusa mexe na tentativa');
@@ -721,4 +749,187 @@ test('[UC-TENTATIVA-004] [UC-PAPEIS-001] ações por aluno do Professor auxiliar
     // O professor da turma (com page.exams) continua recebendo a aplicação inteira.
     const extraAdmin = await action(application.id, { action: 'tentativa_extra', studentEmail: BRUNO }).expect(200);
     assert.ok(Array.isArray(extraAdmin.body.application.versionSnapshots));
+});
+
+// Anular por integridade (cola) e desfazer (P3-S4a, A9; D18 e P-B1 do P3).
+const { calculateAttemptResult } = require('../../backend/utils/submissionAttempts.js');
+const { sanitizeSubmissionForStudent } = require('../../backend/middlewares.js');
+
+function consolidated(applicationId, email) {
+    return calculateAttemptResult(deliveries(applicationId, email));
+}
+
+test('[UC-TENTATIVA-004] anular a entrega: nota zero com motivo, auditoria e registro; desfazer volta a nota; "não conta" fica fora', async () => {
+    const application = await running();
+    const started = await begin(ALICE, application.id);
+    await submit(ALICE, application.id, started, { 1: 'A', 2: 'A' });
+    const [delivery] = deliveries(application.id, ALICE);
+    assert.equal(delivery.score, 100);
+    assert.equal(consolidated(application.id, ALICE).score, 100);
+    const before = await monitorRow(application.id, ALICE);
+    assert.equal(before.canInvalidate, true);
+    assert.equal(before.canUndoInvalidation, false);
+
+    const short = await action(application.id, { action: 'anular', studentEmail: ALICE, motivo: 'x' }).expect(400);
+    assert.equal(short.body.field, 'motivo');
+    const badDecision = await action(application.id, { action: 'anular', studentEmail: ALICE, motivo: 'Cola com celular', decisao: 'apagar' }).expect(400);
+    assert.equal(badDecision.body.field, 'decisao');
+    assert.equal(delivery.integrity, undefined);
+
+    // Padrão (P-B1): zero.
+    const annulled = await action(application.id, { action: 'anular', studentEmail: ALICE, motivo: 'Cola com celular' }).expect(200);
+    assert.equal(annulled.body.submission.id, delivery.id);
+    assert.equal(annulled.body.submission.integrity, 'zero');
+    assert.deepEqual([annulled.body.consolidated.before, annulled.body.consolidated.after], [100, 0]);
+    assert.equal(delivery.score, 100, 'a nota gravada não muda: o calculador aplica a decisão');
+    assert.equal(delivery.integrity.decisao, 'zero');
+    assert.equal(delivery.integrity.motivo, 'Cola com celular');
+    assert.equal(delivery.integrity.por, 'admin@acoes.local');
+    assert.equal(consolidated(application.id, ALICE).score, 0);
+    const audit = db.memory.auditLogs.find(entry => entry.action === 'grade_invalidated');
+    assert.ok(audit, 'anular grava grade_invalidated');
+    assert.equal(audit.reason, 'Cola com celular');
+    assert.equal(audit.submissionId, delivery.id);
+    assert.match(audit.newValue, /anulada \(nota zero\)/);
+    const log = db.memory.proctoringLogs.find(entry => entry.eventType === 'attempt_invalidated');
+    assert.ok(log && log.studentEmail === ALICE);
+    assert.doesNotMatch(log.details, /Cola com celular/, 'o motivo fica na auditoria, não no registro que o aluno vê');
+    const row = await monitorRow(application.id, ALICE);
+    assert.equal(row.integrity, 'zero');
+    assert.equal(row.canUndoInvalidation, true);
+    assert.equal(row.canReopen, false);
+
+    // Antes de publicar, o aluno não fica sabendo; com a nota publicada, vê a tentativa
+    // anulada com 0.
+    assert.equal(sanitizeSubmissionForStudent(delivery, false).anulada, undefined);
+    delivery.gradePublished = true;
+    const studentView = sanitizeSubmissionForStudent(delivery, false);
+    assert.equal(studentView.anulada, 'zero');
+    assert.equal(studentView.score, 0);
+    assert.equal(studentView.integrity, undefined);
+    assert.doesNotMatch(JSON.stringify(studentView), /Cola com celular|admin@acoes/);
+    delivery.gradePublished = false;
+
+    const again = await action(application.id, { action: 'anular', studentEmail: ALICE, motivo: 'De novo', decisao: 'desconsiderar' }).expect(409);
+    assert.equal(again.body.code, 'already_invalidated');
+
+    const undone = await action(application.id, { action: 'desfazer_anulacao', studentEmail: ALICE, motivo: 'Era a calculadora liberada' }).expect(200);
+    assert.equal(undone.body.submission.integrity, null);
+    assert.equal(undone.body.consolidated.after, 100);
+    assert.equal(consolidated(application.id, ALICE).score, 100);
+    assert.equal(delivery.integrity.desfeitaPor, 'admin@acoes.local');
+    assert.equal(delivery.integrity.motivoDesfeita, 'Era a calculadora liberada');
+    assert.ok(db.memory.auditLogs.some(entry => entry.action === 'grade_invalidation_undone' && entry.reason === 'Era a calculadora liberada'));
+    assert.ok(db.memory.proctoringLogs.some(entry => entry.eventType === 'attempt_invalidation_undone'));
+    const notAnnulled = await action(application.id, { action: 'desfazer_anulacao', studentEmail: ALICE, motivo: 'Outra vez' }).expect(409);
+    assert.equal(notAnnulled.body.code, 'not_invalidated');
+
+    // "Não conta": a tentativa sai da conta (sem nota, como se não tivesse feito).
+    await action(application.id, { action: 'anular', studentEmail: ALICE, motivo: 'Trocou de prova com o colega', decisao: 'desconsiderar' }).expect(200);
+    assert.equal(delivery.integrity.decisao, 'desconsiderar');
+    assert.equal(delivery.integrity.anteriores.length, 1, 'a anulação desfeita fica no histórico da entrega');
+    assert.equal(consolidated(application.id, ALICE).score, null);
+    delivery.gradePublished = true;
+    const hidden = sanitizeSubmissionForStudent(delivery, false);
+    assert.equal(hidden.anulada, 'desconsiderar');
+    assert.equal(hidden.gradePublished, false, 'a que não conta não mostra nota');
+});
+
+test('[UC-TENTATIVA-004] anular a prova em andamento recolhe a tentativa antes; sem entrega é 409; o auxiliar não anula', async () => {
+    const auxiliar = req => req.set('x-admin-session', auxiliarToken);
+    const application = await running();
+    const started = await begin(ALICE, application.id);
+    openState(ALICE, application.id).answers = { 1: 'A' };
+
+    const refused = await action(application.id, { action: 'anular', studentEmail: ALICE, motivo: 'Cola com celular' }, auxiliar).expect(403);
+    assert.doesNotMatch(JSON.stringify(refused.body), /alice@/);
+    assert.ok(openState(ALICE, application.id), 'a recusa não recolhe');
+
+    const annulled = await action(application.id, { action: 'anular', studentEmail: ALICE, motivo: 'Cola com celular' }).expect(200);
+    assert.equal(annulled.body.submission.recolhida, true);
+    assert.equal(openState(ALICE, application.id), undefined, 'a tentativa foi recolhida');
+    const [delivery] = deliveries(application.id, ALICE);
+    assert.equal(delivery.attemptId, started.attemptId);
+    assert.equal(delivery.submissionSource, 'instructor_collect');
+    assert.equal(delivery.integrity.decisao, 'zero');
+    assert.ok(db.memory.auditLogs.some(entry => entry.type === 'exam_attempt_collected'));
+    assert.equal(db.memory.auditLogs.find(entry => entry.action === 'grade_invalidated').details.recolhida, true);
+
+    const nobody = await action(application.id, { action: 'anular', studentEmail: BRUNO, motivo: 'Cola com celular' }).expect(409);
+    assert.equal(nobody.body.code, 'no_submission');
+    const unknown = await action(application.id, { action: 'anular', studentEmail: ALICE, motivo: 'Cola com celular', submissionId: 'sub_outra' }).expect(404);
+    assert.equal(unknown.body.code, 'submission_not_found');
+});
+
+test('[UC-TENTATIVA-004] anular vale na aplicação encerrada e o Monitor oferece só anular e desfazer', async () => {
+    const application = await running();
+    const started = await begin(ALICE, application.id);
+    await submit(ALICE, application.id, started, { 1: 'A' });
+    await admin(request(app).post(`/api/admin/exam-applications/${application.id}/control`)).send({ action: 'finish' }).expect(200);
+    const row = await monitorRow(application.id, ALICE);
+    assert.equal(row.canInvalidate, true);
+    assert.equal(row.canReopen, false);
+    await action(application.id, { action: 'anular', studentEmail: ALICE, motivo: 'Cola descoberta na correção' }).expect(200);
+    assert.equal(deliveries(application.id, ALICE)[0].integrity.decisao, 'zero');
+    const after = await monitorRow(application.id, ALICE);
+    assert.equal(after.canInvalidate, false, 'a última entrega já está anulada');
+    assert.equal(after.canUndoInvalidation, true);
+});
+
+// A9, ajuste 2: o "+N min" da turma (reopenDeadlineDeliveries) devolvia à prova a entrega
+// do fim do tempo anulada por cola: a anulação ficava só na cópia guardada e a entrega
+// nova nascia sem ela, contando a nota cheia. Agora a anulada fica e é contada entre as
+// entregues no fim do tempo; desfeita a anulação, o "+N min" reabre como antes.
+test('[UC-TENTATIVA-004] "+N min" da turma não reabre a entrega do fim do tempo anulada por cola', async () => {
+    const application = await running();
+    await begin(ALICE, application.id);
+    const state = openState(ALICE, application.id);
+    state.answers = { 1: 'A', 2: 'A' };
+    state.startedAt = Date.now() - 31 * MINUTE;
+    state.deadlineAt = Date.now() - 30 * 1000;
+    // O Monitor entrega pelo fim do tempo (deadline_server_auto_submit).
+    await monitorRow(application.id, ALICE);
+    const [delivery] = deliveries(application.id, ALICE);
+    assert.ok(delivery, 'entregue pelo fim do tempo');
+    assert.ok(delivery.reopenableState && delivery.reopenableState.startedAt);
+    assert.equal(consolidated(application.id, ALICE).score, 100);
+
+    for (const decisao of ['zero', 'desconsiderar']) {
+        await action(application.id, { action: 'anular', studentEmail: ALICE, motivo: 'Cola com celular', decisao }).expect(200);
+        const adjusted = await admin(request(app).post(`/api/admin/exam-applications/${application.id}/time-adjustment`)).send({ adjustmentMinutes: 5 }).expect(200);
+        assert.equal(adjusted.body.reopenedAtDeadline, 0, decisao);
+        assert.equal(adjusted.body.deliveredAtDeadline, 1, 'a anulada conta entre as que ficaram entregues');
+        const still = deliveries(application.id, ALICE);
+        assert.equal(still.length, 1, 'a entrega anulada continua na lista');
+        assert.equal(still[0].id, delivery.id);
+        assert.equal(still[0].integrity.decisao, decisao);
+        assert.equal(openState(ALICE, application.id), undefined, 'o aluno não volta para a prova');
+        assert.equal(consolidated(application.id, ALICE).score, decisao === 'zero' ? 0 : null);
+        await action(application.id, { action: 'desfazer_anulacao', studentEmail: ALICE, motivo: 'Engano na sala' }).expect(200);
+    }
+    assert.equal(db.memory.auditLogs.some(entry => entry.type === 'exam_attempt_reopened_extra_time'), false);
+
+    // Sem anulação, o "+N min" ainda reabre a entrega do fim do tempo.
+    const reopened = await admin(request(app).post(`/api/admin/exam-applications/${application.id}/time-adjustment`)).send({ adjustmentMinutes: 5 }).expect(200);
+    assert.equal(reopened.body.reopenedAtDeadline, 1);
+    assert.ok(openState(ALICE, application.id), 'desfeita a anulação, volta para a prova');
+});
+
+// A9, ajuste 2: só a tela escondia "Anular" na aplicação cancelada (canInvalidate); o
+// servidor aceitava. Desfazer uma anulação de antes do cancelamento continua valendo.
+test('[UC-TENTATIVA-004] anular é recusado na aplicação cancelada; desfazer a anulação de antes continua', async () => {
+    const application = await running();
+    const started = await begin(ALICE, application.id);
+    await submit(ALICE, application.id, started, { 1: 'A' });
+    const startedB = await begin(BRUNO, application.id);
+    await submit(BRUNO, application.id, startedB, { 1: 'A' });
+    await action(application.id, { action: 'anular', studentEmail: BRUNO, motivo: 'Cola com celular' }).expect(200);
+    db.memory.examApplications.find(item => item.id === application.id).status = 'cancelled';
+
+    const refused = await action(application.id, { action: 'anular', studentEmail: ALICE, motivo: 'Cola com celular' }).expect(409);
+    assert.equal(refused.body.code, 'application_cancelled');
+    assert.equal(deliveries(application.id, ALICE)[0].integrity, undefined, 'a recusa não anula');
+    assert.equal(db.memory.auditLogs.filter(entry => entry.action === 'grade_invalidated').length, 1);
+    await action(application.id, { action: 'desfazer_anulacao', studentEmail: BRUNO, motivo: 'Engano na sala' }).expect(200);
+    assert.equal(deliveries(application.id, BRUNO)[0].integrity.desfeitaPor, 'admin@acoes.local');
 });

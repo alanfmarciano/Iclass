@@ -1,0 +1,44 @@
+MODELO: revisar com um advogado antes de vender ou entregar a outra instituição.
+
+LICENÇA DE USO DO IClass
+
+Titular: [NOME DO TITULAR DO IClass]
+Licenciada: a instituição de ensino que instalou o IClass ("a Instituição").
+
+1. O que esta licença permite
+   O titular concede à Instituição, sem exclusividade e sem direito de transferir a
+   terceiros, o direito de instalar e usar o IClass nos computadores dela, para as
+   atividades de ensino dela, pelo prazo e nas condições combinados com o titular.
+
+2. O que esta licença não permite
+   a) vender, alugar, emprestar ou redistribuir o IClass, no todo ou em parte;
+   b) retirar ou alterar avisos de autoria, desta licença ou dos avisos de terceiros;
+   c) usar o IClass para oferecer o mesmo serviço a outras instituições.
+
+3. Dados da Instituição
+   Os dados gravados no IClass (alunos, notas, presença, provas, apostilas e demais
+   conteúdos criados pela Instituição) pertencem à Instituição e ficam no computador dela.
+   O titular não recebe esses dados pelo IClass. A Instituição é a controladora dos dados
+   pessoais dos alunos para fins da LGPD (Lei 13.709/2018).
+
+4. Conteúdo que acompanha o IClass
+   Apostilas, avaliações e cursos de exemplo que o titular entregar junto com o IClass
+   seguem com o titular e podem ser usados pela Instituição nas aulas dela, sem
+   redistribuição fora dela.
+
+5. Programas de terceiros
+   O IClass usa programas de código aberto, cada um com a licença do seu autor. A lista e
+   os textos dessas licenças estão no arquivo THIRD_PARTY_NOTICES.txt que acompanha o
+   IClass. Esta licença não restringe os direitos que essas licenças dão.
+
+6. Garantia e responsabilidade
+   O IClass é entregue no estado em que se encontra. Faça backups com frequência (o IClass
+   faz um por dia e permite um destino externo). O titular não responde por perda de dados
+   causada por falha do computador, do disco ou da rede da Instituição.
+
+7. Fim da licença
+   O descumprimento desta licença a encerra. Ao fim da licença, a Instituição pode
+   continuar a exportar e guardar os dados dela.
+
+8. Foro
+   [CIDADE/UF do foro escolhido].

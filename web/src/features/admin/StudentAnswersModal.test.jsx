@@ -75,6 +75,16 @@ describe('[UC-PROVA-003] revisão das respostas no Monitor', () => {
   })
 })
 
+describe('[UC-PROVA-007] revisão de quem ainda não sorteou', () => {
+  it('no sorteio por aluno, quem não abriu a prova não tem questões: a tela diz que elas são sorteadas ao começar', async () => {
+    apiMock.get.mockResolvedValue({ status: 'not_started', alternativeLabels: 'position', assignedVersion: 'A', answeredCount: 0, totalCount: 3, correctCount: 0, hasSnapshot: true, drawPending: true, questions: [] })
+    render(<StudentAnswersModal open onClose={() => {}} student={{ email: 'ana@escola.local', name: 'Ana' }} className="1DES" courseId="curso" examKey="Avaliacao" applicationId="app-1" />)
+    expect(await screen.findByText('As questões deste aluno são sorteadas quando ele começar a prova.')).toBeVisible()
+    expect(screen.getByText('Progresso 0/3')).toBeInTheDocument()
+    expect(screen.queryByText('Este aluno ainda não respondeu nenhuma questão.')).not.toBeInTheDocument()
+  })
+})
+
 describe('[UC-IDENT-003] revisão das respostas de aluno sem e-mail', () => {
   it('o subtítulo mostra "sem e-mail", nunca o endereço interno', async () => {
     apiMock.get.mockResolvedValue(positionReview())

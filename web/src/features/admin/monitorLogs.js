@@ -41,6 +41,17 @@ export function focusLogLabel(log) {
   // Ações por aluno do Monitor (P3-S8): ficam no registro, sem contar como saída de foco.
   if (type === 'attempt_collected') return 'Recolhida pelo professor'
   if (type === 'attempt_reopened') return 'Reaberta pelo professor'
+  // Anulação por cola (P3-S4a): o texto do registro diz a decisão (nota zero ou não conta).
+  if (type === 'attempt_invalidated') {
+    const details = String(log?.details || '').toLowerCase()
+    if (details.includes('nota zero')) return 'Tentativa anulada (nota zero)'
+    if (details.includes('não conta')) return 'Tentativa anulada (não conta)'
+    return 'Tentativa anulada pelo professor'
+  }
+  if (type === 'attempt_invalidation_undone') return 'Anulação desfeita pelo professor'
+  // Outro login e troca de IP durante a prova (P3-S13).
+  if (type === 'session_replaced') return 'Entrou de outro aparelho'
+  if (type === 'ip_changed') return 'Mudou de endereço de rede (IP)'
   if (type === 'time_adjusted') {
     const amount = String(log?.details || '').match(/^[+-]?\d+ min/)
     return amount ? `Tempo ajustado (${amount[0]})` : 'Tempo ajustado pelo professor'
@@ -64,6 +75,111 @@ export const LOG_INFO = {
   exam_error_reload: { label: 'Recarregou depois do erro de tela', icon: '↻', sev: 'info', pauses: false, informative: true, badge: 'não travou a prova' },
   // O IClass foi atualizado com a prova aberta e a página recarregou sozinha (não é saída).
   exam_update_reload: { label: 'Recarregou com a atualização do IClass', icon: '↻', sev: 'info', pauses: false, informative: true, badge: 'não travou a prova' },
+  // Outro login com a mesma conta no meio da prova (P3-S13, D28): trava pela política da
+  // aplicação ('travar', o padrão); com 'avisar', fica só o aviso (logInfoFor). Não é
+  // comando do aluno nem saída de foco: tem contador próprio no painel (counter 'device').
+  session_replaced: { label: 'Entrou de outro aparelho', icon: '⇆', sev: 'high', informative: true, counter: 'device' },
+  // Troca de endereço de rede (celular que troca de Wi-Fi para 4G): só aviso, nunca trava.
+  ip_changed: { label: 'Mudou de endereço de rede (IP)', icon: '⇄', sev: 'info', pauses: false, informative: true, badge: 'não travou a prova' },
+}
+
+// Informação do painel para um registro: a de LOG_INFO e, no outro login, se ele travou a
+// prova (o registro guarda sessionChange.travou).
+export function logInfoFor(log) {
+  const info = LOG_INFO[log?.eventType]
+  if (!info) return info
+  if (log.eventType === 'session_replaced' && log.sessionChange && log.sessionChange.travou !== true) {
+    return { ...info, pauses: false, badge: 'não travou a prova' }
+  }
+  return info
+}
+
+// Saída de foco que conta no painel do aluno: registro de foco que pausou a prova, sem
+// contador próprio (o outro aparelho conta à parte, em deviceChangeCount).
+export function countsAsFocusExit(item) {
+  return !!item && item.kind === 'focus' && item.pauses !== false && !item.counter
+}
+
+// Entrada em outro aparelho no painel do aluno (P3-S13).
+export function isDeviceChangeItem(item) {
+  return !!item && item.counter === 'device'
+}
+
+// IP e navegador de antes e de agora do outro login e da troca de IP (o registro guarda
+// sessionChange), para o painel do aluno: '' nos outros registros.
+export function sessionChangeText(log) {
+  const change = log?.sessionChange
+  if (!change || typeof change !== 'object') return ''
+  if (log.eventType !== 'session_replaced' && log.eventType !== 'ip_changed') return ''
+  const lead = change.saiuDaConta ? 'Saiu da conta e entrou de novo. ' : ''
+  return `${lead}${changePairText(change)}`
+}
+
+// Motivo da trava mostrado na linha do Monitor: o código do servidor vira texto.
+export function lockReasonLabel(reason) {
+  if (reason === 'session_replaced') return 'Entrou de outro aparelho'
+  return reason || ''
+}
+
+function clockTime(ms) {
+  const at = Number(ms)
+  if (!Number.isFinite(at) || at <= 0) return ''
+  return new Date(at).toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' })
+}
+
+// IP e navegador de antes e de agora em texto ('' sem dados).
+function changePairText(change) {
+  if (!change || typeof change !== 'object') return ''
+  const pair = (before, after) => {
+    const a = before || 'desconhecido'
+    const b = after || 'desconhecido'
+    return a === b ? a : `${a} → ${b}`
+  }
+  return `IP: ${pair(change.ipAntes, change.ipDepois)} · Navegador: ${pair(change.navegadorAntes, change.navegadorDepois)}`
+}
+
+const TRAIL_HINT = 'Todas as entradas ficam no Registro da aplicação, em Resultados.'
+
+// Selos da linha do Monitor para o outro login e a troca de IP (P3-S13, D28):
+// [{ key, tone, text, title, detail }]. detail: IP e navegador de antes e de agora do mais
+// recente (lastSessionReplaced / lastIpChange da linha), mostrado embaixo do selo.
+export function sessionRowBadges(row) {
+  const badges = []
+  if (Number(row?.sessionReplacedCount) > 0) {
+    const time = clockTime(row.sessionReplacedAt)
+    const times = Number(row.sessionReplacedCount)
+    const detail = changePairText(row.lastSessionReplaced)
+    const lead = row.lastSessionReplaced?.saiuDaConta ? 'Saiu da conta com a prova em andamento e entrou de novo. ' : ''
+    badges.push({
+      key: 'session_replaced',
+      tone: 'danger',
+      text: time ? `Entrou de outro aparelho às ${time}` : 'Entrou de outro aparelho',
+      title: `${times > 1
+        ? `A conta entrou em outro aparelho ${times} vezes durante esta tentativa.`
+        : 'A conta entrou em outro aparelho durante esta tentativa.'} ${lead}${detail ? `${times > 1 ? 'Última entrada: ' : ''}${detail}. ` : ''}${TRAIL_HINT}`,
+      detail,
+    })
+  }
+  if (Number(row?.ipChangeCount) > 0) {
+    const times = Number(row.ipChangeCount)
+    const detail = changePairText(row.lastIpChange)
+    badges.push({
+      key: 'ip_changed',
+      tone: 'warning',
+      text: times > 1 ? `Mudou de IP (${times}×)` : 'Mudou de IP',
+      title: `O endereço de rede do aparelho mudou durante a prova (por exemplo, o celular trocou de Wi-Fi para 4G). A prova não foi travada. ${detail ? `${times > 1 ? 'Última troca: ' : ''}${detail}. ` : ''}${TRAIL_HINT}`,
+      detail,
+    })
+  }
+  return badges
+}
+
+// "Mesmo IP de Fulano" (D29): o servidor só manda sameIpAs com 2 ou 3 alunos no mesmo IP
+// numa sala com pelo menos 5 IPs diferentes. nameOf: (pessoa) => nome para mostrar.
+export function sameIpLabel(row, nameOf = (person) => person?.name || '') {
+  const others = (Array.isArray(row?.sameIpAs) ? row.sameIpAs : []).map(nameOf).filter(Boolean)
+  if (!others.length) return ''
+  return `Mesmo IP de ${others.join(' e ')}`
 }
 
 const SEV_RANK = { high: 3, med: 2, low: 1 }

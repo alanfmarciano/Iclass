@@ -8,6 +8,8 @@ describe('[UC-TENTATIVA-001] como a entrega chegou (AVA-03, UXA-01)', () => {
     expect(deliveryLabel({ submissionSource: 'timer_auto_submit', lateBySeconds: 184 })).toBe('Enviada após o prazo (3 min 4 s)')
     expect(deliveryLabel({ submissionSource: 'timer_auto_submit' })).toBe('Enviada automaticamente no fim do tempo')
     expect(deliveryLabel({ submissionSource: 'instructor_finish' })).toBe('Salva pelo professor ao encerrar')
+    // Fechamento da prova agendada (P3-S12): não diz que foi o professor.
+    expect(deliveryLabel({ submissionSource: 'instructor_finish', finishedBySchedule: true })).toBe('Entregue no horário de fechar da agenda, com as respostas salvas')
     expect(deliveryLabel({ submissionSource: 'student' })).toBe('')
     expect(formatLateness(120)).toBe('2 min')
   })
@@ -16,6 +18,11 @@ describe('[UC-TENTATIVA-001] como a entrega chegou (AVA-03, UXA-01)', () => {
     const locked = { submissionSource: 'deadline_server_auto_submit', focusLockedAtDeadline: true }
     expect(deliveryLabel(locked)).toMatch(/bloqueada por perda de foco/)
     expect(deliveryTone(locked)).toBe('warning')
+    // Travada pela entrada em outro aparelho (P3-S13): o texto não fala em perda de foco.
+    const byDevice = { ...locked, focusLockedAtDeadlineReason: 'session_replaced' }
+    expect(deliveryLabel(byDevice)).toMatch(/travada pela entrada em outro aparelho/)
+    expect(deliveryLabel(byDevice)).not.toMatch(/perda de foco/)
+    expect(deliveryLabel({ ...locked, focusLockReason: 'session_replaced' })).toMatch(/outro aparelho/)
     const recovered = { submissionSource: 'deadline_server_auto_submit', recoveredAfterFinish: true }
     expect(deliveryLabel(recovered)).toMatch(/Recuperada depois do encerramento/)
     expect(deliveryTone(recovered)).toBe('warning')

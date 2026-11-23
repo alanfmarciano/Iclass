@@ -570,3 +570,37 @@ test('[UC-ENCERRADOS-002] anonimizar dá nome neutro aos arquivos da pasta manda
     ['ana', 'Ana', 'atestado-', 'foto', 'ficha', 'LEIA'].forEach(value => assert.ok(!visible.includes(value), `sobrou "${value}" nos nomes`));
     clearFiles();
 });
+
+// A9, ajuste 2 (P3-S4a): o texto livre do professor que a entrega guarda (motivo da
+// anulação por cola e do desfazer, comentários e motivos da correção, motivo da mudança
+// de nota) pode citar o aluno. Anonimizar tira o nome, o e-mail e a matrícula dele e
+// deixa o resto; pontos, decisão e nota ficam.
+test('[UC-ENCERRADOS-002] anonimizar tira o nome do aluno do motivo da anulação e dos comentários da correção', async () => {
+    const sub = db.memory.submissions.find(item => item.id === 'sub-ana');
+    sub.integrity = {
+        decisao: 'zero', motivo: `A ${ANA.name} colou pelo celular`, por: 'prof@vida.local', em: 1,
+        anteriores: [{ decisao: 'desconsiderar', motivo: `Aninha trocou de prova (${ANA.matricula})`, por: 'prof@vida.local', em: 0, desfeitaEm: 1, desfeitaPor: 'prof@vida.local', motivoDesfeita: `Engano: não era a ${ANA.name}` }],
+    };
+    sub.correcao = {
+        situacao: 'concluida', versao: 3, comentarioGeral: `Boa prova, ${ANA.name}!`, concluidaPor: 'prof@vida.local',
+        itens: { 2: { pontos: 1.5, comentario: `Faltou exemplo, Aninha (${ANA.email})`, rubrica: { ideia: 1 }, motivo: 'Revisão pedida', por: 'prof@vida.local', em: 1 } },
+    };
+    sub.scoreHistory = [{ at: '2026-03-02T00:00:00.000Z', from: 50, to: 80, reason: `Pedido de revisão da ${ANA.name}`, by: 'prof@vida.local' }];
+    await desligar({ emails: [ANA.email], status: 'Evadido', reason: 'Parou de vir' }).expect(200);
+    const res = await anonymize({ email: ANA.email, confirm: 'anonimizar', reason: 'Pedido da família' }).expect(200);
+    const kept = db.memory.submissions.find(item => item.id === 'sub-ana');
+    const text = JSON.stringify(kept);
+    for (const personal of [ANA.name, 'Aninha', ANA.email, ANA.matricula]) assert.equal(text.includes(personal), false, personal);
+    assert.match(kept.integrity.motivo, /colou pelo celular/);
+    assert.ok(kept.integrity.motivo.includes(res.body.name), 'o nome vira o pseudônimo');
+    assert.equal(kept.integrity.decisao, 'zero');
+    assert.match(kept.integrity.anteriores[0].motivo, /trocou de prova/);
+    assert.match(kept.integrity.anteriores[0].motivoDesfeita, /^Engano: não era/);
+    assert.match(kept.correcao.comentarioGeral, /^Boa prova/);
+    assert.deepEqual([kept.correcao.itens[2].pontos, kept.correcao.itens[2].rubrica, kept.correcao.itens[2].motivo, kept.correcao.versao], [1.5, { ideia: 1 }, 'Revisão pedida', 3]);
+    assert.match(kept.correcao.itens[2].comentario, /^Faltou exemplo/);
+    assert.match(kept.scoreHistory[0].reason, /^Pedido de revisão/);
+    assert.deepEqual([kept.scoreHistory[0].from, kept.scoreHistory[0].to, kept.score], [50, 80, 80]);
+    // A entrega de outro aluno não muda.
+    assert.equal(db.memory.submissions.find(item => item.id === 'sub-bruno').student.name, 'Bruno Alves');
+});

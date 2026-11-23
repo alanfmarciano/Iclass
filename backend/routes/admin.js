@@ -34,7 +34,8 @@ const {
     validateAdminPermission
 } = require('../middlewares.js');
 const { importWarningsFor, parseEvaluationMarkdown, parseEvaluationMarkdownWithWarnings } = require('../utils/parser.js');
-const { gradeAttempt, correctAnswerFor } = require('../utils/examGrading.js');
+const { gradeAttempt, correctAnswerFor, newCorrection } = require('../utils/examGrading.js');
+const { isPerStudentDraw } = require('../utils/examDraw.js');
 const { alternativeLabelsMode, seenAlternativeLetter, seenLetterFor } = require('../utils/examAnswerIds.js');
 const { DEFAULT_POINTS, describeAnswer, isAnswered, questionType } = require('../utils/examScoring.js');
 
@@ -107,8 +108,9 @@ const ANONYMIZED_STATUS_REFUSAL = 'A situação Anonimizado só é aplicada em C
 const { recordAudit, auditTimestamp, normalizeAuditEntry, auditEntryWithoutSecrets } = require('../utils/audit.js');
 const { generateTemporaryPassword, passwordPolicyRefusal, validateNewPassword } = require('../utils/passwordPolicy.js');
 const { passwordChangeRuleActive, requirePasswordChange, studentHasExamInProgress, studentHasOpenAttempt } = require('../utils/passwordChange.js');
+const { sessionEventsSummary, sharedIpSummary } = require('../utils/examSessionIntegrity.js');
 const { extractBranding, extractInstitutional, validateBrandingPatch } = require('../utils/branding.js');
-const { VALID_POLICIES, calculateAttemptResult, enrichSubmissionsWithAttemptResult, normalizeScore } = require('../utils/submissionAttempts.js');
+const { VALID_POLICIES, calculateAttemptResult, effectiveScore, enrichSubmissionsWithAttemptResult, integrityDecision, isAwaitingCorrection, normalizeScore } = require('../utils/submissionAttempts.js');
 const {
     MANUAL_TYPES,
     buildClassGradebook,
@@ -207,10 +209,13 @@ const { createAdminPrivacyRouter } = require('./adminPrivacy.js');
 const { createAdminStudentRecordsRouter } = require('./adminStudentRecords.js');
 const { createAdminCoursesRouter, courseIdError, parseCourseName, schoolExists } = require('./adminCourses.js');
 const { createAdminAcademicRouter } = require('./adminAcademic.js');
+const { createAdminCorrectionsRouter } = require('./adminCorrections.js');
 const { nonSchoolDayCalendarItems } = require('../utils/calendarFeed.js');
 const { createAdminQuestionBankRouter } = require('./adminQuestionBank.js');
 const { createAdminPreviewRouter } = require('./adminPreview.js');
 const { createAdminAssignmentsRouter } = require('./adminAssignments.js');
+const { createAdminCoursePackageRouter } = require('./adminCoursePackage.js');
+const { remapCourseKeys } = require('../utils/coursePackage.js');
 const { body, either, list, num, shape, str } = require('../utils/inputSchema.js');
 const { normalizeEvaluationQuestions, questionInputSchema } = require('../utils/questionModel.js');
 
@@ -750,9 +755,14 @@ router.get('/api/admin/submissions/:id/review', (req, res) => {
         const gradedAnswers = Array.isArray(submission.gradedAnswers) ? submission.gradedAnswers : [];
         const gradedByNumber = new Map(gradedAnswers.map(answer => [Number(answer.questionNumber), answer]));
         const submittedNumbers = gradedAnswers.map(answer => Number(answer.questionNumber)).filter(Number.isFinite);
-        let snapshot = submission.examSnapshot && Array.isArray(submission.examSnapshot.questions)
+        // Cartão-resposta (prova impressa): a revisão mostra a versão impressa do histórico,
+        // como antes; as questões que a entrega guardou desde o P3-S4a (examSnapshot, para a
+        // correção do professor) só entram quando o histórico não tem a versão.
+        const ownSnapshot = submission.examSnapshot && Array.isArray(submission.examSnapshot.questions)
             ? submission.examSnapshot
             : null;
+        const cardEntry = submission.entryMode === 'card' && !submission.applicationId;
+        let snapshot = cardEntry ? null : ownSnapshot;
         let source = snapshot ? 'attempt' : null;
 
         if (!snapshot && submittedNumbers.length > 0) {
@@ -780,6 +790,10 @@ router.get('/api/admin/submissions/:id/review', (req, res) => {
                     break;
                 }
             }
+        }
+        if (!snapshot && ownSnapshot) {
+            snapshot = ownSnapshot;
+            source = 'attempt';
         }
 
         let questions = snapshot && Array.isArray(snapshot.questions) ? snapshot.questions : [];
@@ -877,10 +891,15 @@ router.post('/api/admin/submissions/publish', (req, res) => {
         if (!motive.ok) return res.status(motive.status).json(motive.body);
         let updated = 0;
         let skippedInvalid = 0;
+        let skippedPendingCorrection = 0;
         submissions.forEach(item => {
             if (!ids.has(String(item.id)) || !allowedIds.has(String(item.id))) return;
             // Nota inválida (vazia ou fora de 0 a 10, de registros antigos) nunca é publicada.
             if (published && normalizeScore(item.score) === null) { skippedInvalid++; return; }
+            // Entrega esperando a correção do professor (P3-S4a, D7): a nota dela é só a das
+            // objetivas e não vai para o aluno até a correção ser concluída. A anulada por
+            // integridade não espera correção (vale a decisão do professor).
+            if (published && integrityDecision(item) === null && isAwaitingCorrection(item)) { skippedPendingCorrection++; return; }
             const wasPublished = item.gradePublished === true;
             item.gradePublished = published;
             item.gradePublishedAt = published ? Date.now() : null;
@@ -900,7 +919,7 @@ router.post('/api/admin/submissions/publish', (req, res) => {
             }
         });
         writeJSON(DB_SUBMISSIONS_FILE, submissions);
-        res.json({ success: true, updated, published, skippedInvalid });
+        res.json({ success: true, updated, published, skippedInvalid, skippedPendingCorrection });
     });
 });
 
@@ -1281,6 +1300,8 @@ router.post('/api/admin/submissions/create', (req, res) => {
         let finalTotalCount = null;
         let gradedAnswers = [];
         let entryMode = 'quick';
+        // Cartão-resposta: pontos, questões da entrega e o que espera o professor.
+        let printedDetails = null;
 
         if (answers !== undefined && answers !== null && (typeof answers !== 'object' || Array.isArray(answers))) {
             return res.status(400).json({ error: 'Respostas do cartão em formato inválido.' });
@@ -1345,25 +1366,30 @@ router.post('/api/admin/submissions/create', (req, res) => {
                     }
                 });
             }
-            finalTotalCount = selectedQuestions.length;
-            finalCorrectCount = 0;
-
-            selectedQuestions.forEach(q => {
-                const correctAnswer = correctAnswerFor(q);
-                const studentChoice = normalizedAnswers[q.originalNumber] || null;
-                const isCorrect = !!correctAnswer && studentChoice === correctAnswer;
-                if (isCorrect) {
-                    finalCorrectCount++;
-                }
-                gradedAnswers.push({
-                    questionNumber: q.originalNumber,
-                    studentChoice,
-                    correctAnswer,
-                    isCorrect
-                });
+            // Correção pelo corretor por tipo (examScoring, como a prova online), com a
+            // resposta no papel (P3-S4a): a letra marcada vale nas questões de escolha
+            // única; a dissertativa, a numérica, a resposta curta e a de várias corretas
+            // esperam o professor, e a entrega nasce com a correção pendente (fica fora
+            // das médias e da publicação até ele concluir). Com todas valendo 1 ponto, a
+            // nota é a de antes (acertos / total). As questões da entrega ficam guardadas
+            // (examSnapshot) para a correção recalcular a nota pelas mesmas questões.
+            const printedGrade = gradeAttempt({
+                onlineConfig: { versionSnapshots: [{ version: 'A', questions: selectedQuestions }] },
+                state: { assignedVersion: 'A', assignedQuestionNumbers: selectedQuestions.map(q => Number(q.originalNumber)) },
+                evaluation: null,
+                answers: normalizedAnswers,
+                onPaper: true,
             });
-
-            finalScore = scoreFromCounts(finalCorrectCount, finalTotalCount);
+            gradedAnswers = printedGrade.gradedAnswers;
+            finalTotalCount = printedGrade.totalCount;
+            finalCorrectCount = printedGrade.correctCount;
+            finalScore = printedGrade.score;
+            printedDetails = {
+                pointsEarned: printedGrade.pointsEarned,
+                pointsPossible: printedGrade.pointsPossible,
+                examSnapshot: printedGrade.examSnapshot,
+                pendingCount: printedGrade.pendingCount,
+            };
         } else {
             // Lançamento rápido: nota (0 a 10) e/ou acertos e total.
             const gradeInput = parseGradeInput(body.grade);
@@ -1417,6 +1443,13 @@ router.post('/api/admin/submissions/create', (req, res) => {
             correctCount: finalCorrectCount,
             totalCount: finalTotalCount,
             gradedAnswers,
+            ...(printedDetails ? {
+                pointsEarned: printedDetails.pointsEarned,
+                pointsPossible: printedDetails.pointsPossible,
+                examSnapshot: printedDetails.examSnapshot,
+                answersOnPaper: true,
+                ...(printedDetails.pendingCount > 0 ? { correcao: newCorrection() } : {}),
+            } : {}),
             type,
             entryMode,
             launchedBy: matchedAdmin?.email || 'admin',
@@ -1441,13 +1474,17 @@ router.post('/api/admin/submissions/create', (req, res) => {
             action: 'grade_create',
             field: 'Nota',
             oldValue: '',
-            newValue: `${describeSubmissionGrade(submissionObj, examTitle(examKey, { evaluations: db.memory.evaluations }))} · lançamento ${entryMode === 'card' ? 'pelo cartão-resposta' : 'manual'} (${type})${ignoredNote ? ` · ${ignoredNote}` : ''}`,
+            newValue: `${describeSubmissionGrade(submissionObj, examTitle(examKey, { evaluations: db.memory.evaluations }))} · lançamento ${entryMode === 'card' ? 'pelo cartão-resposta' : 'manual'} (${type})${printedDetails && printedDetails.pendingCount > 0 ? ' · aguardando correção' : ''}${ignoredNote ? ` · ${ignoredNote}` : ''}`,
         });
         writeJSON(DB_SUBMISSIONS_FILE, submissions);
 
+        const awaitingCorrection = !!(printedDetails && printedDetails.pendingCount > 0);
         res.json({
             success: true,
-            message: `Nota ${formatGradeBR(finalScore)} lançada para ${registeredStudent.name || studentEmail}.${ignoredNote ? ` Atenção: ${ignoredNote}.` : ''}`,
+            message: awaitingCorrection
+                ? `Respostas lançadas para ${registeredStudent.name || studentEmail}. ${printedDetails.pendingCount === 1 ? 'Uma questão aguarda' : `${printedDetails.pendingCount} questões aguardam`} a sua correção: a nota sai quando você concluir.${ignoredNote ? ` Atenção: ${ignoredNote}.` : ''}`
+                : `Nota ${formatGradeBR(finalScore)} lançada para ${registeredStudent.name || studentEmail}.${ignoredNote ? ` Atenção: ${ignoredNote}.` : ''}`,
+            awaitingCorrection,
             submissionId: submissionObj.id,
             score: finalScore,
             grade: gradeFromScore(finalScore),
@@ -2161,7 +2198,27 @@ router.get('/api/admin/student/academic', (req, res) => {
         const submissions = !withGrades ? [] : (db.memory.submissions || [])
             .filter(s => s.student && s.student.email && s.student.email.toLowerCase() === email)
             // Nota inválida de registro antigo (vazia ou fora de 0 a 10) vai como null + aviso.
-            .map(s => ({ id: s.id, examKey: s.examKey, score: normalizeScore(s.score), scoreInvalid: normalizeScore(s.score) === null, correctCount: s.correctCount, totalCount: s.totalCount, assignedVersion: s.assignedVersion, gradePublished: s.gradePublished === true, timestamp: s.timestamp }))
+            // Fase 3 (P3-S4a): a nota de cada tentativa é a que ela leva para a conta
+            // (effectiveScore): a anulada com 'zero' vem com 0, a anulada com
+            // 'desconsiderar' e a que aguarda a correção vêm sem nota (a gravada seria só a
+            // parcial das objetivas), com integrity e awaitingCorrection para a tela dizer.
+            .map(s => {
+                const integrity = integrityDecision(s);
+                const awaitingCorrection = integrity === null && isAwaitingCorrection(s);
+                return {
+                    id: s.id,
+                    examKey: s.examKey,
+                    score: effectiveScore(s),
+                    scoreInvalid: integrity === null && !awaitingCorrection && normalizeScore(s.score) === null,
+                    integrity,
+                    awaitingCorrection,
+                    correctCount: s.correctCount,
+                    totalCount: s.totalCount,
+                    assignedVersion: s.assignedVersion,
+                    gradePublished: s.gradePublished === true,
+                    timestamp: s.timestamp,
+                };
+            })
             .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
         const progressMap = (db.memory.progress && db.memory.progress[email]) || {};
         const completedUnits = Object.keys(progressMap).filter(k => progressMap[k]);
@@ -3750,11 +3807,15 @@ router.use(createAdminPrivacyRouter());
 router.use(createAdminStudentRecordsRouter());
 router.use(createAdminCoursesRouter());
 // Rotas novas da fase 3 (ordem_no_createApp do plano), depois do router de cursos:
-// calendário acadêmico (P2), banco de questões (P3-S9a), tarefas com envio de arquivo
-// (P1-b e P1-d) e pré-visualização como aluno (P5-S6a).
+// calendário acadêmico (P2), correção do professor (P3-S4a), banco de questões (P3-S9a),
+// tarefas com envio de arquivo (P1-b e P1-d), pacote de curso (P4-S14) e
+// pré-visualização como aluno (P5-S6a).
 router.use(createAdminAcademicRouter());
+router.use(createAdminCorrectionsRouter());
 router.use(createAdminQuestionBankRouter());
 router.use(createAdminAssignmentsRouter());
+// Pacote de curso (P4-S14): exportar e importar entre instalações.
+router.use(createAdminCoursePackageRouter({ uploadErrorMessage, isUploadRequestError }));
 router.use(createAdminPreviewRouter());
 
 
@@ -4532,8 +4593,10 @@ router.post('/api/admin/assign-student-version', ADMIN_SCHEMAS.examStudent, (req
                 return res.json({ success: true });
             }
             // Tentativa já aberta: a ordem das questões passa a ser a da versão nova
-            // (recalculada no próximo sync), não a da versão sorteada antes.
-            openAttempt.state.assignedQuestionNumbers = null;
+            // (recalculada no próximo sync), não a da versão sorteada antes. No sorteio por
+            // aluno (P3-S11, D24) as questões sorteadas ficam: a versão nova só muda a ordem
+            // das alternativas.
+            if (!openAttempt.state.drawSeed) openAttempt.state.assignedQuestionNumbers = null;
         }
         if (!db.memory.studentExamState[key]) {
             db.memory.studentExamState[key] = {
@@ -4783,6 +4846,7 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
             })
             : classStudents;
 
+        const sharedIpEntries = [];
         const monitorList = students.map(s => {
             const email = s.email.toLowerCase();
             const openAttempt = application
@@ -4861,7 +4925,9 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 const snapshotCount = Array.isArray(currentConfig.versionSnapshots) && currentConfig.versionSnapshots[0] && Array.isArray(currentConfig.versionSnapshots[0].questions)
                     ? currentConfig.versionSnapshots[0].questions.length
                     : 0;
-                const totalQuestions = Number(currentConfig.questionCount) || snapshotCount || evaluation.questions.length;
+                // Sorteio por aluno (P3-S11): o total é o da tentativa dele.
+                const drawnCount = state.drawSeed && Array.isArray(state.assignedQuestionNumbers) ? state.assignedQuestionNumbers.length : 0;
+                const totalQuestions = drawnCount || Number(currentConfig.questionCount) || snapshotCount || evaluation.questions.length;
                 // Entregue: quantas questões o aluno de fato respondeu (a entrega do fim do
                 // tempo pode ter menos respostas que questões).
                 const answeredQuestions = submission
@@ -4916,10 +4982,25 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
             // tempo restante" e chegava a 0:00 com alunos que ainda teriam o tempo inteiro.
             if (perAttemptTimer && status !== 'finished' && !(Number(state.startedAt) > 0)) timerRemaining = null;
 
+            // Outro login e troca de IP na tentativa (P3-S13, D28): os selos da linha.
+            const sessionEvents = sessionEventsSummary(currentAttemptLogs);
+            // Quem entra na conta do IP repetido (D29): começou a prova e está nela agora.
+            if (session && session.ip && attemptStarted && (attemptInProgress || isOnline)) {
+                sharedIpEntries.push({ email: s.email, name: s.name || '', ip: session.ip });
+            }
+
             return {
                 email: s.email,
                 name: s.name,
                 ip: session ? session.ip : '',
+                // "Entrou de outro aparelho às 10:42" e "Mudou de IP" (registros da tentativa).
+                sessionReplacedAt: sessionEvents.sessionReplacedAt,
+                sessionReplacedCount: sessionEvents.sessionReplacedCount,
+                ipChangedAt: sessionEvents.ipChangedAt,
+                ipChangeCount: sessionEvents.ipChangeCount,
+                // IP e navegador de antes e de agora do mais recente de cada um (selo da linha).
+                lastSessionReplaced: sessionEvents.lastSessionReplaced,
+                lastIpChange: sessionEvents.lastIpChange,
                 status,
                 // Tentativa que a linha mostra ("tentativa N de M") e o limite do aluno (o da
                 // aplicação mais as tentativas extras dele, D16).
@@ -4939,8 +5020,12 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 applicationId: application?.id || null,
                 attemptId: (submission ? submission.attemptId : state.attemptId) || state.attemptId || null,
                 submissionSource: submission?.submissionSource || null,
+                // Entregue pelo fechamento da agenda (P3-S12), não pelo professor.
+                finishedBySchedule: submission?.finishedBySchedule === true,
                 lateBySeconds: Number(submission?.lateBySeconds || 0),
                 focusLockedAtDeadline: submission?.focusLockedAtDeadline === true,
+                // Motivo da trava no fim do tempo ('session_replaced': outro aparelho, P3-S13).
+                focusLockedAtDeadlineReason: submission?.focusLockedAtDeadline === true ? String(submission.focusLockReason || '') : '',
                 recoveredAfterFinish: submission?.recoveredAfterFinish === true,
                 // Reaberta pelo "+N min" da turma depois da entrega do fim do tempo (tentativa
                 // em andamento ou a entrega que veio dela) e entrega do fim do tempo que voltou
@@ -4957,8 +5042,16 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                     : state.reopenedByInstructor === true,
                 canReopen: !!(application && applicationActive && submission
                     && submission.gradePublished !== true
+                    && !integrityDecision(submission)
                     && !['archived', 'invalidated'].includes(submission.resultStatus)
                     && submission.reopenableState && submission.reopenableState.startedAt),
+                // Anulação por integridade (P3-S4a): a decisão da entrega mostrada ('zero',
+                // 'desconsiderar' ou null) e o que o menu do aluno oferece (anular a prova em
+                // andamento ou a última entrega; desfazer quando alguma entrega está anulada).
+                integrity: submission ? integrityDecision(submission) : null,
+                canInvalidate: !!(application && application.status !== 'cancelled'
+                    && (attemptInProgress || (latestDelivery && !integrityDecision(latestDelivery)))),
+                canUndoInvalidation: !!(application && deliveries.some(delivery => integrityDecision(delivery))),
                 // Aparelho sem tela cheia (iPhone): a prova abriu sem exigi-la (UXA-02).
                 fullscreenUnsupported: currentAttemptLogs.some(log => log.eventType === 'fullscreen_unsupported'),
                 // Só os últimos eventos de foco (a linha mostra os 2 últimos); o histórico
@@ -4971,6 +5064,15 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 suspiciousCount,
                 lastKeystrokeAt
             };
+        });
+
+        // IP repetido (D29): "mesmo IP de Fulano" só com 2 ou 3 alunos no mesmo IP e pelo
+        // menos 5 IPs diferentes; com quase todos num IP só (NAT, proxy), nada é destacado e
+        // cada linha leva networkSharedIp para o Monitor avisar uma vez.
+        const sharedIp = sharedIpSummary(sharedIpEntries);
+        monitorList.forEach(row => {
+            row.sameIpAs = sharedIp.sameIpAs.get(String(row.email || '').toLowerCase()) || [];
+            row.networkSharedIp = sharedIp.networkSharedIp;
         });
 
         res.json(monitorList);
@@ -5042,6 +5144,10 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
             snapshot = versionSnapshots.find(s => String(s.version || 'A').toUpperCase() === assignedVersion) || versionSnapshots[0] || null;
         }
         let questions = snapshot && Array.isArray(snapshot.questions) ? snapshot.questions : [];
+        // Sorteio por aluno (P3-S11): quem ainda não abriu a prova não sorteou; a revisão não
+        // mostra o pool inteiro como se fosse a prova dele.
+        const drawPending = !submission && isPerStudentDraw(application) && !state.drawSeed;
+        if (drawPending) questions = [];
 
         // Fallback: prova finalizada sem snapshot — sintetiza a partir das respostas corrigidas.
         if (questions.length === 0 && submission && Array.isArray(submission.gradedAnswers)) {
@@ -5120,7 +5226,10 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
 
         const answeredCount = reviewQuestions.filter(q => q.answered).length;
         const correctCount = reviewQuestions.filter(q => q.isCorrect).length;
-        const totalCount = Number(currentConfig.questionCount) || reviewQuestions.length;
+        // Sorteio por aluno (P3-S11): as questões da tentativa dele.
+        const totalCount = drawPending
+            ? (Number(application.sorteio.total) || 0)
+            : ((state.drawSeed ? reviewQuestions.length : 0) || Number(currentConfig.questionCount) || reviewQuestions.length);
         // Quem já iniciou a tentativa (startedAt) está "em andamento" mesmo sem resposta.
         const status = submission ? 'finished' : ((answeredCount > 0 || state.startedAt) ? 'in_progress' : 'not_started');
 
@@ -5136,10 +5245,32 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
             correctCount,
             totalCount,
             hasSnapshot: !!(snapshot && Array.isArray(snapshot.questions) && snapshot.questions.length > 0),
+            ...(drawPending ? { drawPending: true } : {}),
             questions: reviewQuestions,
         });
     });
 });
+
+// "Nota da tentativa" e "Publicada" da planilha por prova, pela regra do calculador
+// (C1 do P3, enrichSubmissionsWithAttemptResult): a anulada por cola e a que aguarda a
+// correção do professor não mostram a nota gravada (a original ou a parcial das
+// objetivas), e só sai "Sim" em Publicada quando o aluno vê a nota.
+function csvAttemptGrade(sub) {
+    if (sub.integrityDecision === 'zero') return 'anulada (zero)';
+    if (sub.integrityDecision === 'desconsiderar') return 'anulada (não conta)';
+    if (sub.awaitingCorrection) return 'aguardando correção';
+    return sub.scoreInvalid ? 'nota inválida' : formatGradeBR(sub.score);
+}
+
+function csvAttemptPublished(sub) {
+    if (sub.gradePublished !== true) return 'Não';
+    if (sub.integrityDecision === 'desconsiderar') return 'Não (anulada, não conta)';
+    if (sub.integrityDecision === 'zero') return 'Sim';
+    // A que voltou a aguardar correção não aparece para o aluno até ser concluída.
+    if (sub.awaitingCorrection) return 'Não (aguardando correção)';
+    // Nota inválida não é mostrada ao aluno nem entra na média, mesmo marcada como publicada.
+    return sub.scoreInvalid ? 'Não (nota inválida)' : 'Sim';
+}
 
 // 6. Exporta as notas de uma prova da turma em CSV (Excel pt-BR: ";", BOM e nota
 // 0 a 10 com vírgula). Escopo por curso/turma e pelas turmas do professor (UXI-01).
@@ -5174,11 +5305,10 @@ router.get('/api/admin/export-grades/:class/:examKey', (req, res) => {
             sub.assignedVersion || sub.version || '',
             Number.isInteger(sub.correctCount) ? sub.correctCount : '',
             Number.isInteger(sub.totalCount) ? sub.totalCount : '',
-            sub.scoreInvalid ? 'nota inválida' : formatGradeBR(sub.score),
+            csvAttemptGrade(sub),
             sub.resultStatus === 'archived' ? 'Desconsiderada' : (sub.countsTowardResult ? 'Sim' : 'Não'),
             formatGradeBR(sub.consolidatedScore),
-            // Nota inválida não é mostrada ao aluno nem entra na média, mesmo marcada como publicada.
-            sub.scoreInvalid ? 'Não (nota inválida)' : (sub.gradePublished === true ? 'Sim' : 'Não'),
+            csvAttemptPublished(sub),
             formatDateTimeBR(sub.timestamp || sub.submittedAt),
         ]);
 
@@ -5781,22 +5911,17 @@ router.post('/api/admin/courses/:id/clone', (req, res) => {
         }
         if (!db.memory.evaluations) db.memory.evaluations = {};
 
-        const materialKeyMap = new Map();
-        const evaluationKeyMap = new Map();
-
-        const cloneMaterialKey = (oldKey) => {
-            if (!oldKey) return oldKey;
-            if (materialKeyMap.has(oldKey)) return materialKeyMap.get(oldKey);
-            const newKey = `${oldKey}_${newId}`;
-            copyContentFile(oldKey, newKey);
-            materialKeyMap.set(oldKey, newKey);
-            return newKey;
-        };
-
-        const cloneEvaluationKey = (oldKey) => {
-            if (!oldKey) return oldKey;
-            if (evaluationKeyMap.has(oldKey)) return evaluationKeyMap.get(oldKey);
-            const newKey = `${oldKey}_${newId}`;
+        // Chaves novas '<chave>_<código>' pelo mesmo remapeamento do pacote de curso
+        // (remapCourseKeys, utils/coursePackage.js, P4-S14); aqui se copiam os arquivos e
+        // as avaliações de cada chave remapeada.
+        const remapped = remapCourseKeys({
+            course: src,
+            classes: (db.memory.classes || []).filter(cls => String(cls.courseId) === String(src.id)),
+            newCourseId: newId,
+            mapKey: oldKey => `${oldKey}_${newId}`,
+        });
+        remapped.materialKeys.forEach((newKey, oldKey) => copyContentFile(oldKey, newKey));
+        remapped.evaluationKeys.forEach((newKey, oldKey) => {
             copyContentFile(oldKey, newKey);
             if (db.memory.evaluations[oldKey]) {
                 const evaluation = JSON.parse(JSON.stringify(db.memory.evaluations[oldKey]));
@@ -5804,68 +5929,20 @@ router.post('/api/admin/courses/:id/clone', (req, res) => {
                 evaluation.sourceEvaluationKey = evaluation.sourceEvaluationKey ? `${evaluation.sourceEvaluationKey}_${newId}` : undefined;
                 db.memory.evaluations[newKey] = evaluation;
             }
-            evaluationKeyMap.set(oldKey, newKey);
-            return newKey;
-        };
-
-        const cloneModule = (mod) => {
-            const m = JSON.parse(JSON.stringify(mod));
-            const units = m.units || m.items || [];
-            units.forEach((u) => {
-                if (u.apostilaKey) u.apostilaKey = cloneMaterialKey(u.apostilaKey);
-                if (u.avaliacaoKey) u.avaliacaoKey = cloneEvaluationKey(u.avaliacaoKey);
-            });
-            return m;
-        };
+        });
 
         const newCourse = {
-            ...JSON.parse(JSON.stringify(src)),
+            ...remapped.course,
             id: newId,
             name: newName,
             schoolId,
-            structure: (src.structure || []).map(cloneModule),
             status: 'active',
             deleted: false,
             deletedAt: null,
             clonedFrom: src.id,
         };
         db.memory.courses.push(newCourse);
-        const clonedClasses = (db.memory.classes || []).filter(cls => String(cls.courseId) === String(src.id)).map(sourceClass => {
-            const cloned = JSON.parse(JSON.stringify(sourceClass));
-            cloned.courseId = newId;
-            const sourceOverrides = ensureOverrides(sourceClass);
-            const materialOverrides = {};
-            Object.entries(sourceOverrides.materials).forEach(([baseKey, entry]) => {
-                const variantKey = entry?.key || entry;
-                materialOverrides[cloneMaterialKey(baseKey)] = { ...(typeof entry === 'object' ? entry : {}), key: cloneMaterialKey(variantKey) };
-            });
-            const evaluationOverrides = {};
-            Object.entries(sourceOverrides.evaluations).forEach(([baseKey, entry]) => {
-                const variantKey = entry?.key || entry;
-                evaluationOverrides[cloneEvaluationKey(baseKey)] = { ...(typeof entry === 'object' ? entry : {}), key: cloneEvaluationKey(variantKey) };
-            });
-            const unitNames = {};
-            Object.entries(sourceOverrides.unitNames || {}).forEach(([key, value]) => {
-                unitNames[evaluationKeyMap.get(key) || materialKeyMap.get(key) || key] = value;
-            });
-            cloned.contentOverrides = {
-                materials: materialOverrides,
-                evaluations: evaluationOverrides,
-                unitNames,
-                structure: Array.isArray(sourceOverrides.structure) ? sourceOverrides.structure.map(cloneModule) : null,
-                extraUnits: (sourceOverrides.extraUnits || []).map(extra => ({
-                    ...JSON.parse(JSON.stringify(extra)),
-                    unit: {
-                        ...JSON.parse(JSON.stringify(extra.unit || {})),
-                        apostilaKey: extra.unit?.apostilaKey ? cloneMaterialKey(extra.unit.apostilaKey) : undefined,
-                        avaliacaoKey: extra.unit?.avaliacaoKey ? cloneEvaluationKey(extra.unit.avaliacaoKey) : undefined,
-                    },
-                })),
-            };
-            cloned.releasedItems = Object.fromEntries(Object.entries(sourceClass.releasedItems || {}).map(([key, value]) => {
-                if (key.startsWith('Gabarito_')) return [`Gabarito_${cloneEvaluationKey(key.slice('Gabarito_'.length))}`, value];
-                return [materialKeyMap.get(key) || evaluationKeyMap.get(key) || key, value];
-            }));
+        const clonedClasses = remapped.classes.map(cloned => {
             cloned.onlineExamConfigs = {};
             cloned.activeExamKey = null;
             cloned.activeApplicationId = null;

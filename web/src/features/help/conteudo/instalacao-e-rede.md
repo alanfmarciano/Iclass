@@ -24,11 +24,33 @@ O endereço para os alunos e o QR code ficam em **Sistema > Rede** e em **Endere
 
 ## Instalar {#instalar}
 
-<!-- P6 (A17) escreve aqui: instalador, pasta C:\IClass, atalhos e ligar com o Windows. -->
+1. Extraia o ZIP do IClass numa pasta qualquer (por exemplo, em Downloads). Não rode de dentro do ZIP.
+2. Dê dois cliques em **Instalar IClass.cmd**. Se o Windows mostrar "O Windows protegeu o computador", clique em **Mais informações** e depois em **Executar assim mesmo**.
+3. O instalador pergunta a pasta: **Enter** aceita **C:\IClass**. O programa fica em `C:\IClass\programa` e os dados em `C:\IClass\dados`, `C:\IClass\conteudo` e `C:\IClass\cursos-arquivados`.
+4. Se o computador já tinha o IClass antigo (a pasta com o `ligarIclassV3.bat`), o instalador oferece **trazer os dados dele**. A pasta antiga fica como está: os dados são copiados, conferidos (o banco precisa abrir sem problemas) e só então entram na instalação nova. Se o IClass antigo estiver ligado, ele é desligado antes, a não ser que haja prova em andamento nele (o instalador confere no banco dele): aí nada é feito. Se não der para conferir, o instalador pergunta antes de desligar, e só **s** desliga.
+5. O Windows pede permissão de administrador uma vez, para liberar no firewall a porta do IClass (TCP 3000) e o nome na rede (UDP 5353), só nas redes **Privadas** e de domínio. Se você não permitir, o IClass instala do mesmo jeito, mas os alunos podem não conseguir entrar até alguém liberar a porta.
+6. No fim, o instalador pergunta se o IClass deve **ligar junto com o Windows** (dá para mudar depois na opção **[9]** do menu) e abre o IClass.
+
+Ficam um atalho **IClass** na Área de Trabalho e, no menu Iniciar, a pasta **IClass** com o IClass e **Desinstalar o IClass**. O IClass também aparece em **Configurações > Aplicativos**.
+
+Para desinstalar: **Desinstalar o IClass** desliga o servidor, tira o programa, os atalhos e as regras do firewall. Os dados ficam na pasta, a não ser que você digite **APAGAR** quando ele perguntar. Instalando de novo na mesma pasta, o IClass continua com os dados que ficaram.
+
+Durante uma prova, o IClass não deixa o computador dormir (a tela ainda pode apagar). Mesmo assim, deixe o notebook na tomada e com a tampa aberta.
 
 ## Atualizar e voltar de versão {#atualizar}
 
-<!-- P6 (A17) escreve aqui: atualizar, o backup antes da atualização e Voltar para a versão anterior. -->
+Para atualizar, extraia o ZIP da versão nova e dê dois cliques em **Instalar IClass.cmd**: ele acha a instalação e pergunta se pode atualizar. Com prova em andamento, nada é feito: atualize depois que ela terminar. Sem prova, o IClass é desligado, a versão nova é copiada ao lado da atual e o IClass liga de novo já na versão nova.
+
+Na primeira vez que liga, a versão nova faz um **backup dos dados antes de atualizar** o formato deles (fica em **Sistema > Backup**, com o nome começando por `pre-atualizacao`). Se esse backup não der certo (por exemplo, sem espaço no disco), nada é alterado e o IClass não liga na versão nova. A janela do IClass oferece atualizar sem esse backup, só se você digitar **SIM** (aí não há como voltar para a versão anterior com os dados de antes).
+
+A versão anterior fica guardada (o IClass guarda as duas últimas). Se a versão nova der problema, use a opção **[V] Voltar para a versão anterior** do menu do IClass:
+
+- o IClass faz um backup de agora, com tudo o que foi feito até aqui;
+- se a atualização mudou o formato dos dados, ele restaura o backup de antes da atualização (o IClass mostra o nome e a data dele antes de continuar). O que foi feito depois da atualização (notas, presença, provas) não fica nos dados restaurados, só no backup de agora;
+- se a atualização não mudou os dados, ou se a versão nova nunca chegou a abrir os dados (por exemplo, o backup de antes da atualização falhou), ele só volta para a versão anterior, com os dados como estão;
+- com prova em andamento, nada é feito. Se o IClass foi fechado no meio da prova, ligue, encerre a prova e tente de novo.
+
+Para ir de novo para a versão nova depois de voltar, rode o **Instalar IClass.cmd** dela outra vez.
 
 ## Backup {#backup}
 

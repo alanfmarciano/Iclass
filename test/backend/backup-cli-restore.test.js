@@ -132,6 +132,8 @@ test('[UC-ESQUEMA-004] backup-cli restaurar um backup da 281029f: as coleções 
     assert.match(restored.stdout, /Backup restaurado\./);
     assert.match(restored.stdout, /Ficaram como estavam \(o backup é de antes desta função\): Tarefas \(2\), Diário de classe \(1\)\./);
     assert.match(restored.stdout, /Os dados do backup foram atualizados para esta versão \(2 etapas\)\./);
+    // A opção de redefinir a senha nos dois menus (o launcher novo e o ligarIclassV3.bat).
+    assert.match(restored.stdout, /"Redefinir a senha do administrador" no menu do IClass \(opção \[7\]; no ligarIclassV3\.bat, opção \[S\]\)/);
 
     const state = await withDb(dir.dbFile, sqlite3.OPEN_READONLY, async ({ all }) => ({
         assignments: (await all('SELECT key FROM assignments ORDER BY key')).map(row => row.key),

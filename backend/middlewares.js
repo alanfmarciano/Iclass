@@ -18,7 +18,9 @@ const { computeAttemptDeadline } = require('./utils/examDeadline.js');
 const { listExamApplications } = require('./utils/examApplications.js');
 const { keystrokeModeOf } = require('./utils/keystrokePolicy.js');
 const { examFamilyIndex } = require('./utils/examFamily.js');
+const { ensureAttemptDraw, isPerStudentDraw } = require('./utils/examDraw.js');
 const { answerIdScope, studentAlternatives, submissionWithSeenLetters } = require('./utils/examAnswerIds.js');
+const { integrityDecision, isAwaitingCorrection } = require('./utils/submissionAttempts.js');
 const { recordBackupAudit, isBackupRestoreRequest } = require('./utils/backupAudit.js');
 const { installProfessorResponseRedaction } = require('./utils/studentPrivacy.js');
 const { logError } = require('./utils/errorLog.js');
@@ -227,9 +229,14 @@ function validateStudentSession(req, res, next) {
     // O token (aleatório, um por login) já prova a identidade. Um IP diferente é registrado,
     // mas não derruba a sessão: celular que troca de Wi-Fi para 4G ou recebe outro
     // IP do roteador perdia a prova no meio.
+    // Com uma tentativa aberta, quem registra a troca no Monitor (ip_changed) são as rotas
+    // da prova (sync, autosave-progress, log-activity), que já gravam proctoringLogs: aqui
+    // só fica a anotação do pedido (req.sessionIpChange, utils/examSessionIntegrity.js).
+    let sessionIpChange = null;
     if (sessionIp && sessionIp !== clientIp) {
         console.warn(`[SESSÃO] IP mudou para ${normalizedEmail}: ${sessionIp} -> ${clientIp}`);
         session.ip = clientIp;
+        sessionIpChange = { ipAntes: sessionIp, ipDepois: clientIp };
     }
 
     const nowTs = Date.now();
@@ -288,6 +295,9 @@ function validateStudentSession(req, res, next) {
     // Sessão do aparelho (o mesmo token do login): a regra de foco da saída da página
     // confere que quem volta à prova é a mesma sessão (utils/examFocusRules.js).
     req.studentSessionToken = providedToken;
+    // IP deste pedido e a troca vista agora (P3-S13: outro login e troca de IP na prova).
+    req.clientIp = clientIp;
+    req.sessionIpChange = sessionIpChange;
 
     // Devolve o que o próximo passo devolver: a promessa de um callback assíncrono
     // chega a quem chamou (validateAnySession, Express 5), e o erro não fica solto.
@@ -937,9 +947,10 @@ function validateProfessorRequestScope(req, account) {
     }
 
     const courseIds = [body.courseId, query.courseId].filter(Boolean).map(value => String(value).trim());
-    // Curso pelo caminho: estrutura, alterar e excluir (/courses/:id) e duplicar (a
-    // origem do /clone também precisa estar no escopo; SEG-12).
-    const pathCourse = rawPath.match(/^\/courses\/([^/]+)(?:\/(?:structure|clone))?$/i);
+    // Curso pelo caminho: estrutura, alterar e excluir (/courses/:id), duplicar (a
+    // origem do /clone também precisa estar no escopo; SEG-12) e exportar o pacote do
+    // curso (/package, P4-S14).
+    const pathCourse = rawPath.match(/^\/courses\/([^/]+)(?:\/(?:structure|clone|package))?$/i);
     if (pathCourse) courseIds.push(safeDecode(pathCourse[1]));
     const forbiddenCourse = courseIds.filter(Boolean).find(courseId => !adminCanAccessCourse(account, courseId));
     if (forbiddenCourse) return outOfScopeMessage(account, 'O curso solicitado');
@@ -1109,6 +1120,25 @@ function sanitizeEvaluationForStudent(evaluation) {
 }
 
 // Sanitização de Submissão para Aluno
+// Campos da questão que vão para a revisão do aluno com o gabarito liberado (D12 do P3).
+function studentReviewQuestionFields(question) {
+    const out = {};
+    if (!question || typeof question !== 'object') return out;
+    if (typeof question.type === 'string' && question.type) out.type = question.type;
+    const points = Number(question.points);
+    if (Number.isFinite(points) && points > 0) out.points = points;
+    if (typeof question.explanation === 'string' && question.explanation.trim()) out.explanation = question.explanation;
+    if (Array.isArray(question.rubric) && question.rubric.length) {
+        out.rubric = question.rubric
+            .filter(item => item && typeof item === 'object')
+            .map(item => ({ id: String(item.id || ''), nome: String(item.nome || ''), pontos: Number(item.pontos) || 0 }));
+    }
+    if (question.numeric && typeof question.numeric === 'object' && typeof question.numeric.unit === 'string' && question.numeric.unit) {
+        out.unit = question.numeric.unit;
+    }
+    return out;
+}
+
 function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
     // Letras como o aluno viu na tela (posição na versão dele), não as originais (AVA-05).
     const submission = submissionWithSeenLetters(rawSubmission);
@@ -1117,11 +1147,36 @@ function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
     const rawScore = submission && submission.score;
     const scoreValue = typeof rawScore === 'number' ? rawScore : Number(rawScore);
     const scoreValid = rawScore !== null && rawScore !== undefined && rawScore !== '' && Number.isFinite(scoreValue) && scoreValue >= 0 && scoreValue <= 100;
-    const gradePublished = submission && submission.gradePublished === true && scoreValid;
+    // Fase 3 (P3-S4a): a entrega que espera a correção do professor nunca mostra nota ao
+    // aluno, nem a parcial das objetivas (P-B6): ele vê "Aguardando correção". A anulada
+    // por integridade mostra a decisão com a nota publicada ('zero' vale 0;
+    // 'desconsiderar' não tem nota).
+    const decision = integrityDecision(submission);
+    const awaiting = decision === null && isAwaitingCorrection(submission);
+    const gradePublished = submission && submission.gradePublished === true && scoreValid && !awaiting && decision !== 'desconsiderar';
     // scoreHistory (notas anteriores de cada recorreção) é do professor: revelava a
-    // nota antes da publicação.
-    const { examSnapshot, scoreHistory, ...submissionWithoutSnapshot } = submission || {};
+    // nota antes da publicação. correcao e integrity (rascunho e motivos do professor)
+    // saem e voltam só com o que o aluno pode ver, mais abaixo.
+    const { examSnapshot, scoreHistory, correcao, integrity, ...submissionWithoutSnapshot } = submission || {};
     const safeGrade = { ...submissionWithoutSnapshot, gradePublished };
+    if (awaiting) safeGrade.aguardandoCorrecao = true;
+    // A anulação é decisão sobre a nota: o aluno fica sabendo com a nota publicada.
+    if (decision && submission.gradePublished === true) safeGrade.anulada = decision;
+    if (gradePublished && decision === 'zero') {
+        safeGrade.score = 0;
+        if (safeGrade.pointsEarned !== undefined) safeGrade.pointsEarned = 0;
+        // Os acertos da tentativa anulada não valem: "1/2 acertos" ao lado da nota 0
+        // desmentiria a decisão. A correção de cada questão (certa ou errada, com o
+        // gabarito liberado) continua, sem os pontos.
+        delete safeGrade.correctCount;
+        delete safeGrade.totalCount;
+        delete safeGrade.consolidatedScore;
+    }
+    // Comentário geral da correção concluída: com a nota publicada (D12).
+    const finishedCorrection = !awaiting && correcao && typeof correcao === 'object' && !Array.isArray(correcao) ? correcao : null;
+    if (gradePublished && finishedCorrection && typeof finishedCorrection.comentarioGeral === 'string' && finishedCorrection.comentarioGeral.trim()) {
+        safeGrade.comentarioGeral = finishedCorrection.comentarioGeral;
+    }
     // Registro da entrega do servidor que o envio atrasado substituiu: é auditoria do
     // professor e guarda a nota daquela versão, então nunca vai para o aluno.
     delete safeGrade.serverFinalization;
@@ -1146,6 +1201,9 @@ function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
         // Gabarito liberado: expõe o conteúdo das questões (enunciado + alternativas)
         // a partir do examSnapshot para permitir a visualização completa da prova.
         // O snapshot em si não é devolvido; apenas os campos necessários e seguros.
+        // Com o gabarito vêm também a explicação, o tipo, os pontos e os critérios da
+        // rubrica de cada questão (D12 do P3); a resposta esperada da dissertativa e as
+        // respostas aceitas continuam só do professor.
         const snapshotQuestions = Array.isArray(examSnapshot?.questions) ? examSnapshot.questions : [];
         if (snapshotQuestions.length) {
             safeGrade.examQuestions = snapshotQuestions.map(question => ({
@@ -1156,8 +1214,39 @@ function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
                         letter: String(alt?.letter || '').toUpperCase(),
                         text: typeof alt?.text === 'string' ? alt.text : ''
                     }))
-                    : []
+                    : [],
+                ...studentReviewQuestionFields(question),
             }));
+        }
+        // Pontos, comentário e rubrica da correção do professor, por questão: só da
+        // correção concluída (o rascunho não vai) e com a nota publicada (os pontos são a
+        // nota). Esperando correção, nenhum ponto vai: a parte objetiva seria a nota parcial.
+        const allItems = correcao && typeof correcao === 'object' && correcao.itens && typeof correcao.itens === 'object' && !Array.isArray(correcao.itens)
+            ? correcao.itens
+            : {};
+        const items = finishedCorrection && gradePublished ? allItems : {};
+        if (Array.isArray(safeGrade.gradedAnswers)) {
+            safeGrade.gradedAnswers = safeGrade.gradedAnswers.map(answer => {
+                if (!answer || typeof answer !== 'object') return answer;
+                const copy = { ...answer };
+                // Anulada com 'zero': os pontos de cada questão não valem (a nota é 0).
+                if (decision === 'zero') delete copy.pointsEarned;
+                if (!gradePublished) {
+                    // Os pontos de cada questão são a nota: só com ela publicada. A
+                    // questão que o professor corrigiu (ou que espera por ele) também não
+                    // diz se ficou certa antes disso.
+                    delete copy.pointsEarned;
+                    delete copy.pending;
+                    const manual = allItems[answer.questionNumber] || allItems[String(answer.questionNumber)];
+                    if (awaiting || copy.type === 'essay' || (manual && typeof manual === 'object')) delete copy.isCorrect;
+                }
+                const item = items[answer.questionNumber] || items[String(answer.questionNumber)];
+                if (item && typeof item === 'object') {
+                    if (typeof item.comentario === 'string' && item.comentario.trim()) copy.comentario = item.comentario;
+                    if (item.rubrica && typeof item.rubrica === 'object' && !Array.isArray(item.rubrica)) copy.rubrica = { ...item.rubrica };
+                }
+                return copy;
+            });
         }
         return safeGrade;
     }
@@ -1433,6 +1522,8 @@ function initializeExamState(state, onlineConfig) {
         state.assignedVersion = 'A';
         state.versionAssigned = false;
         state.assignedQuestionNumbers = null;
+        state.drawSeed = null;
+        state.drawGroups = null;
         state.individualTimeAdjustment = 0;
         state.tokenValidated = false;
         state.focusLocked = false;
@@ -1449,6 +1540,15 @@ function initializeExamState(state, onlineConfig) {
     const assigned = String(state.assignedVersion || 'A').toUpperCase();
     const snapshot = snapshots.find(item => String(item && item.version || 'A').toUpperCase() === assigned)
         || snapshots[0];
+
+    // Sorteio por aluno (P3-S11, D24): as questões desta tentativa saem do pool da aplicação
+    // pela semente guardada nela (utils/examDraw.js); a mesma semente dá o mesmo sorteio.
+    const drawApplication = state.applicationId
+        ? (db.memory.examApplications || []).find(item => item && item.id === state.applicationId) || null
+        : null;
+    if (drawApplication && isPerStudentDraw(drawApplication) && ensureAttemptDraw(state, drawApplication, snapshot)) {
+        changed = true;
+    }
 
     if (!Array.isArray(state.assignedQuestionNumbers) && snapshot && Array.isArray(snapshot.questions)) {
         state.assignedQuestionNumbers = snapshot.questions

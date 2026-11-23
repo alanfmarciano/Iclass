@@ -9,11 +9,16 @@ vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post } }))
 import {
   ApplicationAudienceFields,
   ApplicationAudienceModal,
+  DEFAULT_SESSION_POLICY,
+  PrepareApplicationForm,
   RECUPERACAO_VISIVEL,
+  SessionPolicySelect,
+  sessionPolicyDescription,
   audiencePayload,
   audienceProblem,
   initialAudience,
 } from './PrepareApplicationForm'
+import { drawAvailability, drawPayload, drawProblem } from './ApplicationDraw'
 
 const CANDIDATES = {
   success: true,
@@ -239,5 +244,205 @@ describe('[UC-PROVA-006] [UC-IDENT-001] Para quem com aluno sem e-mail', () => {
   it('a mensagem da exceção fala do aluno sem e-mail sem mostrar o endereço interno', () => {
     const problem = audienceProblem({ mode: 'turma', selected: [], overrides: { [INTERNAL]: { extraAttempts: '9', motivo: '' } } })
     expect(problem).toBe('Tentativas extras de aluno sem e-mail: use um número de 0 a 5.')
+  })
+})
+
+// "Outro aparelho no meio da prova" (fase 3, P3-S13: AVA-17; D28 e P-B4).
+describe('[UC-TENTATIVA-005] Outro aparelho no meio da prova', () => {
+  function FormHarness({ onValue }) {
+    const [value, setValue] = useState({
+      entry: { label: 'Prova 1', questionCount: 2 },
+      availableVersions: 1,
+      onlineVersions: 1,
+      durationMinutes: 30,
+      waitingRoomMinutes: 0,
+      timerEnabled: true,
+      timerMode: 'per_attempt',
+      tokenEnabled: false,
+      accessToken: 'ABCDE',
+      maxAttempts: '1',
+      keystrokeMode: 'eventos',
+      audience: initialAudience(),
+    })
+    return (
+      <PrepareApplicationForm
+        value={value}
+        onChange={(next) => { setValue(next); onValue(next) }}
+        candidates={{ data: CANDIDATES, loading: false, refreshing: false, error: '', refetch: () => {} }}
+        tokenTools={{ normalize: (text) => text, generate: () => 'ABCDE' }}
+      />
+    )
+  }
+
+  it('padrão "Travar até eu liberar"; "Só avisar" muda o valor e a explicação', () => {
+    const onValue = vi.fn()
+    render(<FormHarness onValue={onValue} />)
+    const select = screen.getByLabelText('Outro aparelho no meio da prova')
+    expect(select).toHaveValue(DEFAULT_SESSION_POLICY)
+    expect(DEFAULT_SESSION_POLICY).toBe('travar')
+    expect(within(select).getAllByRole('option').map((option) => option.textContent)).toEqual(['Travar até eu liberar (recomendado)', 'Só avisar no Monitor'])
+    expect(screen.getByText(/trava no aparelho novo até você liberar pelo Monitor/)).toBeVisible()
+    fireEvent.change(select, { target: { value: 'avisar' } })
+    expect(onValue).toHaveBeenLastCalledWith(expect.objectContaining({ sessionPolicy: 'avisar' }))
+    expect(screen.getByText(/A prova continua no aparelho novo/)).toBeVisible()
+    expect(sessionPolicyDescription('qualquer')).toMatch(/trava/)
+  })
+
+  it('o seletor sozinho (montagem online em Provas) lê valor desconhecido como o padrão', () => {
+    render(<SessionPolicySelect value={undefined} onChange={() => {}} />)
+    expect(screen.getByLabelText('Outro aparelho no meio da prova')).toHaveValue('travar')
+  })
+})
+
+// "Quando" na preparação a partir do histórico (fase 3, P3-S12: AVA-20; D25).
+describe('[UC-PROVA-008] Quando da aplicação', () => {
+  function ScheduleHarness({ onValue, withSchedule = true }) {
+    const [value, setValue] = useState({
+      entry: { label: 'Prova 1', questionCount: 2 },
+      availableVersions: 1,
+      onlineVersions: 1,
+      durationMinutes: 30,
+      waitingRoomMinutes: 0,
+      timerEnabled: true,
+      timerMode: 'per_attempt',
+      tokenEnabled: false,
+      accessToken: 'ABCDE',
+      maxAttempts: '1',
+      keystrokeMode: 'eventos',
+      audience: initialAudience(),
+      ...(withSchedule ? { schedule: { mode: 'agora', date: '', opensAt: '', closesAt: '' } } : {}),
+    })
+    return (
+      <PrepareApplicationForm
+        value={value}
+        onChange={(next) => { setValue(next); onValue?.(next) }}
+        candidates={{ data: CANDIDATES, loading: false, refreshing: false, error: '', refetch: () => {} }}
+        tokenTools={{ normalize: (text) => text, generate: () => 'ABCDE' }}
+        studentClass="1DES"
+        courseId="DES"
+      />
+    )
+  }
+
+  it('agendar na preparação guarda dia e horas no estado e consulta os avisos com a duração da prova', async () => {
+    mocks.get.mockResolvedValue({ avisos: [{ code: 'janela_curta', texto: 'A janela é menor que a duração da prova.' }], janela: 'abre em 20/11 às 08:00 e fecha às 08:20' })
+    const onValue = vi.fn()
+    render(<ScheduleHarness onValue={onValue} />)
+    fireEvent.click(screen.getByRole('radio', { name: 'Agendar dia e horário' }))
+    fireEvent.change(screen.getByLabelText('Dia'), { target: { value: '2026-11-20' } })
+    fireEvent.change(screen.getByLabelText('Abre às'), { target: { value: '08:00' } })
+    fireEvent.change(screen.getByLabelText('Fecha às'), { target: { value: '08:20' } })
+    expect(onValue).toHaveBeenLastCalledWith(expect.objectContaining({ schedule: expect.objectContaining({ mode: 'agendar', date: '2026-11-20', opensAt: '08:00', closesAt: '08:20' }) }))
+    expect(await screen.findByTestId('schedule-warnings')).toHaveTextContent('menor que a duração')
+    await waitFor(() => expect(mocks.get.mock.calls.some(([url]) => url.includes('schedule-check') && url.includes('durationMinutes=30') && url.includes('studentClass=1DES'))).toBe(true))
+  })
+
+  it('sem "schedule" no estado (chamadas antigas), o "Quando" não aparece', () => {
+    render(<ScheduleHarness withSchedule={false} />)
+    expect(screen.queryByTestId('application-schedule')).toBeNull()
+  })
+})
+
+// "Como montar" na preparação a partir do histórico (fase 3, P3-S11: AVA-16; D24).
+describe('[UC-PROVA-007] Como montar na preparação', () => {
+  function DrawHarness({ onValue }) {
+    const [value, setValue] = useState({
+      entry: { id: 'eh_9', label: 'Online #1', questionCount: 3, questionNumbers: [1, 2, 3] },
+      availableVersions: 2,
+      onlineVersions: 2,
+      durationMinutes: 30,
+      waitingRoomMinutes: 0,
+      timerEnabled: true,
+      timerMode: 'per_attempt',
+      tokenEnabled: false,
+      accessToken: 'ABCDE',
+      maxAttempts: '1',
+      keystrokeMode: 'eventos',
+      audience: initialAudience(),
+    })
+    return (
+      <>
+        <PrepareApplicationForm
+          value={value}
+          onChange={(next) => { setValue(next); onValue?.(next) }}
+          candidates={{ data: CANDIDATES, loading: false, refreshing: false, error: '', refetch: () => {} }}
+          tokenTools={{ normalize: (text) => text, generate: () => 'ABCDE' }}
+          studentClass="1DES"
+          courseId="DES"
+          examKey="Avaliacao_1"
+        />
+        <output data-testid="draw-payload">{JSON.stringify(drawPayload(value.draw))}</output>
+      </>
+    )
+  }
+
+  it('padrão "Versões"; o sorteio lê as questões da configuração salva e conta quantas cabem no grupo', async () => {
+    mocks.get.mockResolvedValue({ questions: [
+      { number: 1, origem: 'avaliacao', categoria: '', dificuldade: 'facil', tags: [] },
+      { number: 2, origem: 'avaliacao', categoria: '', dificuldade: 'facil', tags: [] },
+      { number: 3, origem: 'banco', categoria: 'Redes', dificuldade: 'media', tags: [] },
+    ], categorias: ['Redes'], etiquetas: [] })
+    render(<DrawHarness />)
+    expect(screen.getByRole('radio', { name: 'Versões (máx. 4)' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByLabelText('Versões online')).toHaveAttribute('max', '2')
+    expect(screen.getByTestId('draw-payload')).toHaveTextContent('{}')
+    expect(mocks.get).not.toHaveBeenCalledWith(expect.stringContaining('draw-pool'))
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Sorteio por aluno' }))
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledWith(expect.stringContaining('/api/admin/exam-applications/draw-pool?')))
+    const url = mocks.get.mock.calls.find(([item]) => item.includes('draw-pool'))[0]
+    expect(url).toContain('historyId=eh_9')
+    expect(url).toContain('examKey=Avaliacao_1')
+    const group = screen.getByRole('group', { name: 'Grupo 1' })
+    expect(await within(group).findByText('3 questões combinam com o filtro.')).toBeInTheDocument()
+    fireEvent.change(within(group).getByLabelText('Origem'), { target: { value: 'banco' } })
+    fireEvent.change(within(group).getByLabelText('Categoria do banco'), { target: { value: 'redes' } })
+    expect(within(group).getByText('1 questão combina com o filtro.')).toBeInTheDocument()
+    fireEvent.change(within(group).getByLabelText('Quantidade'), { target: { value: '1' } })
+    expect(screen.getByTestId('draw-summary')).toHaveTextContent('Cada aluno recebe 1 de 3 questões')
+    expect(JSON.parse(screen.getByTestId('draw-payload').textContent)).toEqual({ sorteio: { modo: 'por_aluno', grupos: [{ filtro: { origem: 'banco', categoria: 'redes' }, quantidade: 1 }] } })
+  })
+
+  it('as contas da tela são as do servidor: a questão que serve para dois grupos fica no primeiro', () => {
+    const pool = [
+      { number: 1, origem: 'avaliacao', dificuldade: 'facil', tags: ['Redes'] },
+      { number: 2, origem: 'avaliacao', dificuldade: 'facil', tags: [] },
+    ]
+    const draw = { modo: 'por_aluno', grupos: [{ quantidade: '1', tag: 'redes' }, { quantidade: '2', dificuldade: 'facil' }] }
+    expect(drawAvailability(pool, draw)).toEqual([1, 1])
+    expect(drawProblem(draw, pool)).toBe('Grupo 2: pediu 2 questões fáceis, mas a montagem só tem 1 (a questão que serve para dois grupos fica no primeiro).')
+    expect(drawProblem({ modo: 'por_aluno', grupos: [{ quantidade: '' }] }, null)).toBe('Grupo 1: informe quantas questões sortear (um número inteiro a partir de 1).')
+    expect(drawProblem({ modo: 'versoes', grupos: [] }, pool)).toBeNull()
+    expect(drawPayload({ modo: 'versoes' })).toEqual({})
+    // Etiqueta que não existe: o filtro não combina com nada, sem a frase dos dois grupos.
+    const missingTag = { modo: 'por_aluno', grupos: [{ quantidade: '1', dificuldade: 'facil' }, { quantidade: '1', tag: 'inexistente' }] }
+    expect(drawProblem(missingTag, pool)).toBe('Grupo 2: nenhuma questão da montagem combina com o filtro (questões com a etiqueta inexistente).')
+  })
+
+  it('"Como montar" anda pelas setas do teclado e só a opção marcada entra no Tab; origem e dificuldade com 44 px', async () => {
+    mocks.get.mockResolvedValue({ questions: [], categorias: [], etiquetas: [] })
+    render(<DrawHarness />)
+    const versions = screen.getByRole('radio', { name: 'Versões (máx. 4)' })
+    const perStudent = screen.getByRole('radio', { name: 'Sorteio por aluno' })
+    expect(versions).toHaveAttribute('tabindex', '0')
+    expect(perStudent).toHaveAttribute('tabindex', '-1')
+    versions.focus()
+    fireEvent.keyDown(versions, { key: 'ArrowRight' })
+    expect(perStudent).toHaveAttribute('aria-checked', 'true')
+    expect(perStudent).toHaveFocus()
+    expect(perStudent).toHaveAttribute('tabindex', '0')
+    fireEvent.keyDown(perStudent, { key: 'ArrowDown' })
+    expect(versions).toHaveAttribute('aria-checked', 'true')
+    expect(versions).toHaveFocus()
+    fireEvent.keyDown(versions, { key: 'End' })
+    expect(perStudent).toHaveAttribute('aria-checked', 'true')
+    fireEvent.keyDown(perStudent, { key: 'Home' })
+    expect(versions).toHaveAttribute('aria-checked', 'true')
+    fireEvent.keyDown(versions, { key: 'ArrowLeft' })
+    expect(perStudent).toHaveAttribute('aria-checked', 'true')
+    const group = await screen.findByRole('group', { name: 'Grupo 1' })
+    // min-height vence o h-[38px] do Select (cn não mescla classes de altura).
+    expect(within(group).getByLabelText('Origem').className).toContain('min-h-[44px]')
+    expect(within(group).getByLabelText('Dificuldade').className).toContain('min-h-[44px]')
   })
 })

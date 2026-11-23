@@ -526,6 +526,7 @@ function decisions(virtualEmail) {
         'POST /api/session/logout': 'recusada',
         'GET /api/health': 'recusada',
         'POST /api/system/control': 'recusada',
+        'GET /api/system/control/status': 'recusada',
         // Tarefas (fase 3, C5 / P1-c): a prévia lê a lista e o detalhe; envio e download não.
         'GET /api/student/assignments': read(`/api/student/assignments?${Q}`),
         'GET /api/student/assignments/:id': read(`/api/student/assignments/${ASSIGNMENT_ID}?${Q}`),

@@ -72,6 +72,12 @@ function excludedDirs() {
         .map(name => path.resolve(data, name)));
 }
 
+// Pastas de trabalho que nunca entram num backup, pelo nome, em qualquer pasta de origem:
+// a pasta temporária da importação de pacote de curso (utils/coursePackage.js,
+// STAGING_DIR_NAME, o mesmo padrão), que fica dentro de content/ e de uploads/ e tem os
+// .md crus das provas do pacote enquanto a importação roda ou depois de uma queda.
+const TRANSIENT_DIR_NAME = /^\.pacote-[a-f0-9]{16}$/;
+
 // Arquivos de uma pasta (recursivo), sem seguir link simbólico e sem as pastas excluídas.
 async function listFolderFiles(root, excluded = excludedDirs()) {
     const files = [];
@@ -87,7 +93,9 @@ async function listFolderFiles(root, excluded = excludedDirs()) {
             const abs = path.join(dir, item.name);
             const rel = relative ? `${relative}/${item.name}` : item.name;
             if (item.isSymbolicLink()) continue;
-            if (item.isDirectory()) await walk(abs, rel);
+            if (item.isDirectory()) {
+                if (!TRANSIENT_DIR_NAME.test(item.name)) await walk(abs, rel);
+            }
             else if (item.isFile()) {
                 const stat = await fs.promises.stat(abs).catch(() => null);
                 if (stat) files.push({ abs, rel, size: stat.size });
@@ -528,6 +536,7 @@ module.exports = {
     backupAbortedError,
     classifyEntries,
     estimateBackupBytes,
+    TRANSIENT_DIR_NAME,
     excludedDirs,
     extractBackupZip,
     folderSources,
