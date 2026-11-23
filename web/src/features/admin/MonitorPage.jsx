@@ -26,6 +26,7 @@ import { FinishApplicationModal } from './FinishApplicationModal'
 import { ApplicationTokenPanel } from './ApplicationTokenPanel'
 import { controlResultMessage } from './applicationControl'
 import { serverOutageNotices, withLiveOutagePauses } from './serverOutage'
+import { ApplicationScheduleBanner } from './ApplicationSchedule'
 import { StudentAnswersModal } from './StudentAnswersModal'
 import { LOG_INFO, buildAlerts, countsAsFocusExit, focusLogLabel, isDeviceChangeItem, isSuspiciousItem, lockReasonLabel, logInfoFor, logLabel, sameIpLabel, sessionChangeText, sessionRowBadges, suspiciousCount } from './monitorLogs'
 import { csvCell } from '../../lib/csv'
@@ -502,6 +503,16 @@ export default function MonitorPage() {
   // pausas da queda vêm da lista consultada a cada 5 s, porque a compensação acontece
   // no servidor.
   const outageNotice = useMemo(() => serverOutageNotices(liveApplication || selectedApplication), [liveApplication, selectedApplication])
+  // Agendamento (P3-S12): o servidor abre e fecha a aplicação agendada sozinho. A lista
+  // consultada a cada 5 s traz o status novo; a aplicação da tela passa a ele (e a turma é
+  // relida) para o Monitor mostrar "em andamento" ou "encerrada" sem recarregar a página.
+  useEffect(() => {
+    if (!liveApplication || !selectedApplication || liveApplication.id !== selectedApplication.id) return
+    if (liveApplication.status === selectedApplication.status && liveApplication.updatedAt === selectedApplication.updatedAt) return
+    setApplications((items) => items.map((item) => (item.id === liveApplication.id ? { ...item, ...liveApplication, agendaView: liveApplication.agendaView } : item)))
+    if (liveApplication.status !== selectedApplication.status) refetchClasses(true)
+  }, [liveApplication, selectedApplication, refetchClasses])
+  const scheduleApplication = liveApplication || selectedApplication
   const selectedConfig = useMemo(() => {
     const current = selectedClass?.onlineExamConfigs?.[examKey] || {}
     if (!selectedApplication) return current
@@ -1300,10 +1311,26 @@ export default function MonitorPage() {
                     <span><strong>Aplicação encerrada.</strong> Os cronômetros foram congelados e o portal do aluno foi bloqueado. {finished} {finished === 1 ? 'entregou' : 'entregaram'} · {absent} {absent === 1 ? 'não entregou' : 'não entregaram'}.</span>
                   </div>
                 )}
-                {applicationPrepared && (
+                {applicationPrepared && scheduleApplication?.agendaView?.estado !== 'agendada' && (
                   <div className="mt-3 flex items-start gap-2 rounded-lg border border-warning/45 bg-warning-soft px-3 py-2.5 text-sm text-warning" role="status">
                     <AlertTriangle size={17} className="mt-0.5 shrink-0" />
                     <span><strong>Não visível aos alunos.</strong> “Preparar” monta a aplicação; o aviso só será enviado depois de clicar em “Iniciar prova e avisar alunos” ou “Sala de espera”.</span>
+                  </div>
+                )}
+                {scheduleApplication?.agendaView && (
+                  <div className="mt-3">
+                    <ApplicationScheduleBanner
+                      application={scheduleApplication}
+                      toast={toast}
+                      onChanged={(application) => {
+                        if (application) {
+                          setApplications((items) => items.map((item) => (item.id === application.id
+                            ? { ...item, status: application.status, updatedAt: application.updatedAt, agenda: application.agenda, agendaView: application.agendaView }
+                            : item)))
+                        }
+                        activeApplicationsRequest.refetch(true)
+                      }}
+                    />
                   </div>
                 )}
                 {outageNotice && (

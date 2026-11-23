@@ -501,12 +501,41 @@ async function prepareServer() {
     // respostas salvas, mesmo que o aluno nunca mais sincronize (sem rede, sem bateria).
     // No boot também recupera tentativas 'expired' deixadas por versões antigas.
     const { settleExpiredAttempts } = require('./utils/examDeadline.js');
+    // 8b) Agendamento de prova e de material (P3-S12, D25 a D27; contrato C10): na mesma
+    // volta, depois da devolução do tempo parado e antes do fim do tempo das tentativas, a
+    // aplicação agendada abre (ou fica "perdida", D26: o servidor estava desligado em toda
+    // a janela), fecha entregando o que foi salvo e o material agendado é liberado. A
+    // primeira volta é a do boot: o servidor que ligou no meio da janela abre a prova na
+    // hora e avisa o professor no "Precisa de você".
+    const examSchedule = require('./utils/examSchedule.js');
+    function sweepSchedules() {
+        try {
+            const outcome = examSchedule.sweepSchedules(db.memory, { now: Date.now() });
+            if (outcome.opened.length) {
+                // Atrasada: o servidor estava desligado ou suspenso na hora de abrir (D26).
+                const late = outcome.opened.filter(item => Number(item.atrasoSegundos) * 1000 > examSchedule.LATE_OPEN_WARN_MS).length;
+                console.log('🗓️  Agendamento: ' + outcome.opened.length + ' prova(s) aberta(s) pelo agendamento'
+                    + (late ? ' (' + late + ' depois do horário, porque o servidor estava desligado; veja o "Precisa de você").' : ' no horário marcado.'));
+            }
+            if (outcome.finished.length) console.log('🗓️  Agendamento: ' + outcome.finished.length + ' prova(s) encerrada(s) no horário marcado (entregue o que estava salvo).');
+            if (outcome.missed.length) console.log('⚠️ Agendamento: ' + outcome.missed.length + ' prova(s) não abriram porque o servidor estava desligado em todo o horário marcado. Veja o "Precisa de você".');
+            if (outcome.released.length) console.log('🗓️  Agendamento: ' + outcome.released.length + ' material(is) liberado(s) no horário marcado.');
+            (outcome.errors || []).forEach(item => logCrash('agendamento da prova ' + item.applicationId, new Error(item.error || 'falha')));
+            return outcome.changed;
+        } catch (e) {
+            logCrash('agendamento de prova e de material', e);
+            return false;
+        }
+    }
     function sweepExpiredAttempts() {
         try {
             // Computador suspenso ou processo parado desde a última volta: o tempo parado
             // é devolvido antes de qualquer tentativa ser finalizada.
             serverLifecycle.detectGap(Date.now());
-            const { finalized, discarded, changed } = settleExpiredAttempts(db.memory);
+            const scheduleChanged = sweepSchedules();
+            const settled = settleExpiredAttempts(db.memory);
+            const { finalized, discarded } = settled;
+            const changed = settled.changed || scheduleChanged;
             const recovered = finalized.filter(item => item.recoveredAfterFinish).length;
             if (finalized.length > recovered) console.log('⏱️  Fim do tempo: ' + (finalized.length - recovered) + ' tentativa(s) entregue(s) automaticamente.');
             // Tentativas sem entrega deixadas por versões antigas em aplicações já encerradas:

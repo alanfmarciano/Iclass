@@ -36,7 +36,7 @@ O banco abre em modo WAL com `synchronous=FULL` (o "salvo" sobrevive a queda de 
 | `branding` | objeto | identidade white-label global |
 | `schools` | array | escolas/instituições (white-label, compartilháveis) |
 | `submissions` | array | submissões de prova |
-| `examApplications` | array | aplicações de prova (ciclo de vida próprio, `applicationId` imutável); `keystrokeMode` (`eventos`\|`tudo`\|`nada`, H8b; ausente nas de antes vale `eventos`), copiado também para a configuração online da turma; `finalidade`, `participants` e `studentOverrides` (fase 3, A3; ver "Para quem é a aplicação") |
+| `examApplications` | array | aplicações de prova (ciclo de vida próprio, `applicationId` imutável); `keystrokeMode` (`eventos`\|`tudo`\|`nada`, H8b; ausente nas de antes vale `eventos`), copiado também para a configuração online da turma; `finalidade`, `participants` e `studentOverrides` (fase 3, A3; ver "Para quem é a aplicação"); `agenda` (fase 3, A11; ver "Prova e material agendados") |
 | `questionBank` | array | banco de questões reutilizáveis, no modelo único da questão, com metadados, revisão e arquivamento |
 | `evaluations` | objeto | avaliações |
 | `courseStructure` | array | estrutura legada (**em obsolescência**, migrada para `courses[].structure`) |
@@ -271,6 +271,13 @@ P3-S13 (AVA-17; D28 e D29 do desenho do P3). Tudo é novo e opcional: nenhuma mi
 - **`examApplications[].answerKeyCorrections[]`** (novo, opcional): `{ questionNumber, tipo, antes, depois, motivo, por, em (ISO), regraded, changed, notifiedStudents, preparacaoAtualizada, preparadasAtualizadas, tirouAnulacao? }`, uma por correção, para a tela da preparação. A auditoria (`exam_answer_key_corrected`) tem os mesmos dados.
 - **`submissions[].scoreHistory[].avisoAluno`** (novo, opcional): `{ tipo: 'gabarito_corrigido', numeroNaProva }` na mudança de nota que avisa o aluno (só quando a nota já estava publicada). O sino do aluno lê daqui (provedor `nota-alterada`, `utils/gradeChangeNotices.js`); o `scoreHistory` continua fora das rotas do aluno.
 - Nenhuma migração: aplicação e entrega antigas não têm os campos. Voltar para o 281029f pelo backup `pre-atualizacao` não tem problema; abrir o banco novo no 281029f ignora os dois campos e mantém as notas recalculadas.
+
+## Prova e material agendados (fase 3, A11 / P3-S12)
+
+- **`examApplications[].agenda`** (novo, opcional): `{ abreEm, fechaEm (ms), criadoPor, criadoEm, abertaEm?, atrasoSegundos?, encerradaEm?, perdida?, perdidaEm?, fechamentoCanceladoEm?, fechamentoCanceladoPor? }`. Só a aplicação `prepared` ganha agenda; a varredura (`sweepSchedules`, `utils/examSchedule.js`) escreve `abertaEm`/`atrasoSegundos` ao abrir, `perdida`/`perdidaEm` quando o servidor ligou depois de `fechaEm` e `encerradaEm` ao encerrar. Agenda que não é objeto ou sem `abreEm`/`fechaEm` válidos vale como sem agenda. Aplicação de antes desta versão não tem o campo e nada muda nela.
+- **`classes[].releaseSchedule`** (novo, opcional): `{ [itemKey]: { at (ms), released: true, por, porNome, criadoEm, adiadoEm? } }`. Na hora, a varredura grava `releasedItems[itemKey] = true` e `releaseMeta[itemKey]` e tira a entrada; o gabarito com aplicação aberta da prova ganha `adiadoEm` e espera. Só para a turma inteira.
+- **Auditoria**: `exam_application_scheduled`, `exam_application_schedule_changed`, `exam_application_auto_opened`, `exam_application_auto_finished` e `exam_application_schedule_missed` (pelo `recordExamAudit`, ator `sistema` nas da varredura), `content_release_scheduled` e `content_release_auto`.
+- Nenhuma migração. Abrir o banco novo no 281029f ignora os dois campos: a aplicação agendada aparece como preparada comum (o professor inicia pelo Monitor) e o material agendado fica bloqueado.
 
 ## Dias não letivos (`nonSchoolDays`, fase 3, B3)
 

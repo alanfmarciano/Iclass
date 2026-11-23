@@ -292,3 +292,52 @@ describe('[UC-TENTATIVA-005] Outro aparelho no meio da prova', () => {
     expect(screen.getByLabelText('Outro aparelho no meio da prova')).toHaveValue('travar')
   })
 })
+
+// "Quando" na preparação a partir do histórico (fase 3, P3-S12: AVA-20; D25).
+describe('[UC-PROVA-008] Quando da aplicação', () => {
+  function ScheduleHarness({ onValue, withSchedule = true }) {
+    const [value, setValue] = useState({
+      entry: { label: 'Prova 1', questionCount: 2 },
+      availableVersions: 1,
+      onlineVersions: 1,
+      durationMinutes: 30,
+      waitingRoomMinutes: 0,
+      timerEnabled: true,
+      timerMode: 'per_attempt',
+      tokenEnabled: false,
+      accessToken: 'ABCDE',
+      maxAttempts: '1',
+      keystrokeMode: 'eventos',
+      audience: initialAudience(),
+      ...(withSchedule ? { schedule: { mode: 'agora', date: '', opensAt: '', closesAt: '' } } : {}),
+    })
+    return (
+      <PrepareApplicationForm
+        value={value}
+        onChange={(next) => { setValue(next); onValue?.(next) }}
+        candidates={{ data: CANDIDATES, loading: false, refreshing: false, error: '', refetch: () => {} }}
+        tokenTools={{ normalize: (text) => text, generate: () => 'ABCDE' }}
+        studentClass="1DES"
+        courseId="DES"
+      />
+    )
+  }
+
+  it('agendar na preparação guarda dia e horas no estado e consulta os avisos com a duração da prova', async () => {
+    mocks.get.mockResolvedValue({ avisos: [{ code: 'janela_curta', texto: 'A janela é menor que a duração da prova.' }], janela: 'abre em 20/11 às 08:00 e fecha às 08:20' })
+    const onValue = vi.fn()
+    render(<ScheduleHarness onValue={onValue} />)
+    fireEvent.click(screen.getByRole('radio', { name: 'Agendar dia e horário' }))
+    fireEvent.change(screen.getByLabelText('Dia'), { target: { value: '2026-11-20' } })
+    fireEvent.change(screen.getByLabelText('Abre às'), { target: { value: '08:00' } })
+    fireEvent.change(screen.getByLabelText('Fecha às'), { target: { value: '08:20' } })
+    expect(onValue).toHaveBeenLastCalledWith(expect.objectContaining({ schedule: expect.objectContaining({ mode: 'agendar', date: '2026-11-20', opensAt: '08:00', closesAt: '08:20' }) }))
+    expect(await screen.findByTestId('schedule-warnings')).toHaveTextContent('menor que a duração')
+    await waitFor(() => expect(mocks.get.mock.calls.some(([url]) => url.includes('schedule-check') && url.includes('durationMinutes=30') && url.includes('studentClass=1DES'))).toBe(true))
+  })
+
+  it('sem "schedule" no estado (chamadas antigas), o "Quando" não aparece', () => {
+    render(<ScheduleHarness withSchedule={false} />)
+    expect(screen.queryByTestId('application-schedule')).toBeNull()
+  })
+})

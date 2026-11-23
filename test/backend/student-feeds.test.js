@@ -67,8 +67,9 @@ test('[UC-FUNDACAO-001] registro: id e função obrigatórios, mesmo id troca e 
     assert.throws(() => feeds.registerInstructorQueueProvider(null), /inválido/);
     // Os provedores de verdade já registrados pelo createApp (as tarefas do C6, 'tarefas',
     // e as provas aguardando correção do P3-S4a, 'correcoes-de-prova', que sem turma no
-    // contexto não trazem item) ficam de fora da conta.
-    const ownIds = () => feeds.providerIds('queue').filter(id => !['tarefas', 'correcoes-de-prova'].includes(id));
+    // contexto não trazem item, e os agendamentos de prova e material do P3-S12,
+    // 'agendamentos') ficam de fora da conta.
+    const ownIds = () => feeds.providerIds('queue').filter(id => !['tarefas', 'correcoes-de-prova', 'agendamentos'].includes(id));
     const first = feeds.registerInstructorQueueProvider({ id: 'teste', items: () => [{ id: 'a', titulo: 'A' }] });
     feeds.registerInstructorQueueProvider({ id: 'teste', items: () => [{ id: 'b', titulo: 'B' }] });
     assert.deepEqual(ownIds(), ['teste']);

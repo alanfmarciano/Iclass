@@ -10,6 +10,7 @@ import { api } from '../../lib/api'
 import { matchesSearch } from '../../lib/textSearch'
 import { displayEmail, isPlaceholderEmail } from '../../lib/studentProfile'
 import { DEFAULT_KEYSTROKE_MODE, KEYSTROKE_MODE_OPTIONS, keystrokeModeDescription } from '../../lib/keystrokeModes'
+import { ApplicationScheduleFields } from './ApplicationSchedule'
 
 // Preparar a aplicação da prova (fase 3, P3-S7: AVA-09; D15, D16 e D17 do desenho do P3).
 // Extraído da tela Provas: os campos da aplicação ("Aplicar prova novamente") e o "Para
@@ -455,9 +456,10 @@ export function SessionPolicySelect({ value, onChange }) {
 }
 
 // Campos de "Aplicar prova novamente" (extraídos da tela Provas): versões, duração, sala
-// de espera, cronômetro, tentativas, teclado, token e o "Para quem". value/onChange: o
-// estado applyHistory da tela; tokenTools: { normalize, generate } do token.
-export function PrepareApplicationForm({ value, onChange, candidates, tokenTools }) {
+// de espera, cronômetro, tentativas, teclado, token, o "Para quem" e o "Quando" (P3-S12).
+// value/onChange: o estado applyHistory da tela; tokenTools: { normalize, generate } do
+// token; studentClass e courseId: a turma (os avisos do "Quando").
+export function PrepareApplicationForm({ value, onChange, candidates, tokenTools, studentClass, courseId }) {
   const set = (patch) => onChange({ ...value, ...patch })
   return (
     <div className="space-y-4">
@@ -509,6 +511,19 @@ export function PrepareApplicationForm({ value, onChange, candidates, tokenTools
         onRetry={candidates.refetch}
         timerMode={value.timerMode}
       />
+
+      {value.schedule && (
+        <div className="rounded-lg border border-border p-3">
+          <ApplicationScheduleFields
+            value={value.schedule}
+            onChange={(schedule) => set({ schedule })}
+            studentClass={studentClass}
+            courseId={courseId}
+            durationMinutes={value.durationMinutes}
+            timerEnabled={value.timerEnabled}
+          />
+        </div>
+      )}
     </div>
   )
 }

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { ArrowLeft, CheckCircle2, ChevronRight, ClipboardList, Edit3, FileText, LayoutGrid, Library, List, Lock, Pause, Play, Plus, Printer, RefreshCw, Search, Settings2, Shuffle, Square, Trash2, Unlock, Users } from 'lucide-react'
+import { ArrowLeft, CalendarClock, CheckCircle2, ChevronRight, ClipboardList, Edit3, FileText, LayoutGrid, Library, List, Lock, Pause, Play, Plus, Printer, RefreshCw, Search, Settings2, Shuffle, Square, Trash2, Unlock, Users } from 'lucide-react'
 import { Card, CardHeader, CardBody } from '../../components/ui/Card'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
@@ -36,6 +36,7 @@ import {
   initialAudience,
   useParticipantCandidates,
 } from './PrepareApplicationForm'
+import { ApplicationScheduleFields, initialSchedule, schedulePayload, scheduleProblem } from './ApplicationSchedule'
 import '../../styles/provas-board.css'
 import {
   ONLINE_VERSIONS_MAX,
@@ -190,6 +191,8 @@ export default function ProvasPage() {
   const [applyHistory, setApplyHistory] = useState(null)
   // "Para quem" da montagem online e "Alunos desta aplicação" (P3-S7, PrepareApplicationForm.jsx).
   const [audience, setAudience] = useState(initialAudience)
+  // "Quando" da montagem online (P3-S12): agora (iniciar pelo Monitor) ou agendada.
+  const [schedule, setSchedule] = useState(initialSchedule)
   const [audienceApplication, setAudienceApplication] = useState(null)
   const [form, setForm] = useState(DEFAULT_FORM)
   const [excluded, setExcluded] = useState([])
@@ -333,7 +336,7 @@ export default function ProvasPage() {
   }
 
   // Outra prova ou turma: o "Para quem" volta para a turma inteira.
-  useEffect(() => { setAudience(initialAudience()) }, [examKey, className, courseId])
+  useEffect(() => { setAudience(initialAudience()); setSchedule(initialSchedule()) }, [examKey, className, courseId])
 
   useEffect(() => {
     if (activeCourseId && courseId !== activeCourseId) setCourseId(activeCourseId)
@@ -452,10 +455,17 @@ export default function ProvasPage() {
     navigate(`/monitor?${params.toString()}`)
   }
 
-  // Avisos depois de preparar: o que a nova preparação substituiu ou bloqueou.
+  // Avisos depois de preparar: o que a nova preparação substituiu ou bloqueou e, na
+  // agendada, os avisos do horário (dia sem aula, janela menor que a prova).
   function notifyPrepared(prepared) {
     if (prepared?.replacedApplicationIds?.length) toast.info('A aplicação preparada anterior (ainda não iniciada) foi substituída por esta.')
     if (prepared?.answerKeyLocked) toast.info('O gabarito liberado na aplicação anterior voltou a ficar bloqueado. Libere de novo em Materiais quando quiser.')
+    ;(prepared?.avisos || []).forEach((aviso) => toast.info(aviso.texto))
+  }
+
+  function preparedMessage(prepared, fallback) {
+    const janela = prepared?.application?.agendaView?.janela
+    return janela ? `Prova agendada: ${janela}. Ela abre e fecha sozinha.` : fallback
   }
 
   async function saveOnline(prepare) {
@@ -467,6 +477,8 @@ export default function ProvasPage() {
     if (!parsedMaxAttempts.valid) return toast.error('Tentativas deve ser um número entre 1 e 10.')
     const audienceIssue = prepare ? audienceProblem(audience) : null
     if (audienceIssue) return toast.error(audienceIssue)
+    const scheduleIssue = prepare ? scheduleProblem(schedule) : null
+    if (scheduleIssue) return toast.error(scheduleIssue)
     setBusy(prepare ? 'prepare' : 'saveOnline')
     try {
       const saved = await addHistory('online', currentVersions, { questionCount: currentVersions[0].count, maxAttempts: parsedMaxAttempts.value })
@@ -488,10 +500,11 @@ export default function ProvasPage() {
             keystrokeMode: form.keystrokeMode || DEFAULT_KEYSTROKE_MODE,
             sessionPolicy: form.sessionPolicy || DEFAULT_SESSION_POLICY,
             ...audiencePayload(audience, { timerMode: form.timerMode }),
+            ...schedulePayload(schedule),
           },
         })
         rememberApplicationToken(prepared.application.id, prepared.accessToken, prepared.application.accessTokenIssuedAt)
-        toast.success('Aplicação preparada. Inicie pelo monitor quando a turma estiver pronta.')
+        toast.success(preparedMessage(prepared, 'Aplicação preparada. Inicie pelo monitor quando a turma estiver pronta.'))
         notifyPrepared(prepared)
         await loadExamState()
         const params = new URLSearchParams({ courseId, className, examKey, applicationId: prepared.application.id })
@@ -542,6 +555,7 @@ export default function ProvasPage() {
       keystrokeMode: DEFAULT_KEYSTROKE_MODE,
       sessionPolicy: DEFAULT_SESSION_POLICY,
       audience: initialAudience(),
+      schedule: initialSchedule(),
     })
   }
 
@@ -552,6 +566,8 @@ export default function ProvasPage() {
     if (!parsedMaxAttempts.valid) return toast.error('Tentativas deve ser um número entre 1 e 10.')
     const audienceIssue = audienceProblem(applyHistory.audience)
     if (audienceIssue) return toast.error(audienceIssue)
+    const scheduleIssue = scheduleProblem(applyHistory.schedule)
+    if (scheduleIssue) return toast.error(scheduleIssue)
     const durationMinutes = Math.max(1, Number(applyHistory.durationMinutes) || 60)
     const waitingRoomMinutes = parseWaitingRoomInput(applyHistory.waitingRoomMinutes)
     setBusy('applyHistory')
@@ -573,10 +589,11 @@ export default function ProvasPage() {
           keystrokeMode: applyHistory.keystrokeMode || DEFAULT_KEYSTROKE_MODE,
           sessionPolicy: applyHistory.sessionPolicy || DEFAULT_SESSION_POLICY,
           ...audiencePayload(applyHistory.audience, { timerMode: applyHistory.timerMode }),
+          ...schedulePayload(applyHistory.schedule),
         },
       })
       rememberApplicationToken(prepared.application.id, prepared.accessToken, prepared.application.accessTokenIssuedAt)
-      toast.success('Nova aplicação preparada. Abrindo o Monitor Online.')
+      toast.success(preparedMessage(prepared, 'Nova aplicação preparada. Abrindo o Monitor Online.'))
       notifyPrepared(prepared)
       setApplyHistory(null)
       const params = new URLSearchParams({ courseId, className, examKey, applicationId: prepared.application.id })
@@ -1078,6 +1095,26 @@ export default function ProvasPage() {
                       </Card>
                     )}
 
+                    {mode === 'online' && (
+                      <Card className="p-4 space-y-3">
+                        <div className="flex items-center gap-2">
+                          <span className="w-8 h-8 grid place-items-center rounded-md bg-surface-2 text-muted"><CalendarClock size={17} /></span>
+                          <div>
+                            <h3 className="text-sm font-bold text-text">Quando</h3>
+                            <p className="text-xs text-muted">Iniciar pelo Monitor ou abrir e fechar sozinha num horário</p>
+                          </div>
+                        </div>
+                        <ApplicationScheduleFields
+                          value={schedule}
+                          onChange={setSchedule}
+                          studentClass={className}
+                          courseId={courseId}
+                          durationMinutes={form.durationMinutes}
+                          timerEnabled={form.timerEnabled}
+                        />
+                      </Card>
+                    )}
+
                     {mode === 'online' ? (
                       <Card className="p-4 space-y-3">
                         <div className="flex items-center gap-2">
@@ -1097,7 +1134,7 @@ export default function ProvasPage() {
                           <Button icon={FileText} loading={busy === 'saveOnline'} onClick={() => saveOnline(false)}>Salvar online</Button>
                           <Button icon={Play} loading={busy === 'prepare'} disabled={!!runningApplication} title={runningApplication ? RUNNING_MESSAGE : undefined} onClick={() => saveOnline(true)}>Preparar e abrir monitor</Button>
                         </div>
-                        <p className="text-xs text-warning">Preparar ainda não libera a prova. No monitor, clique em “Iniciar prova e avisar alunos” ou abra a sala de espera.</p>
+                        <p className="text-xs text-warning">{schedule.mode === 'agendar' ? 'Preparar com agenda: a prova abre sozinha no horário escolhido em “Quando”. Antes disso, os alunos só veem o horário.' : 'Preparar ainda não libera a prova. No monitor, clique em “Iniciar prova e avisar alunos” ou abra a sala de espera.'}</p>
                         {activeApplication && !['finished', 'cancelled'].includes(activeApplication.status) && (
                           <div className="flex flex-wrap items-center gap-2">
                             <Badge tone={activeApplication.finalidade === 'segunda_chamada' || Array.isArray(activeApplication.participants) ? 'info' : 'neutral'}>{audienceLabel(activeApplication)}</Badge>
@@ -1281,6 +1318,8 @@ export default function ProvasPage() {
           <PrepareApplicationForm
             value={applyHistory}
             onChange={setApplyHistory}
+            studentClass={className}
+            courseId={courseId}
             candidates={historyCandidates}
             tokenTools={{ normalize: normalizeTokenInput, generate: generateExamToken }}
           />

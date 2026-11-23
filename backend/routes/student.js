@@ -45,6 +45,7 @@ require('../utils/gradeChangeNotices.js');
 const attendanceUtil = require('../utils/attendance.js');
 const { lessonsForDate } = require('../utils/academicCalendar.js');
 const { studentCalendarEvents } = require('../utils/calendarFeed.js');
+const examSchedule = require('../utils/examSchedule.js');
 const settingsUtil = require('../utils/settings.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
 const { parseEvaluationMarkdown } = require('../utils/parser.js');
@@ -537,7 +538,9 @@ router.get('/api/status', validateAnySession, (req, res) => {
         examConfigs: cls.examConfigs || {},
         onlineExamConfigs: sanitizeOnlineExamConfigsForStudent(cls.onlineExamConfigs),
         releasedItems: isAdmin ? getReleasedItemsForClass(cls, studentEmail) : getStudentReleasedItems(cls, studentEmail),
-        releaseMeta: cls.releaseMeta || {}
+        releaseMeta: cls.releaseMeta || {},
+        // Liberações agendadas da turma (P3-S12, D27), só para o painel (Materiais).
+        ...(isAdmin ? { releaseSchedule: examSchedule.releaseScheduleView(cls) } : {}),
     });
 });
 
@@ -663,9 +666,18 @@ router.get('/api/student/exam-applications', validateStudentSession, (req, res) 
         })
         .sort((a, b) => String(b.application.createdAt || '').localeCompare(String(a.application.createdAt || '')))
         .map(({ application, cls }) => applicationForStudent(application, cls, req.studentEmail));
+    // Provas agendadas (P3-S12, D25): preparadas que abrem sozinhas, numa lista à parte
+    // ("Abre em 20/11 às 08:00 e fecha às 09:30"), sem questões, configuração nem token.
+    // A tela antiga, que só lê applications, continua sem vê-las.
+    const scheduledSeen = new Set();
+    const agendadas = scopedClasses
+        .flatMap(cls => examSchedule.studentScheduledApplications(db.memory, { cls, email: req.studentEmail }))
+        .filter(item => !scheduledSeen.has(item.id) && scheduledSeen.add(item.id))
+        .sort((a, b) => a.abreEm - b.abreEm)
+        .map(({ criadoEm, ...item }) => item);
 
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
-    res.json({ success: true, applications });
+    res.json({ success: true, applications, agendadas });
 });
 
 // Sincronização unificada durante a prova: estado, mensagens pop-up, configuração da

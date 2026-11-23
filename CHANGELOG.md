@@ -79,6 +79,15 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 - Quando 2 ou 3 alunos da prova aparecem no mesmo IP numa sala em que os outros têm IPs diferentes, a linha deles diz "Mesmo IP de Fulano" (pode ser o mesmo aparelho). Se a rede da escola mostra o mesmo endereço para todos, o Monitor avisa isso e não marca ninguém.
 - O modelo dos Termos de Uso e da Política de Privacidade diz que o IP e o aparelho de cada entrada durante a prova ficam registrados e que a prova pode travar no outro aparelho. Quem ainda não publicou os próprios textos vê o modelo novo; quem já publicou continua com o seu (revise e publique de novo se quiser incluir a frase).
 
+### Prova e material agendados
+- Ao preparar a prova online, o cartão "Quando" tem "Agendar dia e horário": escolha o dia, a hora de abrir e a de fechar (no relógio da escola). A prova abre sozinha no horário (na sala de espera, se ela tiver) e fecha sozinha, entregando o que cada aluno salvou. "Eu abro pelo Monitor" continua como antes.
+- O cartão avisa antes de preparar quando o dia não tem aula na turma (feriado, recesso) e quando o horário é menor que a duração da prova. Horário no passado, menor que 5 minutos, maior que 12 horas ou a mais de 60 dias não é aceito.
+- O aluno vê a prova agendada em Provas, com a etiqueta "Agendada" e o horário, e no Calendário, sem as questões e sem botão de começar até a hora.
+- No Monitor, a prova agendada mostra "Abre sozinha em ...", com "Mudar horário" e "Cancelar agendamento". Depois de aberta, "Fecha sozinha em ..." (o horário anda com as pausas e com o "+N min" da turma) e "Não encerrar sozinha".
+- Se o computador do IClass estava desligado na hora de abrir e ligar dentro do horário, a prova abre na hora em que ele ligou e o "Precisa de você" avisa. Se ele ligar só depois da hora de fechar, a prova não abre sozinha: o Monitor e o "Precisa de você" mostram "A prova agendada não abriu", com "Agendar de novo".
+- Em Materiais, a apostila e o gabarito bloqueados têm "Agendar": o item é liberado sozinho para a turma no dia e na hora marcados, e o aluno vê a liberação no Calendário. O gabarito de prova ainda aberta espera o encerramento ("Adiado: sai quando a prova for encerrada"). Ligar o interruptor antes libera na hora e tira o agendamento.
+- Tudo fica na Auditoria: quem agendou, mudou ou cancelou, e a prova aberta, encerrada ou não aberta pelo agendamento.
+
 ### Versão, Novidades e Ajuda
 - O rodapé do menu mostra a versão de verdade do IClass (por exemplo, "v3.0.0") e se a tela está falando com o servidor: "Conectado", "Sem conexão" ou "Servidor reiniciando". Antes ficava "Sistema ativo" e "v3", mesmo com o servidor fora do ar.
 - Na tela Sistema, o cartão novo "Sobre o IClass" mostra a versão instalada, a última atualização (com o nome do backup feito antes dela), a versão dos dados, o código desta instalação e o botão "Novidades", que abre esta lista.

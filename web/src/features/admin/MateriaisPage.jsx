@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { BookOpen, ClipboardList, FileCheck2, ChevronRight, Lock, Unlock, PackageOpen, Layers, CheckCircle2, XCircle, MonitorPlay } from 'lucide-react'
+import { BookOpen, ClipboardList, FileCheck2, ChevronRight, Lock, Unlock, PackageOpen, Layers, CheckCircle2, XCircle, MonitorPlay, CalendarClock } from 'lucide-react'
 import { Switch } from '../../components/ui/Switch'
 import { Button } from '../../components/ui/Button'
 import { Badge } from '../../components/ui/Badge'
@@ -11,6 +11,7 @@ import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { compareOrdinal } from '../../lib/textSearch'
+import { ReleaseScheduleDialog, cancelReleaseSchedule, releaseScheduleText } from './ReleaseSchedule'
 
 const TYPE_ICON = { 'Apostila': BookOpen, 'Prova online': ClipboardList, 'Gabarito': FileCheck2 }
 
@@ -110,6 +111,8 @@ export default function MateriaisPage() {
   const [structure, setStructure] = useState(null)
   const [released, setReleased] = useState({})
   const [releaseMeta, setReleaseMeta] = useState({})
+  const [releaseSchedule, setReleaseSchedule] = useState({})
+  const [scheduleItem, setScheduleItem] = useState(null)
   const [examApplications, setExamApplications] = useState([])
   const [selIdx, setSelIdx] = useState(0)
   const [loading, setLoading] = useState(false)
@@ -131,8 +134,9 @@ export default function MateriaisPage() {
         ])
         setReleased(st.releasedItems || {})
         setReleaseMeta(st.releaseMeta || {})
+        setReleaseSchedule(st.releaseSchedule && typeof st.releaseSchedule === 'object' ? st.releaseSchedule : {})
         setExamApplications(list && Array.isArray(list.applications) ? list.applications : applicationsFromConfigs(st.onlineExamConfigs))
-      } else { setReleased({}); setReleaseMeta({}); setExamApplications([]) }
+      } else { setReleased({}); setReleaseMeta({}); setReleaseSchedule({}); setExamApplications([]) }
     } catch (e) { setError(e) } finally { setLoading(false) }
   }
 
@@ -144,8 +148,10 @@ export default function MateriaisPage() {
     setReleased((r) => ({ ...r, [itemKey]: value }))
     if (value) setReleaseMeta((m) => ({ ...m, [itemKey]: { by: 'voce', at: new Date().toISOString() } }))
     try {
-      await api.post('/api/admin/release-item', { studentClass: className, courseId, itemKey, released: value })
-      toast.success(value ? 'Liberado' : 'Bloqueado')
+      const response = await api.post('/api/admin/release-item', { studentClass: className, courseId, itemKey, released: value })
+      // Liberado na mão: a liberação agendada do item sai da agenda (o servidor manda a nova).
+      if (response?.releaseSchedule) setReleaseSchedule(response.releaseSchedule)
+      toast.success(value ? (response?.scheduleDropped ? 'Liberado agora; o agendamento foi retirado' : 'Liberado') : 'Bloqueado')
     } catch (e) {
       toast.error(e.message)
       setReleased((r) => ({ ...r, [itemKey]: !value }))
@@ -167,6 +173,13 @@ export default function MateriaisPage() {
     else if (keys.length) toast.success(value ? 'Apostilas liberadas' : 'Itens bloqueados')
     if (value && skipped > 0) toast.info('Provas e gabaritos não são liberados em lote: aplique a prova em Provas e libere cada gabarito na própria chave.')
     load()
+  }
+
+  async function cancelSchedule(item) {
+    try {
+      setReleaseSchedule(await cancelReleaseSchedule({ studentClass: className, courseId, itemKey: item.key }))
+      toast.success('Liberação agendada cancelada. O item continua bloqueado.')
+    } catch (e) { toast.error(e.message) }
   }
 
   function openExam(examKey) {
@@ -297,16 +310,30 @@ export default function MateriaisPage() {
                           const examKey = item.type === 'Gabarito' ? item.key.replace(/^Gabarito_/, '') : null
                           const examState = examKey ? examApplicationState(examApplications, examKey) : null
                           const lockedByExam = !!examState && OPEN_EXAM_STATUSES.has(examState.status) && !isOn
+                          // Liberação agendada (D27): só para o item ainda bloqueado.
+                          const scheduled = !isOn ? releaseSchedule[item.key] : null
                           return (
-                            <div key={item.key} className="flex items-center gap-3 px-4 sm:px-5 py-3 pl-8 sm:pl-10 border-b border-border/50 last:border-0">
+                            <div key={item.key} data-testid={`release-row-${item.key}`} className="flex flex-wrap items-center gap-x-3 gap-y-2 px-4 sm:px-5 py-3 pl-8 sm:pl-10 border-b border-border/50 last:border-0">
                               <Icon size={18} className={isOn ? 'text-text' : 'text-subtle'} />
-                              <div className="flex-1 min-w-0">
+                              <div className="flex-1 min-w-[12rem]">
                                 <p className="text-sm text-text">{item.type}</p>
                                 {isOn && meta?.by && <p className="text-xs text-muted mt-0.5">liberado por {meta.by} {relTime(meta.at)}</p>}
-                                {lockedByExam && <p className="text-xs text-muted mt-0.5">{answerKeyLockHint(examState.status)}</p>}
+                                {lockedByExam && !scheduled && <p className="text-xs text-muted mt-0.5">{answerKeyLockHint(examState.status)}</p>}
+                                {scheduled && (
+                                  <p data-testid={`release-schedule-${item.key}`} className={`text-xs mt-0.5 ${scheduled.adiado ? 'text-warning' : 'text-primary'}`}>
+                                    {releaseScheduleText(scheduled)}{' '}
+                                    <button type="button" onClick={() => setScheduleItem(item)} className="underline hover:no-underline">Mudar</button>{' · '}
+                                    <button type="button" onClick={() => cancelSchedule(item)} className="underline hover:no-underline">Cancelar</button>
+                                  </p>
+                                )}
                               </div>
-                              <span className={`text-xs mr-2 shrink-0 ${isOn ? 'text-success' : 'text-muted'}`}>{isOn ? 'Liberado' : 'Bloqueado'}</span>
-                              <Switch checked={isOn} disabled={lockedByExam} onChange={(v) => toggle(item.key, v)} />
+                              <div className="ml-auto flex shrink-0 items-center gap-2">
+                                {!isOn && !scheduled && className && (
+                                  <Button size="sm" variant="ghost" icon={CalendarClock} onClick={() => setScheduleItem(item)} aria-label={`Agendar a liberação: ${item.type} de ${unit.name}`}>Agendar</Button>
+                                )}
+                                <span className={`text-xs mr-2 shrink-0 ${isOn ? 'text-success' : scheduled ? 'text-primary' : 'text-muted'}`}>{isOn ? 'Liberado' : scheduled ? 'Agendado' : 'Bloqueado'}</span>
+                                <Switch checked={isOn} disabled={lockedByExam} onChange={(v) => toggle(item.key, v)} />
+                              </div>
                             </div>
                           )
                         })}
@@ -319,6 +346,16 @@ export default function MateriaisPage() {
           )}
         </PageState>
       )}
+      <ReleaseScheduleDialog
+        open={!!scheduleItem}
+        item={scheduleItem}
+        entry={scheduleItem ? releaseSchedule[scheduleItem.key] : null}
+        studentClass={className}
+        courseId={courseId}
+        toast={toast}
+        onClose={() => setScheduleItem(null)}
+        onSaved={setReleaseSchedule}
+      />
     </div>
   )
 }

@@ -69,6 +69,10 @@ const {
     participantCandidates,
 } = require('../utils/examParticipants.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
+// Agendamento de prova e de material (P3-S12: AVA-20, UXI-17; D25 a D27). A varredura que
+// abre, fecha e libera roda no timer do servidor (server.js); aqui ficam as rotas.
+const examSchedule = require('../utils/examSchedule.js');
+const { recordAudit } = require('../utils/audit.js');
 const { displayName, normalizeEmail, studentInClass } = require('../utils/students.js');
 const { answerIdSecret } = require('../utils/examAnswerIds.js');
 const {
@@ -344,12 +348,33 @@ function recordAudienceAudit(application, actor, { participantsChanged = false, 
 
 // Tipo e tamanho do "Para quem" dentro das opções da preparação e no corpo da rota de
 // participantes (utils/inputSchema.js); as regras vêm em parseApplicationAudience.
+// Data e hora no relógio da escola ('AAAA-MM-DDTHH:MM'); a conta de fuso é a do
+// schoolTime.deadlineFromLocal (examSchedule.parseScheduleInput).
+const SCHEDULE_INPUT_FIELDS = Object.freeze({
+    abreEmLocal: str({ max: 20, nullable: true, label: 'abre em' }),
+    fechaEmLocal: str({ max: 20, nullable: true, label: 'fecha em' }),
+});
+// Agendar, mudar ou cancelar (P3-S12): { abreEmLocal, fechaEmLocal } ou { cancelar: true }.
+const SCHEDULE_SCHEMA = body({
+    ...SCHEDULE_INPUT_FIELDS,
+    cancelar: bool({ nullable: true, label: 'cancelar o agendamento' }),
+});
+// Liberação agendada de material (P3-S12, D27): releaseAtLocal agenda em vez de liberar
+// agora; cancelSchedule tira a agenda do item.
+const RELEASE_ITEM_SCHEMA = body({
+    releaseAtLocal: str({ max: 20, nullable: true, label: 'liberar em' }),
+    cancelSchedule: bool({ nullable: true, label: 'cancelar a liberação agendada' }),
+});
+
 const PREPARE_AUDIENCE_SCHEMA = body({
     applicationOptions: shape({
         ...AUDIENCE_INPUT_FIELDS,
         // "Outro aparelho no meio da prova" (P3-S13, D28): travar até o professor liberar
         // (padrão) ou só avisar no Monitor.
         sessionPolicy: oneOf(SESSION_POLICIES, { nullable: true, label: 'outro aparelho no meio da prova' }),
+        // "Quando" (P3-S12, D25): sem agenda (ausente ou null) a aplicação fica preparada
+        // esperando o "Iniciar" do Monitor, como sempre.
+        agenda: shape(SCHEDULE_INPUT_FIELDS, { nullable: true, label: 'agendamento' }),
     }, { nullable: true, label: 'opções da aplicação' }),
 });
 const PARTICIPANTS_SCHEMA = body(AUDIENCE_INPUT_FIELDS);
@@ -759,8 +784,15 @@ function revealApplicationToken(application) {
     return token && hashExamToken(token) === application.accessTokenHash ? token : null;
 }
 
+// A aplicação para o painel: sem o token selado e, com agenda, agendaView (a situação e
+// os horários no relógio da escola: "Abre sozinha às 08:00", "Fecha sozinha às 09:30").
+function withAgendaView(view, application) {
+    const agendaView = view ? examSchedule.scheduleView(application) : null;
+    return agendaView ? { ...view, agendaView } : view;
+}
+
 function adminApplicationView(application) {
-    return withoutSealedToken(withKeystrokeMode(application));
+    return withAgendaView(withoutSealedToken(withKeystrokeMode(application)), application);
 }
 
 // Letras das versões da aplicação (A, B...), para o Monitor oferecer só as que existem.
@@ -793,6 +825,11 @@ const DESCRIBED_HERE = new Set([
     'exam_access_token_revealed',
     'exam_application_token_regenerated',
     'exam_answer_key_corrected',
+    'exam_application_scheduled',
+    'exam_application_schedule_changed',
+    'exam_application_auto_opened',
+    'exam_application_auto_finished',
+    'exam_application_schedule_missed',
 ]);
 
 function describeMonitorActionAudit(entry, nameByEmail) {
@@ -828,6 +865,33 @@ function describeMonitorActionAudit(entry, nameByEmail) {
         };
     }
     if (entry.type === 'exam_application_token_regenerated') return { title: 'Token da prova trocado', detail: '' };
+    // Agendamento (P3-S12).
+    const when = ms => examSchedule.formatWhen(ms) || '—';
+    if (entry.type === 'exam_application_scheduled') {
+        return { title: 'Prova agendada', detail: examSchedule.describeWindow(details.abreEm, details.fechaEm) };
+    }
+    if (entry.type === 'exam_application_schedule_changed') {
+        if (details.fechamentoCancelado) return { title: 'Fechamento automático retirado', detail: 'a prova não encerra mais sozinha' };
+        if (!details.depois) return { title: 'Agendamento cancelado', detail: details.antes ? `era: ${examSchedule.describeWindow(details.antes.abreEm, details.antes.fechaEm)}` : '' };
+        return {
+            title: 'Agendamento alterado',
+            detail: join(details.antes ? `antes: ${examSchedule.describeWindow(details.antes.abreEm, details.antes.fechaEm)}` : '', `agora: ${examSchedule.describeWindow(details.depois.abreEm, details.depois.fechaEm)}`),
+        };
+    }
+    if (entry.type === 'exam_application_auto_opened') {
+        const late = Number(details.atrasoSegundos) || 0;
+        return {
+            title: 'Prova aberta pelo agendamento',
+            detail: late > 60 ? `${Math.round(late / 60)} min depois de ${when(details.abreEm)} (o computador estava desligado)` : `às ${when(details.abreEm)}`,
+        };
+    }
+    if (entry.type === 'exam_application_auto_finished') {
+        const delivered = Number(details.entregues) || 0;
+        return { title: 'Prova encerrada pelo agendamento', detail: `${delivered} ${delivered === 1 ? 'prova em andamento entregue' : 'provas em andamento entregues'} com o que estava salvo` };
+    }
+    if (entry.type === 'exam_application_schedule_missed') {
+        return { title: 'Agendamento perdido: a prova não abriu', detail: `o computador estava desligado entre ${when(details.abreEm)} e ${when(details.fechaEm)}` };
+    }
     return null;
 }
 
@@ -844,9 +908,90 @@ function describeAudienceEntries(rows) {
     });
 }
 
+// Avisos do agendamento (nunca bloqueiam): o dia de abrir é não letivo para a turma e a
+// janela é menor que a duração da prova (quem ainda estiver fazendo a prova no fechamento
+// tem a prova entregue com o que salvou).
+function scheduleWarnings(cls, application) {
+    const agenda = application && application.agenda;
+    const avisos = [];
+    if (!agenda || !(Number(agenda.abreEm) > 0)) return avisos;
+    const day = examSchedule.nonSchoolDayWarning(db.memory, cls, Number(agenda.abreEm));
+    if (day) avisos.push({ code: 'nao_letivo', texto: day.texto, nome: day.nome, date: day.date });
+    const windowMinutes = (Number(agenda.fechaEm) - Number(agenda.abreEm)) / 60000;
+    const duration = Number(application.durationMinutes);
+    if (application.timerEnabled !== false && duration > 0 && windowMinutes > 0 && Number(agenda.fechaEm) > Number(agenda.abreEm) + 1 && windowMinutes < duration) {
+        avisos.push({ code: 'janela_curta', texto: `A prova fica aberta ${Math.round(windowMinutes)} min e dura ${duration} min: quem ainda estiver fazendo a prova no horário de fechar tem a prova entregue com o que salvou.` });
+    }
+    return avisos;
+}
+
 // Escopo do professor na turma da aplicação (o guarda já conferiu a permissão).
 function canManageApplication(matchedAdmin, application) {
     return adminCanAccessClass(matchedAdmin, application.studentClass, application.courseId);
+}
+
+// Tira a liberação agendada do item (sem auditoria: quem chama já registra o que fez).
+function dropItemSchedule(cls, itemKey) {
+    if (!cls.releaseSchedule || typeof cls.releaseSchedule !== 'object' || !Object.prototype.hasOwnProperty.call(cls.releaseSchedule, itemKey)) return false;
+    delete cls.releaseSchedule[itemKey];
+    return true;
+}
+
+// Agendar ({ releaseAtLocal }) ou cancelar ({ cancelSchedule: true }) a liberação de um
+// item da turma (P3-S12, D27). Só a turma inteira (a liberação para um aluno continua na
+// hora); a prova online nunca (abre por aplicação); item já liberado não precisa de agenda.
+async function scheduleItemRelease(req, res, cls, itemKey, studentEmail) {
+    if (studentEmail) return res.status(400).json({ error: 'A liberação agendada vale para a turma inteira, não para um aluno só.' });
+    if (!examSchedule.releaseScheduleAllowed(itemKey)) {
+        return res.status(400).json({ error: 'A prova online não é liberada por agenda: prepare a aplicação em Provas e use o "Quando" para agendar.', code: 'schedule_not_allowed' });
+    }
+    const actor = adminActor(req);
+    const actorName = (req.adminAccount && (req.adminAccount.name || req.adminAccount.email)) || 'Administrador';
+    const previous = cls.releaseSchedule && Object.prototype.hasOwnProperty.call(cls.releaseSchedule, itemKey) ? cls.releaseSchedule[itemKey] : null;
+    const describe = entry => (entry && Number(entry.at) > 0 ? examSchedule.formatWhen(Number(entry.at)) : '');
+    if (req.body.cancelSchedule === true) {
+        if (!previous) return res.json({ success: true, unchanged: true, releaseSchedule: examSchedule.releaseScheduleView(cls) });
+        dropItemSchedule(cls, itemKey);
+        recordAudit(db.memory, {
+            action: 'content_release_scheduled',
+            req,
+            courseId: cls.courseId || null,
+            studentClass: cls.name,
+            field: itemKey,
+            oldValue: describe(previous),
+            newValue: 'cancelada',
+            details: { itemKey, at: null, antes: Number(previous.at) || null, cancelado: true },
+        });
+        await persistClasses(db.memory.classes || []);
+        return res.json({ success: true, releaseSchedule: examSchedule.releaseScheduleView(cls) });
+    }
+    if (req.body.released === false) return res.status(400).json({ error: 'A agenda só libera o item. Para bloquear, use o interruptor.' });
+    const parsed = examSchedule.parseReleaseAt(req.body.releaseAtLocal);
+    if (!parsed.ok) return res.status(400).json({ success: false, error: parsed.error, field: 'releaseAtLocal' });
+    if (cls.releasedItems && cls.releasedItems[itemKey] === true) {
+        return res.status(409).json({ error: 'Este item já está liberado para a turma.', code: 'already_released' });
+    }
+    if (!cls.releaseSchedule || typeof cls.releaseSchedule !== 'object' || Array.isArray(cls.releaseSchedule)) cls.releaseSchedule = {};
+    cls.releaseSchedule[itemKey] = { at: parsed.value, released: true, por: actor, porNome: actorName, criadoEm: Date.now() };
+    recordAudit(db.memory, {
+        action: 'content_release_scheduled',
+        req,
+        courseId: cls.courseId || null,
+        studentClass: cls.name,
+        field: itemKey,
+        oldValue: previous ? describe(previous) : null,
+        newValue: describe(cls.releaseSchedule[itemKey]),
+        details: { itemKey, at: parsed.value, ...(previous ? { antes: Number(previous.at) || null } : {}) },
+    });
+    await persistClasses(db.memory.classes || []);
+    const avisos = [];
+    const day = examSchedule.nonSchoolDayWarning(db.memory, cls, parsed.value);
+    if (day) avisos.push({ code: 'nao_letivo', texto: day.texto.replace('A prova abre do mesmo jeito.', 'O item é liberado do mesmo jeito.'), nome: day.nome, date: day.date });
+    // Gabarito com aplicação aberta: a hora chega e a liberação espera o encerramento.
+    if (itemKey.startsWith('Gabarito_') && openExamFamilyApplication(cls, itemKey.slice('Gabarito_'.length))) {
+        avisos.push({ code: 'gabarito_espera', texto: 'A prova ainda tem uma aplicação preparada ou em andamento: se ela não estiver encerrada no horário, o gabarito sai assim que for encerrada.' });
+    }
+    res.json({ success: true, releaseSchedule: examSchedule.releaseScheduleView(cls), ...(avisos.length ? { avisos } : {}) });
 }
 
 function createAdminExamConfigRouter() {
@@ -856,6 +1001,28 @@ function createAdminExamConfigRouter() {
     // (já tem entrega que conta numa aplicação regular da prova) e, com applicationId, se
     // está na lista dela e a exceção dele. segundaChamada é a lista pré-marcada: quem não
     // fez. Declarada antes de /exam-applications/:applicationId.
+    // Avisos do "Quando" antes de agendar (P3-S12, contrato C5): o dia de abrir é não
+    // letivo para a turma (isNonSchoolDay) ou a janela é menor que a duração da prova. Só
+    // avisa, nunca bloqueia. Declarada antes de /exam-applications/:applicationId.
+    router.get('/api/admin/exam-applications/schedule-check', (req, res) => {
+        validateAdmin(req, res, (config, matchedAdmin) => {
+            const cls = findClassByNameAndCourse(db.memory.classes || [], String(req.query.studentClass || '').trim(), req.query.courseId);
+            if (!cls) return res.status(404).json({ error: 'Turma não encontrada.' });
+            if (!adminCanAccessClass(matchedAdmin, cls.name, cls.courseId)) {
+                return res.status(403).json({ error: 'A turma não está atribuída a esta conta.' });
+            }
+            const abreEm = examSchedule.parseLocalDateTime(req.query.abreEmLocal);
+            const fechaEm = examSchedule.parseLocalDateTime(req.query.fechaEmLocal);
+            const duration = Number(req.query.durationMinutes);
+            const avisos = scheduleWarnings(cls, {
+                agenda: abreEm && fechaEm ? { abreEm, fechaEm } : (abreEm ? { abreEm, fechaEm: abreEm + 1 } : null),
+                durationMinutes: Number.isFinite(duration) && duration > 0 ? duration : null,
+                timerEnabled: req.query.timerEnabled !== 'false',
+            });
+            res.json({ success: true, avisos, janela: abreEm && fechaEm && fechaEm > abreEm ? examSchedule.describeWindow(abreEm, fechaEm) : '' });
+        });
+    });
+
     router.get('/api/admin/exam-applications/participant-candidates', (req, res) => {
         validateAdmin(req, res, (config, matchedAdmin) => {
             const studentClass = String(req.query.studentClass || '').trim();
@@ -1095,11 +1262,25 @@ function createAdminExamConfigRouter() {
                 actor: adminActor(req),
             });
             if (!audience.ok) return res.status(400).json({ success: false, error: audience.error, field: audience.field ? `applicationOptions.${audience.field}` : undefined });
+            // "Quando" (P3-S12, D25): agendada, a aplicação abre e fecha sozinha. Conferida
+            // antes de preparar: a agenda inválida não substitui a preparação de antes.
+            let schedule = null;
+            if (options.agenda) {
+                const parsed = examSchedule.parseScheduleInput(options.agenda);
+                if (!parsed.ok) return res.status(400).json({ success: false, error: parsed.error, field: `applicationOptions.agenda.${parsed.field}` });
+                schedule = parsed.value;
+            }
             if (!cls.onlineExamConfigs) cls.onlineExamConfigs = {};
             if (!cls.releasedItems) cls.releasedItems = {};
             const prepared = prepareApplicationFromHistory(cls, examKey, historyEntry, options, req, audience.value);
+            let avisos = [];
+            if (schedule) {
+                prepared.application.agenda = examSchedule.createAgenda(schedule, { actor: adminActor(req) });
+                recordExamAudit('exam_application_scheduled', prepared.application, adminActor(req), { abreEm: schedule.abreEm, fechaEm: schedule.fechaEm });
+                avisos = scheduleWarnings(cls, prepared.application);
+            }
             await persistClasses(db.memory.classes || []);
-            res.status(201).json({ success: true, ...prepared, application: withoutSealedToken(prepared.application), onlineExamConfig: cls.onlineExamConfigs[examKey] });
+            res.status(201).json({ success: true, ...prepared, application: withAgendaView(withoutSealedToken(prepared.application), prepared.application), onlineExamConfig: cls.onlineExamConfigs[examKey], ...(avisos.length ? { avisos } : {}) });
         });
     });
 
@@ -1148,6 +1329,70 @@ function createAdminExamConfigRouter() {
             recordAudienceAudit(application, actor, { participantsChanged, before });
             await db.save({ only: ['examApplications', 'auditLogs'] });
             res.json({ success: true, application: adminApplicationView(application) });
+        });
+    });
+
+    // Agendar, mudar ou cancelar a abertura e o fechamento automáticos (P3-S12, D25).
+    // Preparada: { abreEmLocal, fechaEmLocal } agenda (ou muda, e a agenda perdida volta a
+    // valer com o horário novo) e { cancelar: true } tira a agenda (a aplicação continua
+    // preparada, esperando o "Iniciar" do Monitor). Em andamento: só { cancelar: true },
+    // que tira o fechamento automático ("Não encerrar sozinha"). Não mexe em nota: grava só
+    // a aplicação e a auditoria.
+    router.post('/api/admin/exam-applications/:applicationId/schedule', (req, res) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            if (!SCHEDULE_SCHEMA.check(req, res)) return;
+            const application = findExamApplication(db.memory.examApplications, req.params.applicationId);
+            if (!application) return res.status(404).json({ error: 'Aplicação de prova não encontrada.' });
+            if (!canManageApplication(matchedAdmin, application)) {
+                return res.status(403).json({ error: 'A turma desta aplicação não está atribuída a esta conta.' });
+            }
+            const cls = findClassByNameAndCourse(db.memory.classes || [], application.studentClass, application.courseId);
+            if (!cls) return res.status(404).json({ error: 'Turma da aplicação não encontrada.' });
+            const input = req.body || {};
+            const actor = adminActor(req);
+            const current = examSchedule.applicationAgenda(application);
+            const snapshot = agenda => (agenda ? { abreEm: Number(agenda.abreEm), fechaEm: Number(agenda.fechaEm), ...(agenda.perdida === true ? { perdida: true } : {}) } : null);
+            const now = Date.now();
+            if (ACTIVE_APPLICATION_STATUSES.has(application.status)) {
+                if (input.cancelar !== true) {
+                    return res.status(409).json({ error: 'A prova já abriu: o horário não muda mais. Dá para tirar o fechamento automático ("Não encerrar sozinha") ou encerrar pelo Monitor.', code: 'schedule_started' });
+                }
+                if (!examSchedule.closesAutomatically(application, current)) {
+                    return res.json({ success: true, unchanged: true, application: adminApplicationView(application) });
+                }
+                current.fechamentoCanceladoEm = now;
+                current.fechamentoCanceladoPor = actor;
+                application.updatedAt = new Date(now).toISOString();
+                application.updatedBy = actor;
+                recordExamAudit('exam_application_schedule_changed', application, actor, { antes: snapshot(current), depois: snapshot(current), fechamentoCancelado: true });
+                await db.save({ only: ['examApplications', 'auditLogs'] });
+                return res.json({ success: true, application: adminApplicationView(application) });
+            }
+            if (application.status !== 'prepared') {
+                return res.status(409).json({ error: 'Esta aplicação já foi encerrada ou cancelada; o agendamento não muda mais.', code: 'application_closed', applicationClosed: true });
+            }
+            if (input.cancelar === true) {
+                if (!current) return res.json({ success: true, unchanged: true, application: adminApplicationView(application) });
+                delete application.agenda;
+                application.updatedAt = new Date(now).toISOString();
+                application.updatedBy = actor;
+                recordExamAudit('exam_application_schedule_changed', application, actor, { antes: snapshot(current), depois: null });
+                await db.save({ only: ['examApplications', 'auditLogs'] });
+                return res.json({ success: true, application: adminApplicationView(application) });
+            }
+            const parsed = examSchedule.parseScheduleInput(input, { now });
+            if (!parsed.ok) return res.status(400).json({ success: false, error: parsed.error, field: parsed.field });
+            if (current && current.perdida !== true && Number(current.abreEm) === parsed.value.abreEm && Number(current.fechaEm) === parsed.value.fechaEm) {
+                return res.json({ success: true, unchanged: true, application: adminApplicationView(application), avisos: scheduleWarnings(cls, application) });
+            }
+            application.agenda = examSchedule.createAgenda(parsed.value, { actor, now });
+            application.updatedAt = new Date(now).toISOString();
+            application.updatedBy = actor;
+            if (current) recordExamAudit('exam_application_schedule_changed', application, actor, { antes: snapshot(current), depois: snapshot(application.agenda) });
+            else recordExamAudit('exam_application_scheduled', application, actor, { abreEm: parsed.value.abreEm, fechaEm: parsed.value.fechaEm });
+            await db.save({ only: ['examApplications', 'auditLogs'] });
+            const avisos = scheduleWarnings(cls, application);
+            res.json({ success: true, application: adminApplicationView(application), ...(avisos.length ? { avisos } : {}) });
         });
     });
 
@@ -2069,6 +2314,7 @@ function createAdminExamConfigRouter() {
 
     router.post('/api/admin/release-item', (req, res) => {
         validateAdmin(req, res, async () => {
+            if (!RELEASE_ITEM_SCHEMA.check(req, res)) return;
             const { studentClass, courseId, itemKey, released, studentEmail, historyId, applicationOptions } = req.body;
             if (!studentClass) return res.status(400).json({ error: 'Turma não informada.' });
             if (!itemKey) return res.status(400).json({ error: 'Chave do item não informada.' });
@@ -2084,6 +2330,11 @@ function createAdminExamConfigRouter() {
                 return res.status(400).json({ error: 'Aluno inválido.' });
             }
             const actor = adminActor(req);
+            // Liberação agendada (P3-S12, D27): agendar ou cancelar não liga nem desliga
+            // nada agora; a varredura do servidor libera na hora (utils/examSchedule.js).
+            if (req.body.cancelSchedule === true || (req.body.releaseAtLocal !== undefined && req.body.releaseAtLocal !== null && req.body.releaseAtLocal !== '')) {
+                return scheduleItemRelease(req, res, cls, String(itemKey), normalizedStudentEmail);
+            }
             // Gabarito só é liberado pela chave própria e nunca enquanto a prova tem
             // aplicação preparada ou em andamento na turma (G2: gabarito na reaplicação).
             if (released && itemKey.startsWith('Gabarito_')) {
@@ -2209,6 +2460,11 @@ function createAdminExamConfigRouter() {
                 });
             }
 
+            // Liberado agora pelo interruptor: a liberação agendada do item não tem mais o
+            // que fazer e sai da agenda (bloquear mantém a agenda: o selo continua na tela).
+            const droppedSchedule = !normalizedStudentEmail && released
+                ? [itemKey, ...familyAnswerKeys].filter(key => dropItemSchedule(cls, key)).length > 0
+                : false;
             if (!normalizedStudentEmail) {
                 if (!cls.releaseMeta) cls.releaseMeta = {};
                 const releaseActor = (req.adminAccount && (req.adminAccount.name || req.adminAccount.email)) || 'Administrador';
@@ -2223,6 +2479,7 @@ function createAdminExamConfigRouter() {
                 scope: normalizedStudentEmail ? 'student' : 'class',
                 releasedItems: getReleasedItemsForClass(cls, normalizedStudentEmail),
                 application: withoutSealedToken(affectedApplication),
+                ...(droppedSchedule ? { releaseSchedule: examSchedule.releaseScheduleView(cls), scheduleDropped: true } : {}),
             });
         });
     });
