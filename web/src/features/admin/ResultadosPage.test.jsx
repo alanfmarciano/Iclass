@@ -16,6 +16,8 @@ const mocks = vi.hoisted(() => ({
   // Quadro e plano da turma (useApi); null = como antes (sem quadro carregado).
   gradebook: null,
   plan: null,
+  // Fila da correção (GET /api/admin/corrections, A9); null = vazia.
+  corrections: null,
   // Mesmos objetos a cada render, como o useApi de verdade: a tela da prova corrigida
   // (rota com :submissionId) recarrega a revisão quando a entrega muda de referência.
   stable: {
@@ -58,6 +60,7 @@ vi.mock('../../hooks/useApi', () => ({
     }
     if (path.startsWith('/api/admin/exam-applications')) return { data: { applications: mocks.applications }, loading: false, error: null, refetch: vi.fn() }
     if (path.startsWith('/api/admin/gradebook')) return { data: mocks.gradebook, loading: false, error: null, refetch: vi.fn() }
+    if (path.startsWith('/api/admin/corrections')) return { data: mocks.corrections, loading: false, error: null, refetch: vi.fn() }
     if (path.startsWith('/api/admin/grading/plan')) return { data: mocks.plan, loading: false, error: null, refetch: vi.fn() }
     if (path.startsWith('/api/admin/submissions/deleted')) return { data: { items: mocks.deletedItems }, loading: false, error: null, refetch: mocks.refetch }
     if (path.startsWith('/api/admin/submissions')) {
@@ -88,6 +91,7 @@ afterEach(() => {
   mocks.auth = undefined
   mocks.gradebook = null
   mocks.plan = null
+  mocks.corrections = null
 })
 
 function renderPage() {
@@ -793,5 +797,60 @@ describe('Resultados · critérios do curso (B9)', () => {
     const panel = screen.getByRole('region', { name: 'Plano de avaliação da turma' })
     expect(within(panel).getByRole('listitem', { name: 'Prova 2' })).toBeInTheDocument()
     expect(within(panel).getByRole('button', { name: 'Salvar plano' })).toBeDisabled()
+  })
+})
+
+// A18 (P3-S4b): o caminho até a tela Corrigir. A fila vem de GET /api/admin/corrections e a
+// entrega que espera o professor vem com awaitingCorrection (enrichSubmissionsWithAttemptResult).
+describe('Resultados · correção do professor (A18)', () => {
+  function Where() {
+    const location = useLocation()
+    return <output data-testid="where">{location.pathname}{location.search}</output>
+  }
+
+  it('[UC-CORRECAO-001] aviso com "Corrigir provas (N)" leva para a tela Corrigir', async () => {
+    mocks.corrections = { pendentes: [{ submissionId: 's1' }, { submissionId: 's2' }], total: 2 }
+    render(
+      <MemoryRouter initialEntries={['/resultados']}>
+        <Routes>
+          <Route path="/resultados" element={<ResultadosPage />} />
+          <Route path="/resultados/correcao" element={<Where />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('2 entregas aguardam a sua correção.')).toBeInTheDocument()
+    await userEvent.click(screen.getByRole('button', { name: 'Corrigir provas (2)' }))
+    expect(screen.getByTestId('where')).toHaveTextContent('/resultados/correcao')
+  })
+
+  it('[UC-CORRECAO-001] sem nada para corrigir, nenhum aviso', () => {
+    mocks.corrections = { pendentes: [], total: 0 }
+    renderPage()
+    expect(screen.queryByText(/aguardam? a sua correção/)).not.toBeInTheDocument()
+  })
+
+  it('[UC-CORRECAO-001] a prova que espera o professor diz "Aguardando correção" (não a nota parcial) e abre a correção dela', async () => {
+    const original = { ...mocks.stable.submissions[0] }
+    Object.assign(mocks.stable.submissions[0], { id: 'esp', score: 40, scoreInvalid: false, awaitingCorrection: true, aguardandoCorrecao: true, gradePublished: false })
+    mocks.get.mockImplementation(async (path) => (path.includes('/review') ? { questions: [], history: [] } : {}))
+    try {
+      render(
+        <MemoryRouter initialEntries={['/resultados/aluno/ana%40x.local/prova/esp']}>
+          <Routes>
+            <Route path="/resultados/aluno/:studentId/prova/:submissionId" element={<ResultadosPage />} />
+            <Route path="/resultados/correcao" element={<Where />} />
+          </Routes>
+        </MemoryRouter>,
+      )
+      const nota = (await screen.findByText('Nota')).parentElement
+      expect(within(nota).getByText('Aguardando correção')).toBeInTheDocument()
+      expect(within(nota).queryByText('4,0')).not.toBeInTheDocument()
+      expect(screen.queryByText(/nota vazia ou fora da escala/)).not.toBeInTheDocument()
+      await userEvent.click(screen.getByRole('button', { name: 'Corrigir esta prova' }))
+      expect(screen.getByTestId('where')).toHaveTextContent('/resultados/correcao?submissionId=esp&examKey=Avaliacao_P2')
+    } finally {
+      for (const key of Object.keys(mocks.stable.submissions[0])) delete mocks.stable.submissions[0][key]
+      Object.assign(mocks.stable.submissions[0], original)
+    }
   })
 })

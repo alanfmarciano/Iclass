@@ -351,3 +351,106 @@ describe('Provas do aluno · impressão sem script (CSP)', () => {
   })
 })
 
+
+// A18 (P3-S4b: AVA-07, UXA-17): a revisão do aluno com os tipos novos. Entregas como
+// sanitizeSubmissionForStudent devolve: aguardandoCorrecao, anulada, comentarioGeral e,
+// com o gabarito liberado, examQuestions com tipo, pontos, explicação e rubrica.
+function reviewed(extra = {}) {
+  return {
+    ...sub('r1', { score: 75, published: true }),
+    answerKeyReleased: true, assignedVersion: 'A', correctCount: 1, totalCount: 3,
+    examQuestions: [
+      { number: 1, type: 'multiple_choice', text: 'Qual a **camada** de rede?', points: 1, explanation: 'A camada 3 é a de **rede**.', alternatives: [{ letter: 'A', text: 'Física' }, { letter: 'B', text: 'Rede' }] },
+      { number: 2, type: 'multiple_answer', text: 'Quais são protocolos?', points: 2, alternatives: [{ letter: 'A', text: 'TCP' }, { letter: 'B', text: 'HTML' }, { letter: 'C', text: 'UDP' }] },
+      { number: 3, type: 'essay', text: 'Explique o modelo OSI.', points: 2, rubric: [{ id: 'c1', nome: 'Camadas', pontos: 1 }, { id: 'c2', nome: 'Exemplos', pontos: 1 }] },
+    ],
+    gradedAnswers: [
+      { questionNumber: 1, type: 'multiple_choice', studentChoice: 'A', correctAnswer: 'B', isCorrect: false, pointsEarned: 0, pointsPossible: 1 },
+      { questionNumber: 2, type: 'multiple_answer', studentChoices: ['A'], correctAnswers: ['A', 'C'], isCorrect: false, pointsEarned: 1, pointsPossible: 2 },
+      { questionNumber: 3, type: 'essay', studentResponse: 'Sete camadas, da física à aplicação.', isCorrect: false, pointsEarned: 1.5, pointsPossible: 2, comentario: 'Faltou dar exemplos.', rubrica: { c1: 1, c2: 0.5 } },
+    ],
+    ...extra,
+  }
+}
+
+async function openDetail(submission) {
+  mocks.submissions = [submission]
+  render(<MemoryRouter><ProvasPage /></MemoryRouter>)
+  const card = (await screen.findAllByText(/Avaliacao FUTEC 1/)).map((el) => el.closest('button')).find(Boolean)
+  fireEvent.click(card)
+  return screen.findByRole('dialog')
+}
+
+describe('Provas do aluno · revisão corrigida (A18)', () => {
+  it('[UC-CORRECAO-001] dissertativa corrigida mostra os pontos, a rubrica e o comentário, nunca "Errada"', async () => {
+    // Antes a dissertativa aparecia sempre como "Errada" e a resposta escrita sumia.
+    const dialog = await openDetail(reviewed())
+    const essay = within(dialog).getByText('Explique o modelo OSI.').closest('li')
+    expect(within(essay).getByText('1,5 de 2 pontos')).toBeInTheDocument()
+    expect(within(essay).queryByText('Errada')).not.toBeInTheDocument()
+    expect(within(essay).getByText('Sete camadas, da física à aplicação.')).toBeInTheDocument()
+    expect(within(essay).getByText('Faltou dar exemplos.')).toBeInTheDocument()
+    expect(within(essay).getByText('Camadas').parentElement).toHaveTextContent('1 de 1 ponto')
+    expect(within(essay).getByText('Exemplos').parentElement).toHaveTextContent('0,5 de 1 ponto')
+    // Várias corretas com crédito parcial e as duas certas marcadas.
+    const multi = within(dialog).getByText('Quais são protocolos?').closest('li')
+    expect(within(multi).getByText('Parcial · 1 de 2 pontos')).toBeInTheDocument()
+    expect(within(multi).getAllByText(/Resposta correta|Sua resposta · Correta/)).toHaveLength(2)
+    // Enunciado e explicação em Markdown.
+    const first = within(dialog).getByText('camada', { selector: 'strong' }).closest('li')
+    expect(within(first).getByText('Explicação')).toBeInTheDocument()
+    expect(within(first).getByText('rede', { selector: 'strong' })).toBeInTheDocument()
+  })
+
+  it('[UC-LAYOUT-001] a etiqueta "Sua resposta · Correta" fica numa linha própria, abaixo da alternativa', async () => {
+    // No celular de 375 px a etiqueta ao lado espremia o texto da alternativa.
+    const dialog = await openDetail(reviewed())
+    const tag = within(dialog).getByText('Sua resposta · Correta')
+    expect(tag.className).toContain('basis-full')
+    expect(tag.parentElement.className).toContain('flex-wrap')
+  })
+
+  it('[UC-CORRECAO-001] entrega aguardando o professor diz "Aguardando correção", com o comentário geral', async () => {
+    const dialog = await openDetail(reviewed({
+      gradePublished: false, score: null, consolidatedScore: null, countsTowardResult: false, aguardandoCorrecao: true,
+      answerKeyReleased: false, examQuestions: undefined, comentarioGeral: null,
+      gradedAnswers: [
+        { questionNumber: 1, type: 'multiple_choice', studentChoice: 'A' },
+        { questionNumber: 3, type: 'essay', studentResponse: 'Texto do aluno', isCorrect: null, pending: true },
+      ],
+    }))
+    expect(within(dialog).getByText('Aguardando correção do professor')).toBeInTheDocument()
+    expect(within(dialog).getByText(/A nota aparece quando ele terminar a correção/)).toBeInTheDocument()
+    expect(within(dialog).queryByText('Em revisão')).not.toBeInTheDocument()
+    expect(within(dialog).getByText('Texto do aluno')).toBeInTheDocument()
+  })
+
+  it('[UC-CORRECAO-001] tentativa anulada diz que foi anulada, e o comentário geral do professor aparece', async () => {
+    const dialog = await openDetail(reviewed({ anulada: 'zero', comentarioGeral: 'Conversamos na aula sobre a consulta.' }))
+    expect(within(dialog).getByText(/O professor anulou esta tentativa e ela vale zero/)).toBeInTheDocument()
+    expect(within(dialog).getByText('Conversamos na aula sobre a consulta.').previousSibling).toHaveTextContent('Comentário do professor')
+  })
+
+  it('[UC-CORRECAO-001] o cartão da prova diz por que a nota ainda não saiu', async () => {
+    mocks.submissions = [
+      { ...sub('p1', { published: false, score: null }), aguardandoCorrecao: true },
+      { ...sub('p2', { examKey: 'Avaliacao_FUTEC_2', published: false, score: null }), anulada: 'desconsiderar' },
+    ]
+    render(<MemoryRouter><ProvasPage /></MemoryRouter>)
+    expect(await screen.findByText('Aguardando correção do professor')).toBeInTheDocument()
+    expect(screen.getByText('Tentativa anulada: não conta')).toBeInTheDocument()
+  })
+
+  it('[UC-CORRECAO-001] a impressão traz a resposta escrita, os pontos, o comentário e a explicação', () => {
+    const detail = reviewed({ comentarioGeral: 'Bom trabalho.' })
+    const answers = new Map(detail.gradedAnswers.map((a) => [a.questionNumber, a]))
+    const html = buildExamPrintHtml(detail, detail.examQuestions, answers)
+    expect(html).toContain('Sete camadas, da física à aplicação.')
+    expect(html).toContain('1,5 de 2 pontos')
+    expect(html).toContain('Faltou dar exemplos.')
+    expect(html).toContain('<b>Explicação:</b>')
+    expect(html).toContain('Bom trabalho.')
+    expect(html).toContain('<td>2</td><td>A</td><td>A e C</td><td>Parcial · 1 de 2 pontos</td>')
+    expect(html).not.toContain('<td>3</td><td>Resposta escrita</td><td>-</td><td>Errada</td>')
+  })
+})

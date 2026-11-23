@@ -222,6 +222,8 @@ test('[UC-CORRECAO-001] fila, leitura com gabarito, gravação parcial e conclus
     assert.equal(item.count, 1);
     assert.equal(item.permissao, 'page.results');
     assert.equal(item.somenteQuemAltera, true);
+    // O item abre a tela Corrigir já na prova (A18); antes, a lista de Resultados.
+    assert.equal(item.href, `/resultados/correcao?examKey=${encodeURIComponent(stored().examKey)}`);
 });
 
 test('[UC-CORRECAO-001] recusas: acima do possível, rubrica fora do máximo, ajuste sem motivo, concluir incompleto', async () => {
@@ -561,4 +563,39 @@ test('[UC-CORRECAO-001] planilha por prova: anulada e aguardando correção não
     assert.deepEqual(cells(byAttempt('Alice Souza', 2)), ['aguardando correção', 'Não (aguardando correção)']);
     assert.deepEqual(cells(byAttempt('Alice Souza', 3)), ['anulada (não conta)', 'Não (anulada, não conta)']);
     assert.deepEqual(cells(byAttempt('Bruno Lima', 1)), ['7,5', 'Sim']);
+});
+
+// Contrato da tela Corrigir (A18, web/src/features/admin/CorrecaoPage.jsx): o corpo que a
+// tela monta (correctionForm.correctionBody) passa no schema e na regra do servidor, com os
+// tetos dos campos da tela (comentário, comentário geral e motivo).
+test('[UC-CORRECAO-001] contrato da tela Corrigir: o corpo de correctionBody grava, conclui e muda a objetiva com motivo', async () => {
+    const { pathToFileURL } = require('node:url');
+    const webDir = path.join(__dirname, '..', '..', 'web', 'src', 'features', 'admin');
+    const pageSource = fs.readFileSync(path.join(webDir, 'CorrecaoPage.jsx'), 'utf8').replace(/\s+/g, ' ');
+    assert.ok(pageSource.includes('api.post(`/api/admin/submissions/${encodeURIComponent(detail.submissionId)}/correction`, correctionBody({ questoes, draft, initial, versao: detail.versao, comentarioGeral: general, comentarioGeralInicial: detail.comentarioGeral || \'\', concluir, motivo }))'), 'a tela mudou o pedido: atualize este caso');
+    assert.ok(pageSource.includes('api.get(`/api/admin/submissions/${encodeURIComponent(id)}/correction`)'));
+    const web = await import(pathToFileURL(path.join(webDir, 'correctionForm.js')).href);
+
+    const submission = deliver(ALICE, { 1: 'B', 2: { texto: 'Regras de comunicação.' }, 3: { texto: 'tcp' } });
+    const read = (await getCorrection(submission.id, professor).expect(200)).body;
+    const initial = web.initialDraft(read.questoes);
+    const limits = web.CORRECTION_LIMITS;
+    // Rubrica com vírgula, comentário no teto e comentário geral no teto, sem concluir.
+    let draft = { ...initial, 2: { ...initial[2], rubrica: { ideia: '1', clareza: '0,5' }, comentario: 'c'.repeat(limits.commentMax) } };
+    assert.deepEqual(web.validateDraft(read.questoes, draft), {});
+    const saved = await postCorrection(submission.id, web.correctionBody({ questoes: read.questoes, draft, initial, versao: read.versao, comentarioGeral: 'g'.repeat(limits.generalMax), comentarioGeralInicial: read.comentarioGeral }), professor).expect(200);
+    assert.equal(saved.body.situacao, 'pendente');
+    const stored = () => db.memory.submissions.find(item => item.id === submission.id);
+    assert.equal(stored().correcao.itens['2'].pontos, 1.5);
+
+    // Concluir com a objetiva errada (questão 1) ajustada para 1 ponto, com o motivo no teto.
+    const after = web.initialDraft(saved.body.questoes);
+    draft = { ...after, 1: { ...after[1], ajustando: true, pontos: '1', motivo: 'm'.repeat(limits.reasonMax) } };
+    assert.deepEqual(web.validateDraft(saved.body.questoes, { ...draft, 1: { ...draft[1], motivo: '' } }), { 'itens.1.motivo': 'Informe o motivo: o sistema corrigiu esta questão pelo gabarito.' });
+    assert.deepEqual(web.missingQuestions(saved.body.questoes, draft), []);
+    const done = await postCorrection(submission.id, web.correctionBody({ questoes: saved.body.questoes, draft, initial: after, versao: saved.body.versao, comentarioGeral: saved.body.comentarioGeral, comentarioGeralInicial: saved.body.comentarioGeral, concluir: true }), professor).expect(200);
+    assert.equal(done.body.situacao, 'concluida');
+    assert.equal(done.body.pointsEarned, 3.5);
+    assert.equal(stored().correcao.itens['1'].pontos, 1);
+    assert.ok(db.memory.auditLogs.some(entry => entry.action === 'grade_item_override' && entry.submissionId === submission.id));
 });

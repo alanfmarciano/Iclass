@@ -87,6 +87,15 @@ describe('Quadro de notas com critérios', () => {
     expect(within(ana).getByText('2,0').className || '').not.toMatch(/text-(warning|danger|success)/)
   })
 
+  it('[UC-CORRECAO-001] prova que espera a correção do professor diz "aguardando correção", não um traço', () => {
+    // A18: a célula vem do quadro sem nota e com aguardandoCorrecao (gradebook.js).
+    const data = quadroComCriterios()
+    data.rows[1].cells.REC1 = { score: null, grade: null, pending: 1, aguardandoCorrecao: true }
+    render(<GradebookPanel courseId="DES" studentClass="1DES" gradebook={api(data)} />)
+    const bia = within(screen.getByRole('table')).getByRole('rowheader', { name: /Bia/ }).closest('tr')
+    expect(within(bia).getByText('aguardando correção')).toBeInTheDocument()
+  })
+
   it('[UC-NOTAS-008] no celular, a lista de alunos abre as notas por etapa', async () => {
     const user = userEvent.setup()
     const onOpenStudent = vi.fn()

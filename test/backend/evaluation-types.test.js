@@ -327,6 +327,13 @@ test('[UC-PROVA-004] entrega corrigida por pontos; dissertativa aguarda; Monitor
     assert.equal(byNumber[6].studentResponse, 'Explico o handshake.');
     assert.equal(byNumber[6].pending, true);
     assert.deepEqual([byNumber[2].pointsEarned, byNumber[2].pointsPossible], [1.5, 3]);
+    // A18: em várias corretas, as duas certas aparecem marcadas como certas na revisão
+    // (antes nenhuma: só a letra única contava); numérica e resposta curta trazem o texto
+    // do gabarito.
+    assert.deepEqual(byNumber[2].alternatives.map(alternative => alternative.correct), [true, false, true, false]);
+    assert.equal(byNumber[4].answerKeyText, '3,5 (± 0,25) ms');
+    assert.equal(byNumber[5].answerKeyText, 'Máscara de sub-rede ou máscara');
+    assert.equal(byNumber[1].answerKeyText, '');
 
     const monitor = await request(app)
         .get(`/api/admin/monitor-review/${encodeURIComponent(studentClass)}/${examKey}`)
@@ -335,6 +342,7 @@ test('[UC-PROVA-004] entrega corrigida por pontos; dissertativa aguarda; Monitor
         .expect(200);
     assert.equal(monitor.body.answeredCount, 6, 'lista, número e texto contam como respondidas');
     assert.equal(monitor.body.questions.find(question => question.questionNumber === 4).answerText, '3,6 ms');
+    assert.deepEqual(monitor.body.questions.find(question => question.questionNumber === 2).alternatives.map(alternative => alternative.correct), [true, false, true, false]);
 
     // Prova em andamento no Monitor: as respostas digitadas também contam.
     const brunoState = Object.values(db.memory.studentExamState).find(state => state?.studentEmail === students.bruno.email);

@@ -108,3 +108,36 @@ describe('[UC-PROVA-003] registros de foco e saída no Monitor', () => {
     expect(LOG_INFO.exam_left.pauses).toBeUndefined()
   })
 })
+
+// A18 (P3-S4b: AVA-07): os tipos novos na revisão do Monitor, com os campos de
+// reviewAnswerFields (type, answerText, answerKeyText, studentResponse, pontos, pending).
+describe('[UC-CORRECAO-001] revisão do Monitor com os tipos novos', () => {
+  it('dissertativa aguarda o professor (não conta como errada), numérica e várias corretas por tipo', async () => {
+    apiMock.get.mockResolvedValue({
+      status: 'finished', alternativeLabels: 'original', assignedVersion: 'A', answeredCount: 3, totalCount: 3, correctCount: 0, hasSnapshot: true,
+      questions: [
+        { position: 1, questionNumber: 1, type: 'essay', text: 'Explique o **TCP**.', answered: true, isCorrect: false, pending: true, studentResponse: 'Protocolo com conexão.', pointsEarned: 0, pointsPossible: 2, alternatives: [] },
+        { position: 2, questionNumber: 2, type: 'numeric', text: 'Latência?', answered: true, isCorrect: false, pending: false, studentResponse: '4', answerText: '4 ms', answerKeyText: '3,5 (± 0,25) ms', pointsEarned: 0, pointsPossible: 1, alternatives: [] },
+        {
+          position: 3, questionNumber: 3, type: 'multiple_answer', text: 'Protocolos?', answered: true, isCorrect: false, pending: false, studentChoices: ['A'], correctAnswersSeen: ['A', 'C'], pointsEarned: 1, pointsPossible: 2,
+          alternatives: [
+            { letter: 'A', canonicalLetter: 'A', text: 'TCP', selectedByStudent: true, correct: true },
+            { letter: 'B', canonicalLetter: 'B', text: 'HTML', selectedByStudent: false, correct: false },
+            { letter: 'C', canonicalLetter: 'C', text: 'UDP', selectedByStudent: false, correct: true },
+          ],
+        },
+      ],
+    })
+    render(<StudentAnswersModal open onClose={() => {}} student={{ email: 'ana@escola.local', name: 'Ana' }} className="1DES" examKey="Avaliacao" />)
+    expect(await screen.findByText('Protocolo com conexão.')).toBeVisible()
+    // Antes: "3 erradas" (a dissertativa contava como errada) e a resposta escrita sumia.
+    expect(screen.getByText('2 erradas')).toBeVisible()
+    expect(screen.getByText('1 aguarda correção')).toBeVisible()
+    expect(screen.getByText('Aguardando correção')).toBeVisible()
+    expect(screen.getByText('TCP', { selector: 'strong' })).toBeVisible()
+    expect(screen.getByText('4 ms')).toBeVisible()
+    expect(screen.getByText('3,5 (± 0,25) ms')).toBeVisible()
+    expect(screen.getByText('Parcial · 1 de 2 pontos')).toBeVisible()
+    expect(within(screen.getByText('UDP').parentElement).getByText('Gabarito')).toBeVisible()
+  })
+})

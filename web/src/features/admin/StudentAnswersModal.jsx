@@ -1,12 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { CheckCircle2, XCircle, Loader2, ArrowRight } from 'lucide-react'
+import { Loader2, ArrowRight } from 'lucide-react'
 import { Modal } from '../../components/ui/Modal'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { api } from '../../lib/api'
 import { usePolling } from '../../hooks/usePolling'
 import { displayEmail } from '../../lib/studentProfile'
-import { OriginalLetter, reviewLettersNote, seenWithOriginal } from './reviewLetters'
+import { reviewLettersNote } from './reviewLetters'
+import { ReviewQuestionCard, reviewCounts } from './ReviewQuestionCard'
 
 const STATUS_LABEL = {
   finished: { tone: 'success', text: 'Finalizada' },
@@ -67,6 +68,9 @@ export function StudentAnswersModal({ open, onClose, student, className, courseI
   if (!open) return null
 
   const statusMeta = STATUS_LABEL[review?.status] || STATUS_LABEL.not_started
+  // Erradas: as respondidas que não estão certas nem esperam o professor (antes a
+  // dissertativa contava como errada).
+  const counts = reviewCounts(review?.questions)
 
   return (
     <Modal
@@ -96,8 +100,9 @@ export function StudentAnswersModal({ open, onClose, student, className, courseI
           <div className="flex flex-wrap items-center gap-2">
             <Badge tone={statusMeta.tone} dot>{statusMeta.text}</Badge>
             <Badge tone="neutral">Progresso {review.answeredCount}/{review.totalCount}</Badge>
-            {review.status !== 'not_started' && <Badge tone="success">{review.correctCount} certas</Badge>}
-            {review.status !== 'not_started' && <Badge tone="danger">{Math.max(0, review.answeredCount - review.correctCount)} erradas</Badge>}
+            {review.status !== 'not_started' && <Badge tone="success">{counts.correct} certas</Badge>}
+            {review.status !== 'not_started' && <Badge tone="danger">{counts.wrong} erradas</Badge>}
+            {review.status !== 'not_started' && counts.pending > 0 && <Badge tone="warning">{counts.pending} {counts.pending === 1 ? 'aguarda' : 'aguardam'} correção</Badge>}
             {review.examCode && <span className="text-xs text-subtle">Código {review.examCode}</span>}
           </div>
           {reviewLettersNote(review.alternativeLabels) && <p className="text-xs text-subtle">{reviewLettersNote(review.alternativeLabels)}</p>}
@@ -112,65 +117,9 @@ export function StudentAnswersModal({ open, onClose, student, className, courseI
             </div>
           )}
 
-          {review.questions?.map((question) => {
-            const answered = question.answered
-            const tone = !answered ? 'neutral' : question.isCorrect ? 'success' : 'danger'
-            const circle = !answered
-              ? 'bg-surface-2 text-subtle'
-              : question.isCorrect ? 'bg-success-soft text-success' : 'bg-danger-soft text-danger'
-            return (
-              <section key={`${question.questionNumber}-${question.position}`} className="border-t border-border py-4 first:border-t-0 first:pt-0">
-                <div className="flex items-start gap-3">
-                  <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-full text-sm font-bold ${circle}`}>{question.position}</span>
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-start">
-                      <p className="font-medium leading-relaxed text-text">{question.text || `Questão ${question.position}`}</p>
-                      <Badge tone={tone}>{!answered ? 'Não respondida' : question.isCorrect ? 'Correta' : 'Errada'}</Badge>
-                    </div>
-
-                    {question.alternatives?.length > 0 ? (
-                      <div className="mt-3 divide-y divide-border border-y border-border">
-                        {question.alternatives.map((alternative) => {
-                          const optionStyle = alternative.selectedByStudent && alternative.correct
-                            ? 'bg-success-soft/40'
-                            : alternative.selectedByStudent
-                              ? 'bg-danger-soft/40'
-                              : alternative.correct
-                                ? 'bg-success-soft/25'
-                                : ''
-                          return (
-                            <div key={`${question.position}-${alternative.canonicalLetter || alternative.letter}`} className={`flex flex-wrap items-center gap-3 px-2 py-2.5 ${optionStyle}`}>
-                              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-surface-2 text-xs font-bold text-muted">{alternative.letter}</span>
-                              <OriginalLetter seen={alternative.letter} original={alternative.canonicalLetter} />
-                              <span className="min-w-0 flex-1 text-sm text-text">{alternative.text}</span>
-                              {alternative.selectedByStudent && (
-                                <span className={`inline-flex items-center gap-1 text-xs font-semibold ${alternative.correct ? 'text-success' : 'text-danger'}`}>
-                                  {alternative.correct ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
-                                  Resposta do aluno
-                                </span>
-                              )}
-                              {alternative.correct && !alternative.selectedByStudent && (
-                                <span className="inline-flex items-center gap-1 text-xs font-semibold text-success">
-                                  <CheckCircle2 size={14} /> Gabarito
-                                </span>
-                              )}
-                            </div>
-                          )
-                        })}
-                      </div>
-                    ) : (
-                      <div className="mt-3 flex flex-wrap gap-4 text-sm">
-                        <span className="text-muted">Aluno: <b className="font-mono text-text">{seenWithOriginal(question.studentChoiceSeen, question.studentChoice)}</b></span>
-                        <span className="text-muted">Gabarito: <b className="font-mono text-success">{seenWithOriginal(question.correctAnswerSeen, question.correctAnswer)}</b></span>
-                      </div>
-                    )}
-
-                    {!answered && <p className="mt-2 text-xs font-medium text-warning">Questão ainda não respondida.</p>}
-                  </div>
-                </div>
-              </section>
-            )
-          })}
+          {review.questions?.map((question) => (
+            <ReviewQuestionCard key={`${question.questionNumber}-${question.position}`} question={question} unansweredText="Questão ainda não respondida." correctLabel="Gabarito" />
+          ))}
         </div>
       )}
     </Modal>

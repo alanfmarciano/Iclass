@@ -149,6 +149,7 @@
 .pvb-st.warning { background: var(--warning-soft); color: var(--warning); }
 .pvb-st.info    { background: var(--info-soft);    color: var(--info); }
 .pvb-st.neutral { background: var(--surface-2);    color: var(--text-muted); }
+.pvb-st.danger  { background: var(--danger-soft);  color: var(--danger); }
 .pvb-st.success .pvb-sdot { animation: pvb-pulse 1.6s infinite; }
 @keyframes pvb-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
 

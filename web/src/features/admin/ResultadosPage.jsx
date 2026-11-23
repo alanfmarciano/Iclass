@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate, useParams } from 'react-router-dom'
-import { AlertTriangle, ArrowLeft, ArrowRight, BarChart3, BookOpen, CheckCircle2, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, ClipboardList, Download, Eye, EyeOff, FilePlus2, FileStack, History, Info, Layers3, Loader2, RotateCcw, Table2, Target, Trash2, TrendingUp, Users, XCircle } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, PenLine, ArrowRight, BarChart3, BookOpen, ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown, ClipboardList, Download, Eye, EyeOff, FilePlus2, FileStack, History, Info, Layers3, Loader2, RotateCcw, Table2, Target, Trash2, TrendingUp, Users } from 'lucide-react'
 import '../../styles/resultados-board.css'
 import { DataTable } from '../../components/ui/Table'
 import { Badge } from '../../components/ui/Badge'
@@ -24,7 +24,9 @@ import { useToast } from '../../context/ToastProvider'
 import { normalizeEvaluation, snapshotsFromHistory } from './examTools'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { deliveryLabel } from './attemptDelivery'
-import { OriginalLetter, reviewLettersNote } from './reviewLetters'
+import { reviewLettersNote } from './reviewLetters'
+import { ReviewQuestionCard } from './ReviewQuestionCard'
+import { answerStatus, studentAnswerText } from '../exam/answerView'
 import { GradeReasonDialog, isReasonRequiredError } from './GradeReasonDialog'
 import { displayEmail, isStudentIdParam, studentRouteKey } from '../../lib/studentProfile'
 import { useAuth } from '../../context/AuthProvider'
@@ -100,6 +102,20 @@ const DISTRIBUTION_COLOR = { muito_abaixo: 'var(--danger)', abaixo: 'var(--warni
 const attemptState = (s) => (s.resultStatus === 'archived' ? 'off' : (s.countsTowardResult === true ? 'count' : 'disc'))
 const STATE_LABEL = { count: 'Compõe a nota', disc: 'Descartada', off: 'Desconsiderada' }
 const fmtNota = (s) => fmtGrade(s, '-')
+// Tentativa que espera a correção do professor ou que o professor anulou (P3-S4a,
+// enrichSubmissionsWithAttemptResult): em vez da nota gravada (só a parcial das objetivas,
+// ou a original da anulada), o que ela é (A18).
+const ANULADA_SHORT = { zero: 'Anulada (zero)', desconsiderar: 'Anulada (não conta)' }
+const attemptPendingLabel = (s) => (s?.integrityDecision && ANULADA_SHORT[s.integrityDecision]) || (s?.awaitingCorrection ? 'Aguardando correção' : '')
+// Endereço da tela Corrigir (CorrecaoPage): com a entrega ou só com a prova.
+const CORRECTION_ROUTE = '/resultados/correcao'
+export function correctionPath({ id, examKey } = {}) {
+  const query = new URLSearchParams()
+  if (id) query.set('submissionId', id)
+  if (examKey) query.set('examKey', examKey)
+  const text = query.toString()
+  return text ? CORRECTION_ROUTE + '?' + text : CORRECTION_ROUTE
+}
 
 // Explica em uma linha como a nota da prova foi formada, conforme a política. O
 // resultado é a nota consolidada que o servidor calculou (consolidatedScore).
@@ -276,6 +292,10 @@ export default function ResultadosPage() {
   // Recarrega quando as entregas mudam: a contagem de notas lançadas e publicadas de cada
   // avaliação (que decide se arquivar pede motivo) acompanha o que se lançou na aba Alunos.
   const planApi = useApi(activeCourseId && activeClassName ? `/api/admin/grading/plan?${contextQuery}` : null, [data])
+  // Fila da correção (A9, GET /api/admin/corrections): quantas entregas da turma esperam o
+  // professor, para o aviso com "Corrigir provas" (A18). Recarrega com as entregas.
+  const correctionsApi = useApi(activeCourseId && activeClassName ? `/api/admin/corrections?${contextQuery}` : null, [data])
+  const pendingCorrections = Number(correctionsApi.data?.total) || 0
   const [del, setDel] = useState(null)
   const [detail, setDetail] = useState(null)
   const [review, setReview] = useState(null)
@@ -877,7 +897,8 @@ export default function ResultadosPage() {
           <span className="rb-mini">
             {attempts.map((a) => {
               const st = attemptState(a)
-              return <span key={a.id} className={`rb-mc ${st}`}><span className="d" /><span className="g">{fmtNota(a.score)}</span></span>
+              const pending = attemptPendingLabel(a)
+              return <span key={a.id} className={`rb-mc ${st}`} title={pending || undefined}><span className="d" /><span className="g">{pending ? (a.integrityDecision ? 'anul.' : 'corr.') : fmtNota(a.score)}</span></span>
             })}
           </span>
           <span className="rb-rule">Regra: <b>{POLICY_SHORT[policy] || 'Maior nota'}</b></span>
@@ -914,12 +935,17 @@ export default function ResultadosPage() {
                         <span className={`rb-tag ${st}`}>{STATE_LABEL[st]}</span>
                         {submission.scoreInvalid && <span className="rb-tag off" title="Registro antigo com nota vazia ou fora de 0 a 10. Não entra na média nem é publicado. Exclua e lance de novo.">Nota inválida</span>}
                       </div>
-                      <div className="meta">{submission.timestamp ? new Date(submission.timestamp).toLocaleString('pt-BR') : 'Data não registrada'} · {submission.type || 'online'} · Versão {submission.assignedVersion || '-'} · {submission.gradePublished === true ? 'Publicada' : 'Em revisão'}{deliveryLabel(submission) ? ` · ${deliveryLabel(submission)}` : ''}</div>
+                      <div className="meta">{submission.timestamp ? new Date(submission.timestamp).toLocaleString('pt-BR') : 'Data não registrada'} · {submission.type || 'online'} · Versão {submission.assignedVersion || '-'} · {submission.awaitingCorrection ? 'Aguardando correção' : submission.gradePublished === true ? 'Publicada' : 'Em revisão'}{deliveryLabel(submission) ? ` · ${deliveryLabel(submission)}` : ''}</div>
                     </div>
-                    <span className={`rb-as ${gradeBandClass(submission.score)}`}>{fmtNota(submission.score)}</span>
+                    {attemptPendingLabel(submission)
+                      ? <span className="rb-as rb-gmuted text-xs font-semibold">{attemptPendingLabel(submission)}</span>
+                      : <span className={`rb-as ${gradeBandClass(submission.score)}`}>{fmtNota(submission.score)}</span>}
                     <div className="rb-acts">
                       {canWrite && !archived && (
                         <button type="button" className="rb-btn pri" disabled={busy} title="Fixar esta tentativa como a nota" onClick={() => controlAttempt(submission, 'select', undefined, attempts)}><Target size={13} /><span>Usar esta nota</span></button>
+                      )}
+                      {submission.awaitingCorrection && (
+                        <button type="button" className="rb-btn pri" title="Corrigir as questões que esperam o professor" onClick={() => navigate(correctionPath(submission))}><PenLine size={13} /><span>{canWrite ? 'Corrigir' : 'Ver correção'}</span></button>
                       )}
                       <button type="button" className="rb-btn" title="Ver a prova corrigida" onClick={() => openSubmissionReview(submission)}><Eye size={13} /><span>Ver prova</span></button>
                       {canWrite && (archived
@@ -933,6 +959,7 @@ export default function ResultadosPage() {
             <span className="rb-arrow"><ArrowRight size={20} /></span>
             <div className="rb-result">
               <span className={`rn ${gradeBandClass(exam.score)}`}>{exam.score == null ? '-' : fmtNota(exam.score)}</span>
+              {exam.score == null && attempts.some((a) => a.awaitingCorrection) && <span className="rl font-semibold text-warning">Aguardando correção</span>}
               <span className="rl">Nota da {unitLabel}<br />{POLICY_SHORT[policy] || 'Maior nota'}</span>
             </div>
           </div>
@@ -991,6 +1018,18 @@ export default function ResultadosPage() {
         {canWrite && <Button variant="secondary" icon={Trash2} onClick={() => setDeletedOpen(true)}>Notas excluídas</Button>}
         {canWrite && <Button icon={FilePlus2} onClick={openManual}>Lançar nota</Button>}
       </PageHeader>
+
+      {pendingCorrections > 0 && (
+        <div role="status" className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-warning/30 bg-warning-soft px-4 py-3">
+          <p className="text-sm text-text">
+            <b>{pendingCorrections === 1 ? '1 entrega aguarda' : `${pendingCorrections} entregas aguardam`} a sua correção.</b>{' '}
+            A nota delas só sai quando você concluir a correção.
+          </p>
+          <Button size="sm" icon={PenLine} onClick={() => navigate(correctionPath({ examKey: filterExam }))}>
+            {canWrite ? `Corrigir provas (${pendingCorrections})` : `Ver correções (${pendingCorrections})`}
+          </Button>
+        </div>
+      )}
 
       <div className="flex gap-2 flex-wrap">
         <div className="flex h-[38px] items-center rounded-md border border-border bg-surface-2 px-3 text-sm font-semibold text-text">Turma {activeClassName}</div>
@@ -1232,17 +1271,24 @@ export default function ResultadosPage() {
         >
         <div className="space-y-4">
           <dl className="grid grid-cols-3 gap-3">
-            <div className="rounded-xl bg-surface-2 p-3"><dt className="text-xs text-muted">Nota</dt><dd className="mt-1 text-2xl font-semibold text-text">{fmtGrade(detail.score)}</dd></div>
+            <div className="rounded-xl bg-surface-2 p-3"><dt className="text-xs text-muted">Nota</dt><dd className="mt-1 text-2xl font-semibold text-text">{attemptPendingLabel(detail) ? <span className="text-base text-warning">{attemptPendingLabel(detail)}</span> : fmtGrade(detail.score)}</dd></div>
             <div className="rounded-xl bg-surface-2 p-3"><dt className="text-xs text-muted">Acertos</dt><dd className="mt-1 text-2xl font-semibold text-text">{detail.correctCount ?? '-'}/{detail.totalCount ?? '-'}</dd></div>
             <div className="rounded-xl bg-surface-2 p-3"><dt className="text-xs text-muted">Versão</dt><dd className="mt-1 text-2xl font-semibold text-text">{detail.assignedVersion || '-'}</dd></div>
           </dl>
-          {!isValidScore(detail.score) && (
+          {detail.awaitingCorrection && (
+            <p className="flex items-start gap-2 rounded-lg bg-warning-soft px-3 py-2 text-sm text-text" role="status">
+              <PenLine size={16} className="mt-0.5 shrink-0 text-warning" />
+              Esta entrega tem questões que esperam a sua correção. A nota só sai quando você concluir a correção.
+            </p>
+          )}
+          {!detail.awaitingCorrection && !detail.integrityDecision && !isValidScore(detail.score) && (
             <p className="flex items-start gap-2 rounded-lg bg-warning-soft px-3 py-2 text-sm text-warning" role="alert">
               <AlertTriangle size={16} className="mt-0.5 shrink-0" />
               Este registro antigo tem nota vazia ou fora da escala de 0 a 10 ({String(detail.score ?? 'vazia')}). Ele não entra na média e não pode ser publicado. Exclua e lance a nota de novo.
             </p>
           )}
           <div className="flex flex-wrap gap-2">
+            {detail.awaitingCorrection && <Button icon={PenLine} onClick={() => navigate(correctionPath(detail))}>{canWrite ? 'Corrigir esta prova' : 'Ver a correção'}</Button>}
             {canWrite && <Button variant="secondary" icon={detail.gradePublished === true ? EyeOff : Eye} onClick={() => publishGrades([detail], detail.gradePublished !== true)}>{detail.gradePublished === true ? 'Ocultar do aluno' : 'Publicar para o aluno'}</Button>}
             <Button variant="secondary" icon={Download} onClick={() => exportCsv(detail)}>Exportar CSV da turma</Button>
             {canWrite && <Button variant="destructive" icon={Trash2} onClick={() => setDel(detail)}>Excluir registro</Button>}
@@ -1261,49 +1307,7 @@ export default function ResultadosPage() {
               </div>
               {reviewLettersNote(review.alternativeLabels) && <p className="text-xs text-subtle">{reviewLettersNote(review.alternativeLabels)}</p>}
               {review.questions.map((question) => (
-                <section key={`${question.questionNumber}-${question.position}`} className="border-t border-border py-4 first:border-t-0 first:pt-0">
-                  <div className="flex items-start gap-3">
-                    <span className={`grid h-8 w-8 shrink-0 place-items-center rounded-full text-sm font-bold ${question.isCorrect ? 'bg-success-soft text-success' : 'bg-danger-soft text-danger'}`}>
-                      {question.position}
-                    </span>
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-col justify-between gap-2 sm:flex-row sm:items-start">
-                        <p className="font-medium leading-relaxed text-text">{question.text || `Questão ${question.position}`}</p>
-                        <Badge tone={question.isCorrect ? 'success' : 'danger'}>{question.isCorrect ? 'Correta' : 'Errada'}</Badge>
-                      </div>
-                      <div className="mt-3 divide-y divide-border border-y border-border">
-                        {(question.alternatives || []).map((alternative) => {
-                          const optionStyle = alternative.selectedByStudent && alternative.correct
-                            ? 'bg-success-soft/40'
-                            : alternative.selectedByStudent
-                              ? 'bg-danger-soft/40'
-                              : alternative.correct
-                                ? 'bg-success-soft/25'
-                                : ''
-                          return (
-                            <div key={`${question.position}-${alternative.canonicalLetter || alternative.letter}`} className={`flex flex-wrap items-center gap-3 px-2 py-2.5 ${optionStyle}`}>
-                              <span className="grid h-7 w-7 shrink-0 place-items-center rounded-full bg-surface-2 text-xs font-bold text-muted">{alternative.letter}</span>
-                              <OriginalLetter seen={alternative.letter} original={alternative.canonicalLetter} />
-                              <span className="min-w-0 flex-1 text-sm text-text">{alternative.text}</span>
-                              {alternative.selectedByStudent && (
-                                <span className={`inline-flex items-center gap-1 text-xs font-semibold ${alternative.correct ? 'text-success' : 'text-danger'}`}>
-                                  {alternative.correct ? <CheckCircle2 size={14} /> : <XCircle size={14} />}
-                                  Resposta do aluno
-                                </span>
-                              )}
-                              {alternative.correct && !alternative.selectedByStudent && (
-                                <span className="inline-flex items-center gap-1 text-xs font-semibold text-success">
-                                  <CheckCircle2 size={14} /> Resposta correta
-                                </span>
-                              )}
-                            </div>
-                          )
-                        })}
-                      </div>
-                      {!question.studentChoice && <p className="mt-2 text-xs font-medium text-warning">Questão não respondida.</p>}
-                    </div>
-                  </div>
-                </section>
+                <ReviewQuestionCard key={`${question.questionNumber}-${question.position}`} question={question} />
               ))}
             </div>
           )}
@@ -1312,7 +1316,11 @@ export default function ResultadosPage() {
               {detail.alternativeLabels === 'position' && <p className="px-3 py-2 text-xs text-subtle">Letras do gabarito original. Na tela do aluno as alternativas seguiam a ordem da versão dele.</p>}
               <table className="w-full text-sm">
                 <thead><tr className="bg-surface-2 text-muted"><th className="text-left px-3 py-2">Questão</th><th className="text-left px-3 py-2">Aluno</th><th className="text-left px-3 py-2">Correta</th><th className="text-left px-3 py-2">Status</th></tr></thead>
-                <tbody>{detail.gradedAnswers.map((a, i) => <tr key={i} className="border-t border-border"><td className="px-3 py-2">{a.questionNumber}</td><td className="px-3 py-2">{a.studentChoice || '-'}</td><td className="px-3 py-2">{a.correctAnswer || '-'}</td><td className="px-3 py-2"><Badge tone={a.isCorrect ? 'success' : 'danger'}>{a.isCorrect ? 'Correta' : 'Errada'}</Badge></td></tr>)}</tbody>
+                <tbody>{detail.gradedAnswers.map((a, i) => {
+                  const status = answerStatus(a)
+                  const correct = Array.isArray(a.correctAnswers) && a.correctAnswers.length ? a.correctAnswers.join(', ') : a.correctAnswer
+                  return <tr key={i} className="border-t border-border"><td className="px-3 py-2">{a.questionNumber}</td><td className="max-w-[16rem] break-words px-3 py-2">{studentAnswerText(a, null, { blank: '-' })}</td><td className="px-3 py-2">{correct || '-'}</td><td className="px-3 py-2"><Badge tone={status.tone}>{status.text}</Badge></td></tr>
+                })}</tbody>
               </table>
             </div>
           )}

@@ -101,7 +101,18 @@ Cada questão mostra quanto vale. Se você apagar uma resposta, a questão volta
 
 ### Prova com dissertativa
 
-Quando a prova tem questão dissertativa, a tela final diz "Sua prova foi entregue. As dissertativas serão corrigidas." A nota aparece em Provas depois que o professor corrigir e liberar.
+Quando a prova tem questão dissertativa, a tela final diz "Sua prova foi entregue. As dissertativas serão corrigidas." Até o professor corrigir, a prova aparece em Provas como **Aguardando correção do professor**, sem nota. A nota aparece depois que o professor corrigir e liberar. Se o professor anular uma tentativa, ela aparece como **Tentativa anulada: nota zero** ou **Tentativa anulada: não conta**.
+
+### Revisão da prova corrigida
+
+Toque na prova em Provas para ver o resultado. Com a nota liberada, aparecem a nota e o comentário geral do professor. Com o gabarito liberado, cada questão mostra:
+
+- a sua resposta e a resposta correta (em "Várias corretas", todas as certas ficam marcadas);
+- os pontos que você fez ("1,5 de 2 pontos"); em "Várias corretas", acertar parte das alternativas aparece como **Parcial**;
+- na dissertativa, o seu texto, os pontos e, quando o professor usou critérios, os pontos de cada critério; a dissertativa nunca aparece como "Errada";
+- o comentário do professor na questão e a explicação, quando houver.
+
+O botão **Baixar prova (PDF)** gera a mesma revisão para imprimir ou guardar.
 
 ### Nota alterada
 

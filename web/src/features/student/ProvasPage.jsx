@@ -16,6 +16,8 @@ import { usePolling } from '../../hooks/usePolling'
 import { useNavigate } from 'react-router-dom'
 import { matchesSearch } from '../../lib/textSearch'
 import { ScheduledExams } from './ScheduledExams'
+import QuestionMarkdown from '../exam/QuestionMarkdown'
+import { QUESTION_TYPE_LABEL, answerStatus, answerType, isTextType, pointsLabel, possibleLabel, studentAnswerText } from '../exam/answerView'
 
 // Nota e armazenada em escala 0-100 e exibida em 0-10.
 const toGrade = (score) => Number(score) / 10
@@ -36,6 +38,12 @@ const isOutOfResult = (s) => s.resultStatus === 'archived' || s.assessmentArchiv
 const isManualKey = (key = '') => String(key).startsWith('man_')
 const shortLabel = (key = '') => key.replace(/^Avaliacao_?/i, '').replace(/_/g, ' ').slice(0, 8)
 const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
+// Tentativa anulada pelo professor (integridade) e entrega que espera a correção do
+// professor (dissertativa, resposta curta sem gabarito): o servidor diz em anulada e
+// aguardandoCorrecao (sanitizeSubmissionForStudent). Antes, as duas apareciam como
+// "Em revisão", sem dizer por quê.
+const ANULADA_LABEL = { zero: 'Tentativa anulada: nota zero', desconsiderar: 'Tentativa anulada: não conta' }
+export const pendingLabel = (s) => (s?.anulada && ANULADA_LABEL[s.anulada]) || (s?.aguardandoCorrecao ? 'Aguardando correção do professor' : 'Em revisão')
 const labelOf = (s) => (isManualKey(s.examKey) ? clip(String(s.examTitle || 'Avaliação'), 12) : shortLabel(s.examKey))
 
 // ----- Agrupamento por disciplina ou módulo e por tentativa -----
@@ -122,7 +130,7 @@ function ExamCard({ s, onOpen }) {
             ? <span className="pvb-st neutral"><span className="pvb-sdot" />Avaliação arquivada · fora da média</span>
           : counts
             ? <span className="pvb-st info"><span className="pvb-sdot" />Compõe o resultado</span>
-            : !published ? <span className="pvb-st warning"><span className="pvb-sdot" />Em revisão</span> : null}
+            : !published ? <span className={`pvb-st ${s.anulada ? 'danger' : 'warning'}`}><span className="pvb-sdot" />{pendingLabel(s)}</span> : null}
       </div>
     </button>
   )
@@ -167,7 +175,7 @@ function AttemptGroup({ attempts, onOpen }) {
               <button type="button" key={a.id} onClick={() => onOpen(a)} className={`ag-att ${counts ? 'counts' : 'discard'}`}>
                 <span className="an"><b>Tentativa {a.attemptNumber || '—'}</b>{a.timestamp ? ` — ${fmtDate(a.timestamp)}` : ''}</span>
                 <span className={`as ${gradeBand(g, criterio)}`}>{fmtGrade(g)}</span>
-                <span className="flag">{counts ? 'Conta' : 'Descartada'}</span>
+                <span className="flag">{a.anulada ? 'Anulada' : !isPublished(a) && a.aguardandoCorrecao ? 'Aguardando correção' : counts ? 'Conta' : 'Descartada'}</span>
               </button>
             )
           })}
@@ -252,30 +260,48 @@ const escapeHtml = (value) => String(value ?? '').replace(/[&<>"]/g, (c) => ({ '
 // as questoes completas e o gabarito-resumo. Roda 100% no cliente, sem libs.
 // Nota com vírgula, como no resto do portal (fmtGrade).
 export function buildExamPrintHtml(detail, questions, answerByNumber) {
-  const nota = detail?.gradePublished === true ? fmtGrade(toGrade(detail.score || 0)) : '—'
-  const acertos = detail?.gradePublished === true ? `${detail.correctCount ?? '-'}/${detail.totalCount ?? '-'}` : '-'
+  const anulada = detail?.anulada && ANULADA_LABEL[detail.anulada]
+  // Nota não publicada nunca sai na impressão: um traço, ou por que ainda não há nota.
+  const pending = pendingLabel(detail)
+  const nota = detail?.gradePublished === true ? fmtGrade(toGrade(detail.score || 0)) : (pending === 'Em revisão' ? '—' : pending)
+  const acertos = detail?.gradePublished === true && detail.correctCount != null ? `${detail.correctCount}/${detail.totalCount ?? '-'}` : '-'
   const versao = detail?.assignedVersion || '-'
   const titulo = detail?.examTitle || detail?.examKey || 'Prova'
+  const awaiting = detail?.aguardandoCorrecao === true
 
+  // Questão por tipo (A18): a resposta escrita sai por extenso; pontos, comentário e
+  // explicação quando o servidor mandou. Texto puro (o Markdown aparece como escrito).
   const questoesHtml = (questions || []).map((q) => {
     const a = answerByNumber.get(Number(q.number)) || {}
-    const sc = a.studentChoice ? String(a.studentChoice).toUpperCase() : null
-    const ca = a.correctAnswer ? String(a.correctAnswer).toUpperCase() : null
-    const alts = (q.alternatives || []).map((alt) => {
+    const type = answerType(a, q)
+    const status = answerStatus({ ...a, type }, { awaiting })
+    const { chosen, correct } = choiceSets(a, type)
+    const alts = isTextType(type) ? '' : (q.alternatives || []).map((alt) => {
       const letter = String(alt.letter || '').toUpperCase()
-      const correct = ca && letter === ca
-      const wrong = sc && letter === sc && !correct
-      const cls = correct ? 'alt correct' : wrong ? 'alt wrong' : 'alt'
-      const tag = correct ? (sc === letter ? ' &middot; Sua resposta / Correta' : ' &middot; Resposta correta') : (wrong ? ' &middot; Sua resposta' : '')
+      const isRight = correct.has(letter)
+      const wrong = chosen.has(letter) && !isRight
+      const cls = isRight ? 'alt correct' : wrong ? 'alt wrong' : 'alt'
+      const tag = isRight ? (chosen.has(letter) ? ' &middot; Sua resposta / Correta' : ' &middot; Resposta correta') : (wrong ? ' &middot; Sua resposta' : '')
       return `<div class="${cls}"><span class="ltr">${letter}</span><span>${escapeHtml(alt.text)}${tag ? `<i>${tag}</i>` : ''}</span></div>`
     }).join('')
-    return `<div class="q"><div class="qh"><b>Questão ${escapeHtml(q.number)}</b><span class="${a.isCorrect ? 'ok' : 'err'}">${a.isCorrect ? 'Correta' : 'Errada'}</span></div>${q.text ? `<p>${escapeHtml(q.text)}</p>` : ''}${alts}</div>`
+    const written = isTextType(type)
+      ? `<div class="resp"><span>Sua resposta</span>${escapeHtml(a.studentResponse ? studentAnswerText({ ...a, type: type === 'essay' ? 'short_answer' : type }, q) : 'Em branco')}</div>`
+      : ''
+    const points = pointsLabel(a.pointsEarned, a.pointsPossible)
+    const extra = [
+      a.comentario ? `<div class="note"><b>Comentário do professor:</b> ${escapeHtml(a.comentario)}</div>` : '',
+      q.explanation ? `<div class="note"><b>Explicação:</b> ${escapeHtml(q.explanation)}</div>` : '',
+    ].join('')
+    return `<div class="q"><div class="qh"><b>Questão ${escapeHtml(q.number)}${points && !status.text.includes(points) ? ` &middot; ${escapeHtml(points)}` : ''}</b><span class="${status.tone === 'success' ? 'ok' : status.tone === 'danger' ? 'err' : 'mid'}">${escapeHtml(status.text)}</span></div>${q.text ? `<p>${escapeHtml(q.text)}</p>` : ''}${alts}${written}${extra}</div>`
   }).join('')
 
   const resumoRows = (questions || []).map((q) => {
     const a = answerByNumber.get(Number(q.number)) || {}
-    return `<tr><td>${escapeHtml(q.number)}</td><td>${escapeHtml(a.studentChoice || '-')}</td><td>${escapeHtml(a.correctAnswer || '-')}</td><td>${a.isCorrect ? 'Correta' : 'Errada'}</td></tr>`
+    const type = answerType(a, q)
+    return `<tr><td>${escapeHtml(q.number)}</td><td>${escapeHtml(studentAnswerText(a, q, { blank: '-' }))}</td><td>${escapeHtml(correctText(a, type))}</td><td>${escapeHtml(answerStatus({ ...a, type }, { awaiting }).text)}</td></tr>`
   }).join('')
+
+  const comentario = detail?.comentarioGeral ? `<div class="note"><b>Comentário do professor:</b> ${escapeHtml(detail.comentarioGeral)}</div>` : ''
 
   return `<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><title>${escapeHtml(titulo)}</title><style>
     *{box-sizing:border-box}body{font-family:Arial,Helvetica,sans-serif;color:#1a1a1a;margin:32px;font-size:13px}
@@ -284,20 +310,24 @@ export function buildExamPrintHtml(detail, questions, answerByNumber) {
     .stats div span{display:block;color:#777;font-size:11px}.stats div b{font-size:16px}
     .q{border:1px solid #e2e2e2;border-radius:8px;padding:12px 14px;margin-bottom:12px;page-break-inside:avoid}
     .qh{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:12px}
-    .qh .ok{color:#127a4f;font-weight:bold}.qh .err{color:#c0293a;font-weight:bold}
-    .q p{margin:0 0 10px;font-size:13px;line-height:1.45}
+    .qh .ok{color:#127a4f;font-weight:bold}.qh .err{color:#c0293a;font-weight:bold}.qh .mid{color:#8a5a00;font-weight:bold}
+    .q p{margin:0 0 10px;font-size:13px;line-height:1.45;white-space:pre-wrap}
     .alt{display:flex;gap:9px;align-items:flex-start;border:1px solid #e6e6e6;border-radius:6px;padding:7px 9px;margin-bottom:6px}
     .alt .ltr{font-weight:bold;border:1px solid #ccc;border-radius:4px;min-width:20px;text-align:center;padding:0 2px}
     .alt.correct{border-color:#127a4f;background:#e9f7ef}.alt.correct .ltr{background:#127a4f;color:#fff;border-color:#127a4f}
     .alt.wrong{border-color:#c0293a;background:#fdecee}.alt.wrong .ltr{background:#c0293a;color:#fff;border-color:#c0293a}
     .alt i{color:#555;font-style:italic;font-size:11px}
+    .resp{border:1px solid #e6e6e6;border-radius:6px;padding:8px 10px;white-space:pre-wrap;word-break:break-word}
+    .resp span{display:block;color:#777;font-size:11px;margin-bottom:4px}
+    .note{margin-top:8px;font-size:12px;line-height:1.45;white-space:pre-wrap;word-break:break-word}
     h2{font-size:14px;margin:22px 0 8px}table{width:100%;border-collapse:collapse;font-size:12px}
     th,td{border:1px solid #ddd;padding:6px 10px;text-align:left}th{background:#f3f3f3}
     @media print{body{margin:14mm}}
   </style></head><body>
     <h1>${escapeHtml(titulo)}</h1>
-    <div class="meta">Gabarito liberado &middot; Versão ${escapeHtml(versao)}</div>
-    <div class="stats"><div><span>Nota</span><b>${nota}</b></div><div><span>Acertos</span><b>${acertos}</b></div><div><span>Versão</span><b>${escapeHtml(versao)}</b></div></div>
+    <div class="meta">Gabarito liberado &middot; Versão ${escapeHtml(versao)}${anulada ? ` &middot; ${escapeHtml(anulada)}` : ''}</div>
+    <div class="stats"><div><span>Nota</span><b>${escapeHtml(nota)}</b></div><div><span>Acertos</span><b>${acertos}</b></div><div><span>Versão</span><b>${escapeHtml(versao)}</b></div></div>
+    ${comentario}
     ${questoesHtml}
     <h2>Gabarito &middot; resumo</h2>
     <table><thead><tr><th>Questão</th><th>Sua resposta</th><th>Correta</th><th>Status</th></tr></thead><tbody>${resumoRows}</tbody></table>
@@ -328,15 +358,19 @@ export function openExamPrintWindow(html, openWindow = (...args) => window.open(
   return true
 }
 
-// Visualizacao completa da prova: enunciado, alternativas, resposta do aluno,
-// resposta correta e status por questao, com download em PDF e gabarito-resumo.
-// Usada quando o gabarito foi liberado e examQuestions esta disponivel.
+// Visualização completa da prova com o gabarito liberado (fase 3, P3-S4b / A18: AVA-07,
+// UXA-17): enunciado e alternativas em Markdown (QuestionMarkdown), a resposta do aluno
+// por tipo (marcadas, número ou texto escrito), os pontos de cada questão com a nota
+// publicada, a rubrica com os pontos de cada critério, o comentário do professor e a
+// explicação. A etiqueta "Sua resposta · Correta" fica numa linha própria abaixo da
+// alternativa: no celular de 375 px ela espremia o texto numa coluna estreita.
 function FullExamView({ detail, questions, answers }) {
   const answerByNumber = useMemo(() => {
     const map = new Map()
     ;(answers || []).forEach((a) => map.set(Number(a.questionNumber), a))
     return map
   }, [answers])
+  const awaiting = detail?.aguardandoCorrecao === true
 
   const handleDownload = () => {
     openExamPrintWindow(buildExamPrintHtml(detail, questions, answerByNumber))
@@ -355,53 +389,9 @@ function FullExamView({ detail, questions, answers }) {
       </div>
 
       <ol className="space-y-3">
-        {questions.map((q, qi) => {
-          const answer = answerByNumber.get(Number(q.number)) || {}
-          const studentChoice = answer.studentChoice ? String(answer.studentChoice).toUpperCase() : null
-          const correctAnswer = answer.correctAnswer ? String(answer.correctAnswer).toUpperCase() : null
-          const isCorrect = answer.isCorrect === true
-          return (
-            <li key={q.number ?? qi} className="rounded-xl border border-border bg-surface-2 p-4">
-              <div className="mb-2.5 flex items-center justify-between gap-3">
-                <span className="inline-flex items-center gap-2 text-xs font-semibold text-muted">
-                  <span className="grid h-6 w-6 place-items-center rounded-md border border-border bg-surface text-text">{q.number}</span>
-                  Questão {q.number}
-                </span>
-                <Badge tone={isCorrect ? 'success' : 'danger'}>{isCorrect ? 'Correta' : 'Errada'}</Badge>
-              </div>
-              {q.text && <p className="mb-3 text-sm leading-relaxed text-text">{q.text}</p>}
-              <div className="space-y-2">
-                {(q.alternatives || []).map((alt) => {
-                  const letter = String(alt.letter || '').toUpperCase()
-                  const isCorrectAlt = correctAnswer && letter === correctAnswer
-                  const isChosen = studentChoice && letter === studentChoice
-                  const isWrongChosen = isChosen && !isCorrectAlt
-                  const box = isCorrectAlt
-                    ? 'border-success bg-success-soft'
-                    : isWrongChosen
-                      ? 'border-danger bg-danger-soft'
-                      : 'border-border bg-surface'
-                  const letterBox = isCorrectAlt
-                    ? 'bg-success text-surface border-success'
-                    : isWrongChosen
-                      ? 'bg-danger text-surface border-danger'
-                      : 'bg-surface-2 text-muted border-border'
-                  return (
-                    <div key={letter} className={`flex items-start gap-3 rounded-lg border px-3 py-2.5 text-sm ${box}`}>
-                      <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-md border text-xs font-bold ${letterBox}`}>{letter}</span>
-                      <span className="pt-0.5 text-text">{alt.text}</span>
-                      {(isCorrectAlt || isWrongChosen) && (
-                        <span className={`ml-auto shrink-0 self-center whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-semibold ${isCorrectAlt ? 'text-success' : 'text-danger'}`}>
-                          {isCorrectAlt ? (isChosen ? 'Sua resposta · Correta' : 'Resposta correta') : 'Sua resposta'}
-                        </span>
-                      )}
-                    </div>
-                  )
-                })}
-              </div>
-            </li>
-          )
-        })}
+        {questions.map((q, qi) => (
+          <ReviewQuestion key={q.number ?? qi} question={q} answer={answerByNumber.get(Number(q.number)) || {}} awaiting={awaiting} />
+        ))}
       </ol>
 
       <div>
@@ -412,12 +402,14 @@ function FullExamView({ detail, questions, answers }) {
             <tbody>
               {questions.map((q, i) => {
                 const a = answerByNumber.get(Number(q.number)) || {}
+                const type = answerType(a, q)
+                const status = answerStatus({ ...a, type }, { awaiting })
                 return (
                   <tr key={q.number ?? i} className="border-t border-border">
                     <td className="px-3 py-2">{q.number}</td>
-                    <td className="px-3 py-2">{a.studentChoice || '-'}</td>
-                    <td className="px-3 py-2">{a.correctAnswer || '-'}</td>
-                    <td className="px-3 py-2"><Badge tone={a.isCorrect ? 'success' : 'danger'}>{a.isCorrect ? 'Correta' : 'Errada'}</Badge></td>
+                    <td className="max-w-[12rem] truncate px-3 py-2">{studentAnswerText(a, q, { blank: '-' })}</td>
+                    <td className="px-3 py-2">{correctText(a, type)}</td>
+                    <td className="px-3 py-2"><Badge tone={status.tone}>{status.text}</Badge></td>
                   </tr>
                 )
               })}
@@ -426,6 +418,116 @@ function FullExamView({ detail, questions, answers }) {
         </div>
       </div>
     </div>
+  )
+}
+
+// Letras marcadas e certas de uma questão de escolha (uma correta, V/F e várias corretas),
+// já como o aluno viu (o servidor converte, AVA-05).
+function choiceSets(answer, type) {
+  const upper = (list) => new Set((list || []).filter(Boolean).map((letter) => String(letter).toUpperCase()))
+  if (type === 'multiple_answer') return { chosen: upper(answer?.studentChoices), correct: upper(answer?.correctAnswers) }
+  return { chosen: upper([answer?.studentChoice]), correct: upper([answer?.correctAnswer]) }
+}
+
+// O que vale como certo, para o resumo: a letra, as letras ou um traço (nas questões
+// sem letra o gabarito é a explicação do professor).
+function correctText(answer, type) {
+  if (type === 'multiple_answer') {
+    const letters = [...choiceSets(answer, type).correct]
+    return letters.length ? studentAnswerText({ studentChoices: letters }, null) : '-'
+  }
+  if (isTextType(type)) return '-'
+  return answer?.correctAnswer ? String(answer.correctAnswer).toUpperCase() : '-'
+}
+
+function ReviewNote({ title, children, tone = 'neutral' }) {
+  const box = tone === 'info' ? 'border-info/30 bg-info-soft' : 'border-border bg-surface'
+  return (
+    <div className={`mt-3 rounded-lg border px-3 py-2.5 ${box}`}>
+      <p className="text-xs font-semibold text-muted">{title}</p>
+      <div className="mt-1 break-words text-sm text-text">{children}</div>
+    </div>
+  )
+}
+
+function ReviewQuestion({ question: q, answer, awaiting }) {
+  const type = answerType(answer, q)
+  const status = answerStatus({ ...answer, type }, { awaiting })
+  const { chosen, correct } = choiceSets(answer, type)
+  const points = pointsLabel(answer.pointsEarned, answer.pointsPossible)
+  const possible = possibleLabel(q.points ?? answer.pointsPossible)
+  const rubric = Array.isArray(q.rubric) ? q.rubric : []
+  const rubricScores = answer.rubrica && typeof answer.rubrica === 'object' ? answer.rubrica : null
+  return (
+    <li className="rounded-xl border border-border bg-surface-2 p-4">
+      <div className="mb-2.5 flex flex-wrap items-center justify-between gap-2">
+        <span className="inline-flex flex-wrap items-center gap-2 text-xs font-semibold text-muted">
+          <span className="grid h-6 w-6 place-items-center rounded-md border border-border bg-surface text-text">{q.number}</span>
+          Questão {q.number}
+          {type !== 'multiple_choice' && <span className="font-normal">· {QUESTION_TYPE_LABEL[type]}</span>}
+          {points && !status.text.includes(points) ? <span className="font-normal">· {points}</span> : (!points && possible ? <span className="font-normal">· vale {possible}</span> : null)}
+        </span>
+        <Badge tone={status.tone}>{status.text}</Badge>
+      </div>
+      {q.text && <QuestionMarkdown text={q.text} className="mb-3 text-sm leading-relaxed text-text" />}
+      {!isTextType(type) && (
+        <div className="space-y-2">
+          {type === 'multiple_answer' && <p className="text-xs text-muted">Várias alternativas podiam estar certas.</p>}
+          {(q.alternatives || []).map((alt) => {
+            const letter = String(alt.letter || '').toUpperCase()
+            const isCorrectAlt = correct.has(letter)
+            const isChosen = chosen.has(letter)
+            const isWrongChosen = isChosen && !isCorrectAlt
+            const box = isCorrectAlt
+              ? 'border-success bg-success-soft'
+              : isWrongChosen
+                ? 'border-danger bg-danger-soft'
+                : 'border-border bg-surface'
+            const letterBox = isCorrectAlt
+              ? 'bg-success text-surface border-success'
+              : isWrongChosen
+                ? 'bg-danger text-surface border-danger'
+                : 'bg-surface-2 text-muted border-border'
+            return (
+              <div key={letter} className={`flex flex-wrap items-start gap-x-3 gap-y-1 rounded-lg border px-3 py-2.5 text-sm ${box}`}>
+                <span className={`grid h-6 w-6 shrink-0 place-items-center rounded-md border text-xs font-bold ${letterBox}`}>{letter}</span>
+                <QuestionMarkdown text={alt.text} choice className="min-w-0 flex-1 pt-0.5 text-text" />
+                {(isCorrectAlt || isWrongChosen) && (
+                  <span className={`basis-full pl-9 text-xs font-semibold ${isCorrectAlt ? 'text-success' : 'text-danger'}`}>
+                    {isCorrectAlt ? (isChosen ? 'Sua resposta · Correta' : 'Resposta correta') : 'Sua resposta'}
+                  </span>
+                )}
+              </div>
+            )
+          })}
+        </div>
+      )}
+      {isTextType(type) && (
+        <div className="rounded-lg border border-border bg-surface px-3 py-2.5">
+          <p className="text-xs font-semibold text-muted">Sua resposta</p>
+          {answer.studentResponse
+            ? <p className="mt-1 max-h-64 overflow-y-auto whitespace-pre-wrap break-words text-sm text-text">{type === 'essay' ? answer.studentResponse : studentAnswerText(answer, q)}</p>
+            : <p className="mt-1 text-sm text-muted">Em branco</p>}
+        </div>
+      )}
+      {rubric.length > 0 && (
+        <ReviewNote title="Critérios de correção">
+          <ul className="space-y-1">
+            {rubric.map((criterion) => {
+              const got = rubricScores ? rubricScores[criterion.id] : undefined
+              return (
+                <li key={criterion.id} className="flex flex-wrap justify-between gap-x-3">
+                  <span className="min-w-0">{criterion.nome || criterion.id}</span>
+                  <span className="tabular-nums text-muted">{got !== undefined && got !== null ? pointsLabel(got, criterion.pontos) : `vale ${possibleLabel(criterion.pontos)}`}</span>
+                </li>
+              )
+            })}
+          </ul>
+        </ReviewNote>
+      )}
+      {answer.comentario && <ReviewNote title="Comentário do professor" tone="info"><p className="whitespace-pre-wrap">{answer.comentario}</p></ReviewNote>}
+      {q.explanation && <ReviewNote title="Explicação"><QuestionMarkdown text={q.explanation} /></ReviewNote>}
+    </li>
   )
 }
 
@@ -891,7 +993,7 @@ export default function ProvasPage() {
             <dl className="grid grid-cols-2 gap-x-6 gap-y-3 border-y border-border py-3 sm:grid-cols-4">
               <div>
                 <dt className="text-xs text-muted">Nota</dt>
-                <dd className="mt-0.5 text-lg font-semibold text-text">{detail.gradePublished === true ? fmtGrade(toGrade(detail.score || 0)) : 'Em revisão'}</dd>
+                <dd className="mt-0.5 text-lg font-semibold text-text">{detail.gradePublished === true ? fmtGrade(toGrade(detail.score || 0)) : pendingLabel(detail)}</dd>
               </div>
               <div>
                 <dt className="text-xs text-muted">Resultado</dt>
@@ -899,13 +1001,29 @@ export default function ProvasPage() {
               </div>
               <div>
                 <dt className="text-xs text-muted">Acertos</dt>
-                <dd className="mt-0.5 text-lg font-semibold text-text">{detail.gradePublished === true ? `${detail.correctCount ?? '-'}/${detail.totalCount ?? '-'}` : '-'}</dd>
+                <dd className="mt-0.5 text-lg font-semibold text-text">{detail.gradePublished === true && detail.correctCount != null ? `${detail.correctCount}/${detail.totalCount ?? '-'}` : '-'}</dd>
               </div>
               <div>
                 <dt className="text-xs text-muted">Versão</dt>
                 <dd className="mt-0.5 text-lg font-semibold text-text">{detail.assignedVersion || '-'}</dd>
               </div>
             </dl>
+            {detail.anulada && ANULADA_LABEL[detail.anulada] && (
+              <p role="status" className="rounded-lg border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">
+                {ANULADA_LABEL[detail.anulada]}. {detail.anulada === 'zero' ? 'O professor anulou esta tentativa e ela vale zero.' : 'O professor anulou esta tentativa e ela não entra no seu resultado.'}
+              </p>
+            )}
+            {detail.aguardandoCorrecao === true && !detail.anulada && (
+              <p role="status" className="rounded-lg border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-text">
+                Esta prova tem questões que o professor corrige à mão. A nota aparece quando ele terminar a correção e publicar.
+              </p>
+            )}
+            {detail.comentarioGeral && (
+              <div className="rounded-lg border border-border bg-surface-2 px-3 py-2 text-sm">
+                <p className="text-xs font-semibold text-muted">Comentário do professor</p>
+                <p className="mt-1 whitespace-pre-wrap break-words text-text">{detail.comentarioGeral}</p>
+              </div>
+            )}
             {Array.isArray(detail.gradedAnswers) && detail.gradedAnswers.length > 0 ? (
               detail.answerKeyReleased && Array.isArray(detail.examQuestions) && detail.examQuestions.length > 0 ? (
                 <FullExamView detail={detail} questions={detail.examQuestions} answers={detail.gradedAnswers} />
@@ -914,13 +1032,17 @@ export default function ProvasPage() {
                   <table className="w-full text-sm">
                     <thead><tr className="bg-surface-2 text-muted"><th className="text-left px-3 py-2">Questão</th><th className="text-left px-3 py-2">Sua resposta</th>{detail.answerKeyReleased && <><th className="text-left px-3 py-2">Correta</th><th className="text-left px-3 py-2">Status</th></>}</tr></thead>
                     <tbody>
-                      {detail.gradedAnswers.map((a, i) => (
-                        <tr key={i} className="border-t border-border">
-                          <td className="px-3 py-2">{a.questionNumber}</td>
-                          <td className="px-3 py-2">{a.studentChoice || '-'}</td>
-                          {detail.answerKeyReleased && <><td className="px-3 py-2">{a.correctAnswer || '-'}</td><td className="px-3 py-2"><Badge tone={a.isCorrect ? 'success' : 'danger'}>{a.isCorrect ? 'Correta' : 'Errada'}</Badge></td></>}
-                        </tr>
-                      ))}
+                      {detail.gradedAnswers.map((a, i) => {
+                        const status = answerStatus(a, { awaiting: detail.aguardandoCorrecao === true })
+                        const correct = Array.isArray(a.correctAnswers) && a.correctAnswers.length ? a.correctAnswers.map((l) => String(l).toUpperCase()).join(', ') : a.correctAnswer
+                        return (
+                          <tr key={i} className="border-t border-border">
+                            <td className="px-3 py-2">{a.questionNumber}</td>
+                            <td className="max-w-[16rem] break-words px-3 py-2">{clip(a.type === 'essay' && a.studentResponse ? String(a.studentResponse) : studentAnswerText(a, null, { blank: '-' }), 120)}</td>
+                            {detail.answerKeyReleased && <><td className="px-3 py-2">{correct || '-'}</td><td className="px-3 py-2"><Badge tone={status.tone}>{status.text}</Badge></td></>}
+                          </tr>
+                        )
+                      })}
                     </tbody>
                   </table>
                 </div>

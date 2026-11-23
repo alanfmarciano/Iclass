@@ -174,15 +174,19 @@ O **Boletim (PDF)**, na página do aluno e na ficha dele, sai com o cabeçalho e
 
 <!-- P3 (A9 e A18) escreve aqui: correção manual, anular por cola, revisão pedida pelo aluno e corrigir gabarito. -->
 
-Prova com questão dissertativa, ou com resposta curta e numérica em que você marcou "Mandar para mim quando a resposta não bater", fica **Aguardando correção** até você corrigir. Enquanto isso, a nota não entra na média, no boletim nem no quadro de notas, e **Liberar notas** deixa a entrega de fora. O aluno não vê nota parcial: para ele, a prova aparece em revisão. Em **Precisa de você** aparece quantas provas da turma esperam a sua correção.
+Prova com questão dissertativa, ou com resposta curta e numérica em que você marcou "Mandar para mim quando a resposta não bater", fica **Aguardando correção** até você corrigir. Enquanto isso, a nota não entra na média, no boletim nem no quadro de notas, e **Liberar notas** deixa a entrega de fora. O aluno não vê nota parcial: para ele, a prova aparece como **Aguardando correção do professor**. Em **Precisa de você** e no aviso do alto de **Resultados** aparece quantas provas da turma esperam a sua correção; no quadro de notas, a célula mostra "aguardando correção".
 
 A prova impressa lançada pelo cartão-resposta também espera a sua correção quando tem dissertativa (ou outra questão sem letra para marcar): a letra marcada vale nas questões de escolha, e as outras ficam com você.
 
-Na correção, cada questão recebe os pontos (ou os pontos de cada critério da rubrica) e um comentário para o aluno; a prova toda pode ter um comentário geral. Concluir a correção pede os pontos de todas as questões que esperam você e recalcula a nota. Para mudar os pontos de uma questão que o sistema corrigiu pelo gabarito, informe o motivo; para mudar uma nota já liberada, também. A tela **Corrigir** chega numa próxima versão do IClass.
+Para corrigir, toque em **Corrigir provas** no aviso de **Resultados** (ou em **Corrigir**, na tentativa do aluno). A tela mostra uma entrega por vez, da mais antiga para a mais nova, com **Anterior** e **Próxima**; escolha a prova no filtro para corrigir uma só. Marque **Corrigir sem ver o nome** para ver "Aluno 1", "Aluno 2"... no lugar dos nomes (a escolha fica guardada neste navegador).
+
+Em cada questão aparecem a resposta do aluno, a resposta esperada e a explicação. Lance os pontos (aceita vírgula: 1,5) ou os pontos de cada critério da rubrica, que somam os pontos da questão, e escreva, se quiser, um comentário para o aluno. No fim, há o comentário geral da prova. **Salvar** guarda sem concluir; **Concluir correção** pede os pontos de todas as questões que esperam você, recalcula a nota e mostra a nota antes e depois, com **Corrigir a próxima**. A nota só aparece para o aluno depois que você a liberar em Resultados.
+
+Para mudar os pontos de uma questão que o sistema corrigiu pelo gabarito, toque em **Ajustar pontos** e informe o motivo; para mudar uma nota já liberada, o IClass também pede o motivo. Se outra pessoa (ou outra aba sua) gravou a mesma correção enquanto você corrigia, o IClass avisa e oferece **Recarregar**: nada do que você digitou é gravado por cima. A Coordenação vê a correção, sem os campos.
 
 Se você apagar os pontos de uma questão que espera você depois de concluir, a prova volta a **Aguardando correção** até você concluir de novo.
 
-O comentário geral (com a nota liberada), a explicação e o comentário de cada questão (com o gabarito liberado) aparecem para o aluno a partir da próxima versão, junto com a tela **Corrigir**. A resposta esperada da dissertativa nunca vai para o aluno.
+O comentário geral e os pontos de cada questão aparecem para o aluno com a nota liberada; a explicação, o comentário de cada questão e os pontos de cada critério da rubrica, com o gabarito liberado. A resposta esperada da dissertativa nunca vai para o aluno.
 
 Para anular a tentativa de um aluno por cola, use **Anular tentativa** no Monitor (veja Monitor). Para corrigir uma resposta certa que estava errada no gabarito, use **Corrigir gabarito** em Provas, na aplicação anterior. Se a preparação da prova foi excluída de **Aplicações anteriores**, a aplicação aparece em **Aplicações online sem preparação salva**, com o mesmo botão.
 

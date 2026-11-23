@@ -84,8 +84,14 @@ function columnTitle(column) {
 // Nota de uma prova no quadro, com a cor da faixa pela média mínima do curso
 // (gradeTone/gradeBand, a mesma regra do servidor). Coluna fora da média (sem etapa, "Não
 // conta" ou arquivada) fica sem cor.
+// Prova que espera a correção do professor (aguardandoCorrecao, sem nota): "aguardando
+// correção" no lugar do traço (A18). Antes a célula ficava com o traço, como se o aluno
+// não tivesse feito a prova.
 function Cell({ cell, criterio, muted = false }) {
   const tone = cell && !muted ? gradeTone(cell.score == null ? null : cell.score / 10, criterio) : null
+  if (cell?.aguardandoCorrecao && cell.score == null) {
+    return <span className="whitespace-nowrap text-xs font-medium text-warning" title="A nota sai quando o professor concluir a correção">aguardando correção</span>
+  }
   return (
     <>
       {cell ? <span className={tone ? TONE_TEXT[tone] : undefined}>{fmtGrade(cell.score)}</span> : <span className="text-subtle">—</span>}

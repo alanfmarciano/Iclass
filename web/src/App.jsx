@@ -22,6 +22,7 @@ const DashboardPage = lazyPage(() => import('./features/admin/DashboardPage'))
 const ProvasPage = lazyPage(() => import('./features/admin/ProvasPage'))
 const MonitorPage = lazyPage(() => import('./features/admin/MonitorPage'))
 const ResultadosPage = lazyPage(() => import('./features/admin/ResultadosPage'))
+const CorrecaoPage = lazyPage(() => import('./features/admin/CorrecaoPage'))
 // Tarefas (fase 3, C7 / P1-e): a lista e o formulário (nova e editar); C8 / P1-f: o
 // detalhe com as entregas da turma e a correção.
 const TarefasPage = lazyPage(() => import('./features/admin/TarefasPage'))
@@ -133,6 +134,7 @@ export default function App() {
         <Route path="tarefas/:id" element={<RequireAdminPath path="/tarefas"><TarefaDetalhePage /></RequireAdminPath>} />
         <Route path="tarefas/:id/editar" element={<RequireAdminPath path="/tarefas"><TarefaForm /></RequireAdminPath>} />
         <Route path="resultados" element={<RequireAdminPath path="/resultados"><ResultadosPage /></RequireAdminPath>} />
+        <Route path="resultados/correcao" element={<RequireAdminPath path="/resultados"><CorrecaoPage /></RequireAdminPath>} />
         <Route path="resultados/aluno/:studentId" element={<RequireAdminPath path="/resultados"><ResultadosPage /></RequireAdminPath>} />
         <Route path="resultados/aluno/:studentId/prova/:submissionId" element={<RequireAdminPath path="/resultados"><ResultadosPage /></RequireAdminPath>} />
         <Route path="materiais" element={<RequireAdminPath path="/materiais"><MateriaisPage /></RequireAdminPath>} />

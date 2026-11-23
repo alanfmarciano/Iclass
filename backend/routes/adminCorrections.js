@@ -1,8 +1,8 @@
 // Correção do professor nas entregas de prova (fase 3, P3-S4a: AVA-07; D7 e D8 do
 // desenho do P3; contratos C1 e C5). Montado em admin.js logo depois de
-// createAdminAcademicRouter (ordem_no_createApp do plano). A tela "Corrigir" (P3-S4b)
-// chega depois; estas rotas já valem para ela, para o lançamento da prova impressa e para
-// os testes.
+// createAdminAcademicRouter (ordem_no_createApp do plano). Servem à tela "Corrigir"
+// (P3-S4b, A18: web/src/features/admin/CorrecaoPage.jsx, /resultados/correcao), ao
+// lançamento da prova impressa e aos testes.
 //
 // - GET  /api/admin/corrections?courseId=&studentClass=&applicationId=&examKey=
 //   a fila "Aguardando correção": entregas do escopo da conta com correção pendente (nem
@@ -150,7 +150,8 @@ function queueItems(ctx) {
         detalhe: exams.size === 1 ? `em "${title}" · Resultados` : `em ${exams.size} provas · Resultados`,
         count: pending.length,
         tone: 'warning',
-        href: '/resultados',
+        // A tela Corrigir (A18), com a prova da fila quando é uma só.
+        href: exams.size === 1 ? `/resultados/correcao?examKey=${encodeURIComponent([...exams][0])}` : '/resultados/correcao',
         permissao: 'page.results',
         // Corrigir é ação: a Coordenação (Resultados só para ver) não recebe o item.
         somenteQuemAltera: true,
