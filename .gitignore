@@ -33,3 +33,11 @@ coverage/
 web/coverage/
 test-results/
 playwright-report/
+
+# Pacote de release (scripts/release/montar-pacote.js, fase 3 A15): ZIPs, cache dos
+# binários baixados e os arquivos gerados que só existem dentro do pacote
+pacotes/
+scripts/release/.cache/
+/THIRD_PARTY_NOTICES.txt
+/release-manifest.json
+/iclass-pastas.json

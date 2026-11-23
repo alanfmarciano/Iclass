@@ -1,0 +1,50 @@
+{
+  "comentario": "Binários que o pacote de release baixa (fase 3, A15 / P6-S3, D8 e contrato C3 do P6). Os SHA-256 ficam fixados aqui: se o arquivo baixado ou o binário extraído não bater, o montar-pacote.js para. O SHA-256 do Node também precisa bater com o SHASUMS256.txt do nodejs.org. Para trocar de versão: baixar, conferir e atualizar os números deste arquivo no mesmo commit.",
+  "node": {
+    "versao": "22.23.5",
+    "shasums": "https://nodejs.org/dist/v22.23.5/SHASUMS256.txt",
+    "plataformas": {
+      "win32-x64": {
+        "url": "https://nodejs.org/dist/v22.23.5/node-v22.23.5-win-x64.zip",
+        "arquivo": "node-v22.23.5-win-x64.zip",
+        "sha256": "4a191082e9706866830379d577d2cc8a50c776fcd9436a8d061b063ed0d9a0e3",
+        "executavel": "node-v22.23.5-win-x64/node.exe",
+        "executavelSha256": "247e9693d316da9857e44990e5e11709f596f18112251b8026ec6eed80bdf38a",
+        "licenca": "node-v22.23.5-win-x64/LICENSE",
+        "destino": "node/node.exe"
+      },
+      "linux-x64": {
+        "url": "https://nodejs.org/dist/v22.23.5/node-v22.23.5-linux-x64.tar.gz",
+        "arquivo": "node-v22.23.5-linux-x64.tar.gz",
+        "sha256": "c54118104acc524633b5abe106bbf44a53126ec8b4e5fa105cb92b5d7de8a1a1",
+        "executavel": "node-v22.23.5-linux-x64/bin/node",
+        "executavelSha256": "2f822d544601dfff107f57d945b649d15c5bf6302595735a6bd9cdc7ee9669bd",
+        "licenca": "node-v22.23.5-linux-x64/LICENSE",
+        "destino": "node/node"
+      }
+    }
+  },
+  "addons": {
+    "sqlite3": {
+      "versao": "6.0.1",
+      "napi": 6,
+      "binario": "node_modules/sqlite3/build/Release/node_sqlite3.node",
+      "plataformas": {
+        "win32-x64": {
+          "url": "https://github.com/TryGhost/node-sqlite3/releases/download/v6.0.1/sqlite3-v6.0.1-napi-v6-win32-x64.tar.gz",
+          "arquivo": "sqlite3-v6.0.1-napi-v6-win32-x64.tar.gz",
+          "sha256": "e0bbbb6e43b45378e6d6e2c5cc096e61e4c8932dbc2d2c9c08b8e3aaa80c9adf",
+          "entrada": "build/Release/node_sqlite3.node",
+          "binarioSha256": "5e1d1275e126c3fc584bcf5752fbf747bff89454bfcf8bc76c982b24e7815057"
+        },
+        "linux-x64": {
+          "url": "https://github.com/TryGhost/node-sqlite3/releases/download/v6.0.1/sqlite3-v6.0.1-napi-v6-linux-x64.tar.gz",
+          "arquivo": "sqlite3-v6.0.1-napi-v6-linux-x64.tar.gz",
+          "sha256": "3b2aba05ec737aeed4d686b7309df57b1c93a217c8d7f3a09aa952a87db071b6",
+          "entrada": "build/Release/node_sqlite3.node",
+          "binarioSha256": "92319a6b5f025ed2003e4865889137714417b8a7c463ee475e88c1f3340359ce"
+        }
+      }
+    }
+  }
+}

@@ -12,13 +12,14 @@ Navegador (React SPA)  ──HTTP /api──►  Express (Node)  ──►  SQLi
 - **Frontend** (`web/`): apenas apresentação e chamadas de API. Não decide regra de negócio.
 - **Backend** (`backend/`): **fonte de verdade** (server-authoritative). Autenticação, liberação de conteúdo, correção de prova e sanitização de gabarito ficam aqui.
 - **Local-first**: tudo roda na máquina do professor; alunos acessam pela rede local. O mesmo processo Express serve a API e o build estático do React (`web/dist`).
+- **Pacote de release** (fase 3, A15): `scripts/release/montar-pacote.js` monta o ZIP do Windows com `backend/`, `web/dist/`, as dependências de produção, o binário do sqlite3 e o Node portátil, sem `web/src`. O servidor sabe em que modo está pelo `buildIntegrity.buildMode()` (`desenvolvimento` com `web/src`, `pacote` com o `release-manifest.json`) e, no pacote, confere o `web/dist` pelo SHA-256 do manifesto no boot. Detalhes em OPERACAO_SEGURANCA_TESTES.md.
 
 ## 2. Camadas do backend
 
 ```
 backend/
 ├── server.js          # bootstrap: CORS, static, monta routers, error handler, listen
-├── runtimePaths.js    # resolve DATA_DIR, CONTENT_DIR, ARCHIVE_DIR (configuráveis por env)
+├── runtimePaths.js    # resolve DATA_DIR, CONTENT_DIR, ARCHIVE_DIR (variável de ambiente > iclass-pastas.json do pacote > padrão)
 ├── database.js        # SQLite key-value + espelho em memória (db.memory) + db.save() + registro COLLECTION_TABLES
 ├── middlewares.js     # validateAdmin, validateStudentSession, sanitização, RBAC
 ├── routes/            # um router por área funcional

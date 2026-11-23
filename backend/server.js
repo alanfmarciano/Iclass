@@ -733,6 +733,25 @@ function describeBootFailure(cause, err, { port = PORT } = {}) {
     const code = err && typeof err === 'object' ? String(err.code || '') : '';
     const detail = err && typeof err === 'object' && err.message ? err.message : String(err);
     if (cause === 'build') {
+        // Pacote de release (A15, D14 do P6): o web/dist não bate com o release-manifest.json.
+        // Compilar não resolve (o pacote nem tem web/src): o caminho é reinstalar a versão.
+        if (code === 'ICLASS_BUILD_TAMPERED') {
+            const details = err && err.details && typeof err.details === 'object' ? err.details : {};
+            const listed = [
+                ...(Array.isArray(details.faltando) ? details.faltando.map(file => `${file} (faltando)`) : []),
+                ...(Array.isArray(details.alterados) ? details.alterados.map(file => `${file} (alterado)`) : []),
+            ];
+            const more = listed.length > 3 ? ` e mais ${listed.length - 3}` : '';
+            const files = listed.length ? `\n   Arquivos: ${listed.slice(0, 3).join(', ')}${more}.` : '';
+            return { exitCode: EXIT_CODES.CONFIG, kind: 'boot-build', message: `⛔ ${detail}${files}` };
+        }
+        if (code === 'ICLASS_BUILD_NO_SOURCE') {
+            return {
+                exitCode: EXIT_CODES.CONFIG,
+                kind: 'boot-build',
+                message: '⛔ Esta pasta do IClass está incompleta: não tem o código da interface (web/src) nem o release-manifest.json do pacote. Reinstale o IClass pelo pacote ou baixe o código de novo.',
+            };
+        }
         const what = code === 'ICLASS_BUILD_OUTDATED'
             ? 'O site do IClass está desatualizado: o código foi atualizado e o site não foi compilado de novo.'
             : 'O site do IClass não está compilado (falta a pasta web/dist ou ela está incompleta).';

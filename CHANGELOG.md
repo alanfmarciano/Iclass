@@ -123,6 +123,12 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 - Agora há Ajuda dentro do IClass: item "Ajuda" no menu do professor e do aluno, com o manual separado por tela e busca sem acento. Em Provas, Monitor e Sistema, o botão "?" ao lado do título abre a parte da ajuda sobre aquela tela.
 - No login, o link "Problemas para entrar?" abre a ajuda do aluno sem precisar entrar: como achar o endereço da sala, esqueci a senha, troca de senha e o que fazer se a conexão cair durante a prova.
 
+### Pacote pronto para instalar
+- O IClass agora sai num pacote pronto para o Windows (IClass-<versão>-windows-x64.zip, uns 45 MB): já vem com o Node, com o banco de dados e com a interface compilada. O computador da escola não precisa de internet, de instalar o Node nem de compilar nada. O instalador que usa esse pacote chega numa próxima etapa; quem usa a pasta do git (como hoje) continua igual.
+- O pacote não leva o código-fonte da interface. Ao ligar, o IClass confere os próprios arquivos e, se algum sumiu ou foi mexido, não abre e diz "Os arquivos da interface estão incompletos ou foram alterados. Reinstale esta versão do IClass."
+- Junto vão a licença de uso do IClass (LICENSE.txt, ainda um modelo), os avisos das bibliotecas de código aberto que ele usa (THIRD_PARTY_NOTICES.txt) e o "Guia de instalação.html", que abre no navegador.
+- Os dados (banco, backups, apostilas e cursos arquivados) ficam numa pasta separada do programa, indicada no arquivo iclass-pastas.json do pacote: trocar a versão nunca mexe neles.
+
 ### Minha conta e papéis no painel
 - Novo: Minha conta. O avatar no topo do painel mostra as iniciais do seu nome e abre um menu com Minha conta e Sair. Em Minha conta você corrige o seu nome, troca a senha (com a senha atual) e usa "Sair dos outros aparelhos" para fechar a conta esquecida aberta em outro computador. (UXI-07)
 - O administrador agora redefine a senha de outra conta do painel em Contas: o IClass gera uma senha temporária (mostrada uma vez, com Copiar) ou o administrador digita uma. A pessoa sai dos aparelhos onde estava conectada e escolhe uma senha nova no próximo acesso. (UXI-07)

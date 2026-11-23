@@ -29,7 +29,11 @@
     "test:backend": "node --test test/backend/*.test.js",
     "test:web": "npm --prefix web run test",
     "test:e2e": "playwright test",
-    "check": "npm run test:full"
+    "check": "npm run test:full",
+    "licencas": "node scripts/release/licencas.js",
+    "release": "node scripts/release/montar-pacote.js",
+    "release:linux": "node scripts/release/montar-pacote.js --plataforma linux-x64",
+    "test:release": "node scripts/release/montar-pacote.js --so-baixar --plataforma linux-x64 && node --test test/release/*.test.js"
   },
   "dependencies": {
     "adm-zip": "^0.6.1",
