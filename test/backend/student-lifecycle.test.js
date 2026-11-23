@@ -502,7 +502,28 @@ test('scrubReason tira e-mail, nome e matrícula sem pegar pedaço de palavra', 
 test('scrubReason sem nome, e-mail nem matrícula no texto devolve o texto sem mudar a forma', () => {
     const text = 'Lista:\n    1.  primeiro  item\n    2.  segundo ( ) ok ! ';
     assert.equal(scrubReason(text, { emails: ['ana@x.local'], names: ['Ana Souza'], matriculas: ['MAT-1'] }), text);
-    assert.equal(scrubReason('Falei com Ana Souza ( )', { names: ['Ana Souza'] }), 'Falei com aluno');
+    // A arrumação vale só em volta da troca (J2, pendência do C13): o parêntese que a troca
+    // esvaziou sai; o "( )" que o texto já tinha e os espaços duplos longe da troca ficam.
+    assert.equal(scrubReason('Falei com Ana Souza (MAT-1)', { names: ['Ana Souza'], matriculas: ['MAT-1'] }), 'Falei com aluno');
+    assert.equal(scrubReason('Falei com Ana Souza  ( )  ok', { names: ['Ana Souza'] }), 'Falei com aluno ( )  ok');
+});
+
+test('scrubReason tira o nome e a matrícula colados a pontuação ("-Bruno", "@Ana", "...Ana", "Nota_Ana_final", "mat.MAT-a1") e arruma só em volta (J2, pendência do C13)', () => {
+    const opts = { emails: ['ana@x.local'], names: ['Ana Conceição Souza-Lima', 'Ana', 'Conceição', 'Souza-Lima', 'Souza', 'Lima', 'Bruno'], matriculas: ['MAT-a1'], replacement: 'aluno', foldAccents: true };
+    const tabela = [
+        ['Presentes:\n-Ana Conceição\n-Bruno', 'Presentes:\n-aluno aluno\n-aluno'],
+        ['Bom dia...Ana, tudo bem?', 'Bom dia...aluno, tudo bem?'],
+        ['Falei com @Ana hoje.', 'Falei com @aluno hoje.'],
+        ['Nota_Ana_final', 'Nota_aluno_final'],
+        ['Matrícula MAT-a1 e mat.MAT-a1', 'Matrícula e mat.'],
+        ['Conceic\u0327a\u0303o decomposto.', 'aluno decomposto.'],
+        ['Oi Ana!\n    1.  item  com  espaço', 'Oi aluno!\n    1.  item  com  espaço'],
+        ['Falei da Ana hoje', 'Falei de aluno hoje'],
+        ['ana@x.local e ANA@X.LOCAL', 'aluno e aluno'],
+        // O e-mail só casa inteiro; outro nome com as mesmas letras dentro fica.
+        ['Joana e Mariana vieram', 'Joana e Mariana vieram'],
+    ];
+    for (const [entrada, saida] of tabela) assert.equal(scrubReason(entrada, opts), saida, JSON.stringify(entrada));
 });
 
 // Decisões §12 (sobras do H7c). Antes: a anonimização apagava o antes/depois de toda

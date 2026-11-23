@@ -611,6 +611,8 @@ test('[UC-MENSAGEM-005] troca de e-mail renomeia o aluno da conversa e o autor d
         ['Estágio', CLASS, 'Prof. Alan', 'Professor', 'Vamos ver.'],
     ]);
     assert.equal(typeof mine.body.conversas[0].enviadaEm, 'number');
+    // O campo "curso" é o nome do curso, não o código (J2, pendência leve do C13).
+    assert.equal(mine.body.conversas[0].curso, 'Curso das conversas');
     assert.equal(mine.body.extraSections.find(item => item.key === 'conversas').label, 'Conversas com professores');
     assert.equal(JSON.stringify(mine.body.conversas).includes(PROF), false, 'sem o e-mail do professor na versão do aluno');
     const admin = await as('admin', request(app).get(`/api/admin/lgpd/students/export?email=${encodeURIComponent('bia.nova@conversas.local')}&finalidade=baixar`));

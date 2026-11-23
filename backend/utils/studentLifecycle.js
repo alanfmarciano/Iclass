@@ -165,17 +165,76 @@ function accentInsensitivePattern(value) {
 // também escrito com outro acento ou sem acento (mensagens digitadas à mão). Texto sem
 // nenhum termo volta como veio: a arrumação de espaços e parênteses vazios só vale para o
 // que a troca deixou (a mensagem do professor que não cita o aluno não muda de forma).
+// Bordas: o e-mail só casa inteiro (não dentro de outro e-mail, como "x.ana@escola" para
+// "ana@escola"); o nome e a matrícula casam também colados a pontuação: "-Bruno" (item de
+// lista), "@Ana", "...Ana", "Nota_Ana_final", "mat.MAT-a1" (J2, pendência do C13: antes,
+// '-', '.', '_' e '@' antes do termo o deixavam no texto). A arrumação (parênteses vazios,
+// espaço sobrando, "da" antes do substituto) só mexe em volta do que foi trocado: o resto
+// da mensagem fica como o professor escreveu (recuo, espaços duplos).
+const SCRUB_OPEN = '\u0001';
+const SCRUB_CLOSE = '\u0002';
 function scrubReason(text, { emails = [], names = [], matriculas = [], replacement = 'aluno', foldAccents = false } = {}) {
     const original = String(text || '');
+    if (original.includes(SCRUB_OPEN) || original.includes(SCRUB_CLOSE)) return legacyScrubReason(original, { emails, names, matriculas, replacement, foldAccents });
     let out = original;
-    const edge = (value, to, pattern = escapeRegExp(value)) => {
-        out = out.replace(new RegExp(`(^|[^\\p{L}\\p{N}@._-])${pattern}(?=$|[^\\p{L}\\p{N}@_-]|\\.(?![\\p{L}\\p{N}]))`, 'giu'), `$1${to}`);
+    const mark = to => `${SCRUB_OPEN}${to}${SCRUB_CLOSE}`;
+    const strict = (value, to) => {
+        out = out.replace(new RegExp(`(^|[^\\p{L}\\p{N}@._-])${escapeRegExp(value)}(?=$|[^\\p{L}\\p{N}@_-]|\\.(?![\\p{L}\\p{N}]))`, 'giu'), `$1${mark(to)}`);
     };
-    emails.filter(Boolean).forEach(email => edge(email, replacement));
+    const loose = (to, pattern) => {
+        out = out.replace(new RegExp(`(^|[^\\p{L}\\p{M}\\p{N}])${pattern}(?=$|[^\\p{L}\\p{M}\\p{N}])`, 'giu'), `$1${mark(to)}`);
+    };
+    emails.filter(Boolean).forEach(email => strict(email, replacement));
     names.map(name => String(name || '').trim()).filter(name => name.length >= 3)
         .sort((a, b) => b.length - a.length)
-        .forEach(name => edge(name, replacement, foldAccents ? accentInsensitivePattern(name) : undefined));
-    matriculas.map(value => String(value || '').trim()).filter(value => value.length >= 3).forEach(value => edge(value, ''));
+        .forEach(name => loose(replacement, foldAccents ? accentInsensitivePattern(name) : escapeRegExp(name)));
+    matriculas.map(value => String(value || '').trim()).filter(value => value.length >= 3).forEach(value => loose('', escapeRegExp(value)));
+    if (out === original) return original;
+    return tidyAroundScrubbed(out, replacement, original);
+}
+
+// A arrumação de tidyScrubbedText, só em volta das trocas marcadas.
+const CONTRACTIONS = { da: 'de', do: 'de', das: 'de', dos: 'de', na: 'em', no: 'em', nas: 'em', nos: 'em', pela: 'por', pelo: 'por', pelas: 'por', pelos: 'por' };
+function tidyAroundScrubbed(marked, replacement, original) {
+    const O = SCRUB_OPEN;
+    const C = SCRUB_CLOSE;
+    let out = marked;
+    if (String(replacement || '').trim()) {
+        out = out.replace(new RegExp(`(^|[^\\p{L}\\p{N}])(da|do|das|dos|na|no|nas|nos|pela|pelo|pelas|pelos)[ \\t]+(?=${O})`, 'giu'), (match, before, word) => {
+            const target = CONTRACTIONS[word.toLowerCase()];
+            const cased = word[0] === word[0].toUpperCase() ? target[0].toUpperCase() + target.slice(1) : target;
+            return `${before}${cased} `;
+        });
+    }
+    out = out
+        // Parênteses ou colchetes que ficaram vazios com a troca.
+        .replace(new RegExp(`\\([ \\t]*${O}${C}[ \\t]*\\)|\\[[ \\t]*${O}${C}[ \\t]*\\]`, 'g'), `${O}${C}`)
+        // Espaço dos dois lados do que saiu (matrícula): fica um.
+        .replace(new RegExp(`[ \\t]+${O}${C}[ \\t]+`, 'g'), ' ')
+        // Espaço antes do que saiu e pontuação depois: some o espaço.
+        .replace(new RegExp(`[ \\t]+${O}${C}(?=[,.;:!?)\\]])`, 'g'), '')
+        // Espaços repetidos colados à troca.
+        .replace(new RegExp(`[ \\t]{2,}(?=${O})`, 'g'), ' ')
+        .replace(new RegExp(`(${C})[ \\t]{2,}`, 'g'), '$1 ')
+        .replace(new RegExp(`${O}|${C}`, 'g'), '');
+    // A troca no começo ou no fim não deixa espaço sobrando ali.
+    if (!/^\s/.test(original)) out = out.replace(/^[ \t]+/, '');
+    if (!/\s$/.test(original)) out = out.replace(/[ \t]+$/, '');
+    return out;
+}
+
+// Texto que já traz os caracteres de controle usados como marca (nunca digitados): a troca
+// de antes, com a arrumação do texto inteiro.
+function legacyScrubReason(original, { emails, names, matriculas, replacement, foldAccents }) {
+    let out = original;
+    const edge = (to, pattern) => {
+        out = out.replace(new RegExp(`(^|[^\\p{L}\\p{M}\\p{N}])${pattern}(?=$|[^\\p{L}\\p{M}\\p{N}])`, 'giu'), `$1${to}`);
+    };
+    emails.filter(Boolean).forEach(email => edge(replacement, escapeRegExp(email)));
+    names.map(name => String(name || '').trim()).filter(name => name.length >= 3)
+        .sort((a, b) => b.length - a.length)
+        .forEach(name => edge(replacement, foldAccents ? accentInsensitivePattern(name) : escapeRegExp(name)));
+    matriculas.map(value => String(value || '').trim()).filter(value => value.length >= 3).forEach(value => edge('', escapeRegExp(value)));
     return out === original ? original : tidyScrubbedText(out, [replacement]);
 }
 

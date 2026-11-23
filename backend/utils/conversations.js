@@ -776,8 +776,7 @@ function foldWord(value) {
 // O nome completo, o nome social e cada parte deles com 3 letras ou mais (menos as
 // partículas): na conversa o professor chama o aluno pelo primeiro nome ("Oi Ana") ou só
 // pelo sobrenome. O sobrenome com hífen entra inteiro ("Souza-Lima") e também por partes
-// ("Souza", "Lima"): a borda do scrubReason não aceita hífen colado no termo, então só as
-// partes não tiram o "Souza-Lima" do texto. Palavra comum igual a uma parte do nome também
+// ("Souza", "Lima"). Palavra comum igual a uma parte do nome também
 // sai (preferimos tirar a mais do que deixar o nome).
 function nameTerms(values) {
     const out = new Set();
@@ -833,7 +832,7 @@ function exportRows(memory, aluno, audience) {
             messagesOf(memory, read.id).map(readMessage).forEach(msg => {
                 const row = {
                     conversa: read.assunto || '(sem assunto)',
-                    curso: read.courseId,
+                    curso: courseName(memory, read.courseId),
                     turma: read.studentClass,
                     professor: nome,
                     situacao: read.status === 'aberta' ? 'Aberta' : 'Encerrada',
