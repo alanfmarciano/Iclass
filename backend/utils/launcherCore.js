@@ -546,20 +546,41 @@ function createLauncher(options = {}) {
     // Onde está o servidor desta pasta de dados e em que estado:
     // 'ligado' | 'iniciando' | 'desligado' | 'sem-resposta' | 'sem-controle'.
     async function locate(instance = realInstance) {
+        const found = await locateRaw(instance);
+        return found.staleInfo ? { ...found, stale: true } : found;
+    }
+
+    async function locateRaw(instance) {
         const token = readControlToken(instance.dataDir);
-        const info = readServerInfo(instance.dataDir);
+        let info = readServerInfo(instance.dataDir);
         const supervisorPid = readSupervisorPid(instance.dataDir);
         const supervisorAlive = supervisorPid ? runningNode(supervisorPid) : false;
-        const base = { token, info, port: info ? info.porta : instance.port, serverPid: info ? info.pid : null, supervisorPid: supervisorAlive ? supervisorPid : null, status: null };
+        let staleInfo = false;
         if (info && !runningNode(info.pid)) {
             // Arquivo de um processo que já terminou (queda, computador desligado) ou cujo
-            // número hoje é de outro programa: ignorado.
-            if (supervisorAlive) return { ...base, state: 'iniciando', serverPid: null, stale: true };
-            return { ...base, state: 'desligado', stale: true, serverPid: null };
+            // número hoje é de outro programa: ignorado. Com o supervisor vivo, é um reinício.
+            if (supervisorAlive) return { token, info, port: info.porta, serverPid: null, supervisorPid, status: null, state: 'iniciando', stale: true };
+            // Sem ele, a conferência segue sem o arquivo (J2, pendência do A16): um servidor de
+            // uma versão anterior pode estar ligado nesta pasta (pelo control.token e pelo
+            // /api/health), ou outro programa na porta. Antes, voltava "desligado" sem olhar,
+            // e "parar", "backup" e "senha" agiam como se nada estivesse no ar.
+            info = null;
+            staleInfo = true;
         }
+        const base = { token, info, port: info ? info.porta : instance.port, serverPid: info ? info.pid : null, supervisorPid: supervisorAlive ? supervisorPid : null, status: null, ...(staleInfo ? { staleInfo: true } : {}) };
         if (!info && !token) {
             // Sem servidor no ar, mas com o supervisor vivo: entre um reinício e outro.
             if (supervisorAlive) return { ...base, state: 'iniciando' };
+            if (staleInfo) {
+                // Sem token, nada nosso responde com controle: se algo responde na porta, é
+                // outro programa (ou um servidor antigo que não deixou o token).
+                const health = await getHealth(base.port);
+                if (health.status) {
+                    const legacy = legacyServerIsOurs(instance, health, null);
+                    if (legacy.ours) return { ...base, legacy: true, serverPid: legacy.pid || null, state: health.status === 200 ? 'ligado' : 'iniciando' };
+                    return { ...base, state: 'desligado', portBusy: true };
+                }
+            }
             return { ...base, state: 'desligado' };
         }
         if (!token) return { ...base, state: 'sem-controle' };
@@ -978,7 +999,7 @@ function createLauncher(options = {}) {
             if (refuseWithExams(found, 'Redefinir a senha', instance)) return { code: EXIT.ERROR, refused: true };
             const ok = await stopForMaintenance(found, instance, { sim, pergunta: `Para redefinir a senha, ${nameOf(instance)} fica desligad${instance.demo ? 'a' : 'o'} por alguns segundos e liga de novo. Continuar?` });
             if (!ok) return { code: EXIT.ERROR, cancelled: true };
-        }
+        } else if (refusePortBusy(found, 'a redefinição de senha pela linha de comando', instance)) return { code: EXIT.CONFIG, portBusy: true };
         const code = await run({ nodePath, script: scripts.resetPassword, args: account ? [account] : [], cwd: projectRoot, env: instanceEnv({ ...instance, port: found.port }) });
         if (code !== EXIT.OK) out('Não foi possível redefinir a senha. Veja a mensagem acima.');
         if (wasRunning) {

@@ -464,7 +464,10 @@ test('[UC-LAUNCHER-002] token e servidor.json de um processo que já terminou s�
     assert.equal(stopped.already, true);
     assert.match(world.text(), /já está desligado/);
     assert.deepEqual(world.kills, []);
-    assert.equal(world.requests.length, 0, 'nem pergunta à porta: o processo do arquivo não existe');
+    // Desde a J2 (pendência do A16) o arquivo velho não encerra a conferência: o launcher
+    // pergunta à porta (um servidor de versão anterior pode estar ligado nesta pasta), e
+    // nada responde.
+    assert.deepEqual(world.requests.map(item => `${item.method} ${item.pathname}`), ['GET /api/system/control/status']);
     const state = await world.launcher.locate();
     assert.equal(state.state, 'desligado');
     assert.equal(state.stale, true);
@@ -478,6 +481,50 @@ test('[UC-LAUNCHER-002] token e servidor.json de um processo que já terminou s�
     const started = await world.launcher.iniciar({ abrirNavegador: false });
     assert.equal(started.code, 0, world.text());
     assert.equal(world.spawns.length, 1);
+});
+
+test('[UC-LAUNCHER-002] servidor.json velho com um servidor de versão anterior ligado na mesma pasta, ou outro programa na porta: o launcher vê (J2, pendência do A16)', async () => {
+    // O servidor novo caiu (servidor.json de um processo morto) e o 281029f foi ligado na
+    // mesma pasta: o /api/health traz o instanceId do heartbeat dele.
+    const world = createWorld({ prefix: 'velho-com-antigo-', answers: ['n'] });
+    writeRuntime(world.dataDir, 'servidor.json', { formato: 1, pid: 31337, porta: world.port, instanceId: 'novo-que-caiu' });
+    writeRuntime(world.dataDir, 'control.token', TOKEN);
+    writeRuntime(world.dataDir, 'heartbeat.json', { at: Date.now(), clean: false, instanceId: 'antigo-vivo', pid: 6400 });
+    world.alive.add(6400);
+    world.handlers['GET /api/system/control/status'] = () => ({ status: 404, body: null });
+    world.handlers['GET /api/health'] = () => ({ status: 200, body: { status: 'ok', instanceId: 'antigo-vivo', startedAt: new Date(Date.now() - 3600000).toISOString() } });
+    world.handlers['POST /api/system/control'] = () => { throw new Error('não devia desligar'); };
+    const found = await world.launcher.locate();
+    assert.equal(found.state, 'ligado');
+    assert.equal(found.legacy, true);
+    assert.equal(found.stale, true, 'o servidor.json velho continua marcado');
+    assert.equal(found.serverPid, 6400);
+    const stop = await world.launcher.parar();
+    assert.equal(stop.already, undefined, 'não diz "já está desligado"');
+    assert.equal(stop.cancelled, true);
+    assert.match(world.text(), /servidor é de uma versão anterior do IClass/);
+
+    // O servidor antigo sem token (parado à força antes) e outro programa na porta: status
+    // mostra a porta ocupada, e backup e senha recusam sem mexer no banco.
+    const other = createWorld({ prefix: 'velho-com-outro-' });
+    writeRuntime(other.dataDir, 'servidor.json', { formato: 1, pid: 31338, porta: other.port, instanceId: 'novo-que-caiu' });
+    other.handlers['GET /api/health'] = () => ({ status: 200, body: { status: 'ok', instanceId: 'de-outro-programa' } });
+    const busy = await other.launcher.locate();
+    assert.deepEqual([busy.state, busy.portBusy, busy.stale], ['desligado', true, true]);
+    await other.launcher.status({ json: true });
+    assert.equal(JSON.parse(other.lines[other.lines.length - 1]).portaOcupada, true);
+    const backup = await other.launcher.backup({ sim: true });
+    assert.equal(backup.portBusy, true);
+    const senha = await other.launcher.senha({ sim: true, email: 'admin@x.local' });
+    assert.equal(senha.portBusy, true);
+    assert.equal(other.runs.length, 0, 'nem o backup nem a redefinição de senha rodaram');
+    assert.match(other.text(), /a redefinição de senha pela linha de comando só roda com essa porta livre/);
+
+    // Nada na porta: desligado, como antes.
+    const quiet = createWorld({ prefix: 'velho-sozinho-' });
+    writeRuntime(quiet.dataDir, 'servidor.json', { formato: 1, pid: 31339, porta: quiet.port, instanceId: 'novo-que-caiu' });
+    const off = await quiet.launcher.locate();
+    assert.deepEqual([off.state, off.portBusy, off.stale], ['desligado', undefined, true]);
 });
 
 test('[UC-LAUNCHER-002] prova em andamento: desligar e reiniciar perguntam dizendo qual prova; backup, restaurar e senha recusam', async () => {
