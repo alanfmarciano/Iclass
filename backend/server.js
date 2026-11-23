@@ -521,15 +521,8 @@ async function prepareServer() {
     function sweepSchedules() {
         try {
             const outcome = examSchedule.sweepSchedules(db.memory, { now: Date.now() });
-            if (outcome.opened.length) {
-                // Atrasada: o servidor estava desligado ou suspenso na hora de abrir (D26).
-                const late = outcome.opened.filter(item => Number(item.atrasoSegundos) * 1000 > examSchedule.LATE_OPEN_WARN_MS).length;
-                console.log('🗓️  Agendamento: ' + outcome.opened.length + ' prova(s) aberta(s) pelo agendamento'
-                    + (late ? ' (' + late + ' depois do horário, porque o servidor estava desligado; veja o "Precisa de você").' : ' no horário marcado.'));
-            }
-            if (outcome.finished.length) console.log('🗓️  Agendamento: ' + outcome.finished.length + ' prova(s) encerrada(s) no horário marcado (entregue o que estava salvo).');
-            if (outcome.missed.length) console.log('⚠️ Agendamento: ' + outcome.missed.length + ' prova(s) não abriram porque o servidor estava desligado em todo o horário marcado. Veja o "Precisa de você".');
-            if (outcome.released.length) console.log('🗓️  Agendamento: ' + outcome.released.length + ' material(is) liberado(s) no horário marcado.');
+            // A hora real do que saiu depois do horário (servidor desligado) vai no log (A18).
+            examSchedule.sweepLogLines(outcome).forEach(line => console.log(line));
             (outcome.errors || []).forEach(item => logCrash('agendamento da prova ' + item.applicationId, new Error(item.error || 'falha')));
             return outcome.changed;
         } catch (e) {

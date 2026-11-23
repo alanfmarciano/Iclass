@@ -697,3 +697,119 @@ test('[UC-PROVA-008] clonar o curso leva a liberação agendada com as chaves do
     assert.equal(clonedClass.releasedItems[`${apostilaKey}_CLONE1`], true);
     assert.equal(clonedClass.releasedItems[apostilaKey], undefined);
 });
+
+// ------------------------------------------------------------ pendências do A11 (A18)
+// (1) Começar antes da hora fala do horário marcado em todos os casos da agenda e da sala
+// de espera; (2) o log e o registro da volta do boot dizem a hora real do que saiu
+// atrasado; (3) o calendário do aluno nunca diz "Gabarito liberado" antes da liberação e
+// acha a unidade do gabarito da prova editada só para a turma.
+
+test('[UC-PROVA-008] A18: start-attempt sem a prova aberta fala do horário marcado, não do professor', async () => {
+    const now = Date.now();
+    // Agenda perdida: a prova não abriu e não vai abrir sozinha.
+    const missed = await preparedWithAgenda(now - 90 * MINUTE, now - 30 * MINUTE);
+    examSchedule.sweepSchedules(db.memory, { now });
+    const refused = await asStudent(request(app).post(`/api/student/exam-applications/${missed.id}/start-attempt`), ALICE).send({}).expect(409);
+    assert.equal(refused.body.scheduleMissed, true);
+    assert.match(refused.body.error, /horário marcado para esta prova .* passou sem ela abrir/);
+    assert.doesNotMatch(refused.body.error, /ainda não foi iniciada/);
+    // No horário, antes da volta de 10 s abrir a prova: "está abrindo", para tentar de novo.
+    const opening = { status: 'prepared', agenda: { abreEm: now - 5000, fechaEm: now + 60 * MINUTE } };
+    const soon = examSchedule.notStartedResponse(opening, { now });
+    assert.equal(soon.retryable, true);
+    assert.match(soon.error, /abrindo agora, no horário marcado/);
+    // Antes da hora (o texto do ce30b59 continua).
+    const early = examSchedule.notStartedResponse({ status: 'prepared', agenda: { abreEm: now + 30 * MINUTE, fechaEm: now + 90 * MINUTE } }, { now });
+    assert.equal(early.error, `A prova abre em ${examSchedule.formatWhen(now + 30 * MINUTE)}.`);
+    // Horário de fechar passou sem a volta marcar perdida (servidor acabou de ligar).
+    const passed = examSchedule.notStartedResponse({ status: 'prepared', agenda: { abreEm: now - 60 * MINUTE, fechaEm: now - MINUTE } }, { now });
+    assert.equal(passed.scheduleMissed, true);
+    // Sala de espera: diz a hora de começar.
+    const startsAt = now + 5 * MINUTE;
+    const waiting = examSchedule.notStartedResponse({ status: 'waiting', startsAt }, { now });
+    assert.equal(waiting.waitingRoom, true);
+    assert.match(waiting.error, new RegExp(`A prova começa (às|em .* às) ${schoolTime.localParts(startsAt).time}\\. Aguarde na sala de espera\\.`));
+    // Sem agenda, o texto de sempre.
+    assert.equal(examSchedule.notStartedResponse({ status: 'prepared' }, { now }).error, 'A prova ainda não foi iniciada pelo professor.');
+    // Pela rota, com a sala de espera da agenda.
+    const withRoom = await preparedWithAgenda(now - MINUTE, now + 60 * MINUTE, { waitingRoomMinutes: 5 });
+    examSchedule.sweepSchedules(db.memory, { now });
+    assert.equal(withRoom.status, 'waiting');
+    const room = await asStudent(request(app).post(`/api/student/exam-applications/${withRoom.id}/start-attempt`), ALICE).send({}).expect(409);
+    assert.equal(room.body.waitingRoom, true, JSON.stringify(room.body));
+    assert.doesNotMatch(room.body.error, /professor/);
+});
+
+test('[UC-PROVA-008] A18: liberação e encerramento atrasados no boot ficam com a hora real no log e no registro', async () => {
+    const now = Date.now();
+    const at = Math.ceil((now + 10 * MINUTE) / MINUTE) * MINUTE;
+    await admin(request(app).post('/api/admin/release-item')).send({ studentClass, courseId, itemKey: apostilaKey, releaseAtLocal: local(at) }).expect(200);
+    // Servidor desligado na hora: a primeira volta (a do boot) é 25 min depois.
+    const bootAt = at + 25 * MINUTE;
+    const result = examSchedule.sweepSchedules(db.memory, { now: bootAt });
+    assert.equal(result.released.length, 1);
+    assert.equal(result.released[0].atrasoSegundos, 25 * 60);
+    assert.equal(result.released[0].liberadoEm, bootAt);
+    const auto = audits('content_release_auto');
+    assert.equal(auto[0].details.atrasoSegundos, 25 * 60);
+    assert.equal(auto[0].details.liberadoEm, bootAt);
+    assert.equal(classOf(studentClass).releaseMeta[apostilaKey].at, new Date(bootAt).toISOString());
+    const lines = examSchedule.sweepLogLines(result);
+    assert.equal(lines.length, 1);
+    assert.doesNotMatch(lines[0], /no horário marcado/);
+    assert.match(lines[0], /depois do horário marcado, porque o servidor estava desligado/);
+    assert.ok(lines[0].includes(`marcado para ${examSchedule.formatWhen(at)}, saiu às ${schoolTime.localParts(bootAt).time}`), lines[0]);
+    // No horário (dentro de 1 min), a linha de sempre.
+    const onTime = examSchedule.sweepLogLines({ released: [{ itemKey: 'x', at, liberadoEm: at + 10000, atrasoSegundos: 10 }] });
+    assert.deepEqual(onTime, ['🗓️  Agendamento: 1 material(is) liberado(s) no horário marcado.']);
+
+    // Encerramento: o servidor ligou 15 min depois do horário de fechar.
+    const application = await preparedWithAgenda(now - 30 * MINUTE, now + 30 * MINUTE);
+    examSchedule.sweepSchedules(db.memory, { now: now - 29 * MINUTE });
+    assert.equal(application.status, 'running');
+    const closeBoot = now + 45 * MINUTE;
+    const closed = examSchedule.sweepSchedules(db.memory, { now: closeBoot });
+    assert.equal(closed.finished.length, 1);
+    assert.equal(closed.finished[0].atrasoSegundos, 15 * 60);
+    const closeLines = examSchedule.sweepLogLines(closed);
+    assert.equal(closeLines.length, 1);
+    assert.match(closeLines[0], /encerrada\(s\) agora, depois do horário de fechar/);
+    assert.doesNotMatch(closeLines[0], /no horário marcado/);
+    const finishedAudit = (db.memory.auditLogs || []).find(entry => entry.type === 'exam_application_auto_finished' && entry.applicationId === application.id)
+        || (db.memory.auditLogs || []).find(entry => entry.type === 'exam_application_auto_finished');
+    assert.ok(finishedAudit, 'auditoria do encerramento');
+    assert.equal(finishedAudit.details.atrasoSegundos, 15 * 60);
+    // O registro da aplicação diz quanto atrasou.
+    const trail = await admin(request(app).get(`/api/admin/exam-applications/${application.id}/audit`)).expect(200);
+    const row = (trail.body.entries || trail.body.events || trail.body.items || []).find(item => /encerrada pelo agendamento/i.test(item.title || ''));
+    assert.ok(row, JSON.stringify(trail.body).slice(0, 2000));
+    assert.match(row.detail, /15 min depois de .* \(o computador estava desligado\)/);
+});
+
+test('[UC-PROVA-008] A18: calendário do aluno com o gabarito agendado da prova editada só para a turma', async () => {
+    const now = Date.now();
+    const at = Math.ceil((now + 24 * 60 * MINUTE) / MINUTE) * MINUTE;
+    // Variante "só desta turma" da prova (forkEvaluation): Avaliacao_X__turma_<hash>.
+    const variantKey = `${examKey}__turma_0123456789`;
+    db.memory.evaluations[variantKey] = { ...db.memory.evaluations[examKey], key: variantKey, sourceEvaluationKey: examKey };
+    const cls = classOf(studentClass);
+    cls.contentOverrides = { materials: {}, evaluations: { [examKey]: { key: variantKey, createdAt: now } }, unitNames: {}, extraUnits: [], structure: null };
+    cls.releaseSchedule = { [`Gabarito_${variantKey}`]: { at, released: true, por: 'admin@agenda.local', criadoEm: now } };
+    const calendar = await asStudent(request(app).get('/api/student/calendar-events'), ALICE).query({ studentClass, courseId }).expect(200);
+    const release = calendar.body.find(event => String(event.id).startsWith('liberacao:'));
+    assert.ok(release, JSON.stringify(calendar.body));
+    assert.equal(release.title, 'Gabarito · Unidade 3');
+    // Nome da unidade trocado na turma vale.
+    cls.contentOverrides.unitNames = { [examKey]: 'Unidade 3 (turma)' };
+    assert.equal(examSchedule.releaseItemTitle(db.memory, cls, `Gabarito_${variantKey}`), 'Gabarito · Unidade 3 (turma)');
+    // Sem unidade, o título diz o que vai sair e nunca "liberado".
+    db.memory.courses[0].structure = [];
+    cls.contentOverrides.unitNames = {};
+    const orphan = examSchedule.releaseItemTitle(db.memory, cls, `Gabarito_${variantKey}`);
+    assert.equal(orphan, 'Gabarito da prova Prova agendada');
+    assert.doesNotMatch(orphan, /liberad/);
+    assert.doesNotMatch(examSchedule.releaseItemTitle(db.memory, cls, 'Apostila_Sem_Unidade'), /liberad/);
+    // Unidade extra da turma.
+    cls.contentOverrides.extraUnits = [{ moduleId: '0', unit: { name: 'Unidade extra', apostilaKey: 'Apostila_Extra' } }];
+    assert.equal(examSchedule.releaseItemTitle(db.memory, cls, 'Apostila_Extra'), 'Apostila · Unidade extra');
+});

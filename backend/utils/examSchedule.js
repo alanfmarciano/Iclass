@@ -149,6 +149,42 @@ function parseScheduleInput(input, { now = Date.now(), timezone } = {}) {
     return { ok: true, value: { abreEm, fechaEm } };
 }
 
+// Resposta do start-attempt quando a aplicação ainda não deixa começar (fase 3, A18:
+// pendência do A11). Antes, toda prova que não estava aberta dizia "A prova ainda não foi
+// iniciada pelo professor", também a agendada (que abre sozinha) e a da sala de espera
+// (que começa num horário). Devolve o corpo do 409 ({ error, notStarted, ... }):
+// - agendada antes da hora: "A prova abre em 20/11 às 08:00." (scheduled);
+// - agendada no horário, antes da varredura de 10 s abrir: "está abrindo agora" (retryable);
+// - agenda perdida (o computador estava desligado em todo o horário) ou horário de fechar
+//   já passado: fala do horário marcado e pede para chamar o professor (scheduleMissed);
+// - sala de espera: "A prova começa às 08:05." (waitingRoom);
+// - sem agenda: a mensagem de sempre, do professor.
+function notStartedResponse(application, { now = Date.now(), timezone } = {}) {
+    const agenda = application && application.status === 'prepared' ? applicationAgenda(application) : null;
+    if (agenda && !positive(agenda.abertaEm)) {
+        const abreEm = Number(agenda.abreEm);
+        const fechaEm = Number(agenda.fechaEm);
+        if (agenda.perdida === true || now >= fechaEm) {
+            return {
+                error: `O horário marcado para esta prova (${describeWindow(abreEm, fechaEm, timezone)}) passou sem ela abrir, porque o computador do professor estava desligado. Fale com o professor.`,
+                notStarted: true,
+                scheduled: true,
+                scheduleMissed: true,
+            };
+        }
+        if (abreEm > now) return { error: `A prova abre em ${formatWhen(abreEm, timezone)}.`, notStarted: true, scheduled: true };
+        return { error: 'A prova está abrindo agora, no horário marcado. Tente de novo em alguns segundos.', notStarted: true, scheduled: true, retryable: true };
+    }
+    const startsAt = application && application.status === 'waiting' ? positive(application.startsAt) : null;
+    if (startsAt && startsAt > now) {
+        const sameDay = schoolTime.schoolDateOf(startsAt, timezone) === schoolTime.schoolDateOf(now, timezone);
+        const parts = schoolTime.localParts(startsAt, timezone);
+        const when = sameDay && parts ? `às ${parts.time}` : `em ${formatWhen(startsAt, timezone)}`;
+        return { error: `A prova começa ${when}. Aguarde na sala de espera.`, notStarted: true, waitingRoom: true, startsAt };
+    }
+    return { error: 'A prova ainda não foi iniciada pelo professor.', notStarted: true };
+}
+
 function createAgenda({ abreEm, fechaEm }, { actor, now = Date.now() } = {}) {
     return { abreEm, fechaEm, criadoPor: actor || null, criadoEm: now };
 }
@@ -270,7 +306,7 @@ function markMissed(memory, application, agenda, now) {
     return { applicationId: application.id, examKey: application.examKey, studentClass: application.studentClass };
 }
 
-function finishScheduledApplication(memory, application, agenda, cls, now) {
+function finishScheduledApplication(memory, application, agenda, cls, now, closeAt = null) {
     const processed = finishApplication(memory, {
         application,
         cls,
@@ -281,12 +317,18 @@ function finishScheduledApplication(memory, application, agenda, cls, now) {
     });
     agenda.encerradaEm = now;
     const entregues = processed ? (Number(processed.submitted) || 0) + (Number(processed.deliveredAtDeadline) || 0) : 0;
+    // Encerrada depois do horário (o servidor estava desligado no horário de fechar): o
+    // registro e o log dizem a hora real (A18, pendência do A11).
+    const fechaEfetivaEm = positive(closeAt) || Number(agenda.fechaEm);
+    const atrasoSegundos = Math.max(0, Math.round((now - fechaEfetivaEm) / 1000));
     recordExamAudit(memory, 'exam_application_auto_finished', application, SYSTEM_ACTOR, {
         fechaEm: Number(agenda.fechaEm),
+        fechaEfetivaEm,
         encerradaEm: now,
+        atrasoSegundos,
         entregues,
     });
-    return { applicationId: application.id, examKey: application.examKey, studentClass: application.studentClass, entregues };
+    return { applicationId: application.id, examKey: application.examKey, studentClass: application.studentClass, entregues, fechaEfetivaEm, encerradaEm: now, atrasoSegundos };
 }
 
 // Aplicação preparada ou em andamento de qualquer prova da família na turma (a mesma
@@ -349,6 +391,9 @@ function sweepReleases(memory, cls, now, result) {
         const by = `Agendamento${entry.porNome || entry.por ? ` de ${entry.porNome || entry.por}` : ''}`;
         const keys = releaseClassItem(memory, cls, itemKey, { by, at: now });
         delete cls.releaseSchedule[itemKey];
+        // Liberado depois do horário: o servidor estava desligado (ou o gabarito esperou a
+        // prova ser encerrada). releaseMeta, a auditoria e o log ficam com a hora real.
+        const atrasoSegundos = Math.max(0, Math.round((now - Number(entry.at)) / 1000));
         recordAudit(memory, {
             action: 'content_release_auto',
             actor: SYSTEM_ACTOR,
@@ -361,13 +406,22 @@ function sweepReleases(memory, cls, now, result) {
                 itemKey,
                 at: Number(entry.at),
                 liberadoEm: now,
+                atrasoSegundos,
                 adiado: positive(entry.adiadoEm) ? true : false,
                 agendadoPor: entry.por || null,
                 ...(keys.length > 1 ? { chaves: keys } : {}),
             },
         }, { timestamp: now });
         result.changed = true;
-        result.released.push({ studentClass: cls.name, courseId: cls.courseId || null, itemKey, adiado: positive(entry.adiadoEm) ? true : false });
+        result.released.push({
+            studentClass: cls.name,
+            courseId: cls.courseId || null,
+            itemKey,
+            adiado: positive(entry.adiadoEm) ? true : false,
+            at: Number(entry.at),
+            liberadoEm: now,
+            atrasoSegundos,
+        });
     });
 }
 
@@ -403,7 +457,7 @@ function sweepSchedules(memory, { now = Date.now() } = {}) {
             const cls = classOf(memory, application);
             if (!cls) return;
             try {
-                result.finished.push(finishScheduledApplication(memory, application, applicationAgenda(application), cls, now));
+                result.finished.push(finishScheduledApplication(memory, application, applicationAgenda(application), cls, now, closeAt));
                 result.changed = true;
             } catch (error) {
                 result.errors = [...(result.errors || []), { applicationId: application.id, error: error && error.message }];
@@ -413,6 +467,67 @@ function sweepSchedules(memory, { now = Date.now() } = {}) {
     // fechar sai na mesma volta).
     ((memory.classes) || []).forEach(cls => { if (cls) sweepReleases(memory, cls, now, result); });
     return result;
+}
+
+// Linhas do log do servidor (janela do launcher) para uma volta da agenda (fase 3, A18:
+// pendência do A11). O que passou do horário porque o servidor estava desligado (ou
+// suspenso) diz a hora real e a marcada; antes, a volta do boot dizia "liberado no
+// horário marcado" para o material que saía 20 min depois. Atraso de até 1 min (a volta é
+// de 10 s) conta como no horário.
+function lateItem(item) {
+    return Number(item && item.atrasoSegundos) * 1000 > LATE_OPEN_WARN_MS;
+}
+
+function clockOf(ms, timezone) {
+    const parts = positive(ms) ? schoolTime.localParts(ms, timezone) : null;
+    return parts ? parts.time : '';
+}
+
+function lateDetail(items, scheduledField, realField, timezone) {
+    return items.map(item => {
+        const marked = formatWhen(item[scheduledField], timezone);
+        const real = clockOf(item[realField], timezone);
+        return marked && real ? `marcado para ${marked}, saiu às ${real}` : '';
+    }).filter(Boolean).join('; ');
+}
+
+function sweepLogLines(outcome, { timezone } = {}) {
+    const lines = [];
+    if (!outcome) return lines;
+    const opened = outcome.opened || [];
+    if (opened.length) {
+        const late = opened.filter(lateItem).length;
+        lines.push(`🗓️  Agendamento: ${opened.length} prova(s) aberta(s) pelo agendamento`
+            + (late ? ` (${late} depois do horário, porque o servidor estava desligado; veja o "Precisa de você").` : ' no horário marcado.'));
+    }
+    const finished = outcome.finished || [];
+    if (finished.length) {
+        const late = finished.filter(lateItem);
+        const onTime = finished.length - late.length;
+        if (onTime) lines.push(`🗓️  Agendamento: ${onTime} prova(s) encerrada(s) no horário marcado (entregue o que estava salvo).`);
+        if (late.length) {
+            const detail = lateDetail(late, 'fechaEfetivaEm', 'encerradaEm', timezone);
+            lines.push(`🗓️  Agendamento: ${late.length} prova(s) encerrada(s) agora, depois do horário de fechar, porque o servidor estava desligado (entregue o que estava salvo)${detail ? `: ${detail}` : ''}.`);
+        }
+    }
+    if ((outcome.missed || []).length) {
+        lines.push(`⚠️ Agendamento: ${outcome.missed.length} prova(s) não abriram porque o servidor estava desligado em todo o horário marcado. Veja o "Precisa de você".`);
+    }
+    const released = outcome.released || [];
+    if (released.length) {
+        const late = released.filter(lateItem);
+        const onTime = released.length - late.length;
+        if (onTime) lines.push(`🗓️  Agendamento: ${onTime} material(is) liberado(s) no horário marcado.`);
+        if (late.length) {
+            const waited = late.filter(item => item.adiado).length;
+            const detail = lateDetail(late, 'at', 'liberadoEm', timezone);
+            const why = waited === late.length
+                ? 'porque esperou a prova ser encerrada'
+                : (waited ? 'porque o servidor estava desligado ou o gabarito esperou a prova ser encerrada' : 'porque o servidor estava desligado');
+            lines.push(`🗓️  Agendamento: ${late.length} material(is) liberado(s) agora, depois do horário marcado, ${why}${detail ? `: ${detail}` : ''}.`);
+        }
+    }
+    return lines;
 }
 
 // ------------------------------------------------------------ material: rota e telas
@@ -504,18 +619,59 @@ function studentScheduledApplications(memory, { cls, email, timezone } = {}) {
         }));
 }
 
-// Nome do item liberável para o calendário do aluno ("Apostila · Unidade 3").
+// Chaves que levam à mesma unidade que itemKey (sem o "Gabarito_"): a própria, a de origem
+// e as variantes "só desta turma" da apostila (contentOverrides.materials) e da prova
+// (família da prova: sourceEvaluationKey e contentOverrides.evaluations).
+function unitLookupKeys(memory, cls, key) {
+    const keys = new Set([key]);
+    const overrides = cls && cls.contentOverrides && typeof cls.contentOverrides === 'object' ? cls.contentOverrides : {};
+    ['materials', 'evaluations'].forEach(kind => {
+        const map = overrides[kind] && typeof overrides[kind] === 'object' ? overrides[kind] : {};
+        Object.entries(map).forEach(([baseKey, entry]) => {
+            const variant = typeof entry === 'string' ? entry : entry && entry.key;
+            if (baseKey === key || variant === key) {
+                keys.add(baseKey);
+                if (variant) keys.add(String(variant));
+            }
+        });
+    });
+    examFamilyKeys(memory, key).forEach(familyKey => keys.add(familyKey));
+    return keys;
+}
+
+// Nome do item liberável para o calendário do aluno ("Gabarito · Unidade 3"). A unidade
+// é procurada na estrutura que a turma vê (a própria da turma, as unidades extras e os
+// nomes trocados) e pela chave de origem da variante: o gabarito da prova editada só
+// para a turma (Avaliacao_X__turma_<hash>) acha a unidade da Avaliacao_X. Sem unidade, o
+// título diz o que vai ser liberado, nunca "liberado" (antes, o calendário mostrava
+// "Gabarito liberado" dias antes da liberação; A18, pendência do A11).
 function releaseItemTitle(memory, cls, itemKey) {
     const course = courseOf(memory, cls);
     const isAnswerKey = itemKey.startsWith('Gabarito_');
     const lookup = isAnswerKey ? itemKey.slice('Gabarito_'.length) : itemKey;
+    const keys = unitLookupKeys(memory, cls, lookup);
+    const overrides = cls && cls.contentOverrides && typeof cls.contentOverrides === 'object' ? cls.contentOverrides : {};
+    const structure = Array.isArray(overrides.structure) ? overrides.structure : ((course && course.structure) || []);
+    const units = [];
+    structure.forEach(mod => ((mod && (mod.units || mod.items)) || []).forEach(unit => units.push(unit)));
+    (Array.isArray(overrides.extraUnits) ? overrides.extraUnits : []).forEach(extra => { if (extra && extra.unit) units.push(extra.unit); });
+    const unitNames = overrides.unitNames && typeof overrides.unitNames === 'object' ? overrides.unitNames : {};
     let unitName = '';
-    ((course && course.structure) || []).forEach(mod => ((mod && (mod.units || mod.items)) || []).forEach(unit => {
-        if (unitName || !unit) return;
-        if (unit.apostilaKey === lookup || unit.avaliacaoKey === lookup || unit.key === lookup) unitName = unit.name || unit.title || '';
-    }));
+    units.forEach(unit => {
+        if (unitName || !unit || typeof unit !== 'object') return;
+        const own = [unit.apostilaKey, unit.avaliacaoKey, unit.key].filter(Boolean).map(String);
+        if (!own.some(key => keys.has(key))) return;
+        const renamed = own.map(key => unitNames[key]).find(name => typeof name === 'string' && name.trim());
+        unitName = String(renamed || unit.name || unit.title || '').trim();
+    });
     const kind = isAnswerKey ? 'Gabarito' : 'Apostila';
-    return unitName ? `${kind} · ${unitName}` : `${kind} liberado`;
+    if (unitName) return `${kind} · ${unitName}`;
+    if (isAnswerKey) {
+        const evaluation = memory && memory.evaluations && memory.evaluations[lookup];
+        const titled = evaluation && (evaluation.title || evaluation.name);
+        return `Gabarito da prova ${examTitleOf(memory, titled ? lookup : lookup.replace(/__turma_[0-9a-f]+(?:_\d+)?$/, ''))}`;
+    }
+    return 'Liberação de apostila';
 }
 
 function calendarEvents(ctx) {
@@ -676,7 +832,10 @@ module.exports = {
     releaseClassItem,
     releaseScheduleAllowed,
     releaseScheduleView,
+    notStartedResponse,
+    releaseItemTitle,
     scheduleView,
     studentScheduledApplications,
+    sweepLogLines,
     sweepSchedules,
 };

@@ -952,7 +952,13 @@ function describeMonitorActionAudit(entry, nameByEmail) {
     }
     if (entry.type === 'exam_application_auto_finished') {
         const delivered = Number(details.entregues) || 0;
-        return { title: 'Prova encerrada pelo agendamento', detail: `${delivered} ${delivered === 1 ? 'prova em andamento entregue' : 'provas em andamento entregues'} com o que estava salvo` };
+        const deliveredText = `${delivered} ${delivered === 1 ? 'prova em andamento entregue' : 'provas em andamento entregues'} com o que estava salvo`;
+        // Encerrada depois do horário de fechar (o computador estava desligado): a hora real (A18).
+        const late = Number(details.atrasoSegundos) || 0;
+        if (late > 60) {
+            return { title: 'Prova encerrada pelo agendamento', detail: `${Math.round(late / 60)} min depois de ${when(details.fechaEfetivaEm || details.fechaEm)} (o computador estava desligado) · ${deliveredText}` };
+        }
+        return { title: 'Prova encerrada pelo agendamento', detail: deliveredText };
     }
     // O encerramento da agenda (finishApplication com o ator 'sistema'): antes o registro
     // dizia "provas em andamento enviadas pelo professor".
