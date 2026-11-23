@@ -81,7 +81,7 @@ export function NowBand({ now, onChamada, onProva }) {
             <p className="mt-1 text-[17px] font-semibold tracking-[-0.02em] text-text">{aula.ordem}ª aula · {aula.nome}</p>
             <p className="text-[12.5px] text-muted">{aula.inicio} – {aula.fim} · tolerância de {aula.toleranciaMin} min</p>
             <p className="mt-2 text-[12.5px] font-semibold text-primary">
-              {aula.chamadaStatus === 'concluida' ? 'Chamada lançada ✓' : aula.chamadaStatus === 'rascunho' ? 'Chamada em rascunho →' : 'Chamada ainda não lançada →'}
+              {aula.chamadaStatus === 'concluida' ? 'Chamada lançada ✓' : aula.chamadaParcial ? 'Chamada feita só para parte da turma →' : aula.chamadaStatus === 'rascunho' ? 'Chamada em rascunho →' : 'Chamada ainda não lançada →'}
             </p>
           </>
         ) : semAula ? (

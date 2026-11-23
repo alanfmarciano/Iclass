@@ -221,8 +221,8 @@ Grupo é uma parte da turma: uma equipe de trabalho ou uma subturma (a metade qu
 **Usar o grupo no dia a dia.** Com grupos na turma, quatro telas oferecem o grupo:
 
 - **Avisos** e **Calendário**: em "Destino", **Um grupo da turma** manda o aviso ou o evento só para os alunos do grupo. O aluno vê o selo "Para o grupo Laboratório A". Quem entra no grupo depois passa a ver; quem sai deixa de ver. Arquivar o grupo esconde os avisos dele dos alunos (na sua lista eles continuam, com "(arquivado)").
-- **Materiais**: na apostila ou no gabarito ainda bloqueado para a turma, **Liberar para um grupo** libera o item só para aquele grupo, e a linha mostra "Liberado para Laboratório A" (o **x** tira). O aluno vê o item se a turma liberou, se um grupo dele liberou ou se você liberou só para ele. A prova online não se libera assim: use o "Para quem" ao preparar.
-- **Chamada**: em "Chamada de", escolha o grupo para ver, salvar e exportar só os alunos dele (útil quando metade da turma está no laboratório). **Toda a turma** volta ao normal.
+- **Materiais**: na apostila ou no gabarito ainda bloqueado para a turma, **Liberar para um grupo** libera o item só para aquele grupo, e a linha mostra "Liberado para Laboratório A" (o **x** tira). O aluno vê o item se a turma liberou, se um grupo dele liberou ou se você liberou só para ele. A prova online não se libera assim: use o "Para quem" ao preparar. Ao aplicar a prova de novo, o gabarito volta a ficar bloqueado para a turma e para os grupos.
+- **Chamada**: em "Chamada de", escolha o grupo para ver, salvar e exportar só os alunos dele (útil quando metade da turma está no laboratório). **Toda a turma** volta ao normal. Enquanto faltar a chamada de algum aluno, o Dashboard lembra: "Chamada de hoje feita só para parte da turma".
 - **Provas**: no "Para quem" da preparação, **Um grupo** marca os alunos do grupo como ele está agora. Quem entrar no grupo depois não entra nessa aplicação; use **Alunos desta aplicação** para acrescentar.
 
 ## Ver como aluno {#ver-como-aluno}

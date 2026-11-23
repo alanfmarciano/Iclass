@@ -160,7 +160,8 @@ function copyGroupReleases(cls, pairs) {
         const items = map[groupId];
         if (!items || typeof items !== 'object') return;
         pairs.forEach(([from, to]) => {
-            if (Object.prototype.hasOwnProperty.call(items, from)) items[to] = items[from];
+            // O mapa do grupo só guarda liberação (true); nunca copia um bloqueio.
+            if (items[from] === true) items[to] = true;
         });
     });
 }

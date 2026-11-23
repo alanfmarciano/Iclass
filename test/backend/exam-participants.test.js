@@ -582,6 +582,7 @@ test('[UC-PROVA-006] [UC-GRUPO-003] Para quem: um grupo grava os membros na prep
     assert.match(empty.body.error, /não tem alunos ativos/);
     const second = await prepare(historyId, { groupId: 'grp_1_aaaaaa', finalidade: 'segunda_chamada' }, 400);
     assert.equal(second.body.field, 'applicationOptions.groupId');
+    assert.match(second.body.error, /segunda chamada não é feita por grupo/);
     assert.equal(db.memory.examApplications.length, 0);
 
     // O grupo vale mais que uma lista mandada junto.
@@ -620,4 +621,57 @@ test('[UC-PROVA-006] [UC-GRUPO-003] Para quem: um grupo grava os membros na prep
     const all = await admin(request(app).post(`/api/admin/exam-applications/${application.id}/participants`)).send({ participants: null }).expect(200);
     assert.equal(all.body.application.participants, null);
     assert.equal(all.body.application.groupId, null);
+});
+
+// Rodada de ajuste do C19: a nova aplicação trava o gabarito liberado para um grupo
+// tirando a chave do mapa do grupo (D18: o grupo só guarda liberação). Antes ela gravava
+// false ali, e esse false passava por cima do true da turma: liberado de novo para a turma
+// depois da nova aplicação, os membros do grupo continuavam sem o gabarito e o painel não
+// mostrava nada para desfazer.
+test('[UC-GRUPO-003] nova aplicação trava o gabarito liberado para um grupo sem deixar bloqueio: a turma libera de novo e todos veem', async () => {
+    const GROUP = 'grp_1_aaaaaa';
+    db.memory.classGroups = [{
+        id: GROUP, schemaVersion: 1, courseId, studentClass, nome: 'Laboratório A', conjunto: 'Laboratório', tipo: 'subturma',
+        membros: [{ email: ALICE, studentId: null, adicionadoEm: 1, adicionadoPor: 'admin@participantes.local' }],
+        criadoEm: 1, criadoPor: 'admin@participantes.local', atualizadoEm: 1, atualizadoPor: 'admin@participantes.local', arquivadoEm: null, arquivadoPor: null,
+    }];
+    const answerKey = `Gabarito_${examKey}`;
+    const releaseKey = extra => admin(request(app).post('/api/admin/release-item')).send({ studentClass, courseId, itemKey: answerKey, released: true, ...extra });
+    const seenBy = async email => {
+        const res = await asStudent(request(app).get('/api/status'), email).query({ studentClass, courseId }).expect(200);
+        return res.body.releasedItems[answerKey];
+    };
+    const historyId = await createHistory();
+    const first = await prepare(historyId);
+    await start(first.body.application.id);
+    await finish(first.body.application.id);
+    await releaseKey({ groupId: GROUP }).expect(200);
+    await releaseKey({}).expect(200);
+    assert.equal(await seenBy(ALICE), true);
+    assert.equal(await seenBy(BRUNO), true);
+
+    // Nova aplicação: o gabarito volta a ficar bloqueado para todos, e o mapa do grupo
+    // fica sem a chave (nada de false guardado).
+    const second = await prepare(historyId);
+    const cls = db.memory.classes.find(item => item.name === studentClass);
+    assert.equal(cls.releasedItems[answerKey], false);
+    assert.deepEqual(cls.groupReleasedItems || {}, {}, 'o grupo que ficou vazio sai do mapa');
+    await start(second.body.application.id);
+    assert.equal(await seenBy(ALICE), false);
+    assert.equal(await seenBy(BRUNO), false);
+    await finish(second.body.application.id);
+    assert.equal(await seenBy(ALICE), false, 'encerrada, continua bloqueado até o professor liberar');
+
+    // A turma libera de novo: o membro do grupo vê como todo mundo.
+    await releaseKey({}).expect(200);
+    assert.equal(await seenBy(ALICE), true);
+    assert.equal(await seenBy(BRUNO), true);
+    const panel = await admin(request(app).get('/api/status')).query({ studentClass, courseId }).expect(200);
+    assert.deepEqual(panel.body.groupReleases, {});
+
+    // Liberado de novo só para o grupo (com a turma bloqueada), vale para o membro.
+    db.memory.classes.find(item => item.name === studentClass).releasedItems[answerKey] = false;
+    await releaseKey({ groupId: GROUP }).expect(200);
+    assert.equal(await seenBy(ALICE), true);
+    assert.equal(await seenBy(BRUNO), false);
 });

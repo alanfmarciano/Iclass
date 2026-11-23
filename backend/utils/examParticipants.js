@@ -361,7 +361,7 @@ function parseApplicationAudience(memory, input = {}, {
     let groupId = application && typeof application.groupId === 'string' && application.groupId ? application.groupId : null;
     if (source.groupId !== undefined && source.groupId !== null && source.groupId !== '') {
         if (typeof source.groupId !== 'string') return fail('Grupo inválido.', 'groupId');
-        if (finalidade === 'segunda_chamada') return fail('A segunda chamada usa a lista de quem não fez a prova. Para um grupo, escolha "Um grupo".', 'groupId');
+        if (finalidade === 'segunda_chamada') return fail('A segunda chamada não é feita por grupo: ela já vem com quem não fez a prova, e você desmarca ou marca quem precisar. Para aplicar só a um grupo, escolha "Um grupo" em Para quem.', 'groupId');
         const group = classGroups.activeGroupInClass(memory, cls, source.groupId.trim());
         if (!group) return fail('Grupo não encontrado nesta turma (ele pode ter sido arquivado).', 'groupId');
         const members = classGroups.groupMemberEmails(memory, group, { cls });

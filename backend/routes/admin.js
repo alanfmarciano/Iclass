@@ -230,7 +230,7 @@ const { createAdminMessagesRouter } = require('./adminMessages.js');
 const { createAdminAssignmentsRouter } = require('./adminAssignments.js');
 const { createAdminCoursePackageRouter } = require('./adminCoursePackage.js');
 const { remapCourseKeys } = require('../utils/coursePackage.js');
-const { body, either, int, list, num, shape, str } = require('../utils/inputSchema.js');
+const { body, either, int, list, num, query, shape, str } = require('../utils/inputSchema.js');
 const { normalizeEvaluationQuestions, questionInputSchema } = require('../utils/questionModel.js');
 
 // Entrada das rotas do professor que respondiam 500 com um campo de tipo errado (fase 2,
@@ -2516,6 +2516,11 @@ function _gradeAulasForRoster(gradeAulas, course) {
 // de um grupo ativo da turma, a chamada mostra, grava e exporta só os membros dele (os que
 // ainda estão na turma, com o cadastro encerrado também, que a chamada mostra nas datas em
 // que ele tem registro). Devolve { members: Set | null, group } ou { status, error, code }.
+// Tipo e tamanho do groupId (inputSchema): um objeto ou uma lista (?groupId=a&groupId=b)
+// recebe 400 com o campo, em vez de virar texto e cair num 404 enganoso.
+const ATTENDANCE_GROUP_QUERY = query({ groupId: adminIdField('grupo') });
+const ATTENDANCE_GROUP_BODY = body({ groupId: adminIdField('grupo') });
+
 function _attendanceGroupFilter(groupId, courseId, className) {
     const id = String(groupId || '').trim();
     if (!id) return { members: null, group: null };
@@ -2536,6 +2541,8 @@ function _attendanceGroupFilter(groupId, courseId, className) {
 // tela de dia sem aula. Só a presença automática do login não conta (não é lançamento).
 router.get('/api/admin/attendance/roster', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
+        const checkedQuery = ATTENDANCE_GROUP_QUERY.check(req, res);
+        if (!checkedQuery) return;
         const className = String(req.query.studentClass || '').trim();
         const courseId = String(req.query.courseId || '').trim();
         const date = /^\d{4}-\d{2}-\d{2}$/.test(req.query.date || '') ? req.query.date : settingsUtil.today();
@@ -2543,7 +2550,7 @@ router.get('/api/admin/attendance/roster', (req, res) => {
         const cls = findClassByNameAndCourse(db.memory.classes || [], className, courseId)
             || (db.memory.classes || []).find(c => c.name === className);
         const groupCourseId = courseId || (cls && cls.courseId) || '';
-        const groupFilter = _attendanceGroupFilter(req.query.groupId, groupCourseId, className);
+        const groupFilter = _attendanceGroupFilter(checkedQuery.groupId, groupCourseId, className);
         if (groupFilter.error) return res.status(groupFilter.status).json({ error: groupFilter.error, code: groupFilter.code });
         const course = (db.memory.courses || []).find(c => String(c.id) === courseId);
         const cfg = attendanceUtil.effectiveAttendanceConfig(cls);
@@ -2642,6 +2649,7 @@ router.get('/api/admin/attendance/roster', (req, res) => {
 // regrava o aluno sem mudar nada não apagar a origem da situação.
 router.post('/api/admin/attendance/bulk', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
+        if (!ATTENDANCE_GROUP_BODY.check(req, res)) return;
         const className = String(req.body.studentClass || '').trim();
         const courseId = String(req.body.courseId || '').trim();
         const date = isValidIsoDate(req.body.date) ? req.body.date : null;
@@ -2718,6 +2726,9 @@ router.post('/api/admin/attendance/bulk', (req, res) => {
                 observacao,
                 markedBy,
                 timestamp: now,
+                // Chamada de um grupo (P5-S5): marca o registro, para o "Precisa de você" só
+                // dar a chamada do dia como concluída quando a turma toda foi coberta.
+                ...(groupFilter.group ? { grupoId: String(groupFilter.group.id) } : {}),
                 ...attendanceUtil.attendanceCarryOver(previous, { concluida, now }),
             };
             const prev = attendanceUtil.effectiveDayRecord(previous);
@@ -2745,6 +2756,8 @@ const ATT_ORIGIN_LABEL = { chamada: 'Chamada', manual: 'Manual', login: 'Automá
 // Exporta presença da turma em CSV (uma linha por aula; respeita período opcional).
 router.get('/api/admin/attendance/export', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
+        const checkedQuery = ATTENDANCE_GROUP_QUERY.check(req, res);
+        if (!checkedQuery) return;
         const className = String(req.query.studentClass || '').trim();
         if (!className) return res.status(400).json({ error: 'Turma é obrigatória.' });
         const from = /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : null;
@@ -2752,11 +2765,11 @@ router.get('/api/admin/attendance/export', (req, res) => {
         // Exportar a chamada de um grupo (P5-S5): só as linhas dos membros. O grupo é da
         // turma do curso informado (ou da única turma com esse nome).
         let groupFilter = { members: null, group: null };
-        if (String(req.query.groupId || '').trim()) {
+        if (String(checkedQuery.groupId || '').trim()) {
             const courseIdQuery = String(req.query.courseId || '').trim();
             const exportCls = findClassByNameAndCourse(db.memory.classes || [], className, courseIdQuery || undefined)
                 || (db.memory.classes || []).find(c => c && c.name === className);
-            groupFilter = _attendanceGroupFilter(req.query.groupId, courseIdQuery || (exportCls && exportCls.courseId) || '', className);
+            groupFilter = _attendanceGroupFilter(checkedQuery.groupId, courseIdQuery || (exportCls && exportCls.courseId) || '', className);
             if (groupFilter.error) return res.status(groupFilter.status).json({ error: groupFilter.error, code: groupFilter.code });
         }
         const emailsInScope = new Set(filterStudentsForAdmin((db.memory.students || []).filter(s => _studentInClass(s, className)), matchedAdmin).map(s => (s.email || '').toLowerCase())
@@ -2811,6 +2824,16 @@ router.get('/api/admin/attendance/export', (req, res) => {
 // studentClass obrigatórios); o aviso chega só aos membros atuais do grupo e deixa de
 // valer quando ele é arquivado.
 const ANN_TARGETS = ['todos', 'curso', 'turma', 'aluno', 'grupo'];
+// Destino de aviso e de evento do calendário (inputSchema): texto, com o tamanho do maior
+// valor que cabe (e-mail do aluno, 254; id do grupo, nome da turma). Antes o destino ia
+// por String(): um objeto virava '[object Object]' e uma lista de um item passava como o id.
+const announcementTargetFields = () => ({
+    target: adminTextField(20, 'destino'),
+    targetValue: adminTextField(254, 'destino'),
+    courseId: adminIdField('curso'),
+    studentClass: adminTextField(200, 'turma'),
+});
+const ANNOUNCEMENT_TARGET_SCHEMA = body(announcementTargetFields());
 
 // Confere o destino 'grupo' de um aviso ou evento: o grupo precisa ser da turma
 // informada e estar ativo; na edição, o mesmo grupo de antes passa mesmo arquivado (o
@@ -2891,6 +2914,7 @@ router.get('/api/admin/announcements', (req, res) => {
 
 router.post('/api/admin/announcements', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
+        if (!ANNOUNCEMENT_TARGET_SCHEMA.check(req, res)) return;
         const { title, message, target, targetValue, courseId, studentClass, priority, pinned, expiresAt } = req.body || {};
         if (!title || !message) return res.status(400).json({ error: 'Título e mensagem são obrigatórios.' });
         const tgt = ANN_TARGETS.includes(target) ? target : 'turma';
@@ -2936,6 +2960,7 @@ router.post('/api/admin/announcements', (req, res) => {
 
 router.post('/api/admin/announcements/update', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
+        if (!ANNOUNCEMENT_TARGET_SCHEMA.check(req, res)) return;
         const { id, title, message, target, targetValue, courseId, studentClass, priority, pinned, expiresAt } = req.body || {};
         const ann = (db.memory.announcements || []).find(a => a.id === id);
         if (!ann) return res.status(404).json({ error: 'Aviso não encontrado.' });
@@ -3064,6 +3089,7 @@ router.get('/api/admin/announcements/calendar', (req, res) => {
 
 router.post('/api/admin/announcements/calendar', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
+        if (!ANNOUNCEMENT_TARGET_SCHEMA.check(req, res)) return;
         const body = req.body || {};
         const title = String(body.title || '').trim();
         const eventDate = String(body.eventDate || '');
@@ -3104,6 +3130,7 @@ router.post('/api/admin/announcements/calendar', (req, res) => {
 
 router.post('/api/admin/announcements/calendar/update', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
+        if (!ANNOUNCEMENT_TARGET_SCHEMA.check(req, res)) return;
         const body = req.body || {};
         const item = (db.memory.announcements || []).find(entry => entry.id === body.id && entry.kind === 'calendar');
         if (!item) return res.status(404).json({ error: 'Evento não encontrado.' });

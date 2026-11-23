@@ -143,6 +143,35 @@ test('[UC-DASH-002] queue: chamada concluída não gera pendência', () => {
     assert.ok(!items.some(i => i.id === 'chamada_pendente'));
 });
 
+test('[UC-DASH-002] [UC-GRUPO-003] queue: chamada concluída só para um grupo não dá a turma como feita', () => {
+    const memory = baseMemory();
+    const rec = (email, extra = {}) => ({ id: `t_${email}`, studentEmail: email, courseId: 'TI', studentClass: '1DES', date: TODAY, origin: 'chamada', concluida: true, aulas: [], ...extra });
+    // Metade do laboratório (grupo) concluída: o resto da turma ainda falta.
+    memory.attendance.push(rec('a@t.local', { grupoId: 'grp_1_aaaaaa' }), rec('b@t.local', { grupoId: 'grp_1_aaaaaa' }));
+    let item = computeQueue({ ...scopeOf(memory), canSeeMatriculas: false }).find(i => i.id === 'chamada_pendente');
+    assert.ok(item, 'a chamada do outro grupo continua cobrada');
+    assert.equal(item.titulo, 'Chamada de hoje feita só para parte da turma');
+    assert.match(item.detalhe, /1 aluno ainda sem chamada/);
+    let now = computeNow(scopeOf(memory));
+    assert.equal(now.aula.chamadaStatus, 'rascunho');
+    assert.equal(now.aula.chamadaParcial, true);
+
+    // Cadastro encerrado não é cobrado; o outro grupo concluído fecha a turma.
+    memory.students[2].status = 'Inativo';
+    assert.ok(!computeQueue({ ...scopeOf(memory), canSeeMatriculas: false }).some(i => i.id === 'chamada_pendente'));
+    memory.students[2].status = 'Ativo';
+    memory.attendance.push(rec('c@t.local', { grupoId: 'grp_1_bbbbbb' }));
+    assert.ok(!computeQueue({ ...scopeOf(memory), canSeeMatriculas: false }).some(i => i.id === 'chamada_pendente'));
+    now = computeNow(scopeOf(memory));
+    assert.equal(now.aula.chamadaStatus, 'concluida');
+    assert.equal(now.aula.chamadaParcial, undefined);
+
+    // Chamada da turma inteira concluída (sem grupoId) vale como antes, mesmo com alguém sem registro.
+    memory.attendance = memory.attendance.filter(r => r.date !== TODAY);
+    memory.attendance.push(rec('a@t.local'));
+    assert.ok(!computeQueue({ ...scopeOf(memory), canSeeMatriculas: false }).some(i => i.id === 'chamada_pendente'));
+});
+
 test('[UC-DASH-005] dia não letivo: a fila não cobra chamada, a faixa "Agora" diz por quê e a próxima aula pula o feriado', () => {
     const memory = baseMemory();
     memory.nonSchoolDays = [{ id: 'nl_hoje', inicio: TODAY, tipo: 'feriado', nome: 'Feriado municipal', escopo: 'instituicao' }];

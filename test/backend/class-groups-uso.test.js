@@ -204,7 +204,10 @@ test('[UC-GRUPO-003] fusão: turma -> grupos (liberado em qualquer grupo vence) 
     cls.studentReleasedItems = { [BIA]: { Apostila_U2: false } };
     assert.equal(getReleasedItemsForClass(cls, ANA).Apostila_U2, true);
     assert.equal(getReleasedItemsForClass(cls, ANA).Apostila_U1, true, 'liberado em outro grupo dela vence o bloqueio do Laboratório A');
-    assert.equal(getReleasedItemsForClass(cls, BIA).Apostila_U1, false, 'o grupo da Bia bloqueia a unidade 1 para ela');
+    // O grupo só acrescenta liberação (D18): um false no mapa do grupo (bloquear tira a
+    // chave; um false ali só viria de dado antigo) não tira o que a turma liberou.
+    assert.equal(getReleasedItemsForClass(cls, BIA).Apostila_U1, true, 'false no grupo da Bia não bloqueia o que a turma liberou');
+    assert.equal(getReleasedItemsForClass(cls, CAIO).Apostila_U1, true);
     assert.equal(getReleasedItemsForClass(cls, BIA).Apostila_U2, false, 'a exceção individual vence o grupo');
     assert.equal(getReleasedItemsForClass(cls, DUDA).Apostila_U2, false, 'grupo arquivado não vale');
     assert.equal(getReleasedItemsForClass(cls, '').Apostila_U2, false, 'a visão da turma não muda');
@@ -212,6 +215,7 @@ test('[UC-GRUPO-003] fusão: turma -> grupos (liberado em qualquer grupo vence) 
     // Arquivar o grupo pela tela: a liberação deixa de valer; reativar volta.
     await as('prof', request(app).post(`/api/admin/class-groups/${GRP_A}/archive`)).send({}).expect(200);
     assert.equal((await releasedFor(BIA)).Apostila_U1, true);
+    assert.equal((await releasedFor(BIA)).Apostila_U2, false);
     assert.equal((await releasedFor(ANA)).Apostila_U2, false);
     await as('prof', request(app).post(`/api/admin/class-groups/${GRP_A}/restore`)).send({}).expect(200);
     assert.equal((await releasedFor(ANA)).Apostila_U2, true);
@@ -403,6 +407,10 @@ test('[UC-GRUPO-003] chamada com groupId: roster só com os membros, bulk só gr
     assert.equal(saved.body.foraDoGrupo, 2);
     assert.equal(JSON.stringify(db.memory.attendance.filter(item => item.studentEmail !== ANA)), before, 'quem não é do grupo fica como estava');
     assert.equal(db.memory.attendance.find(item => item.studentEmail === ANA).aulas[0].status, 'falta');
+    assert.equal(db.memory.attendance.find(item => item.studentEmail === ANA).grupoId, GRP_A, 'o registro diz que veio da chamada do grupo');
+    // A chamada da turma inteira regrava o registro sem a marca do grupo.
+    await as('prof', request(app).post('/api/admin/attendance/bulk')).send({ ...Q, date: DATE, concluida: true, entries: [{ email: ANA, aulas: aula('presente') }] }).expect(200);
+    assert.equal(db.memory.attendance.find(item => item.studentEmail === ANA).grupoId, undefined);
 
     const csv = await as('prof', request(app).get('/api/admin/attendance/export')).query({ ...Q, groupId: GRP_B }).expect(200);
     const lines = csv.text.replace(/^﻿/, '').trim().split(/\r?\n/);
@@ -419,6 +427,48 @@ test('[UC-GRUPO-003] chamada com groupId: roster só com os membros, bulk só gr
         const bulk = await as('prof', request(app).post('/api/admin/attendance/bulk')).send({ ...Q, date: DATE, groupId, entries: [] });
         assert.equal(bulk.status, 404, groupId);
     }
+});
+
+test('[UC-GRUPO-003] groupId e destino de aviso com tipo errado: 400 com o campo (inputSchema), sem gravar nada', async () => {
+    // Na URL o valor é sempre texto (o leitor da query fica com o último valor repetido);
+    // o schema confere o tamanho.
+    const longId = 'g'.repeat(101);
+    const roster = await as('prof', request(app).get('/api/admin/attendance/roster')).query({ ...Q, date: DATE, groupId: longId });
+    assert.equal(roster.status, 400, JSON.stringify(roster.body));
+    assert.equal(roster.body.field, 'groupId');
+    const exported = await as('prof', request(app).get('/api/admin/attendance/export')).query({ ...Q, groupId: longId });
+    assert.equal(exported.status, 400, JSON.stringify(exported.body));
+    assert.equal(exported.body.field, 'groupId');
+    const bulk = await as('prof', request(app).post('/api/admin/attendance/bulk')).send({ ...Q, date: DATE, groupId: [GRP_A], entries: [{ email: ANA, aulas: [{ ordem: 1, disciplinaId: '', status: 'falta' }] }] });
+    assert.equal(bulk.status, 400, JSON.stringify(bulk.body));
+    assert.equal(bulk.body.field, 'groupId');
+    assert.equal(db.memory.attendance.length, 0);
+
+    const ann = { title: 'Lab', message: 'Tragam o kit', target: 'grupo', ...Q };
+    for (const targetValue of [{ $ne: 1 }, [GRP_A], 'x'.repeat(300)]) {
+        const res = await as('prof', request(app).post('/api/admin/announcements')).send({ ...ann, targetValue });
+        assert.equal(res.status, 400, JSON.stringify(res.body));
+        assert.equal(res.body.field, 'targetValue');
+    }
+    // (O professor nem chega à rota: o guarda do escopo recusa a turma que não é texto.)
+    const badClass = await as('admin', request(app).post('/api/admin/announcements')).send({ ...ann, targetValue: GRP_A, studentClass: { a: 1 } });
+    assert.equal(badClass.status, 400);
+    assert.equal(badClass.body.field, 'studentClass');
+    const event = { title: 'Visita', eventDate: '2026-11-20', target: 'grupo', ...Q };
+    const badEvent = await as('prof', request(app).post('/api/admin/announcements/calendar')).send({ ...event, targetValue: [GRP_A] });
+    assert.equal(badEvent.status, 400);
+    assert.equal(badEvent.body.field, 'targetValue');
+    assert.equal(db.memory.announcements.length, 0);
+    // O mesmo pedido com o id em texto passa, como antes.
+    await as('prof', request(app).post('/api/admin/announcements')).send({ ...ann, targetValue: GRP_A }).expect(200);
+    await as('prof', request(app).post('/api/admin/announcements/calendar')).send({ ...event, targetValue: GRP_A }).expect(200);
+    const created = db.memory.announcements.find(item => item.kind === 'calendar');
+    const badUpdate = await as('prof', request(app).post('/api/admin/announcements/calendar/update')).send({ ...event, id: created.id, targetValue: { x: 1 } });
+    assert.equal(badUpdate.status, 400);
+    const annId = db.memory.announcements.find(item => item.kind !== 'calendar').id;
+    const badAnnUpdate = await as('prof', request(app).post('/api/admin/announcements/update')).send({ ...ann, id: annId, targetValue: [GRP_A] });
+    assert.equal(badAnnUpdate.status, 400);
+    assert.equal(db.memory.announcements.find(item => item.id === annId).targetValue, GRP_A);
 });
 
 // ---------------------------------------------------------------------------

@@ -389,9 +389,10 @@ function groupTargetReaches(memory, item, { courseId, studentClass, email } = {}
     return studentGroupIdsInClass(memory, { courseId: course, studentClass: className }, email).has(String(item.targetValue || ''));
 }
 
-// Liberação pelos grupos do aluno: { [itemKey]: boolean }. Liberado em qualquer grupo dele
-// vence; false só fica quando nenhum grupo dele libera. Só apostila e gabarito
-// (isGroupReleaseKey). Quem chama aplica a exceção individual por cima.
+// Liberação pelos grupos do aluno: { [itemKey]: true }. Liberado em qualquer grupo dele
+// vence; o grupo só acrescenta liberação, nunca bloqueia o que a turma liberou (D18). Um
+// valor diferente de true no mapa (não deveria existir: bloquear tira a chave) é ignorado.
+// Só apostila e gabarito (isGroupReleaseKey). Quem chama aplica a exceção individual por cima.
 function groupReleasedItemsFor(memory, cls, email) {
     const map = cls && isObject(cls.groupReleasedItems) ? cls.groupReleasedItems : null;
     if (!map) return {};
@@ -400,12 +401,27 @@ function groupReleasedItemsFor(memory, cls, email) {
     ids.forEach(id => {
         if (!Object.prototype.hasOwnProperty.call(map, id) || !isObject(map[id])) return;
         Object.keys(map[id]).forEach(itemKey => {
-            if (!isGroupReleaseKey(itemKey) || typeof map[id][itemKey] !== 'boolean') return;
-            if (map[id][itemKey] === true) released[itemKey] = true;
-            else if (released[itemKey] !== true) released[itemKey] = false;
+            if (isGroupReleaseKey(itemKey) && map[id][itemKey] === true) released[itemKey] = true;
         });
     });
     return released;
+}
+
+// Tira o item da liberação de todos os grupos da turma (nova aplicação da prova volta a
+// bloquear o gabarito). Apaga a chave, nunca grava false; o grupo que fica vazio sai do
+// mapa. Devolve true quando algum grupo tinha o item liberado.
+function clearGroupReleasesOf(cls, itemKey) {
+    const map = cls && isObject(cls.groupReleasedItems) ? cls.groupReleasedItems : null;
+    if (!map) return false;
+    let changed = false;
+    Object.keys(map).forEach(id => {
+        const items = map[id];
+        if (!isObject(items) || !Object.prototype.hasOwnProperty.call(items, itemKey)) return;
+        if (items[itemKey] === true) changed = true;
+        delete items[itemKey];
+        if (!Object.keys(items).length) delete map[id];
+    });
+    return changed;
 }
 
 // Para o painel (Materiais): por item, os grupos ativos da turma com ele liberado, em
@@ -1049,6 +1065,7 @@ module.exports = {
     studentGroupIdsInClass,
     groupTargetReaches,
     groupReleasedItemsFor,
+    clearGroupReleasesOf,
     groupReleasesView,
     setGroupRelease,
     groupOptionsForClass,

@@ -13,6 +13,7 @@ const { buildGradeGroups, scopeSubmissionsToContext } = require('./gradebook.js'
 const { studentSessionByEmail } = require('./authSessions.js');
 const { collectInstructorQueue } = require('./studentFeeds.js');
 const { applicationParticipant } = require('./examApplications.js');
+const { isClosedStudentStatus } = require('./students.js');
 
 const DIA_MS = 86400000;
 const AULA_PADRAO_MIN = 50; // grade só tem o início; o fim é o início da próxima ou +50min
@@ -55,10 +56,22 @@ function chamadaHoje(memory, cls, emails, today) {
         && (!cls || !r.studentClass || r.studentClass === cls.name)
         && emails.has(lower(r.studentEmail)));
 }
-function chamadaStatusHoje(memory, cls, emails, today) {
+// Situação da chamada de hoje: 'concluida', 'rascunho' ou 'nao_lancada'. Chamada da turma
+// inteira concluída vale como antes. Chamada por grupo (P5-S5: registro com grupoId) só
+// conclui o dia quando todo aluno ativo da turma tem a chamada concluída; senão fica
+// 'rascunho' com parcial (faltam: quantos alunos ativos ainda sem chamada concluída).
+function chamadaResumoHoje(memory, cls, students, today) {
+    const emails = emailSet(students);
     const recs = chamadaHoje(memory, cls, emails, today);
-    if (recs.some(r => r.concluida)) return 'concluida';
-    return recs.length ? 'rascunho' : 'nao_lancada';
+    const concluded = recs.filter(r => r.concluida);
+    if (concluded.some(r => !r.grupoId)) return { status: 'concluida', parcial: false, faltam: 0 };
+    if (concluded.length) {
+        const done = new Set(concluded.map(r => lower(r.studentEmail)));
+        const faltam = students.filter(s => s && s.email && !isClosedStudentStatus(s.status) && !done.has(lower(s.email))).length;
+        if (!faltam) return { status: 'concluida', parcial: false, faltam: 0 };
+        return { status: 'rascunho', parcial: true, faltam };
+    }
+    return { status: recs.length ? 'rascunho' : 'nao_lancada', parcial: false, faltam: 0 };
 }
 
 // Aplicações da turma (courseId é opcional em aplicações antigas).
@@ -87,7 +100,8 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
         return { ...a, iniMin: ini, fimMin: fim };
     });
     const emCurso = bounds.find(a => a.iniMin != null && nowMin >= a.iniMin && nowMin < a.fimMin);
-    const chamadaStatus = chamadaStatusHoje(memory, cls, emails, today);
+    const chamada = chamadaResumoHoje(memory, cls, students, today);
+    const chamadaStatus = chamada.status;
 
     const aula = emCurso ? {
         ordem: emCurso.ordem,
@@ -97,6 +111,8 @@ function computeNow({ memory, cls, course, students, today, nowMin, now }) {
         fim: minToHHMM(emCurso.fimMin),
         toleranciaMin: cfg.toleranciaMin,
         chamadaStatus,
+        // Chamada feita só para um grupo (P5-S5): o resto da turma ainda falta.
+        ...(chamada.parcial ? { chamadaParcial: true } : {}),
     } : null;
 
     // Fora de horário: aponta a próxima aula (hoje mais tarde, ou nos próximos 7 dias).
@@ -197,12 +213,16 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
     // período letivo da turma o painel não cobra a chamada; FUN-15).
     const grade = cls ? academicCalendar.lessonsForDate(memory, cls, today) : [];
     if (grade.length && students.length) {
-        const status = chamadaStatusHoje(memory, cls, emails, today);
+        const { status, parcial, faltam } = chamadaResumoHoje(memory, cls, students, today);
         if (status !== 'concluida') {
+            const aulas = `${grade.length} ${grade.length === 1 ? 'aula' : 'aulas'} na grade de hoje`;
             items.push({
                 id: 'chamada_pendente', tipo: 'chamada_pendente',
-                titulo: status === 'rascunho' ? 'Chamada de hoje salva como rascunho' : 'Chamada de hoje não lançada',
-                detalhe: `${grade.length} ${grade.length === 1 ? 'aula' : 'aulas'} na grade de hoje · Chamada`,
+                titulo: parcial ? 'Chamada de hoje feita só para parte da turma'
+                    : status === 'rascunho' ? 'Chamada de hoje salva como rascunho' : 'Chamada de hoje não lançada',
+                detalhe: parcial
+                    ? `${aulas} · ${faltam} ${faltam === 1 ? 'aluno ainda sem chamada' : 'alunos ainda sem chamada'} · Chamada`
+                    : `${aulas} · Chamada`,
                 count: grade.length, tone: 'danger', href: '/chamada', permissao: 'page.dashboard',
             });
         }

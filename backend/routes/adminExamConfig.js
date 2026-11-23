@@ -271,13 +271,10 @@ function lockAnswerKeyForNewApplication(cls, examKey, actor) {
                 changedKeys.add(answerKey);
             }
         });
-        // Liberação por grupo (P5-S5): também volta a ficar bloqueada.
-        Object.values(cls.groupReleasedItems || {}).forEach(items => {
-            if (items && items[answerKey] === true) {
-                items[answerKey] = false;
-                changedKeys.add(answerKey);
-            }
-        });
+        // Liberação por grupo (P5-S5): também volta a ficar bloqueada. O mapa do grupo só
+        // guarda o que está liberado (D18): bloquear tira a chave (e o grupo, se ficar
+        // vazio), para o membro voltar a seguir a turma quando ela liberar de novo.
+        if (groupRules.clearGroupReleasesOf(cls, answerKey)) changedKeys.add(answerKey);
     });
     if (changedKeys.size) {
         if (!cls.releaseMeta) cls.releaseMeta = {};
