@@ -132,6 +132,8 @@ Tarefa é um trabalho com prazo que o aluno entrega pelo IClass: um arquivo (PDF
 
 **Copiar para outra turma.** Cria a mesma tarefa como rascunho noutra turma sua, com o prazo que você escolher (ou sem prazo). As entregas não vão junto.
 
+**A nota na média.** A nota devolvida aparece no quadro de notas de **Resultados** como uma coluna **Tarefa: título**, logo depois das provas do módulo da tarefa, e entra na média do aluno como uma avaliação de peso 1. A correção salva e ainda não devolvida aparece só para você. Desmarque **Conta na média** no formulário da tarefa para a nota aparecer sem entrar na média. Com os critérios de avaliação do curso ligados, a tarefa aparece no **Plano de avaliação** da turma, onde você escolhe a etapa e o peso; desmarcar **Conta na média** marca **Não conta** no plano, e o contrário também vale. Arquivar a tarefa tira as notas dela da média até reativar.
+
 A Coordenação vê as entregas, abre os arquivos e baixa o ZIP, mas não corrige.
 
 **Quando o aluno sai da escola.** Em **Cadastros encerrados**, **Anonimizar** guarda as entregas com um código no lugar do nome (a situação, as datas, o atraso e a nota ficam; o texto, o link, o seu comentário e o nome dos arquivos saem) e **Apagar de vez** tira as entregas. Nos dois casos, os arquivos vão para a lixeira de arquivos em **Sistema**, que só o administrador vê; na correção, o arquivo aparece como "tirado da entrega quando o cadastro do aluno foi anonimizado". O seu comentário, a observação da entrega em mãos e o motivo da prorrogação saem também da Auditoria. Ao arquivar um curso em **Turmas**, as tarefas e as entregas vão junto para o pacote do curso e voltam quando ele é restaurado.

@@ -137,7 +137,10 @@ describe('Nova tarefa', () => {
     await user.click(screen.getByLabelText('Aceitar com desconto na nota'))
     await user.clear(screen.getByLabelText('Desconto máximo (%)'))
     await user.type(screen.getByLabelText('Desconto máximo (%)'), '30')
+    // C18 / P1-j: o texto ao lado diz o que a escolha faz com a nota.
+    expect(screen.getByLabelText('Conta na média')).toHaveAccessibleDescription(/entra na média do aluno como uma avaliação de peso 1/)
     await user.click(screen.getByLabelText('Conta na média'))
+    expect(screen.getByLabelText('Conta na média')).toHaveAccessibleDescription('A nota devolvida aparece no quadro de notas, mas não entra na média.')
     await user.click(screen.getByRole('button', { name: 'Publicar' }))
     await waitFor(() => expect(mocks.post).toHaveBeenCalledTimes(1))
     expect(mocks.post).toHaveBeenCalledWith('/api/admin/assignments', {

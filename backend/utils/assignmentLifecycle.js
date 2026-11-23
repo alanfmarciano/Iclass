@@ -32,7 +32,10 @@
 // Se a gravação falhou, o efeito roda depois do COMMIT da regravação em segundo plano
 // (db.afterNextCommit), em vez de se perder. A regravação do pacote lê o curso.json de
 // novo e troca só as linhas do aluno, pelo id (dois anonimizar ao mesmo tempo não
-// desfazem um ao outro); restaurar o curso antes dela já traz a entrega como ficaria.
+// desfazem um ao outro); restaurar o curso antes dela já traz a entrega como ficaria. A
+// mudança que espera a regravação fica na fila do banco (assignmentBundleRewrites, C18),
+// gravada junto com o anonimizar/apagar: se a regravação falhar e o servidor desligar
+// antes da próxima gravação, o boot lê a fila e tenta de novo.
 //
 // Curso excluído de vez (adminArchive.js, D14): as tarefas e as entregas vão para o pacote
 // do curso (cursos_arquivados/<pasta>/curso.json, que vai nos backups) e os arquivos
@@ -41,6 +44,7 @@
 // Restaurar o curso traz os registros e os arquivos de volta; excluir o pacote manda os
 // arquivos para a lixeira, com lápide ('excluir_curso').
 // ---------------------------------------------------------------------------
+const crypto = require('crypto');
 const fs = require('fs');
 const path = require('path');
 const runtimePaths = require('../runtimePaths.js');
@@ -394,28 +398,152 @@ function applyBundleChange(rows, change) {
 }
 
 // O que já foi aceito (o passo do anonimizar/apagar deu certo) e ainda não foi regravado
-// no pacote, por pasta: a regravação espera a gravação do banco (e, se ela falhou, a
-// regravação em segundo plano). Restaurar o curso nesse meio-tempo aplica estas mudanças
-// às entregas que voltam (pendingBundleChangesApplied), em vez de trazer do pacote ainda
-// não regravado o texto e o e-mail de quem já saiu.
-const pendingBundleChanges = new Map();
+// no pacote fica na fila do banco (coleção assignmentBundleRewrites, C18; antes ficava só
+// na memória e se perdia se o servidor desligasse antes da próxima gravação, e restaurar o
+// curso depois trazia de volta a entrega do aluno anonimizado). A linha entra na mesma
+// gravação do anonimizar/apagar e só sai quando a regravação deu certo (ou o pacote já
+// saiu: curso restaurado ou pacote excluído). Restaurar o curso nesse meio-tempo aplica
+// estas mudanças às entregas que voltam (pendingBundleChangesApplied), em vez de trazer
+// do pacote ainda não regravado o texto e o e-mail de quem já saiu. A fila é relida no
+// boot (processPendingBundleRewrites no prepareServer) e tentada de novo depois de cada
+// gravação enquanto houver pendência.
+// Linha: { id 'pbr_<ms>_<6 hex>', schemaVersion 1, folder (pasta do pacote em
+//   cursos_arquivados), mode 'anonymize'|'purge', ids (ids das entregas), pseudonimoEmail
+//   (o e-mail do pseudônimo, só no anonymize), at (ms do passo), criadaEm }. Nada de dado
+//   pessoal: só ids e o pseudônimo.
+const BUNDLE_QUEUE = 'assignmentBundleRewrites';
+const BUNDLE_QUEUE_MODES = Object.freeze(['anonymize', 'purge']);
 
-function addPendingBundleChange(folder, change) {
-    if (!pendingBundleChanges.has(folder)) pendingBundleChanges.set(folder, []);
-    pendingBundleChanges.get(folder).push(change);
+function bundleQueue(memory) {
+    if (!memory) return [];
+    if (!Array.isArray(memory[BUNDLE_QUEUE])) memory[BUNDLE_QUEUE] = [];
+    return memory[BUNDLE_QUEUE];
 }
 
-function dropPendingBundleChange(folder, change) {
-    const items = pendingBundleChanges.get(folder);
-    if (!items) return;
-    const index = items.indexOf(change);
-    if (index >= 0) items.splice(index, 1);
-    if (!items.length) pendingBundleChanges.delete(folder);
+function newBundleQueueId(now = Date.now()) {
+    return `pbr_${now}_${crypto.randomBytes(3).toString('hex')}`;
+}
+
+// A mudança de uma linha da fila ({ mode, ids: Set, pseudonimo, at }), ou null quando a
+// linha não serve (gravada estragada: sai da fila sem mexer no pacote).
+function changeFromQueueRow(row) {
+    if (!isObject(row) || typeof row.folder !== 'string' || !BUNDLE_QUEUE_MODES.includes(row.mode)) return null;
+    const ids = new Set(list(row.ids).filter(id => typeof id === 'string' && id));
+    if (!ids.size) return null;
+    const email = normalizeEmail(row.pseudonimoEmail);
+    if (row.mode === 'anonymize' && !email) return null;
+    const at = Number.isFinite(Number(row.at)) ? Number(row.at) : Date.now();
+    return { mode: row.mode, ids, pseudonimo: row.mode === 'anonymize' ? { email } : null, at };
+}
+
+function queueBundleChange(memory, folder, change, now = Date.now()) {
+    const row = {
+        id: newBundleQueueId(now),
+        schemaVersion: 1,
+        folder,
+        mode: change.mode,
+        ids: [...change.ids],
+        pseudonimoEmail: change.mode === 'anonymize' ? normalizeEmail(change.pseudonimo && change.pseudonimo.email) : null,
+        at: change.at,
+        criadaEm: now,
+    };
+    bundleQueue(memory).push(row);
+    return row;
+}
+
+function dropQueueRow(memory, rowId) {
+    const rows = memory && Array.isArray(memory[BUNDLE_QUEUE]) ? memory[BUNDLE_QUEUE] : null;
+    if (!rows) return false;
+    const index = rows.findIndex(item => isObject(item) && item.id === rowId);
+    if (index < 0) return false;
+    rows.splice(index, 1);
+    return true;
+}
+
+// As mudanças que esperam a regravação do pacote (folder), na ordem em que entraram.
+function pendingChangesFor(memory, folder) {
+    return list(memory && memory[BUNDLE_QUEUE])
+        .filter(row => isObject(row) && row.folder === folder)
+        .sort((a, b) => (Number(a.criadaEm) || 0) - (Number(b.criadaEm) || 0))
+        .map(changeFromQueueRow)
+        .filter(Boolean);
 }
 
 // As entregas do pacote (folder) com as mudanças que ainda esperam a regravação dele.
-function pendingBundleChangesApplied(folder, rows) {
-    return list(pendingBundleChanges.get(folder)).reduce((current, change) => applyBundleChange(current, change), list(rows));
+// memory: a memória do banco (db.memory), onde fica a fila.
+function pendingBundleChangesApplied(folder, rows, memory) {
+    return pendingChangesFor(memory, folder).reduce((current, change) => applyBundleChange(current, change), list(rows));
+}
+
+// O curso.json do pacote de uma linha da fila (a pasta conferida como pedaço de caminho).
+function bundleFileOf(folder) {
+    return path.join(runtimePaths.ARCHIVE_DIR, assertSafeId(folder), 'curso.json');
+}
+
+// Falhas já registradas no crash.log (uma vez por linha da fila em cada execução).
+const loggedQueueFailures = new Set();
+let queueRetryWaiting = false;
+
+// Tenta de novo cada regravação pendente da fila. Uma linha sai quando a regravação deu
+// certo ou não tem mais o que fazer (pacote que já saiu, linha estragada); a que falha
+// fica e é tentada depois da próxima gravação que der certo (afterNextCommit). Só grava a
+// fila (save({ only: [fila] })) quando alguma linha saiu: a falha não grava nada (senão
+// cada tentativa puxaria outra). Devolve { feitas, pendentes, gravacao (promessa) }.
+function processPendingBundleRewrites(memory, { save = null, afterNextCommit = null } = {}) {
+    const rows = list(memory && memory[BUNDLE_QUEUE]).slice()
+        .sort((a, b) => (Number(a && a.criadaEm) || 0) - (Number(b && b.criadaEm) || 0));
+    let feitas = 0;
+    let pendentes = 0;
+    rows.forEach(row => {
+        const rowId = isObject(row) ? row.id : null;
+        const change = changeFromQueueRow(row);
+        let file = null;
+        if (change) {
+            try { file = bundleFileOf(row.folder); } catch (e) { file = null; }
+        }
+        if (!change || !file) {
+            logError(`assignmentLifecycle: pendência de regravação de pacote inválida saiu da fila (${rowId || 'sem id'})`, new Error('linha da fila sem pasta, modo ou entregas válidos'));
+            if (dropQueueRow(memory, rowId)) feitas += 1;
+            return;
+        }
+        try {
+            rewriteBundleWithChange(row.folder, file, change);
+        } catch (error) {
+            pendentes += 1;
+            if (!loggedQueueFailures.has(rowId)) {
+                loggedQueueFailures.add(rowId);
+                logError(`assignmentLifecycle: pacote do curso excluído não foi regravado (${row.folder}); a mudança continua pendente no banco e a regravação tenta de novo depois da próxima gravação e no próximo boot`, error);
+            }
+            return;
+        }
+        loggedQueueFailures.delete(rowId);
+        if (dropQueueRow(memory, rowId)) feitas += 1;
+    });
+    let gravacao = Promise.resolve();
+    if (feitas && typeof save === 'function') {
+        try {
+            gravacao = Promise.resolve(save({ only: [BUNDLE_QUEUE] }));
+        } catch (error) {
+            gravacao = Promise.reject(error);
+        }
+        // A fila sem as linhas feitas vai ao disco agora ou na regravação em segundo plano;
+        // se o processo cair antes, o boot tenta de novo (a regravação repetida não muda o
+        // pacote, e a linha sai).
+        gravacao = gravacao.catch(error => {
+            if (!error || error.code !== 'ICLASS_DB_WRITE') logError('assignmentLifecycle: a fila de regravações de pacote não foi gravada agora', error);
+        });
+    }
+    if (pendentes && typeof afterNextCommit === 'function' && !queueRetryWaiting) {
+        let waiting = false;
+        try {
+            waiting = afterNextCommit(() => {
+                queueRetryWaiting = false;
+                processPendingBundleRewrites(memory, { save, afterNextCommit });
+            }) !== false;
+        } catch (e) { waiting = false; }
+        queueRetryWaiting = waiting;
+    }
+    return { feitas, pendentes, gravacao };
 }
 
 // Regrava o pacote com uma mudança: lê o curso.json de novo na hora (outro anonimizar ou
@@ -435,9 +563,10 @@ function rewriteBundleWithChange(folder, file, change) {
 
 // As entregas do aluno nos pacotes: grava as lápides na memória e devolve { ids, effect }:
 // os ids das entregas (para limpar a auditoria) e o efeito ({ accepted, afterSave }, ou
-// null sem nada a fazer). accepted() põe a mudança na lista do que espera a regravação;
-// afterSave() regrava o pacote (rewriteBundleWithChange) e manda os arquivos do pacote (e
-// os que ficaram em data/entregas) para a lixeira.
+// null sem nada a fazer). accepted() põe a mudança na fila do banco do que espera a
+// regravação (assignmentBundleRewrites, C18); afterSave() regrava o pacote
+// (processPendingBundleRewrites) e manda os arquivos do pacote (e os que ficaram em
+// data/entregas) para a lixeira.
 function archivedBundleChanges(memory, aluno, { mode, pseudonimo, at }) {
     const isHis = ownedBy(aluno);
     const reason = mode === 'anonymize' ? 'anonimizar' : 'apagar_aluno';
@@ -456,30 +585,18 @@ function archivedBundleChanges(memory, aluno, { mode, pseudonimo, at }) {
         jobs.push({ folder, file, files, change: { mode, ids: changeIds, pseudonimo, at } });
     });
     if (!jobs.length) return { ids, effect: null };
-    const accepted = () => jobs.forEach(job => addPendingBundleChange(job.folder, job.change));
-    // A regravação que falha (disco cheio, antivírus segurando o arquivo) deixa a mudança
-    // na lista do que espera: restaurar o curso nesse meio-tempo continua trazendo a entrega
-    // como ficaria (D14/LGPD), e a regravação tenta de novo depois do próximo COMMIT
-    // (afterNextCommit, quando quem chama passa). A mudança só sai da lista quando a
-    // regravação deu certo ou o pacote já saiu (J2, pendência do C10).
-    const rewriteOrKeep = (job, afterNextCommit, attempt = 1) => {
-        try {
-            rewriteBundleWithChange(job.folder, job.file, job.change);
-        } catch (error) {
-            if (attempt === 1) logError(`assignmentLifecycle: pacote do curso excluído não foi regravado (${job.folder}); a mudança continua pendente e a regravação tenta de novo depois da próxima gravação`, error);
-            let waiting = false;
-            if (typeof afterNextCommit === 'function') {
-                try { waiting = afterNextCommit(() => rewriteOrKeep(job, afterNextCommit, attempt + 1)) !== false; } catch (e) { waiting = false; }
-            }
-            if (!waiting && attempt === 1) logError(`assignmentLifecycle: a regravação do pacote (${job.folder}) fica pendente até reiniciar o servidor`, error);
-            return false;
-        }
-        dropPendingBundleChange(job.folder, job.change);
-        return true;
-    };
-    const afterSave = ({ deletedBy, afterNextCommit = null } = {}) => {
+    // Aceito o passo (antes da gravação do banco): a mudança entra na fila do banco, na
+    // mesma gravação do anonimizar/apagar (C18).
+    const accepted = () => jobs.forEach(job => { job.row = queueBundleChange(memory, job.folder, job.change); });
+    // Depois da gravação: a regravação do pacote. A que falha (disco cheio, antivírus
+    // segurando o arquivo) deixa a linha na fila: restaurar o curso nesse meio-tempo
+    // continua trazendo a entrega como ficaria (D14/LGPD), e a regravação tenta de novo
+    // depois da próxima gravação e no próximo boot, mesmo que o servidor desligue antes
+    // (J2, pendência do C10; C18). A linha só sai quando a regravação deu certo ou o pacote
+    // já saiu.
+    const afterSave = ({ deletedBy, afterNextCommit = null, save = null } = {}) => {
+        processPendingBundleRewrites(memory, { save, afterNextCommit });
         jobs.forEach(job => {
-            rewriteOrKeep(job, afterNextCommit);
             moveFilesToTrash(job.files, { deletedBy, resolve: item => archivedAbsFor(job.folder, item.storedRel) });
             // O que ficou em data/entregas (o arquivamento não tinha conseguido mover, ou o
             // curso foi restaurado antes desta hora).
@@ -925,6 +1042,8 @@ module.exports = {
     scrubSubmissionAuditText,
     followCurrentStudentEmails,
     pendingBundleChangesApplied,
+    processPendingBundleRewrites,
+    BUNDLE_QUEUE,
     courseAssignmentRecords,
     archivedBundleFileRefs,
     archiveCourseAssignmentFiles,

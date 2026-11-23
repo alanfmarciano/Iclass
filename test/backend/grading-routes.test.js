@@ -803,7 +803,8 @@ test('[UC-NOTAS-005] provedor de itens (C2): os itens entram no plano e no quadr
         unregister();
         broken();
     }
-    assert.equal(gradebook.gradeItemProviderList().length, 0);
+    // Só os provedores deste teste saem; o da tarefa (C18 / P1-j) fica sempre registrado.
+    assert.deepEqual(gradebook.gradeItemProviderList().map(provider => provider.origem), ['tarefa']);
 });
 
 // ------------------------------------------------------------------ conta (gradingRules)

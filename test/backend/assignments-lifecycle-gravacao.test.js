@@ -219,12 +219,19 @@ test('[UC-ENCERRADOS-002] regravação do pacote do curso excluído falha: a mud
     // O pacote continua com o dado (a regravação falhou), mas a mudança está pendente:
     // restaurar nesse meio-tempo traz a entrega como ficaria.
     assert.equal(fs.readFileSync(bundleFile, 'utf8').includes('TXT_EVA'), true);
-    const pending = assignmentLifecycle.pendingBundleChangesApplied(folder, JSON.parse(fs.readFileSync(bundleFile, 'utf8')).assignmentSubmissions);
+    const pending = assignmentLifecycle.pendingBundleChangesApplied(folder, JSON.parse(fs.readFileSync(bundleFile, 'utf8')).assignmentSubmissions, db.memory);
     assert.equal(JSON.stringify(pending).includes('TXT_EVA'), false);
     assert.equal(pending.find(item => item.id === sub.id).anonymized, true);
+    // A pendência fica gravada no banco (C18): sobrevive a desligar o servidor (o caso de
+    // desligar e religar está em assignments-bundle-queue-boot.test.js).
+    const queue = db.memory[assignmentLifecycle.BUNDLE_QUEUE];
+    assert.equal(queue.length, 1);
+    assert.equal(queue[0].folder, folder);
+    assert.equal(queue[0].mode, 'anonymize');
     // A próxima gravação (de qualquer rota) leva a regravação do pacote.
     await db.save();
     await waitFor(() => !fs.readFileSync(bundleFile, 'utf8').includes('TXT_EVA'), 5000, 'regravação do pacote');
+    await waitFor(() => db.memory[assignmentLifecycle.BUNDLE_QUEUE].length === 0, 5000, 'fila vazia');
     ['TXT_EVA', 'ARQ_EVA', 'eva@trava.local'].forEach(piece => assert.equal(fs.readFileSync(bundleFile, 'utf8').includes(piece), false, piece));
     const restored = await asAdmin(request(app).post('/api/admin/archived-courses/restore')).send({ folder });
     assert.equal(restored.status, 200, JSON.stringify(restored.body));

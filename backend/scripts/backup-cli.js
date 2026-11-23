@@ -686,6 +686,15 @@ async function internalAfterRestore(previousDb) {
             if (entry.missing === 'keep' && count > 0) kept.push({ colecao: entry.collection, rotulo: COLLECTION_LABELS[entry.collection] || entry.collection, atual: count });
         });
     }
+    // Regravações pendentes dos pacotes de curso excluído (C18, LGPD): o pacote fica em
+    // cursos_arquivados, que a restauração não troca, então a pendência de antes continua
+    // valendo (como 'merge' na tela): junta a do banco de antes com a do backup, pelo id.
+    // O próximo boot tenta cada uma de novo.
+    const queueEntry = db.COLLECTION_TABLES.find(entry => entry.collection === 'assignmentBundleRewrites');
+    if (previous && queueEntry && !previousAbsent.has(queueEntry.collection) && Array.isArray(previous[queueEntry.collection]) && previous[queueEntry.collection].length) {
+        const { mergeRowsByKey } = require('../utils/backup.js');
+        db.memory[queueEntry.collection] = mergeRowsByKey(queueEntry, Array.isArray(db.memory[queueEntry.collection]) ? db.memory[queueEntry.collection] : [], previous[queueEntry.collection]);
+    }
     const before = (db.memory.auditLogs || []).length;
     await db.runAfterRestore(db.memory, {
         keepNetwork: !!previous,

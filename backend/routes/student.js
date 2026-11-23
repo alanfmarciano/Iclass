@@ -120,6 +120,7 @@ const { visibleLibraryEntries } = require('../utils/studentLibrary.js');
 const { recordAudit } = require('../utils/audit.js');
 const { previewToken } = require('../utils/previewAccess.js');
 const { keystrokeModeOf } = require('../utils/keystrokePolicy.js');
+const { assignmentGradeEntries } = require('../utils/assignments.js');
 const {
     attemptContextForStudent,
     collectiveTimeOverForNewAttempt,
@@ -2460,6 +2461,10 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
                 const manualTitle = manualAssessmentTitle([gradesCls], latest.examKey);
                 return { id: latest.id, examKey: latest.examKey, ...(manualTitle ? { title: manualTitle } : {}), timestamp: latest.timestamp, note: roundGrade(group.score) };
             })
+            // A nota devolvida das tarefas (C18 / P1-j), na hora da devolução: a mesma de
+            // assignmentGradeEntries (só a devolvida, já com o desconto de atraso).
+            .concat(assignmentGradeEntries(db.memory, { courseId: String(gradesCls.courseId || courseId || ''), studentClass: gradesCls.name, students: [email], published: true })
+                .map(entry => ({ id: entry.columnId, examKey: entry.assignmentId, title: `Tarefa: ${entry.title}`, timestamp: entry.returnedAt, note: roundGrade(entry.score) })))
             .sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0))
             .slice(-5)
             .map(({ timestamp, ...item }) => item),

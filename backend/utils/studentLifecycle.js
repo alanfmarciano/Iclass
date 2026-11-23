@@ -685,7 +685,15 @@ function afterCommitEffects(db, saved, effects, { mode, deletedBy }) {
         if (ran) return;
         ran = true;
         effects.forEach(effect => {
-            try { effect.afterSave({ deletedBy, afterNextCommit: typeof db.afterNextCommit === 'function' ? db.afterNextCommit : null }); } catch (error) { logError(`studentLifecycle: efeito em disco de coleção nova falhou (${mode})`, error); }
+            try {
+                effect.afterSave({
+                    deletedBy,
+                    afterNextCommit: typeof db.afterNextCommit === 'function' ? db.afterNextCommit : null,
+                    // Para o efeito gravar o que ele mesmo muda depois (C18: a linha da fila de
+                    // regravação do pacote do curso excluído que deu certo sai do banco).
+                    save: typeof db.save === 'function' ? options => db.save(options) : null,
+                });
+            } catch (error) { logError(`studentLifecycle: efeito em disco de coleção nova falhou (${mode})`, error); }
         });
     };
     return saved.then(run, error => {

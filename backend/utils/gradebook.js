@@ -586,9 +586,11 @@ function newManualItemId() {
 // Provedor de itens de avaliação que não são prova (contrato C2 do P2):
 // registerGradeItemProvider({
 //   origem: 'tarefa',
-//   items(course, cls, memory) => [{ id, titulo, moduloId?, data?, fora? }]
+//   items(course, cls, memory) => [{ id, titulo, moduloId?, data?, fora?, tipoRotulo?, arquivado? }]
 //     os itens da turma (fora: true = "Conta na média" desmarcado, o padrão do item no plano
-//     enquanto o professor não mexer nele);
+//     enquanto o professor não mexer nele; tipoRotulo: 'Tarefa', a coluna do quadro sai
+//     como 'Tarefa: <título>'; arquivado: a nota fica guardada e sai da média com aviso,
+//     como a da avaliação manual arquivada);
 //   entries(memory, { course, cls, courseId, studentClass, emails, publishedOnly })
 //     => [{ itemId, email, studentId?, score (0 a 100), publicada }]
 //     as notas da turma (emails: lista de e-mails minúsculos para limitar, ou null para
@@ -710,12 +712,19 @@ function classGradingContext(memory, { course = null, cls = null, structure = nu
         callGradeItemProvider(provider, 'items', [course, cls, mem]).forEach(raw => {
             const id = raw && typeof raw.id === 'string' ? raw.id.trim() : '';
             if (!id || id.length > gradingRules.LIMITES.itemIdMax || isManualItemId(id) || examIndex.has(id)) return;
+            const tipoRotulo = typeof raw.tipoRotulo === 'string' ? raw.tipoRotulo.trim().slice(0, 40) : '';
             push({
                 id,
                 titulo: String(raw.titulo || raw.title || id).slice(0, 200),
                 origem: provider.origem,
                 moduloId: typeof raw.moduloId === 'string' && moduleNames.has(raw.moduloId) ? raw.moduloId : null,
                 data: typeof raw.data === 'string' ? raw.data : null,
+                // Rótulo do tipo ('Tarefa', C18 / P1-j): a coluna do quadro sai como
+                // '<rótulo>: <título>' e o boletim e Minhas notas mostram o rótulo ao lado.
+                ...(tipoRotulo ? { tipoRotulo } : {}),
+                // Item arquivado do provedor (tarefa arquivada, C18): como a avaliação manual
+                // arquivada, a nota fica guardada e na célula, e sai da média com aviso.
+                ...(raw.arquivado === true ? { arquivado: true } : {}),
             });
             if (raw.fora === true) foraPadrao.add(id);
         });
@@ -1169,8 +1178,14 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
         // Campos novos só onde valem (a coluna de prova da regra antiga sai como sempre).
         if (itemOfOtherOrigin) {
             column.origem = itemOfOtherOrigin.origem;
-            if (itemOfOtherOrigin.tipoRotulo) column.tipo = itemOfOtherOrigin.tipoRotulo;
+            // Item de provedor com rótulo (C18, D15 do P1): 'Tarefa: <título>' na coluna e na
+            // planilha; a avaliação manual continua com o tipo ao lado ('Trabalho').
+            if (itemOfOtherOrigin.tipoRotulo && itemOfOtherOrigin.origem !== 'manual') column.label = `${itemOfOtherOrigin.tipoRotulo}: ${column.label}`;
+            else if (itemOfOtherOrigin.tipoRotulo) column.tipo = itemOfOtherOrigin.tipoRotulo;
             if (itemOfOtherOrigin.arquivado) column.arquivado = true;
+            // Regra antiga: o item de provedor fora da média ("Conta na média" desmarcado) fica
+            // na coluna, sem cor e fora da média da linha (com critérios quem diz é column.fora).
+            else if (!withCriteria && isLegacyProviderOut(grading, { examKey })) column.foraDaMedia = true;
         }
         if (withCriteria) {
             const plan = planItemView(grading, examKey);
@@ -1186,11 +1201,26 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
     // Ordem: estrutura do curso; provas sem nota também ganham coluna. Depois as avaliações
     // manuais e os itens dos provedores (os ativos, com nota ou não; os arquivados, só com
     // nota) e, por fim, as provas fora da estrutura.
-    const orderedExamKeys = [...examIndex.keys()];
+    // O item de provedor ligado a um módulo (a tarefa, D15 do P1) entra logo depois das
+    // provas desse módulo; sem módulo, depois das avaliações manuais. Sem itens de provedor
+    // com módulo, a ordem é a de sempre.
+    const moduleOrder = new Map();
+    (Array.isArray(structure) ? structure : []).forEach((module, index) => {
+        if (!module || typeof module !== 'object') return;
+        const id = structureModuleId(module, index);
+        if (!moduleOrder.has(id)) moduleOrder.set(id, index);
+    });
+    const head = [...examIndex.keys()].map((key, position) => ({ key, rank: [moduleOrder.has(examIndex.get(key).moduleId) ? moduleOrder.get(examIndex.get(key).moduleId) : Number.MAX_SAFE_INTEGER, 0, position] }));
+    const tail = [];
     if (grading) {
         grading.itens.filter(item => item.origem !== 'prova' && (!item.arquivado || scopesByExam.has(item.id)))
-            .forEach(item => orderedExamKeys.push(item.id));
+            .forEach((item, position) => {
+                if (item.origem !== 'manual' && item.moduloId && moduleOrder.has(item.moduloId)) head.push({ key: item.id, rank: [moduleOrder.get(item.moduloId), 1, position] });
+                else tail.push(item.id);
+            });
     }
+    head.sort((a, b) => a.rank[0] - b.rank[0] || a.rank[1] - b.rank[1] || a.rank[2] - b.rank[2]);
+    const orderedExamKeys = [...head.map(entry => entry.key), ...tail];
     const listed = new Set(orderedExamKeys);
     [...scopesByExam.keys()].filter(key => !listed.has(key)).sort((a, b) => a.localeCompare(b, 'pt-BR')).forEach(key => orderedExamKeys.push(key));
     orderedExamKeys.forEach(examKey => {

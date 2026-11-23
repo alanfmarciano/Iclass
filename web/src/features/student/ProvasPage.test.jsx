@@ -215,6 +215,37 @@ describe('Provas do aluno · avaliação manual da turma', () => {
   })
 })
 
+describe('Provas do aluno · notas das tarefas (C18)', () => {
+  it('[UC-TAREFAS-003] sem critérios, "Minhas notas" lista as tarefas devolvidas com a nota e o link para a atividade; a que não conta na média vem marcada', async () => {
+    mocks.submissions = [sub('a1', { score: 70 })]
+    mocks.summary = summary({
+      notasPublicadas: 3, mediaFinal: 8,
+      itens: [
+        { id: 'Avaliacao_FUTEC_1', titulo: 'Prova 1', moduloId: null, modulo: 'Outras avaliações', nota: 7, publicada: true },
+        { id: 'asg_1', titulo: 'Relatório de redes', origem: 'tarefa', tipo: 'Tarefa', moduloId: null, modulo: 'Outras avaliações', nota: 9, publicada: true },
+        { id: 'asg_2', titulo: 'Exercício extra', origem: 'tarefa', tipo: 'Tarefa', moduloId: null, modulo: 'Outras avaliações', nota: 2, publicada: true, foraDaMedia: true },
+        { id: 'asg_3', titulo: 'Ainda sem nota', origem: 'tarefa', tipo: 'Tarefa', moduloId: null, modulo: 'Outras avaliações', nota: null, publicada: false },
+      ],
+    })
+    render(<MemoryRouter><ProvasPage /></MemoryRouter>)
+    const heading = await screen.findByRole('heading', { name: 'Tarefas' })
+    const list = heading.parentElement
+    const link = within(list).getByRole('link', { name: /Relatório de redes/ })
+    expect(link).toHaveAttribute('href', '/aluno/atividades/asg_1')
+    expect(link.closest('li')).toHaveTextContent('9,0')
+    expect(within(list).getByRole('link', { name: /Exercício extra · fora da média/ }).closest('li')).toHaveTextContent('2,0')
+    expect(within(list).queryByText(/Ainda sem nota/)).not.toBeInTheDocument()
+  })
+
+  it('[UC-TAREFAS-003] sem tarefa devolvida, "Minhas notas" não ganha a lista de tarefas', async () => {
+    mocks.submissions = [sub('a1', { score: 70 })]
+    mocks.summary = summary({ notasPublicadas: 1, mediaFinal: 7, itens: [{ id: 'Avaliacao_FUTEC_1', titulo: 'Prova 1', moduloId: null, modulo: 'Outras avaliações', nota: 7, publicada: true }] })
+    render(<MemoryRouter><ProvasPage /></MemoryRouter>)
+    await screen.findByText('Melhor nota')
+    expect(screen.queryByRole('heading', { name: 'Tarefas' })).not.toBeInTheDocument()
+  })
+})
+
 describe('Provas do aluno · avaliação manual arquivada', () => {
   it('[UC-NOTAS-006] nota de avaliação arquivada aparece fora da média, igual ao Início e ao boletim', async () => {
     // my-submissions marca a entrega da avaliação arquivada (assessmentArchived, sem nota

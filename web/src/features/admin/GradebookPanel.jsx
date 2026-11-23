@@ -11,6 +11,9 @@ import { displayEmail } from '../../lib/studentProfile'
 // (ou por aplicação, quando a mesma prova foi aplicada mais de uma vez) e a média.
 // Vem do mesmo cálculo do servidor usado no boletim e na planilha exportada.
 //
+// As tarefas (C18 / P1-j) entram como colunas 'Tarefa: <título>', logo depois das provas do
+// módulo delas; na regra antiga, a que não conta na média vem marcada "fora da média".
+//
 // Com os critérios do curso ligados (B9 / P2-S4, FUN-02): as colunas se agrupam por
 // etapa ("Etapa 1 · peso 2"), cada etapa ganha a coluna da média dela (já com a
 // recuperação), e vêm a média final, a frequência, a situação e a menção, tudo pronto do
@@ -78,6 +81,7 @@ function columnTitle(column) {
   if (column.recuperacaoDe) parts.push('recuperação')
   if (column.peso !== undefined && Number(column.peso) !== 1) parts.push(`peso ${fmtWeight(column.peso)}`)
   if (column.arquivado) parts.push('arquivada, fora da média')
+  else if (column.foraDaMedia) parts.push('não conta na média')
   return parts.filter(Boolean).join(' · ')
 }
 
@@ -178,8 +182,8 @@ function PhoneList({ gradebook, criterio, withCriteria, groups, onOpenStudent })
                   <ul className="space-y-1">
                     {columns.map((column) => (
                       <li key={column.id} className="flex items-start justify-between gap-2">
-                        <span className="min-w-0 break-words text-text">{column.label}</span>
-                        <span className="shrink-0 tabular-nums"><Cell cell={row.cells?.[column.id]} criterio={criterio} muted={!!column.arquivado} /></span>
+                        <span className="min-w-0 break-words text-text">{column.label}{column.foraDaMedia ? <span className="text-xs text-muted"> · fora da média</span> : null}</span>
+                        <span className="shrink-0 tabular-nums"><Cell cell={row.cells?.[column.id]} criterio={criterio} muted={!!column.arquivado || !!column.foraDaMedia} /></span>
                       </li>
                     ))}
                   </ul>
@@ -256,7 +260,9 @@ export function GradebookPanel({ courseId, studentClass, refreshKey, onExport, o
                       )),
                       ...(group.etapa ? [<th key={`${group.key}-media`} scope="col" className={`px-3 py-2 text-right font-semibold text-text ${group.colunas.length === 0 ? 'border-l border-border' : ''}`}>Média da etapa</th>] : []),
                     ]) : columns.map((column) => (
-                      <th key={column.id} scope="col" className="max-w-[12rem] px-3 py-2 text-right font-semibold" title={columnTitle(column)}>{column.label}</th>
+                      <th key={column.id} scope="col" className="max-w-[12rem] px-3 py-2 text-right font-semibold" title={columnTitle(column)}>
+                        {column.label}{column.foraDaMedia ? <span className="block text-[10px] font-normal text-subtle">fora da média</span> : null}
+                      </th>
                     ))}
                     {withCriteria ? (
                       <>
@@ -292,7 +298,7 @@ export function GradebookPanel({ courseId, studentClass, refreshKey, onExport, o
                             </td>,
                           ] : []),
                         ]) : columns.map((column) => (
-                          <td key={column.id} className="px-3 py-2 text-right tabular-nums text-text"><Cell cell={row.cells?.[column.id]} criterio={criterio} muted={!!column.arquivado} /></td>
+                          <td key={column.id} className="px-3 py-2 text-right tabular-nums text-text"><Cell cell={row.cells?.[column.id]} criterio={criterio} muted={!!column.arquivado || !!column.foraDaMedia} /></td>
                         ))}
                         {withCriteria ? (
                           <>

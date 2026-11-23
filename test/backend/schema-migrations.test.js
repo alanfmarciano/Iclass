@@ -24,8 +24,11 @@ const preload = path.join(__dirname, 'fixtures', 'registro-de-teste.js');
 const cli = path.join(__dirname, '..', '..', 'backend', 'scripts', 'backup-cli.js');
 const publishedFile = path.join(__dirname, 'fixtures', 'migracoes-publicadas.json');
 const legacyBackup = path.join(__dirname, 'fixtures', 'backup-versao-anterior.json');
+// Tabelas que a fase 3 cria vazias (CREATE TABLE IF NOT EXISTS); a das regravações
+// pendentes de pacote de curso (assignment_bundle_rewrites) veio no C18.
 const NEW_TABLES = ['schema_meta', 'assignments', 'assignment_submissions', 'assignment_file_tombstones', 'academic_terms',
-    'non_school_days', 'class_diary', 'class_groups', 'conversations', 'conversation_messages', 'guardian_contacts'];
+    'non_school_days', 'class_diary', 'class_groups', 'conversations', 'conversation_messages', 'guardian_contacts',
+    'assignment_bundle_rewrites'];
 
 test.after(() => {
     fs.rmSync(tempRoot, { recursive: true, force: true });
@@ -617,6 +620,7 @@ test('[UC-ESQUEMA-004] tabelas novas no registro: rótulos, missing keep, origen
         conversations: 'conversations',
         conversationMessages: 'conversation_messages',
         guardianContacts: 'guardian_contacts',
+        assignmentBundleRewrites: 'assignment_bundle_rewrites',
     };
     Object.entries(expected).forEach(([collection, table]) => {
         const entry = db.COLLECTION_TABLES.find(item => item.collection === collection);
@@ -628,6 +632,8 @@ test('[UC-ESQUEMA-004] tabelas novas no registro: rótulos, missing keep, origen
     assert.equal(db.COLLECTION_TABLES.find(item => item.collection === 'assignmentFileTombstones').key, 'fileId');
     assert.equal(db.COLLECTION_TABLES.find(item => item.collection === 'assignmentFileTombstones').restore, 'merge');
     assert.equal(db.COLLECTION_TABLES.find(item => item.collection === 'schemaMeta').restore, 'keep');
+    // A fila das regravações pendentes de pacote de curso (C18) junta na restauração.
+    assert.equal(db.COLLECTION_TABLES.find(item => item.collection === 'assignmentBundleRewrites').restore, 'merge');
     assert.equal(db.afterRestore[0].name, 'schemaMigrations');
     // Origens novas e a retenção delas.
     assert.ok(store.BACKUP_ORIGINS.includes('pre-atualizacao'));

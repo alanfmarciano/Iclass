@@ -359,10 +359,17 @@ export default function TarefaForm() {
                   </div>
                 )}
                 <p className="text-sm text-muted">O aluno lê: “{latePolicyText({ mode: form.lateMode, penaltyPerDayPct: form.penaltyPerDayPct, penaltyMaxPct: form.penaltyMaxPct })}”</p>
-                <label className="flex min-h-[44px] items-center gap-2 text-sm text-text">
-                  <input type="checkbox" checked={form.countsInAverage} onChange={(event) => change({ countsInAverage: event.target.checked })} />
-                  Conta na média
-                </label>
+                <div>
+                  <label className="flex min-h-[44px] items-center gap-2 text-sm text-text">
+                    <input type="checkbox" checked={form.countsInAverage} aria-describedby="tarefa-conta-media-ajuda" onChange={(event) => change({ countsInAverage: event.target.checked })} />
+                    Conta na média
+                  </label>
+                  <p id="tarefa-conta-media-ajuda" className="text-sm text-muted">
+                    {form.countsInAverage
+                      ? 'A nota devolvida entra na média do aluno como uma avaliação de peso 1, e aparece no quadro de notas como "Tarefa: título". Etapa e peso ficam em Resultados > Plano de avaliação.'
+                      : 'A nota devolvida aparece no quadro de notas, mas não entra na média.'}
+                  </p>
+                </div>
               </Card>
             </fieldset>
 

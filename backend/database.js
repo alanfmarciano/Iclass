@@ -450,6 +450,11 @@ const COLLECTION_TABLES = Object.freeze([
     tableEntry('assignmentSubmissions', 'assignment_submissions', 'array', 'id', { missing: 'keep' }),
     // Lápides dos arquivos de entrega removidos (P1): chave fileId, sem id próprio.
     tableEntry('assignmentFileTombstones', 'assignment_file_tombstones', 'array', 'fileId', { append: true, restore: 'merge' }),
+    // Regravações pendentes dos pacotes de curso excluído (C18, LGPD): a mudança do
+    // anonimizar/apagar de vez que ainda não chegou ao curso.json do pacote (só ids e o
+    // pseudônimo), relida no boot. Na restauração junta com a de agora (o pacote fica em
+    // cursos_arquivados, que a restauração não troca): restaurar não perde a pendência.
+    tableEntry('assignmentBundleRewrites', 'assignment_bundle_rewrites', 'array', 'id', { restore: 'merge', missing: 'keep' }),
     // Períodos letivos e dias não letivos (P2).
     tableEntry('academicTerms', 'academic_terms', 'array', 'id', { missing: 'keep' }),
     tableEntry('nonSchoolDays', 'non_school_days', 'array', 'id', { missing: 'keep' }),

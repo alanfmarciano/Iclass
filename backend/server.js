@@ -490,6 +490,22 @@ async function prepareServer() {
         if (removed) console.log(`🧹 Entregas: ${removed} envio(s) interrompido(s) removido(s) de .recebendo.`);
     } catch (e) { logCrash('limpeza de envios interrompidos', e); }
 
+    // 5b2) Pacotes de curso excluído com a regravação do anonimizar/apagar de vez ainda
+    // pendente (fase 3, C18, LGPD): a fila gravada no banco (assignmentBundleRewrites) é
+    // relida e cada regravação é tentada de novo; a que falhar de novo fica e é tentada
+    // depois da próxima gravação. Antes a pendência ficava só na memória e se perdia com o
+    // servidor desligado, e restaurar o curso trazia de volta a entrega do aluno
+    // anonimizado. Falha aqui não impede o boot.
+    try {
+        const lifecycle = require('./utils/assignmentLifecycle.js');
+        const queued = Array.isArray(db.memory[lifecycle.BUNDLE_QUEUE]) ? db.memory[lifecycle.BUNDLE_QUEUE].length : 0;
+        if (queued) {
+            const result = lifecycle.processPendingBundleRewrites(db.memory, { save: options => db.save(options), afterNextCommit: db.afterNextCommit });
+            await result.gravacao;
+            console.log(`🔒 Pacotes de curso: ${result.feitas} regravação(ões) pendente(s) concluída(s)${result.pendentes ? `, ${result.pendentes} ainda pendente(s)` : ''}.`);
+        }
+    } catch (e) { logCrash('regravação pendente de pacote de curso', e); }
+
     // 5c) Importação de pacote de curso que caiu no meio (fase 3, A14): a pasta de
     // trabalho .pacote-<id> dentro de content/ e de uploads/ sai no boot, inteira (nenhuma
     // importação está rodando agora). Só a pasta de trabalho: nada fora dela é tocado.

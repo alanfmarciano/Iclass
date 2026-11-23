@@ -43,6 +43,11 @@
 //   assignment_archived, assignment_unarchived, assignment_deleted (cópia em
 //   details.deleted) e assignment_copied. Pedido que não muda nada não grava nem registra.
 // - Gravação parcial: db.save({ only: ['assignments', 'auditLogs'] }).
+// - "Conta na média" (C18 / P1-j): a tarefa é item do plano da turma (provedor 'tarefa',
+//   utils/assignmentGrades.js). countsInAverage na resposta é o que vale
+//   (effectiveCountsInAverage: com a linha da tarefa no plano, a linha manda). Mudá-lo no
+//   /update passa pelo portão da turma encerrada (409 class_closed) e, com a linha no
+//   plano, muda também a linha (fora), gravando 'classes' junto.
 //
 // Correção (C6 / P1-d):
 // - Só em tarefa publicada (rascunho não tem entrega: 409 assignment_not_published;
@@ -92,6 +97,7 @@ const academicCalendar = require('../utils/academicCalendar.js');
 const { submissionLockKey, withSubmissionLock, withSubmissionLocks } = require('../utils/submissionLocks.js');
 const assignmentExport = require('../utils/assignmentExport.js');
 const assignmentFeeds = require('../utils/assignmentFeeds.js');
+const assignmentGrades = require('../utils/assignmentGrades.js');
 const { formatGradeBR, gradeChangeReason, parseGradeInput, scoreFromGrade } = require('../utils/gradebook.js');
 const { normalizeEmail } = require('../utils/students.js');
 const { logError } = require('../utils/errorLog.js');
@@ -507,7 +513,8 @@ function presentAssignment(memory, raw, { tz, full = true } = {}) {
         dueAt: task.dueAt,
         closeAt: task.closeAt,
         latePolicy: task.latePolicy,
-        countsInAverage: task.countsInAverage,
+        // O que vale (C18 / P1-j): com a linha da tarefa no plano da turma, a linha manda.
+        countsInAverage: assignments.effectiveCountsInAverage(memory, task),
         createdBy: task.createdBy,
         createdAt: task.createdAt,
         updatedBy: task.updatedBy,
@@ -1023,11 +1030,19 @@ function createAdminAssignmentsRouter() {
         const read = readAssignmentFields(req.body, { current: raw, courseId: task.courseId, studentClass: task.studentClass, tz });
         if (read.error) return sendFieldError(res, read.error, read.field);
         const now = Date.now();
-        const merged = assignments.normalizeAssignment({ ...raw, ...read.fields });
+        // "Conta na média" (C18 / P1-j): o de agora é o que vale (com a linha da tarefa no
+        // plano da turma, a linha); sem o campo no pedido, fica como está.
+        const countsBefore = assignments.effectiveCountsInAverage(db.memory, task);
+        const current = { ...task, countsInAverage: countsBefore };
+        const merged = assignments.normalizeAssignment({ ...raw, countsInAverage: countsBefore, ...read.fields });
         const problem = merged.status === 'publicada' ? publishProblem(merged) : shapeProblem(merged);
         if (problem) return sendFieldError(res, problem.error, problem.field);
-        const keys = changedKeys(task, merged);
+        const keys = changedKeys(current, merged);
         if (!keys.length) return res.json({ success: true, changed: false, assignment: presentAssignment(db.memory, raw, { tz }) });
+        // Tirar ou pôr a tarefa na média muda a média da turma, como o plano: turma
+        // encerrada recusa (409 class_closed, assertClassOpen).
+        const countsChanged = keys.includes('countsInAverage');
+        if (countsChanged && !academicCalendar.assertClassOpen(classOfTask(task), { res })) return undefined;
 
         const reason = typeof req.body.reason === 'string' ? req.body.reason.trim() : '';
         const deadlineChanged = keys.some(key => DEADLINE_KEYS.includes(key));
@@ -1037,16 +1052,19 @@ function createAdminAssignmentsRouter() {
         }
         const next = { ...raw, ...merged, updatedBy: String(account.email || '').toLowerCase(), updatedAt: now };
         replaceAssignment(raw, next);
+        // A linha da tarefa no plano da turma (se o professor já mexeu nela em Resultados)
+        // acompanha o "Conta na média" do formulário.
+        const planChanged = countsChanged && assignmentGrades.syncPlanLine(db.memory, merged, merged.countsInAverage);
         const before = {};
         const after = {};
-        keys.forEach(key => { before[key] = task[key]; after[key] = merged[key]; });
+        keys.forEach(key => { before[key] = current[key]; after[key] = merged[key]; });
         audit(req, account, 'assignment_updated', merged, {
             before,
             after,
             reason: deadlineChanged && reason ? reason : undefined,
-            details: { id: task.id, title: merged.title, campos: keys },
+            details: { id: task.id, title: merged.title, campos: keys, ...(planChanged ? { planoDaTurma: true } : {}) },
         });
-        await db.save({ only: ['assignments', 'auditLogs'] });
+        await db.save({ only: planChanged ? ['assignments', 'classes', 'auditLogs'] : ['assignments', 'auditLogs'] });
         res.json({ success: true, changed: true, assignment: presentAssignment(db.memory, next, { tz }) });
     }));
 
@@ -1166,7 +1184,7 @@ function createAdminAssignmentsRouter() {
             response: task.response,
             files: { ...task.files, maxSizeMb: Math.min(task.files.maxSizeMb, ceiling) },
             latePolicy: task.latePolicy,
-            countsInAverage: task.countsInAverage,
+            countsInAverage: assignments.effectiveCountsInAverage(db.memory, task),
             ...dates,
             status: 'rascunho',
         }, { actor: account, now });

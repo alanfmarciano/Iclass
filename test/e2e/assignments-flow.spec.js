@@ -1,8 +1,9 @@
 // Atividades no celular do aluno (fase 3, C9 / P1-g; FUN-01, D12 do P1): o professor
 // publica uma tarefa (pela rota da tela dele), o aluno num celular (375 x 812, toque)
 // abre "Atividades", escolhe um PDF e uma foto, envia com a barra de progresso e vê o
-// comprovante; o professor devolve com nota e o aluno vê a nota e o comentário. Sem
-// rolagem para o lado e sem violação WCAG AA nas telas novas.
+// comprovante; o professor devolve com nota e o aluno vê a nota e o comentário, e a nota
+// entra no quadro de notas e em Minhas notas (C18 / P1-j). Sem rolagem para o lado e sem
+// violação WCAG AA nas telas novas.
 const { test, expect } = require('@playwright/test');
 const axeSource = require('axe-core').source;
 
@@ -146,5 +147,21 @@ test('aluno no celular envia PDF e foto da atividade, vê o comprovante e depois
     await page.goto('/aluno/atividades');
     const returned = page.getByRole('region', { name: /^Devolvidas/ });
     await expect(returned.getByText('Nota 8,5')).toBeVisible();
+
+    // A nota devolvida entra no quadro de notas e na média (C18 / P1-j): coluna "Tarefa:
+    // <título>" no quadro do professor e a tarefa em Provas > Minhas notas do aluno.
+    const gradebook = await request.get(`/api/admin/gradebook?courseId=${COURSE}&studentClass=${CLASS}`, { headers });
+    expect(gradebook.ok(), await gradebook.text()).toBeTruthy();
+    const quadro = await gradebook.json();
+    const column = quadro.columns.find(item => (item.examKey || item.id) === assignment.id);
+    expect(column && column.label).toBe('Tarefa: Relatório da prática de redes');
+    expect(quadro.rows.find(row => row.email === 'aluno@teste.local').cells[column.id].grade).toBe(8.5);
+    await page.goto('/aluno/provas');
+    const notas = page.getByRole('region', { name: 'Minhas notas' });
+    const tarefa = notas.getByRole('link', { name: /Relatório da prática de redes/ });
+    await expect(tarefa).toBeVisible({ timeout: 15000 });
+    await expect(tarefa.locator('xpath=ancestor::li[1]')).toContainText('8,5');
+    await expectNoHorizontalScroll(page, 'Minhas notas com a tarefa');
+    await expectNoWcagViolations(page, 'Minhas notas com a tarefa');
     await context.close();
 });

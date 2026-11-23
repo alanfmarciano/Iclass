@@ -244,7 +244,8 @@ function buildStudentGradesSummary(memory, { email, course = null, cls = null, h
             id: exam.examKey,
             titulo: exam.title,
             origem: exam.origem || 'prova',
-            tipo: exam.tipo || null,
+            // Tipo da avaliação manual ou, para o item de provedor, o rótulo dele ('Tarefa').
+            tipo: exam.tipo || (item && item.tipoRotulo) || null,
             moduloId: module.id === '__outras__' ? null : module.id,
             modulo: module.name,
             disciplinaId: item ? item.disciplinaId : null,

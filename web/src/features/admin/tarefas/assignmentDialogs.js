@@ -13,7 +13,9 @@ export const ASSIGNMENT_DIALOGS = Object.freeze({
   }),
   archive: (assignment) => ({
     title: 'Arquivar a tarefa?',
-    message: `"${assignment.title}" some para os alunos. As entregas e as notas ficam guardadas, e a tarefa pode voltar pela aba Arquivadas.`,
+    // A nota da tarefa arquivada sai da média (C18 / P1-j), como a da avaliação manual
+    // arquivada; o quadro de notas mostra a coluna marcada.
+    message: `"${assignment.title}" some para os alunos. As entregas e as notas ficam guardadas, e a tarefa pode voltar pela aba Arquivadas.${assignment.publishedAt && assignment.countsInAverage !== false ? ' Enquanto estiver arquivada, as notas dela não entram na média.' : ''}`,
     confirmLabel: 'Arquivar',
     tone: 'primary',
   }),

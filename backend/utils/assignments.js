@@ -740,6 +740,18 @@ function assignmentStatusSummary(memory, assignmentOrId) {
 //   correção salva e não devolvida (só para o professor);
 // - tarefas publicadas da turma; includeArchived traz também as arquivadas;
 // - students: lista de e-mails (ou cadastros) para limitar; sem ela, todos.
+// "Conta na média" que vale para a tarefa (C18 / P1-j): no plano da turma a tarefa é
+// classes[].avaliacao.itens['asg_*']; com a linha dela no plano, a linha manda (fora =
+// não conta); sem a linha, vale o countsInAverage da tarefa.
+function effectiveCountsInAverage(memory, assignmentOrRaw) {
+    const task = asAssignment(assignmentOrRaw);
+    if (!task) return true;
+    const cls = ((memory && memory.classes) || []).find(item => item && item.name === task.studentClass && String(item.courseId || '') === task.courseId);
+    const itens = cls && isObject(cls.avaliacao) && isObject(cls.avaliacao.itens) ? cls.avaliacao.itens : null;
+    if (itens && Object.prototype.hasOwnProperty.call(itens, task.id)) return !(isObject(itens[task.id]) && itens[task.id].fora === true);
+    return task.countsInAverage !== false;
+}
+
 function assignmentGradeEntries(memory, { courseId, studentClass, students = null, published = true, includeArchived = false } = {}) {
     const statuses = includeArchived ? ['publicada', 'arquivada'] : ['publicada'];
     const wanted = Array.isArray(students)
@@ -762,7 +774,7 @@ function assignmentGradeEntries(memory, { courseId, studentClass, students = nul
                     title: task.title,
                     moduleId: task.moduleId,
                     score: sub.grade.finalScore,
-                    countsInAverage: task.countsInAverage,
+                    countsInAverage: effectiveCountsInAverage(memory, task),
                     returnedAt: sub.returnedAt,
                 });
             });
@@ -996,6 +1008,7 @@ module.exports = {
     assignmentRoster,
     assignmentStatusSummary,
     assignmentGradeEntries,
+    effectiveCountsInAverage,
     submissionRules,
     nextVersionNumber,
     isVisibleToStudent,
@@ -1018,3 +1031,6 @@ module.exports = {
 // registra o handler de 'assignmentSubmissions' ao carregar: quem usa as regras das
 // tarefas já tem o handler. Depois do module.exports (o módulo lê estas regras).
 require('./assignmentLifecycle.js');
+// O provedor 'tarefa' do quadro de notas (C18 / P1-j) também: quem usa as tarefas já vê
+// a nota delas no quadro, no boletim e em Minhas notas.
+require('./assignmentGrades.js');

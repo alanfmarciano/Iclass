@@ -13,7 +13,7 @@ import { useStudent } from './useStudent'
 import { countByBand, criterioOf, fmtGradeValue, fmtMencao, gradeBand as faixaDaNota, gradeBandRanges, gradeRangeLabel, gradeTone as tomDaNota, situacaoTone } from '../../lib/grades'
 import { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react'
 import { usePolling } from '../../hooks/usePolling'
-import { useNavigate } from 'react-router-dom'
+import { Link, useNavigate } from 'react-router-dom'
 import { matchesSearch } from '../../lib/textSearch'
 import { ScheduledExams } from './ScheduledExams'
 
@@ -509,6 +509,10 @@ export function MyGradesCard({ summary }) {
   const mencao = fmtMencao(summary.mencao)
   const semNotas = !summary.notasPublicadas
   const grupos = useMemo(() => gradesByStage(summary), [summary])
+  // Notas devolvidas das tarefas (C18 / P1-j). Com critérios elas já aparecem na etapa;
+  // na regra antiga, numa lista própria (as provas ficam no histórico abaixo).
+  const tarefas = useMemo(() => (Array.isArray(summary?.itens) ? summary.itens : [])
+    .filter((item) => item && item.origem === 'tarefa' && item.publicada && item.nota !== null && item.nota !== undefined), [summary])
   const tone = (value) => (value != null ? gradeText(value, criterio) || 'text-text' : 'text-subtle')
   return (
     <Card as="section" className="p-5" aria-labelledby="minhas-notas-titulo">
@@ -559,6 +563,22 @@ export function MyGradesCard({ summary }) {
               <StageRow id="fora" title="Fora da média" criterio={criterio}
                 value={String(grupos.fora.length)} valueTone="text-subtle" note="Sem etapa ou marcadas para não contar" itens={grupos.fora} />
             )}
+          </ul>
+        </div>
+      )}
+      {!comCriterios && tarefas.length > 0 && (
+        <div className="mt-4">
+          <h3 className="text-sm font-semibold text-text">Tarefas</h3>
+          <ul className="mt-1 divide-y divide-border">
+            {tarefas.map((item) => (
+              <li key={item.id} className="flex min-h-[44px] items-center justify-between gap-3 text-sm">
+                <Link to={`/aluno/atividades/${encodeURIComponent(item.id)}`} className="min-w-0 break-words py-2 text-text underline-offset-2 hover:underline">
+                  {item.titulo}
+                  {item.foraDaMedia ? <span className="text-muted"> · fora da média</span> : null}
+                </Link>
+                <span className={`shrink-0 font-semibold tabular-nums ${item.foraDaMedia ? 'text-muted' : tone(item.nota)}`}>{fmtGrade(item.nota)}</span>
+              </li>
+            ))}
           </ul>
         </div>
       )}

@@ -115,3 +115,25 @@ describe('Quadro de notas com critérios', () => {
     expect(within(table).queryByText('Média da etapa')).not.toBeInTheDocument()
   })
 })
+
+describe('Quadro de notas · tarefas (C18)', () => {
+  it('[UC-TAREFAS-001] sem critérios, a coluna "Tarefa: título" e a tarefa que não conta na média marcada "fora da média"', () => {
+    const data = {
+      columns: [
+        { id: 'P1', examKey: 'P1', label: 'Prova 1', moduleName: 'Módulo 1' },
+        { id: 'asg_1', examKey: 'asg_1', label: 'Tarefa: Relatório', moduleName: 'Módulo 1', origem: 'tarefa' },
+        { id: 'asg_2', examKey: 'asg_2', label: 'Tarefa: Extra', moduleName: 'Outras avaliações', origem: 'tarefa', foraDaMedia: true },
+      ],
+      rows: [{ email: 'ana@x.local', name: 'Ana', cells: { P1: { score: 70, grade: 7 }, asg_1: { score: 90, grade: 9 }, asg_2: { score: 20, grade: 2 } }, average: 8, averageScore: 80, gradedCount: 2, pendingCount: 0 }],
+      etapas: [], avisos: [],
+    }
+    render(<GradebookPanel courseId="DES" studentClass="1DES" gradebook={api(data)} />)
+    const table = screen.getByRole('table')
+    const headers = within(table).getAllByRole('columnheader')
+    expect(headers.some((th) => th.textContent === 'Tarefa: Relatório')).toBe(true)
+    const extra = headers.find((th) => th.textContent.startsWith('Tarefa: Extra'))
+    expect(extra).toHaveTextContent('fora da média')
+    expect(extra).toHaveAttribute('title', expect.stringContaining('não conta na média'))
+    expect(headers.find((th) => th.textContent === 'Tarefa: Relatório')).not.toHaveAttribute('title', expect.stringContaining('média'))
+  })
+})

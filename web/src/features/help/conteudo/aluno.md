@@ -80,6 +80,8 @@ No alto de Provas, **Minhas notas** mostra o seu resultado na turma com as notas
 
 Embaixo, as suas provas e avaliações (trabalhos, seminários) ficam agrupadas por disciplina ou por módulo. A nota que ainda não foi publicada aparece em "Notas em revisão" e não entra na média. Se o professor arquivar uma avaliação que já tinha nota, a nota continua em "Outras avaliações", marcada "Avaliação arquivada · fora da média".
 
+As **tarefas** (atividades) entram em Minhas notas quando o professor devolve a correção, já com o desconto de atraso. Elas contam na média como as outras avaliações, a não ser as que o professor marcou para não contar: essas aparecem com "fora da média". Com etapas, a tarefa fica dentro da etapa dela; sem etapas, na lista **Tarefas**, onde o nome abre a atividade.
+
 ### Como responder cada tipo de questão
 
 - **Uma correta**: toque na alternativa. Para trocar, toque em outra.

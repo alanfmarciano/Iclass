@@ -85,6 +85,7 @@ const COLLECTION_LABELS = {
     assignments: 'Tarefas',
     assignmentSubmissions: 'Trabalhos entregues (registros)',
     assignmentFileTombstones: 'Arquivos de entregas removidos',
+    assignmentBundleRewrites: 'Pacotes de curso a regravar (anonimização)',
     academicTerms: 'Períodos letivos',
     nonSchoolDays: 'Dias não letivos',
     classDiary: 'Diário de classe',
