@@ -405,14 +405,28 @@ test('[UC-ARMAZENAMENTO-002] destino desconectado: a fila mostra a falha da cóp
     await resetState({ withDestination: false });
     addSubmission(BIA, ['um', 'dois']);
     await db.save();
+    // Sem destino, a mesma causa vira um item só: o "Backup só neste computador" passa a
+    // falar também dos trabalhos (antes saíam backup_sem_destino e entregas_sem_copia).
     await withoutTestMode(async () => {
-        const item = (await queueOf(ADMIN)).find(entry => entry.id === 'entregas_sem_copia');
+        const items = await queueOf(ADMIN);
+        assert.equal(items.some(entry => entry.id === 'entregas_sem_copia'), false, JSON.stringify(items.map(entry => entry.id)));
+        const item = items.find(entry => entry.id === 'backup_sem_destino');
         assert.ok(item);
         assert.equal(item.tone, 'warning');
-        assert.equal(item.count, 2);
-        assert.match(item.titulo, /Trabalhos dos alunos sem cópia fora deste computador/);
-        assert.match(item.detalhe, /2 arquivos/);
+        assert.equal(item.titulo, 'Backup e trabalhos dos alunos só neste computador');
+        assert.match(item.detalhe, /Os trabalhos dos alunos \(2 arquivos, 1 KB\) também não têm cópia fora daqui/);
     });
+    // Sem o bloco do backup (só o das entregas), o item próprio aparece, com o tamanho em KB
+    // (272 bytes não viram "1 MB").
+    const base = { memory: { students: [], classes: [], attendance: [], submissions: [] }, cls: null, course: null, students: [], today: '2026-11-23', now: Date.now(), canSeeMatriculas: true };
+    const own = computeQueue(base, { entregas: { semCopia: { arquivos: 1, bytes: 272 } } }).find(entry => entry.id === 'entregas_sem_copia');
+    assert.ok(own);
+    assert.match(own.titulo, /Trabalhos dos alunos sem cópia fora deste computador/);
+    assert.match(own.detalhe, /^1 arquivo \(1 KB\) só neste computador/);
+    const merged = computeQueue(base, { backup: { semDestino: { dias: 1 } }, entregas: { semCopia: { arquivos: 3, bytes: 5 * MB } } });
+    assert.deepEqual(merged.filter(entry => /sem_destino|sem_copia/.test(entry.id)).map(entry => entry.id), ['backup_sem_destino']);
+    assert.match(merged.find(entry => entry.id === 'backup_sem_destino').detalhe, /3 arquivos, 5 MB/);
+    assert.equal(computeQueue(base, { backup: { semDestino: { dias: 1 } } }).find(entry => entry.id === 'backup_sem_destino').titulo, 'Backup só neste computador');
 });
 
 test('[UC-ARMAZENAMENTO-002] pouco espaço no disco para os envios: aviso antes e alerta que não se adia quando já recusa', async () => {
@@ -523,4 +537,176 @@ test('[UC-ARMAZENAMENTO-002] desligamento no meio: o espelho para, o que já foi
     assert.equal(store.readState().espelho, undefined, 'interrupção não é falha do destino');
     await assert.rejects(mirror.mirrorAssignmentFiles({ destino, memory: db.memory, signal: controller.signal }), error => error.code === 'ICLASS_BACKUP_ABORTED');
     assert.equal(fs.readdirSync(mirror.mirrorDirFor(destino)).filter(name => name.endsWith(mirror.PARTIAL_SUFFIX)).length, 0);
+});
+
+// Rodada de ajuste 1 do C11 (verificação V2): curso restaurado cujo pacote que sobrou foi
+// excluído depois. A exclusão do pacote mandou para a lixeira o arquivo de uma entrega que
+// continua viva no banco e gravou a lápide 'excluir_curso' (o bug do C10, aberto até a J2).
+// Antes, o espelho apagava a única cópia externa dessa entrega (o arquivo não estava mais
+// aqui), o cartão não a contava como faltando e "Trazer arquivos" não a trazia.
+test('[UC-ARMAZENAMENTO-002] lápide de pacote de curso excluído não apaga a cópia de uma entrega viva do banco; o cartão conta e "Trazer arquivos" traz', async () => {
+    const destino = await resetState();
+    const bia = addSubmission(BIA, ['trabalho da Bia, entrega viva']);
+    const ana = addSubmission(ANA, ['trabalho da Ana, só no pacote']);
+    await db.save();
+    await backup.runBackupJob({ origem: 'manual' });
+    const [live] = bia.files;
+    const copy = mirrorPath(destino, live.storedRel);
+    assert.ok(fs.existsSync(copy));
+    const archivedRel = rel => `entregas/${assignmentLifecycle.COURSE_ARCHIVE_SEGMENT}/pacote-1/${rel.slice('entregas/'.length)}`;
+    // A cópia do caminho do pacote (de um espelhamento enquanto o curso estava excluído).
+    const archivedCopy = mirrorPath(destino, archivedRel(live.storedRel));
+    fs.mkdirSync(path.dirname(archivedCopy), { recursive: true });
+    fs.copyFileSync(copy, archivedCopy);
+    // O pacote excluído: arquivo da entrega viva na lixeira, lápides 'excluir_curso'. A da
+    // Ana é de uma entrega que não está mais no banco (só no pacote): essa vale.
+    fs.rmSync(localPath(live.storedRel));
+    fs.rmSync(localPath(ana.files[0].storedRel));
+    db.memory.assignmentSubmissions = db.memory.assignmentSubmissions.filter(item => item.id !== ana.row.id);
+    const at = Date.now();
+    db.memory.assignmentFileTombstones.push(
+        { fileId: live.id, storedRel: live.storedRel, reason: 'excluir_curso', at, mirroredRemovalAt: null, archivedRel: archivedRel(live.storedRel) },
+        { fileId: ana.files[0].id, storedRel: ana.files[0].storedRel, reason: 'excluir_curso', at, mirroredRemovalAt: null, archivedRel: archivedRel(ana.files[0].storedRel) },
+    );
+    await db.save();
+
+    const result = await backup.runBackupJob({ origem: 'manual' });
+    assert.equal(result.espelho.ok, true, JSON.stringify(result.espelho));
+    assert.ok(fs.existsSync(copy), 'a cópia da entrega viva fica no pendrive');
+    assert.equal(fs.existsSync(archivedCopy), false, 'a cópia do caminho do pacote sai');
+    assert.equal(fs.existsSync(mirrorPath(destino, ana.files[0].storedRel)), false, 'a da entrega que só estava no pacote sai');
+    const tombs = Object.fromEntries(db.memory.assignmentFileTombstones.map(item => [item.fileId, item.mirroredRemovalAt]));
+    assert.equal(tombs[live.id], null, 'a lápide do caminho vivo espera');
+    assert.ok(tombs[ana.files[0].id], 'a outra foi cumprida');
+
+    // O cartão mostra o arquivo que falta aqui (antes: faltando 0, perda invisível).
+    const card = await as()('get', '/api/admin/storage');
+    assert.equal(card.body.entregas.faltando, 1);
+    // "Trazer arquivos" traz de volta, conferido pelo SHA-256 do registro.
+    const recovered = await as()('post', '/api/admin/backup/entregas/recuperar').send({});
+    assert.equal(recovered.status, 200, recovered.body.error);
+    assert.equal(recovered.body.copiados, 1);
+    assert.equal(sha(fs.readFileSync(localPath(live.storedRel))), live.sha256);
+    assert.equal(fs.existsSync(localPath(ana.files[0].storedRel)), false, 'a da entrega que não está no banco não volta');
+    assert.equal((await as()('get', '/api/admin/storage')).body.entregas.faltando, 0);
+
+    // A entrega viva é anonimizada depois: o arquivo sai do registro e a lápide (a mesma,
+    // 'excluir_curso') passa a valer; a cópia sai do pendrive.
+    const handler = studentData.studentDataHandlers().find(item => item.collection === 'assignmentSubmissions');
+    const effects = handler.anonymize(db.memory, studentData.studentDataContext(db.memory, BIA), { email: 'anon-2@anonimizado.invalid' });
+    for (const effect of [].concat(effects).filter(Boolean)) {
+        if (typeof effect === 'function') effect({ deletedBy: ADMIN });
+        else { effect.accepted(); effect.afterSave({ deletedBy: ADMIN }); }
+    }
+    await db.save();
+    await backup.runBackupJob({ origem: 'manual' });
+    assert.equal(fs.existsSync(copy), false, 'anonimizada, a cópia sai');
+});
+
+// Rodada de ajuste 1 do C11 (verificação V3): no computador novo (no Windows, outro nome,
+// DESKTOP-XXXX), "Trazer arquivos" procurava só em <destino>/IClass-<este computador> e
+// respondia que os arquivos não estavam no destino, embora estivessem na pasta do de antes.
+test('[UC-ARMAZENAMENTO-002] computador trocado: "Trazer arquivos" acha a cópia na pasta do computador de antes, conferida pelo SHA-256', async () => {
+    const destino = await resetState();
+    const bia = addSubmission(BIA, ['parte A', 'parte B', 'parte C']);
+    await db.save();
+    await backup.runBackupJob({ origem: 'manual' });
+    const [good, damaged, noHash] = bia.files;
+    // O espelho foi feito pelo computador velho; o novo tem outro nome.
+    const own = store.externalDir(destino);
+    const oldDir = path.join(destino, 'IClass-COMPUTADOR-VELHO', mirror.MIRROR_SEGMENT);
+    fs.mkdirSync(path.dirname(oldDir), { recursive: true });
+    fs.renameSync(mirror.mirrorDirFor(destino), oldDir);
+    fs.rmSync(own, { recursive: true, force: true });
+    // Outra pasta, de um terceiro computador, com uma cópia adulterada do mesmo tamanho.
+    const thirdDir = path.join(destino, 'IClass-OUTRO', mirror.MIRROR_SEGMENT);
+    const thirdCopy = path.join(thirdDir, ...damaged.storedRel.split('/').slice(1));
+    fs.mkdirSync(path.dirname(thirdCopy), { recursive: true });
+    fs.writeFileSync(thirdCopy, 'parte X');
+    // A cópia do velho do segundo arquivo também está adulterada (mesmo tamanho).
+    fs.writeFileSync(path.join(oldDir, ...damaged.storedRel.split('/').slice(1)), 'parte Y');
+    // Registro sem SHA-256: de outro computador, não se traz (não há como conferir).
+    noHash.sha256 = '';
+    for (const file of bia.files) fs.rmSync(localPath(file.storedRel));
+    // Uma pasta qualquer com nome estranho no destino é ignorada.
+    fs.mkdirSync(path.join(destino, 'Fotos', mirror.MIRROR_SEGMENT), { recursive: true });
+    await db.save();
+
+    const card = await as()('get', '/api/admin/storage');
+    assert.equal(card.body.entregas.faltando, 3);
+    const res = await as()('post', '/api/admin/backup/entregas/recuperar').send({});
+    assert.equal(res.status, 200, res.body.error);
+    assert.equal(res.body.copiados, 1, JSON.stringify(res.body));
+    assert.equal(res.body.deOutroComputador, 1);
+    assert.equal(res.body.divergentes, 1);
+    assert.equal(res.body.faltando, 1, 'o sem SHA-256 não vem de outro computador');
+    assert.equal(sha(fs.readFileSync(localPath(good.storedRel))), good.sha256);
+    assert.equal(fs.existsSync(localPath(damaged.storedRel)), false, 'nenhuma das cópias adulteradas entra');
+    assert.equal(fs.existsSync(localPath(noHash.storedRel)), false);
+    assert.equal(auditOf('assignment_files_recovered').at(-1).details.deOutroComputador, 1);
+    // O próximo backup copia o que voltou para a pasta deste computador.
+    const next = await backup.runBackupJob({ origem: 'manual' });
+    assert.equal(next.espelho.ok, true);
+    assert.equal(sha(fs.readFileSync(mirrorPath(destino, good.storedRel))), good.sha256);
+});
+
+// Rodada de ajuste 1 do C11 (verificação V4): a cópia estragada no pendrive com o MESMO
+// tamanho (um byte trocado) não era percebida: com o arquivo no espelho.json, só o tamanho
+// era comparado, e o cartão dizia "Em dia" para sempre.
+test('[UC-ARMAZENAMENTO-002] cópia estragada com o mesmo tamanho é refeita: mexida no destino (outra data) ou pela releitura de rodízio', async () => {
+    const destino = await resetState();
+    const bia = addSubmission(BIA, ['conteúdo original do trabalho 1', 'conteúdo original do trabalho 2']);
+    await db.save();
+    await backup.runBackupJob({ origem: 'manual' });
+    const [first, second] = bia.files;
+    const manifestFile = path.join(mirror.mirrorDirFor(destino), mirror.MANIFEST_FILE);
+    const entry = JSON.parse(fs.readFileSync(manifestFile, 'utf8')).arquivos[first.storedRel.slice('entregas/'.length)];
+    assert.ok(Number.isInteger(entry.mtimeMs), 'o espelho.json guarda a data de gravação da cópia');
+    assert.ok(entry.conferidoEm);
+
+    // 1. Byte trocado (outra data de gravação no destino): conferida e refeita.
+    const copy1 = mirrorPath(destino, first.storedRel);
+    const buffer = fs.readFileSync(copy1);
+    buffer[3] ^= 0xff;
+    fs.writeFileSync(copy1, buffer);
+    const future = new Date(Date.now() + 5000);
+    fs.utimesSync(copy1, future, future);
+    const fixed = await backup.runBackupJob({ origem: 'manual' });
+    assert.equal(fixed.espelho.copiados, 1, JSON.stringify(fixed.espelho));
+    assert.equal(sha(fs.readFileSync(copy1)), first.sha256);
+
+    // 2. Byte trocado sem mudar a data (pendrive que estraga aos poucos): a releitura de
+    // rodízio confere as cópias e refaz a estragada.
+    const copy2 = mirrorPath(destino, second.storedRel);
+    const before = fs.statSync(copy2);
+    const buffer2 = fs.readFileSync(copy2);
+    buffer2[5] ^= 0xff;
+    fs.writeFileSync(copy2, buffer2);
+    fs.utimesSync(copy2, before.atime, before.mtime);
+    const outcome = await mirror.mirrorAssignmentFiles({ destino, memory: db.memory });
+    assert.equal(outcome.resumo.corrigidos, 1);
+    assert.equal(sha(fs.readFileSync(copy2)), second.sha256);
+    // Com tudo certo, nada é copiado de novo.
+    const again = await backup.runBackupJob({ origem: 'manual' });
+    assert.equal(again.espelho.copiados, 0);
+    assert.equal(auditOf('assignment_files_mirrored').at(-1).details.copiados, 1, 'sem auditoria nova quando nada mudou');
+});
+
+// Rodada de ajuste 1 do C11: a falta de espaço dizia "faltam copiar cerca de 65 MB" para
+// um arquivo de 272 bytes (somava a folga de 64 MB ao que falta copiar).
+test('[UC-ARMAZENAMENTO-002] sem espaço no destino: a mensagem separa o que falta copiar da folga', async () => {
+    const destino = await resetState();
+    addSubmission(BIA, [Buffer.alloc(272, 0x41)]);
+    await db.save();
+    const original = store.freeBytesAt;
+    store.freeBytesAt = async dir => (String(dir).includes(`${path.sep}entregas`) ? 10 * MB : original(dir));
+    try {
+        await assert.rejects(mirror.mirrorAssignmentFiles({ destino, memory: db.memory }), error => {
+            assert.equal(error.code, 'ENOSPC_DESTINO');
+            assert.match(error.message, /faltam copiar cerca de 1 KB \(1 arquivo\), o destino precisa ficar com uma folga de 64 MB e há 10 MB livres/);
+            return true;
+        });
+    } finally {
+        store.freeBytesAt = original;
+    }
 });

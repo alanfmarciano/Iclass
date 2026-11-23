@@ -157,6 +157,9 @@ export function mirrorStatusText(entregas) {
     return { tone: 'danger', text: `A última cópia falhou em ${formatWhen(espelho.ultimaFalha.em)}: ${espelho.ultimaFalha.mensagem}` }
   }
   const pending = espelho.pendentes
+  if (!espelho.ultimoSucesso && espelho.acessivel === false) {
+    return { tone: 'warning', text: Number(entregas.arquivos) ? 'O destino externo não está acessível agora (pendrive ou HD desconectado, ou pasta removida): os trabalhos dos alunos ainda não têm cópia fora deste computador.' : 'O destino externo não está acessível agora (pendrive ou HD desconectado, ou pasta removida).' }
+  }
   if (!espelho.ultimoSucesso) {
     return { tone: 'warning', text: Number(entregas.arquivos) ? 'Ainda sem cópia: ela sai junto com o próximo backup.' : 'Nada para copiar ainda. Os trabalhos vão para o destino junto com o backup diário.' }
   }
@@ -174,7 +177,12 @@ export function mirrorStatusText(entregas) {
 export function recoverResultText(r) {
   if (!r) return ''
   const parts = []
-  parts.push(r.copiados ? `${countText(r.copiados, 'arquivo trazido', 'arquivos trazidos')} do destino externo.` : 'Nenhum arquivo precisou ser trazido.')
+  const other = Number(r.deOutroComputador) || 0
+  // No computador trocado, os arquivos vêm da cópia feita pelo computador de antes.
+  const fromOther = !other ? '' : other >= r.copiados
+    ? ', da cópia feita em outro computador'
+    : ` (${countText(other, 'deles veio', 'deles vieram')} da cópia feita em outro computador)`
+  parts.push(r.copiados ? `${countText(r.copiados, 'arquivo trazido', 'arquivos trazidos')} do destino externo${fromOther}.` : 'Nenhum arquivo precisou ser trazido.')
   if (r.faltando) parts.push(`${countText(r.faltando, 'arquivo não está', 'arquivos não estão')} no destino externo.`)
   if (r.divergentes) parts.push(`${countText(r.divergentes, 'cópia não conferiu', 'cópias não conferiram')} com o registro e ${r.divergentes === 1 ? 'ficou' : 'ficaram'} de fora.`)
   return parts.join(' ')
@@ -300,7 +308,7 @@ export function ArmazenamentoCard() {
           onClose={() => setRecoverOpen(false)}
           onConfirm={recover}
           title="Trazer arquivos do destino externo?"
-          message="O IClass copia de volta para este computador os arquivos de entregas que estão faltando aqui, conferindo cada um pelo registro da entrega. Nenhum arquivo deste computador é substituído, e o que foi tirado ao anonimizar ou apagar um aluno não volta."
+          message="O IClass copia de volta para este computador os arquivos de entregas que estão faltando aqui, conferindo cada um pelo registro da entrega. Se este computador substituiu outro, ele procura também na cópia que o computador de antes deixou no mesmo pendrive ou HD. Nenhum arquivo deste computador é substituído, e o que foi tirado ao anonimizar ou apagar um aluno não volta."
           confirmLabel="Trazer arquivos"
           tone="primary"
         />

@@ -195,6 +195,12 @@ describe('ArmazenamentoCard · Armazenamento', () => {
     expect(mirrorStatusText(entregas({ espelho: { pendentes: null, acessivel: false } }))).toEqual({ tone: 'warning', text: expect.stringMatching(/O destino não está conectado agora\.$/) })
     expect(mirrorStatusText(entregas({ espelho: { ultimoSucesso: null } })).text).toBe('Ainda sem cópia: ela sai junto com o próximo backup.')
     expect(recoverResultText({ copiados: 0, faltando: 1, divergentes: 1 })).toBe('Nenhum arquivo precisou ser trazido. 1 arquivo não está no destino externo. 1 cópia não conferiu com o registro e ficou de fora.')
+    // Destino novo desconectado, sem nenhuma cópia ainda: avisa que não está acessível (antes
+    // dizia "Ainda sem cópia: ela sai junto com o próximo backup.").
+    expect(mirrorStatusText(entregas({ espelho: { ultimoSucesso: null, acessivel: false, pendentes: null } }))).toEqual({ tone: 'warning', text: 'O destino externo não está acessível agora (pendrive ou HD desconectado, ou pasta removida): os trabalhos dos alunos ainda não têm cópia fora deste computador.' })
+    // Computador trocado: os arquivos vêm da pasta do computador de antes.
+    expect(recoverResultText({ copiados: 2, deOutroComputador: 2 })).toBe('2 arquivos trazidos do destino externo, da cópia feita em outro computador.')
+    expect(recoverResultText({ copiados: 3, deOutroComputador: 1 })).toBe('3 arquivos trazidos do destino externo (1 deles veio da cópia feita em outro computador).')
     expect(topCollections({ assignmentSubmissions: 4 })).toEqual([{ name: 'assignmentSubmissions', label: 'Trabalhos entregues (registros)', rows: 4 }])
   })
 })

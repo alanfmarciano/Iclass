@@ -257,7 +257,8 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
 
     // "Trazer arquivos do destino externo" (fase 3, C11 / P1-i; D3 do P1): copia de volta
     // para data/entregas os arquivos de entregas registradas que faltam aqui, do espelho em
-    // <destino>/IClass-<computador>/entregas, conferindo o SHA-256 do registro. Nunca
+    // <destino>/IClass-<computador>/entregas (e, no computador trocado, das pastas
+    // IClass-* de outros computadores no mesmo destino), conferindo o SHA-256 do registro. Nunca
     // substitui arquivo deste computador, nunca traz arquivo com lápide (anonimizado,
     // apagado) nem arquivo sem registro. Só o administrador (a regra /backup pede
     // system.manage; o professor com "Executar manutenção" recebe 403). Corpo vazio.
@@ -285,10 +286,10 @@ function createAdminRecoveryRouter({ uploadForRequest, rejectInvalidUpload, uplo
                 actor: matchedAdmin,
                 action: 'assignment_files_recovered',
                 category: 'backup',
-                details: { copiados: result.copiados, faltando: result.faltando, divergentes: result.divergentes, bytes: result.bytes },
+                details: { copiados: result.copiados, deOutroComputador: result.deOutroComputador, faltando: result.faltando, divergentes: result.divergentes, bytes: result.bytes },
             });
             await db.save({ only: ['auditLogs'] });
-            res.json({ success: true, copiados: result.copiados, conferidos: result.conferidos, faltando: result.faltando, divergentes: result.divergentes, bytes: result.bytes });
+            res.json({ success: true, copiados: result.copiados, deOutroComputador: result.deOutroComputador, conferidos: result.conferidos, faltando: result.faltando, divergentes: result.divergentes, bytes: result.bytes });
         });
     });
 

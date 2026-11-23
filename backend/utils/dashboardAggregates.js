@@ -325,11 +325,15 @@ function computeQueue({ memory, cls, course, students, today, now, canSeeMatricu
 
     // 9. Backup (H4b, OPS-03): falha, atraso, cópia externa atrasada e destino externo não
     // configurado. Só administrador (a rota manda null para os outros).
-    backupQueueItems(extras && extras.backup).forEach(item => items.push(item));
+    // Sem destino externo, o "Backup só neste computador" fala também dos trabalhos dos
+    // alunos (a mesma causa não vira dois itens).
+    const entregasExtras = extras && extras.entregas;
+    const semCopiaJunto = !!(entregasExtras && entregasExtras.semCopia && extras.backup && extras.backup.semDestino);
+    backupQueueItems(extras && extras.backup, { semCopia: semCopiaJunto ? entregasExtras.semCopia : null }).forEach(item => items.push(item));
 
     // 9b. Arquivos das entregas de tarefa (C11 / P1-i): sem cópia fora deste computador,
     // falha da cópia no destino externo e pouco espaço no disco para os envios.
-    assignmentStorageQueueItems(extras && extras.entregas).forEach(item => items.push(item));
+    assignmentStorageQueueItems(semCopiaJunto ? { ...entregasExtras, semCopia: null } : entregasExtras).forEach(item => items.push(item));
 
     // 10. Pendências dos provedores da fase 3 (entregas para corrigir, correção
     // pendente, revisão aberta, chamada não cobrada...), depois das de hoje
@@ -350,8 +354,9 @@ function plural(count, one, many) {
 }
 
 // Itens do backup. count: dias desde o último sucesso (mínimo 1). Falha e atraso não se
-// adiam (adiavel: false); "sem destino" adia 24 h, como os outros.
-function backupQueueItems(backup) {
+// adiam (adiavel: false); "sem destino" adia 24 h, como os outros. semCopia (C11 / P1-i):
+// os trabalhos dos alunos que também estão só aqui, no texto do "sem destino".
+function backupQueueItems(backup, { semCopia = null } = {}) {
     if (!backup || typeof backup !== 'object') return [];
     const items = [];
     const common = { href: '/sistema', permissao: 'system.manage' };
@@ -384,22 +389,27 @@ function backupQueueItems(backup) {
         });
     }
     if (backup.semDestino) {
+        const arquivos = semCopia ? Math.max(1, Number(semCopia.arquivos) || 1) : 0;
         items.push({
             id: 'backup_sem_destino', tipo: 'backup_sem_destino',
-            titulo: 'Backup só neste computador',
-            detalhe: 'Escolha um pendrive, HD externo ou pasta de rede para uma cópia fora daqui · Sistema → Backup',
+            titulo: arquivos ? 'Backup e trabalhos dos alunos só neste computador' : 'Backup só neste computador',
+            detalhe: arquivos
+                ? `Os trabalhos dos alunos (${plural(arquivos, 'arquivo', 'arquivos')}, ${sizeText(semCopia.bytes)}) também não têm cópia fora daqui; o backup não os leva. Escolha um pendrive, HD externo ou pasta de rede · Sistema → Backup`
+                : 'Escolha um pendrive, HD externo ou pasta de rede para uma cópia fora daqui · Sistema → Backup',
             count: Math.max(1, Number(backup.semDestino.dias) || 1), tone: 'warning', ...common,
         });
     }
     return items;
 }
 
-// Tamanho para o texto da fila: 640 MB, 3,2 GB.
+// Tamanho para o texto da fila: 1 KB, 640 KB, 12,4 MB, 3,2 GB (o mesmo arredondamento do
+// cartão Armazenamento; 272 bytes não viram "1 MB").
 function sizeText(bytes) {
     const value = Math.max(0, Number(bytes) || 0);
-    const gb = value / (1024 * 1024 * 1024);
-    if (gb >= 1) return `${gb.toLocaleString('pt-BR', { maximumFractionDigits: 1 })} GB`;
-    return `${Math.max(1, Math.round(value / (1024 * 1024))).toLocaleString('pt-BR')} MB`;
+    const decimal = n => n.toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+    if (Math.round(value / 1024) < 1000) return `${Math.max(1, Math.round(value / 1024)).toLocaleString('pt-BR')} KB`;
+    if (Math.round((value / (1024 * 1024)) * 10) / 10 < 1000) return `${decimal(value / (1024 * 1024))} MB`;
+    return `${decimal(value / (1024 * 1024 * 1024))} GB`;
 }
 
 // Itens das entregas de tarefa. A falha da cópia e o disco que já recusa envios não se

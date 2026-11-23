@@ -13,22 +13,29 @@
 //   próprio 'espelho' em data/backups/estado.json, alerta na fila do administrador).
 // - Incremental: copia só o arquivo que o destino ainda não tem (arquivo de entrega nunca
 //   muda: cada reenvio é versão nova). Cada cópia vai para <nome>.iclass-parcial, é relida
-//   do destino e conferida pelo SHA-256 da origem antes de ganhar o nome final. Cópia
-//   que já está lá com o mesmo tamanho e o mesmo SHA-256 do espelho.json não é relida;
-//   sem o espelho.json (perdido, outro computador), é conferida uma vez pelo SHA-256.
-//   A de tamanho ou SHA-256 diferente (pendrive tirado no meio) é refeita.
+//   do destino e conferida pelo SHA-256 da origem antes de ganhar o nome final; o
+//   espelho.json guarda tamanho, SHA-256 e a data de gravação da cópia no destino. Cópia
+//   com o mesmo tamanho e a mesma data de gravação do espelho.json não é relida, a não ser
+//   pela releitura de rodízio (até 256 MB por espelhamento, as conferidas há mais tempo
+//   primeiro). A que foi mexida no destino (outra data de gravação) ou que não está no
+//   espelho.json (perdido, outro computador) é conferida pelo SHA-256. A de tamanho ou
+//   SHA-256 diferente (pendrive tirado no meio, byte trocado) é refeita.
 // - Espaço: antes de copiar, o livre no destino precisa caber o que falta copiar mais uma
 //   folga; sem espaço, nada é copiado e o motivo vai para o estado.
 // - Remoção só por ordem explícita (D4): o arquivo com lápide (assignmentFileTombstones:
-//   anonimizar, apagar de vez, excluir o pacote do curso) sai do destino, nos dois
-//   caminhos da lápide (storedRel e archivedRel), e não é copiado de novo. A cópia de um
-//   caminho só não sai quando o arquivo está neste computador naquele caminho e uma
-//   entrega viva ainda aponta para ele (lápide de um pacote excluído depois que o curso
-//   foi restaurado): a lápide fica esperando. Arquivo sem registro (depois de restaurar um
-//   backup antigo) é copiado e nunca apagado.
+//   anonimizar, apagar de vez, excluir a tarefa ou o pacote do curso) sai do destino, nos
+//   dois caminhos da lápide (storedRel e archivedRel), e não é copiado de novo. A lápide
+//   não vale para um caminho (a cópia fica e a lápide espera) quando o arquivo está neste
+//   computador naquele caminho e um registro vivo aponta para ele, nem, na lápide do
+//   pacote de curso excluído, quando uma entrega viva do banco registra aquele caminho,
+//   esteja o arquivo aqui ou não (curso restaurado cujo pacote que sobrou foi excluído
+//   depois). Arquivo sem registro (depois de restaurar um backup antigo) é copiado e nunca
+//   apagado.
 // - Recuperar (POST /api/admin/backup/entregas/recuperar, só administrador): traz de
 //   volta para data/entregas os arquivos registrados que faltam aqui, conferindo o SHA-256
-//   do registro; nunca substitui arquivo existente e nunca traz arquivo com lápide.
+//   do registro; procura na pasta deste computador e, no computador trocado, nas pastas
+//   IClass-* de outros computadores no mesmo destino; nunca substitui arquivo existente e
+//   nunca traz arquivo com lápide.
 // - Cartão Armazenamento (GET /api/admin/storage): tamanho e quantidade dos arquivos,
 //   os sem registro, os registrados que faltam aqui e a situação do espelho. Fila do
 //   administrador: trabalhos sem cópia fora deste computador, falha do espelho e pouco
@@ -58,6 +65,9 @@ const FREE_MARGIN_BYTES = 64 * MB;
 // O espelho.json é regravado a cada tantos arquivos copiados (pendrive tirado no meio não
 // perde a conta do que já foi).
 const MANIFEST_FLUSH_EVERY = 100;
+// Releitura de rodízio: quanto das cópias já conferidas é relido do destino a cada
+// espelhamento (as conferidas há mais tempo primeiro). ~10 s num pendrive USB 2.0.
+const ROLLING_VERIFY_BYTES = 256 * MB;
 // Profundidade da árvore: _cursos_arquivados/<pasta>/<tarefa>/<entrega>/<arquivo>.
 const MAX_DEPTH = 6;
 // Resumo dos arquivos deste computador guardado para a fila (que pergunta a cada visita
@@ -73,8 +83,13 @@ function isObject(value) {
     return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-function megabytes(bytes) {
-    return Math.max(1, Math.ceil((Number(bytes) || 0) / MB));
+// Tamanho para as mensagens: 1 KB, 640 KB, 12,4 MB, 3,2 GB (nunca "1 MB" para 272 bytes).
+function sizeText(bytes) {
+    const value = Math.max(0, Number(bytes) || 0);
+    const decimal = n => n.toLocaleString('pt-BR', { maximumFractionDigits: 1 });
+    if (Math.round(value / 1024) < 1000) return `${Math.max(1, Math.round(value / 1024)).toLocaleString('pt-BR')} KB`;
+    if (Math.round((value / MB) * 10) / 10 < 1000) return `${decimal(value / MB)} MB`;
+    return `${decimal(value / (1024 * MB))} GB`;
 }
 
 function plural(count, one, many) {
@@ -184,29 +199,39 @@ function registeredFiles(memory) {
     return out;
 }
 
-// Lápides por caminho: Map rel -> lápide (storedRel e archivedRel).
-function tombstonesByRel(memory) {
-    const out = new Map();
+// A lápide vale para este caminho? Não vale (a cópia no destino fica, o arquivo conta como
+// registrado no cartão e "Trazer arquivos" o traz de volta):
+// - quando o arquivo está aqui naquele caminho e um registro vivo aponta para ele;
+// - quando a lápide é do pacote de um curso excluído ('excluir_curso') e uma entrega viva
+//   do banco registra o caminho, esteja o arquivo aqui ou não. É o curso restaurado cujo
+//   pacote que sobrou foi excluído depois (ou um backup de antes da exclusão restaurado):
+//   a entrega continua no banco, e a cópia externa pode ser a única que sobrou dela.
+// As outras lápides (anonimizar, apagar o aluno, excluir a tarefa) valem mesmo com o
+// registro de volta por um backup antigo (D4: a lápide em 'merge' sobrevive a ele).
+function tombApplies(rel, tomb, registered, localSet) {
+    if (!isObject(tomb)) return false;
+    const info = registered.get(rel);
+    if (info && localSet.has(rel)) return false;
+    if (tomb.reason === 'excluir_curso' && info && info.origem === 'banco') return false;
+    return true;
+}
+
+// Caminhos (storedRel e archivedRel) em que alguma lápide vale: Set de rel.
+function tombstonedRels(memory, registered, localSet) {
+    const out = new Set();
     list(memory && memory.assignmentFileTombstones).forEach(item => {
         if (!isObject(item)) return;
         [item.storedRel, item.archivedRel].forEach(value => {
             const rel = relFromStored(value);
-            if (rel && !out.has(rel)) out.set(rel, item);
+            if (rel && tombApplies(rel, item, registered, localSet)) out.add(rel);
         });
     });
     return out;
 }
 
-// Uma entrega viva aponta para este caminho e o arquivo está aqui: a lápide dele não vale
-// (ainda) para este caminho.
-function liveHere(rel, registered, localSet) {
-    return registered.has(rel) && localSet.has(rel);
-}
-
-// O que o espelho copia: os arquivos daqui, menos os que têm lápide (a não ser os vivos).
-function filesToMirror(localFiles, registered, tombs) {
-    const localSet = new Set(localFiles.map(item => item.rel));
-    return localFiles.filter(item => !tombs.has(item.rel) || liveHere(item.rel, registered, localSet));
+// O que o espelho copia: os arquivos daqui, menos os que têm lápide que vale.
+function filesToMirror(localFiles, tombs) {
+    return localFiles.filter(item => !tombs.has(item.rel));
 }
 
 // ------------------------------------------------------------ espelho.json
@@ -225,6 +250,9 @@ async function readManifest(mirrorDir) {
                 tamanho: Math.max(0, Math.floor(Number(info.tamanho)) || 0),
                 sha256: /^[0-9a-f]{64}$/.test(String(info.sha256 || '')) ? info.sha256 : '',
                 copiadoEm: typeof info.copiadoEm === 'string' ? info.copiadoEm : null,
+                conferidoEm: typeof info.conferidoEm === 'string' ? info.conferidoEm : null,
+                // Data de gravação da cópia no destino (ms, inteiro): mudou, a cópia é relida.
+                mtimeMs: Number.isFinite(Number(info.mtimeMs)) && info.mtimeMs !== null ? Math.floor(Number(info.mtimeMs)) : null,
             };
         });
         return { ...emptyManifest(), ...parsed, arquivos };
@@ -302,8 +330,8 @@ async function mirrorAssignmentFiles({ destino, memory, signal = null, now = new
     const mirrorDir = mirrorDirFor(destino);
     const localFiles = await listLocalFiles();
     const registered = registeredFiles(memory);
-    const tombs = tombstonesByRel(memory);
     const localSet = new Set(localFiles.map(item => item.rel));
+    const tombs = tombstonedRels(memory, registered, localSet);
     const mirrorExists = fs.existsSync(mirrorDir);
     const resumo = { copiados: 0, bytes: 0, removidosPorLapide: 0, corrigidos: 0, conferidos: 0, origemDiferente: 0, sumiram: 0, arquivos: 0, bytesTotal: 0 };
     const lapidesFeitas = new Set();
@@ -320,13 +348,14 @@ async function mirrorAssignmentFiles({ destino, memory, signal = null, now = new
     list(memory && memory.assignmentFileTombstones).forEach(item => {
         if (!isObject(item) || !item.fileId) return;
         const rels = [item.storedRel, item.archivedRel].map(relFromStored).filter(Boolean);
-        byTomb.set(String(item.fileId), rels);
+        byTomb.set(String(item.fileId), { item, rels });
     });
-    for (const [fileId, rels] of byTomb) {
+    for (const [fileId, { item: tomb, rels }] of byTomb) {
         throwIfAborted(signal);
         let waiting = false;
         for (const rel of rels) {
-            if (liveHere(rel, registered, localSet)) { waiting = true; continue; }
+            // Caminho de uma entrega viva: a lápide espera (não apaga a cópia).
+            if (!tombApplies(rel, tomb, registered, localSet)) { waiting = true; continue; }
             const target = mirrorAbs(mirrorDir, rel);
             let existed = false;
             try { existed = (await fs.promises.stat(target)).isFile(); } catch (e) { existed = false; }
@@ -341,33 +370,58 @@ async function mirrorAssignmentFiles({ destino, memory, signal = null, now = new
         if (!waiting) lapidesFeitas.add(fileId);
     }
 
-    // 2. O que falta copiar (ou refazer) e o que já está lá.
-    const wanted = filesToMirror(localFiles, registered, tombs);
+    // 2. O que falta copiar (ou refazer) e o que já está lá. A cópia anotada no
+    // espelho.json com o mesmo tamanho e a mesma data de gravação no destino é dada como
+    // boa, a não ser pela releitura de rodízio; a que foi mexida no destino (outra data
+    // de gravação), a de outro tamanho e a que não está no espelho.json são conferidas
+    // pelo SHA-256 e, se não baterem, refeitas.
+    const wanted = filesToMirror(localFiles, tombs);
     const plan = [];
+    const settled = [];
     for (const item of wanted) {
         throwIfAborted(signal);
         const target = mirrorAbs(mirrorDir, item.rel);
         let stat = null;
         try { stat = await fs.promises.stat(target); } catch (e) { stat = null; }
+        const isFile = !!(stat && stat.isFile());
         const known = manifest.arquivos[item.rel];
-        if (stat && stat.isFile() && stat.size === item.size && known && known.tamanho === item.size && known.sha256) {
-            resumo.arquivos += 1;
-            resumo.bytesTotal += item.size;
+        const sameSize = isFile && stat.size === item.size;
+        if (sameSize && known && known.tamanho === item.size && known.sha256 && known.mtimeMs !== null && Math.floor(stat.mtimeMs) === known.mtimeMs) {
+            settled.push({ ...item, target, known });
             continue;
         }
-        plan.push({ ...item, target, exists: !!(stat && stat.isFile()), sameSize: !!(stat && stat.isFile() && stat.size === item.size) });
+        plan.push({ ...item, target, exists: isFile, sameSize, known });
     }
-    // Cópia que já está lá com o mesmo tamanho, mas fora do espelho.json: confere uma vez.
+    // Releitura de rodízio: a cada espelhamento, até ROLLING_VERIFY_BYTES das cópias
+    // conferidas há mais tempo são relidas do destino (pendrive que estraga aos poucos).
+    settled.sort((a, b) => String(a.known.conferidoEm || a.known.copiadoEm || '').localeCompare(String(b.known.conferidoEm || b.known.copiadoEm || '')) || a.rel.localeCompare(b.rel));
+    let rollingBudget = ROLLING_VERIFY_BYTES;
+    for (const item of settled) {
+        if (rollingBudget > 0) {
+            rollingBudget -= Math.max(1, item.size);
+            plan.push({ ...item, exists: true, sameSize: true });
+            continue;
+        }
+        resumo.arquivos += 1;
+        resumo.bytesTotal += item.size;
+    }
+    // Cópia que já está lá com o mesmo tamanho: confere pelo SHA-256 do registro (sem
+    // registro, o do espelho.json ou, sem ele, o do arquivo daqui).
     const toCopy = [];
     for (const item of plan) {
         throwIfAborted(signal);
         if (!item.sameSize) { toCopy.push(item); continue; }
-        let expected = registered.get(item.rel) && registered.get(item.rel).sha256;
+        let expected = (registered.get(item.rel) && registered.get(item.rel).sha256) || (item.known && item.known.sha256) || '';
         try {
             if (!expected) expected = (await hashFile(localAbs(item.rel), signal)).sha256;
             const there = await hashFile(item.target, signal);
             if (there.sha256 === expected) {
-                manifest.arquivos[item.rel] = { tamanho: item.size, sha256: expected, copiadoEm: manifest.arquivos[item.rel]?.copiadoEm || now.toISOString() };
+                const stat = await fs.promises.stat(item.target);
+                manifest.arquivos[item.rel] = {
+                    tamanho: item.size, sha256: expected,
+                    copiadoEm: (item.known && item.known.copiadoEm) || now.toISOString(),
+                    conferidoEm: now.toISOString(), mtimeMs: Math.floor(stat.mtimeMs),
+                };
                 resumo.conferidos += 1;
                 resumo.arquivos += 1;
                 resumo.bytesTotal += item.size;
@@ -386,7 +440,7 @@ async function mirrorAssignmentFiles({ destino, memory, signal = null, now = new
         const free = await store.freeBytesAt(mirrorDir);
         if (free !== null && free < needed + FREE_MARGIN_BYTES) {
             await writeManifest(mirrorDir, manifest, now).catch(() => {});
-            throw Object.assign(new Error(`Espaço insuficiente no destino externo para a cópia dos trabalhos dos alunos: faltam copiar cerca de ${megabytes(needed + FREE_MARGIN_BYTES)} MB e há ${Math.floor(free / MB)} MB livres. Nada foi apagado por isso; libere espaço no pendrive ou HD.`), { status: 400, code: 'ENOSPC_DESTINO' });
+            throw Object.assign(new Error(`Espaço insuficiente no destino externo para a cópia dos trabalhos dos alunos: faltam copiar cerca de ${sizeText(needed)} (${plural(toCopy.length, 'arquivo', 'arquivos')}), o destino precisa ficar com uma folga de ${sizeText(FREE_MARGIN_BYTES)} e há ${sizeText(free)} livres. Nada foi apagado por isso; libere espaço no pendrive ou HD.`), { status: 400, code: 'ENOSPC_DESTINO' });
         }
     }
 
@@ -410,7 +464,9 @@ async function mirrorAssignmentFiles({ destino, memory, signal = null, now = new
                 resumo.origemDiferente += 1;
                 logError(`espelho das entregas: o arquivo ${item.rel} deste computador não bate com o SHA-256 do registro (copiado assim mesmo)`, new Error('SHA-256 diferente do registro'));
             }
-            manifest.arquivos[item.rel] = { tamanho: copied.size, sha256: copied.sha256, copiadoEm: now.toISOString() };
+            let mtimeMs = null;
+            try { mtimeMs = Math.floor((await fs.promises.stat(item.target)).mtimeMs); } catch (e) { mtimeMs = null; }
+            manifest.arquivos[item.rel] = { tamanho: copied.size, sha256: copied.sha256, copiadoEm: now.toISOString(), conferidoEm: now.toISOString(), mtimeMs };
             if (item.exists) resumo.corrigidos += 1;
             else resumo.copiados += 1;
             resumo.bytes += copied.size;
@@ -490,16 +546,44 @@ function markTombstonesMirrored(memory, fileIds, at = Date.now()) {
 }
 
 // ------------------------------------------------------------ recuperar
+// Pastas de espelho no destino: a deste computador primeiro e depois as de outros
+// computadores (<destino>/IClass-*/entregas, a atualizada há menos tempo primeiro). No
+// computador trocado (no Windows, cada máquina tem outro nome, DESKTOP-XXXX), a cópia dos
+// trabalhos está na pasta do computador de antes. [{ dir, propria }]
+const MAX_OTHER_MIRRORS = 20;
+const HOST_FOLDER = /^IClass-[A-Za-z0-9_-]{1,40}$/;
+async function mirrorSources(destino) {
+    const own = mirrorDirFor(destino);
+    const out = [{ dir: own, propria: true }];
+    let entries = [];
+    try { entries = await fs.promises.readdir(destino, { withFileTypes: true }); } catch (e) { entries = []; }
+    const others = [];
+    for (const entry of entries) {
+        if (!entry.isDirectory() || !HOST_FOLDER.test(entry.name)) continue;
+        const dir = path.join(destino, entry.name, MIRROR_SEGMENT);
+        if (path.resolve(dir) === path.resolve(own)) continue;
+        try { if (!(await fs.promises.lstat(dir)).isDirectory()) continue; } catch (e) { continue; }
+        const manifest = await readManifest(dir);
+        others.push({ dir, propria: false, at: Date.parse(String(manifest.atualizadoEm || '')) || 0, name: entry.name });
+    }
+    others.sort((a, b) => b.at - a.at || a.name.localeCompare(b.name));
+    return out.concat(others.slice(0, MAX_OTHER_MIRRORS).map(({ dir, propria }) => ({ dir, propria })));
+}
+
 // Traz de volta do espelho os arquivos registrados que faltam em data/entregas, conferindo
-// o SHA-256 do registro (sem SHA-256 no registro, o tamanho). Nunca substitui arquivo
-// existente; nunca traz arquivo com lápide nem arquivo sem registro. Devolve
-// { copiados, conferidos, faltando, divergentes, bytes }.
+// o SHA-256 do registro (sem SHA-256 no registro, o tamanho, e só da pasta deste
+// computador). Procura primeiro na pasta deste computador e depois nas de outros
+// computadores no mesmo destino. Nunca substitui arquivo existente; nunca traz arquivo
+// com lápide nem arquivo sem registro. Devolve
+// { copiados, deOutroComputador, conferidos, faltando, divergentes, bytes }.
 async function recoverAssignmentFiles({ destino, memory, signal = null } = {}) {
     if (!(await destinationReachable(destino))) throw Object.assign(new Error(UNREACHABLE_MESSAGE), { status: 409, code: 'destination_unavailable' });
-    const mirrorDir = mirrorDirFor(destino);
+    const sources = await mirrorSources(destino);
     const registered = registeredFiles(memory);
-    const tombs = tombstonesByRel(memory);
-    const out = { copiados: 0, conferidos: 0, faltando: 0, divergentes: 0, bytes: 0 };
+    const localFiles = await listLocalFiles();
+    const localSet = new Set(localFiles.map(item => item.rel));
+    const tombs = tombstonedRels(memory, registered, localSet);
+    const out = { copiados: 0, deOutroComputador: 0, conferidos: 0, faltando: 0, divergentes: 0, bytes: 0 };
     const missing = [];
     for (const [rel, info] of registered) {
         if (tombs.has(rel)) continue;
@@ -512,48 +596,65 @@ async function recoverAssignmentFiles({ destino, memory, signal = null } = {}) {
     }
     const available = [];
     for (const item of missing) {
-        let source;
-        try { source = mirrorAbs(mirrorDir, item.rel); } catch (e) { out.faltando += 1; continue; }
-        let stat = null;
-        try { stat = await fs.promises.stat(source); } catch (e) { stat = null; }
-        if (!stat || !stat.isFile()) { out.faltando += 1; continue; }
-        available.push({ ...item, source, size: stat.size });
+        const candidates = [];
+        for (const source of sources) {
+            // Pasta de outro computador: só com o SHA-256 do registro para conferir.
+            if (!source.propria && !item.info.sha256) continue;
+            let file;
+            try { file = mirrorAbs(source.dir, item.rel); } catch (e) { continue; }
+            let stat = null;
+            try { stat = await fs.promises.stat(file); } catch (e) { stat = null; }
+            if (!stat || !stat.isFile()) continue;
+            if (item.info.size && stat.size !== item.info.size) { candidates.push({ file, size: stat.size, propria: source.propria, wrongSize: true }); continue; }
+            candidates.push({ file, size: stat.size, propria: source.propria });
+        }
+        if (!candidates.length) { out.faltando += 1; continue; }
+        // As de tamanho certo primeiro (a de tamanho errado só conta como divergente).
+        candidates.sort((a, b) => Number(!!a.wrongSize) - Number(!!b.wrongSize));
+        available.push({ ...item, candidates });
     }
     if (available.length) {
-        const needed = available.reduce((sum, item) => sum + item.size, 0);
+        const needed = available.reduce((sum, item) => sum + item.candidates[0].size, 0);
         const minFree = settingsUtil.entregasSettings().discoLivreMinimoMb * MB;
         const free = await store.freeBytesAt(fs.existsSync(runtimePaths.ASSIGNMENT_FILES_DIR) ? runtimePaths.ASSIGNMENT_FILES_DIR : runtimePaths.DATA_DIR);
         if (free !== null && free - needed < minFree) {
-            throw Object.assign(new Error(`Sem espaço neste computador para trazer os arquivos: são cerca de ${megabytes(needed)} MB, e o disco precisa ficar com pelo menos ${megabytes(minFree)} MB livres para os envios dos alunos.`), { status: 409, code: 'disk_full' });
+            throw Object.assign(new Error(`Sem espaço neste computador para trazer os arquivos: são cerca de ${sizeText(needed)}, e o disco precisa ficar com pelo menos ${sizeText(minFree)} livres para os envios dos alunos.`), { status: 409, code: 'disk_full' });
         }
     }
     await fs.promises.mkdir(runtimePaths.ASSIGNMENT_RECEIVING_DIR, { recursive: true });
     for (const item of available) {
-        throwIfAborted(signal);
-        const temporary = path.join(runtimePaths.ASSIGNMENT_RECEIVING_DIR, `recuperar_${Date.now()}_${crypto.randomBytes(6).toString('hex')}.part`);
-        try {
-            const copied = await copyVerified(item.source, temporary, { signal });
-            const ok = item.info.sha256 ? copied.sha256 === item.info.sha256 : (!item.info.size || copied.size === item.info.size);
-            if (!ok) {
-                out.divergentes += 1;
+        let done = false;
+        for (const candidate of item.candidates) {
+            throwIfAborted(signal);
+            if (candidate.wrongSize) continue;
+            const temporary = path.join(runtimePaths.ASSIGNMENT_RECEIVING_DIR, `recuperar_${Date.now()}_${crypto.randomBytes(6).toString('hex')}.part`);
+            try {
+                const copied = await copyVerified(candidate.file, temporary, { signal });
+                const ok = item.info.sha256 ? copied.sha256 === item.info.sha256 : (!item.info.size || copied.size === item.info.size);
+                if (!ok) {
+                    await fs.promises.rm(temporary, { force: true }).catch(() => {});
+                    continue;
+                }
+                await fs.promises.mkdir(path.dirname(item.abs), { recursive: true });
+                // Chegou outro no meio (a restauração do curso, por exemplo): o daqui fica.
+                if (fs.existsSync(item.abs)) {
+                    out.conferidos += 1;
+                    await fs.promises.rm(temporary, { force: true }).catch(() => {});
+                    done = true;
+                    break;
+                }
+                await renameWithRetry(temporary, item.abs);
+                out.copiados += 1;
+                if (!candidate.propria) out.deOutroComputador += 1;
+                out.bytes += copied.size;
+                done = true;
+                break;
+            } catch (err) {
                 await fs.promises.rm(temporary, { force: true }).catch(() => {});
-                continue;
+                throw err;
             }
-            await fs.promises.mkdir(path.dirname(item.abs), { recursive: true });
-            // Chegou outro no meio (a restauração do curso, por exemplo): o daqui fica.
-            if (fs.existsSync(item.abs)) {
-                out.conferidos += 1;
-                await fs.promises.rm(temporary, { force: true }).catch(() => {});
-                continue;
-            }
-            await renameWithRetry(temporary, item.abs);
-            out.copiados += 1;
-            out.bytes += copied.size;
-        } catch (err) {
-            await fs.promises.rm(temporary, { force: true }).catch(() => {});
-            if (err && err.code === 'ICLASS_BACKUP_ABORTED') throw err;
-            throw err;
         }
+        if (!done) out.divergentes += 1;
     }
     return out;
 }
@@ -575,8 +676,8 @@ async function localSummary(memory, { fresh = true, now = Date.now() } = {}) {
     if (!fresh && localSummaryCache && localSummaryCache.signature === signature && now - localSummaryCache.at < LOCAL_SUMMARY_MAX_AGE_MS) return localSummaryCache.value;
     const files = await listLocalFiles();
     const registered = registeredFiles(memory);
-    const tombs = tombstonesByRel(memory);
     const here = new Set(files.map(item => item.rel));
+    const tombs = tombstonedRels(memory, registered, here);
     let bytes = 0;
     let semRegistro = 0;
     let semRegistroBytes = 0;
@@ -608,7 +709,7 @@ async function storageSummary(memory, { full = false } = {}) {
     if (destino && acessivel) {
         const mirrorDir = mirrorDirFor(destino);
         const manifest = await readManifest(mirrorDir);
-        pendentes = filesToMirror(local.files, local.registered, local.tombs)
+        pendentes = filesToMirror(local.files, local.tombs)
             .filter(item => !(manifest.arquivos[item.rel] && manifest.arquivos[item.rel].tamanho === item.size)).length;
     }
     const failure = openMirrorFailure(espelhoState, destino);
