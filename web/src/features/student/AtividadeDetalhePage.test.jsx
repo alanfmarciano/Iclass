@@ -346,6 +346,40 @@ describe('atividade do aluno: escolher e enviar', () => {
     }
   })
 
+  it('J2 (pendência do C9): o prazo vence no meio de um envio lento: a barra, o Cancelar e o erro continuam, sem a recusa falsa', async () => {
+    const MOTIVO = 'O prazo desta tarefa terminou. O envio não é mais aceito.'
+    let progress
+    let finish
+    mocks.upload = vi.fn((path, form, options) => { progress = options.onProgress; return new Promise((resolve, reject) => { finish = { resolve, reject } }) })
+    renderPage()
+    choose(file('relatorio.pdf', 2 * MB, 'application/pdf'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Enviar' }))
+    await screen.findByRole('progressbar', { name: 'Envio dos arquivos' })
+    // A tela recarrega o detalhe com o prazo vencido enquanto o envio sobe.
+    mocks.detail = detail({ aceitaEnvio: false, motivo: MOTIVO, atrasoAgora: false })
+    await act(async () => { progress({ loaded: 60, total: 100, percent: 60 }) })
+    expect(screen.getByRole('progressbar', { name: 'Envio dos arquivos' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Cancelar envio' })).toBeInTheDocument()
+    expect(screen.queryByText(MOTIVO)).not.toBeInTheDocument()
+    // A rede cai: o erro e o "Tentar de novo" aparecem (o servidor aceita pelo horário do pedido).
+    await act(async () => { finish.reject(Object.assign(new Error('Sem conexão com o servidor do IClass. Confira a rede e tente de novo.'), { status: 0, network: true })) })
+    expect(await screen.findByText('Sem conexão com o servidor do IClass. Confira a rede e tente de novo.')).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Tentar de novo' })).toBeInTheDocument()
+    expect(screen.getByText('relatorio.pdf')).toBeInTheDocument()
+  })
+
+  it('J2 (pendência do C9): o envio que termina depois do prazo mostra o comprovante', async () => {
+    let finish
+    mocks.upload = vi.fn(() => new Promise((resolve) => { finish = resolve }))
+    renderPage()
+    choose(file('relatorio.pdf', 2 * MB, 'application/pdf'))
+    fireEvent.click(await screen.findByRole('button', { name: 'Enviar' }))
+    await screen.findByRole('progressbar', { name: 'Envio dos arquivos' })
+    mocks.detail = detail({ aceitaEnvio: false, motivo: 'O prazo desta tarefa terminou. O envio não é mais aceito.' })
+    await act(async () => { finish({ success: true, version: version(1) }) })
+    expect(await screen.findByText('Envio recebido.')).toBeInTheDocument()
+  })
+
   it('C9 ajuste 1: o servidor responde "repetido" (o envio tinha chegado): mostra o comprovante dessa versão', async () => {
     const networkError = Object.assign(new Error('Sem conexão com o servidor do IClass. Confira a rede e tente de novo.'), { status: 0, network: true })
     mocks.upload = vi.fn().mockRejectedValueOnce(networkError).mockResolvedValueOnce({ success: true, repetido: true, version: version(1) })

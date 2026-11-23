@@ -18,7 +18,8 @@
 // - Rede parada sem cair (Wi-Fi da sala congestionada, ajuste 2): passados STALL_MS sem
 //   nada subir nem a resposta chegar, o envio é interrompido sozinho e vira o mesmo caso
 //   da resposta perdida (confere pelo identificador antes de mandar de novo). Depois de
-//   SLOW_HINT_MS parado, a tela avisa que a rede está lenta; "Cancelar envio" interrompe
+//   SLOW_HINT_MS parado, a tela avisa que a rede está lenta; com os arquivos todos fora do
+//   aparelho (100%), a espera pela resposta não conta como parada (J2); "Cancelar envio" interrompe
 //   na hora e mantém os arquivos escolhidos. As consultas de conferência têm prazo
 //   (CHECK_TIMEOUT_MS), para a tela nunca ficar presa em "Enviando…".
 // - Comprovante: a linha "Recebido às 14:32 de 20/11 — versão 2 — ..." recebe o foco
@@ -245,6 +246,10 @@ export default function AtividadeDetalhePage() {
   const sending = phase === 'sending' || phase === 'checking'
   const preparing = items.some((item) => item.preparing)
   const accepts = !!data?.aceitaEnvio
+  // O cartão de envio fica enquanto um envio está em andamento ou com o erro dele: o prazo
+  // que vence no meio de um envio lento não esconde a barra, o Cancelar e o erro (o servidor
+  // aceita pelo horário do pedido; J2, pendência do C9).
+  const showSendCard = accepts || sending || !!error
   const lateNow = accepts && typeof assignment?.dueAt === 'number' ? now > assignment.dueAt : !!data?.atrasoAgora
   const row = data ? { situacao: data.situacao, situacaoTexto: data.situacaoTexto, aceitaEnvio: data.aceitaEnvio, dueAt: assignment?.dueAt } : null
   const courseName = (courses || []).find((course) => course.id === courseId)?.name || ''
@@ -498,7 +503,7 @@ export default function AtividadeDetalhePage() {
               )}
             </Card>
 
-            {accepts ? (
+            {showSendCard && (
               <Card className="space-y-4 p-5">
                 <h2 className="font-semibold text-text">{versions.length ? 'Enviar nova versão' : 'Enviar'}</h2>
                 {versions.length > 0 && <p className="text-sm text-muted">As versões anteriores continuam guardadas. O professor corrige a mais recente.</p>}
@@ -554,9 +559,8 @@ export default function AtividadeDetalhePage() {
                   <PreviewDisabledNote />
                 </div>
               </Card>
-            ) : (
-              data.motivo && !devolucao && <p role="status" className="rounded-lg border border-border bg-surface-2 p-3 text-sm text-muted">{data.motivo}</p>
             )}
+            {!accepts && !sending && data.motivo && !devolucao && <p role="status" className="rounded-lg border border-border bg-surface-2 p-3 text-sm text-muted">{data.motivo}</p>}
 
             {data.minhaEntrega?.entregaEmMaos && <p className="rounded-lg border border-border bg-surface-2 p-3 text-sm text-muted">O professor registrou a entrega em mãos em {dateTimeText(data.minhaEntrega.entregaEmMaos.at, timezone, now)}.</p>}
 

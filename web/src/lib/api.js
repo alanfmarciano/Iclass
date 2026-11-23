@@ -340,6 +340,8 @@ export async function downloadFile(path, fallbackName = 'arquivo') {
 // pode parar de passar dados sem fechar a conexão; sem este prazo o envio ficava parado
 // até o sistema desistir da conexão, muitos minutos depois. Estourado, o pedido é
 // cancelado e o erro sai como o do tempo-limite (status 0, err.timeout), com err.stalled.
+// Depois do corpo todo enviado (upload.onload) o prazo sem novidade para (J2): a espera
+// pela resposta não tem eventos e não é rede parada.
 // Devolve o JSON da resposta (ou null sem corpo JSON).
 export function uploadWithProgress(path, formData, { method = 'POST', onProgress, signal, timeoutMs = 0, stallMs = 0, headers: extraHeaders = null } = {}) {
   return new Promise((resolve, reject) => {
@@ -366,9 +368,14 @@ export function uploadWithProgress(path, formData, { method = 'POST', onProgress
       return err
     }
     const fail = (err) => { if (settled) return; finish(); reject(err) }
+    // Corpo todo entregue ao navegador (upload.onload): daqui até a resposta não há evento
+    // de progresso (numa rede lenta o corpo ainda está saindo do buffer e o servidor ainda
+    // recebe), então o prazo sem novidade para; vale o timeoutMs de quem chama e o Cancelar
+    // (J2, pendência do C9: antes o 100% sem resposta virava "a rede parou" falso).
+    let bodySent = false
     // Algo andou (pedaço enviado, resposta chegando): o prazo sem novidade recomeça.
     const armStall = () => {
-      if (!stallLimit || settled) return
+      if (!stallLimit || settled || bodySent) return
       if (stallTimer) clearTimeout(stallTimer)
       stallTimer = setTimeout(() => { stalled = true; timedOut = true; try { xhr.abort() } catch {} }, stallLimit)
     }
@@ -390,7 +397,11 @@ export function uploadWithProgress(path, formData, { method = 'POST', onProgress
         armStall()
         if (event && event.lengthComputable) report(event.loaded, event.total)
       }
-      xhr.upload.onload = () => { armStall(); report(1, 1) }
+      xhr.upload.onload = () => {
+        bodySent = true
+        if (stallTimer) { clearTimeout(stallTimer); stallTimer = null }
+        report(1, 1)
+      }
     }
     // Cabeçalhos ou pedaços da resposta chegando também contam como novidade.
     xhr.onreadystatechange = () => { if (xhr.readyState >= 2) armStall() }

@@ -593,17 +593,37 @@ describe('uploadWithProgress (envio da atividade com barra de progresso)', () =>
     }
   })
 
-  it('C9 ajuste 2: corpo todo enviado (100%) e a resposta que não vem também estoura o prazo sem novidade', async () => {
+  // Contrato mudado na J2 (pendência do C9): o upload.onload diz que o corpo saiu para o
+  // navegador, não que o servidor recebeu; numa rede lenta o servidor ainda recebe sem
+  // nenhum evento até a resposta. O prazo sem novidade para aí; quem encerra é o timeoutMs
+  // de quem chama ou o Cancelar.
+  it('J2 (C9): corpo todo enviado (100%) esperando a resposta não estoura o prazo sem novidade', async () => {
     vi.useFakeTimers()
     try {
-      const { promise, xhr } = await start({ stallMs: 1000 })
+      const { xhr } = await start({ stallMs: 1000 })
+      xhr.progress(100, 100)
+      xhr.upload.onload?.()
+      vi.advanceTimersByTime(10 * 60 * 1000)
+      expect(xhr.aborted).toBe(false)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('J2 (C9): depois do 100%, o timeoutMs de quem chama continua valendo', async () => {
+    vi.useFakeTimers()
+    try {
+      const { promise, xhr } = await start({ stallMs: 1000, timeoutMs: 5000 })
       const caught = promise.catch((e) => e)
       xhr.progress(100, 100)
       xhr.upload.onload?.()
+      vi.advanceTimersByTime(4000)
+      expect(xhr.aborted).toBe(false)
       vi.advanceTimersByTime(1001)
       const err = await caught
       expect(xhr.aborted).toBe(true)
-      expect(err).toMatchObject({ status: 0, timeout: true, stalled: true })
+      expect(err).toMatchObject({ status: 0, timeout: true })
+      expect(err.stalled).toBeUndefined()
     } finally {
       vi.useRealTimers()
     }
