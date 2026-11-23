@@ -1,0 +1,9 @@
+﻿Categoria;Tipo;Enunciado;Alternativa A;Alternativa B;Alternativa C;Correta;Pontos;Valor;Tolerância;Unidade;Respostas aceitas;Revisão;Resposta esperada;Rubrica;Explicação;Dificuldade;Habilidades;Etiquetas;Pontuação parcial
+Redes;Uma correta;"Qual porta o ""HTTP"" usa?
+Responda pelo número.";80;21;443;A;2;;;;;;;;A porta **80**.;Fácil;Competência 3;redes | HTTP;
+Redes;Várias corretas;Quais são de transporte?;TCP;HTTP;UDP;A e C;3;;;;;;;;;Média;;;não
+Redes;V/F;IPv4 tem 32 bits.;;;;V;;;;;;;;;;;;;
+Sub-redes;Numérica;Quantos hosts numa /26?;;;;;1,5;62;0;hosts;;professor;;;;Difícil;;sub-rede;
+Linux;Resposta curta;Comando que lista arquivos?;;;;;;;;;ls | ls -l;;;;;;;;
+Linux;Dissertativa;Explique o handshake.;;;;;4;;;;;;SYN, SYN-ACK, ACK;Etapas: 3 | Clareza: 1;;;;;
+;Uma correta;"=CMD()|calc";'=1+1;2;;A;;;;;;;;;;;;;

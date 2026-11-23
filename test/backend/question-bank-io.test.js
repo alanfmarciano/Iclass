@@ -4,7 +4,8 @@
 // GET filtra e devolve a estatística calculada na hora (usos e % de acerto, só com as
 // entregas consideradas); a questão que veio do banco leva bankKey na avaliação e no
 // snapshot da aplicação, e é por ela que as entregas contam.
-// (A importação e a exportação GIFT e CSV, P3-S9b, acrescentam casos aqui.)
+// A importação e a exportação GIFT e planilha (P3-S9b, D22) estão no fim, em
+// [UC-BANCO-002].
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -22,6 +23,8 @@ const db = require('../../backend/database.js');
 const { createApp } = require('../../backend/server.js');
 const { alternativeAnswerId } = require('../../backend/utils/examAnswerIds.js');
 const { questionBankStats, normalizeBankQuestion } = require('../../backend/utils/questionBank.js');
+const questionFormats = require('../../backend/utils/questionFormats.js');
+const { buildXlsx } = require('../../backend/utils/tabularFile.js');
 
 let app;
 const adminToken = 'admin-token-question-bank';
@@ -608,4 +611,386 @@ test('[UC-BANCO-001] normalizeBankQuestion: item antigo com marca e letra juntos
     // Alternativas marcadas sem a letra: a letra de antes não vale junto.
     const marked = normalizeBankQuestion({ alternatives: [{ text: 'um', isCorrect: true }, { text: 'dois' }] }, { previous: legacy });
     assert.equal(marked.correctAnswer, 'A');
+});
+
+// ---------------------------------------------------------------- P3-S9b: GIFT e planilha
+
+const FIXTURES = path.join(__dirname, 'fixtures');
+const coordToken = 'coord-token-question-bank';
+const coordEmail = 'coord@banco.local';
+const fixture = name => fs.readFileSync(path.join(FIXTURES, name));
+const asFile = (formato, buffer, nomeArquivo, extra = {}) => ({ formato, arquivo: buffer.toString('base64'), nomeArquivo, ...extra });
+const preview = (payload, who = asAdmin) => who('post', '/api/admin/question-bank/import/preview').send(payload);
+const confirm = (payload, sha256, extra = {}, who = asAdmin) => who('post', '/api/admin/question-bank/import').send({ ...payload, sha256, ...extra });
+const bankItems = () => db.memory.questionBank.filter(Boolean);
+const withoutKey = question => {
+    const { questionText, ...rest } = question;
+    return { ...rest, questionText };
+};
+
+function seedWithCoordination() {
+    seed();
+    db.memory.schools = [{ id: 'esc_banco', name: 'Escola' }];
+    db.memory.admins.push({ email: coordEmail, name: 'Coord', role: 'coordenacao', password: db.hashPassword('senha-administrativa'), assignedSchoolIds: ['esc_banco'], additionalPermissions: ['page.exams'] });
+    db.memory.adminSessions[coordToken] = { email: coordEmail, createdAt: Date.now(), lastSeen: Date.now() };
+}
+
+test('[UC-BANCO-002] GIFT do Moodle: a prévia lê os seis tipos sem gravar; a confirmação grava com autor, revisão e auditoria', async () => {
+    seed();
+    const payload = asFile('gift', fixture('banco.gift'), 'banco.gift', { categoriaPadrao: 'Importadas' });
+    const res = await preview(payload);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(bankItems().length, 0, 'a prévia não grava');
+    assert.equal(audits('question_bank_imported').length, 0);
+    assert.equal(res.body.sha256, require('node:crypto').createHash('sha256').update(fixture('banco.gift')).digest('hex'));
+    assert.deepEqual(res.body.erros, []);
+    assert.equal(res.body.validas, 8);
+    assert.equal(res.body.comErro, 0);
+    const byLine = Object.fromEntries(res.body.itens.map(item => [item.linha, item]));
+    assert.deepEqual(res.body.itens.map(item => item.type), ['multiple_choice', 'multiple_answer', 'true_false', 'numeric', 'numeric', 'short_answer', 'essay', 'multiple_choice']);
+    // [html] vira Markdown, o título sai, a categoria é a última parte do caminho do Moodle.
+    assert.equal(byLine[9].questionText, 'Qual porta o **HTTP** usa por padrão?');
+    assert.equal(byLine[9].category, 'Protocolos');
+    assert.deepEqual(byLine[9].tags, ['redes', 'HTTP']);
+    assert.deepEqual(byLine[9].avisos, ['O comentário de cada resposta (#) não existe no IClass e ficou de fora.']);
+    assert.deepEqual(byLine[16].alternatives.filter(item => item.isCorrect).map(item => item.text), ['TCP', 'UDP']);
+    assert.equal(byLine[22].correctAnswer, 'A');
+    assert.deepEqual(byLine[26].numeric, { value: 62, tolerance: 0 });
+    assert.deepEqual(byLine[28].numeric, { value: 2, tolerance: 1 }, '{#1..3} é 2 com tolerância 1');
+    assert.equal(byLine[26].category, 'Sub-redes');
+    assert.deepEqual(byLine[33].acceptedAnswers, ['ls', 'dir']);
+    assert.equal(byLine[35].type, 'essay');
+    assert.equal(byLine[39].questionText, 'Use {chaves}, = e ~ e # e : no texto: qual é o sinal de atribuição em C?');
+    assert.equal(byLine[39].category, 'Linux');
+
+    const saved = await confirm(payload, res.body.sha256);
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.equal(saved.body.importadas, 8);
+    assert.equal(saved.body.ignoradas, 0);
+    const items = bankItems();
+    assert.equal(items.length, 8);
+    assert.equal(new Set(items.map(item => item.key)).size, 8);
+    items.forEach(item => {
+        assert.equal(item.author, adminEmail);
+        assert.equal(item.revision, 1);
+        assert.equal(item.archived, false);
+        assert.equal(item.sourceExamKey, null, 'acervo comum');
+        assert.ok(item.createdAt && item.updatedAt);
+    });
+    const essay = items.find(item => item.type === 'essay');
+    assert.equal(essay.questionText, 'Explique o handshake de três vias do TCP.\nUse as palavras SYN e ACK.');
+    assert.equal(essay.explanation, 'Espera-se SYN, SYN-ACK e ACK.');
+    const entry = audits('question_bank_imported').pop();
+    assert.equal(entry.actor, adminEmail);
+    assert.equal(entry.details.formato, 'gift');
+    assert.equal(entry.details.importadas, 8);
+    assert.equal(entry.details.arquivo, 'banco.gift');
+    assert.equal(entry.details.keys.length, 8);
+    // O GET mostra as importadas como as outras.
+    const list = await asAdmin('get', '/api/admin/question-bank?categoria=Linux');
+    assert.equal(list.body.questions.length, 3);
+});
+
+test('[UC-BANCO-002] questão com erro vem com a linha e não impede as outras; arquivo diferente da prévia é recusado', async () => {
+    seed();
+    const gift = [
+        '// cabeçalho',
+        '',
+        'Qual porta o HTTP usa? {=80 ~21}',
+        '',
+        'Associe as camadas {=Rede -> 3 =Enlace -> 2}',
+        '',
+        'Sem respostas aqui',
+        '',
+        'Uma alternativa só {=única}',
+        '',
+        'Só erradas {~a ~b}',
+        '',
+        'Quanto é 2+2? {#quatro}',
+    ].join('\n');
+    const payload = { formato: 'gift', conteudo: gift };
+    const res = await preview(payload);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.validas, 2, 'a de uma alternativa só com "=" é resposta curta');
+    assert.deepEqual(res.body.erros.map(item => item.linha), [5, 7, 11, 13]);
+    assert.match(res.body.erros[0].mensagem, /associação/);
+    assert.match(res.body.erros[1].mensagem, /chaves/);
+    assert.equal(res.body.erros[2].mensagem, 'Marque exatamente uma alternativa correta.');
+    assert.match(res.body.erros[3].mensagem, /numérica/);
+    assert.equal(bankItems().length, 0);
+
+    // Outro arquivo com o sha256 da prévia: 409, nada gravado.
+    const changed = await confirm({ ...payload, conteudo: `${gift}\n` }, res.body.sha256);
+    assert.equal(changed.status, 409);
+    assert.equal(changed.body.code, 'import_changed');
+    assert.equal(bankItems().length, 0);
+    // sha256 em formato errado: 400 do schema.
+    assert.equal((await confirm(payload, 'abc')).status, 400);
+
+    const saved = await confirm(payload, res.body.sha256);
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.equal(saved.body.importadas, 2);
+    assert.equal(saved.body.comErro, 4);
+    assert.equal(audits('question_bank_imported').pop().details.comErro, 4);
+    assert.deepEqual(bankItems().map(item => item.category), ['Geral', 'Geral']);
+});
+
+test('[UC-BANCO-002] planilha: ";" com aspas e quebra de linha, Windows-1252 e XLSX dão as mesmas questões; o apóstrofo do csvSafe sai', async () => {
+    seed();
+    const csv = fixture('banco.csv');
+    const res = await preview(asFile('csv', csv, 'banco.csv'));
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.deepEqual(res.body.erros, []);
+    assert.equal(res.body.validas, 7);
+    const [first, many, trueFalse, numeric, short, essay, formula] = res.body.itens;
+    assert.equal(first.questionText, 'Qual porta o "HTTP" usa?\nResponda pelo número.');
+    assert.equal(first.points, 2);
+    assert.equal(first.difficulty, 'facil');
+    assert.deepEqual(first.tags, ['redes', 'HTTP']);
+    assert.deepEqual(many.correctAnswers, ['A', 'C'], '"A e C"');
+    assert.equal(trueFalse.type, 'true_false');
+    assert.equal(trueFalse.correctAnswer, 'A');
+    assert.deepEqual(numeric.numeric, { value: 62, tolerance: 0, unit: 'hosts' });
+    assert.equal(numeric.points, 1.5, '"1,5"');
+    assert.deepEqual(short.acceptedAnswers, ['ls', 'ls -l']);
+    assert.equal(essay.type, 'essay');
+    assert.equal(formula.alternatives[0].text, '=1+1', "o \"'=1+1\" do csvSafe volta a ser =1+1");
+    assert.equal(formula.category, 'Geral');
+
+    // Windows-1252 (o "CSV" do Excel em português).
+    const ansi = Buffer.from(csv.subarray(3).toString('utf8'), 'latin1');
+    const ansiRes = await preview(asFile('csv', ansi, 'banco.csv'));
+    assert.equal(ansiRes.status, 200, JSON.stringify(ansiRes.body));
+    assert.deepEqual(ansiRes.body.itens.map(item => item.questionText), res.body.itens.map(item => item.questionText));
+
+    // XLSX com a mesma planilha (parseTabularFile lê os dois).
+    const table = csv.subarray(3).toString('utf8');
+    const { _internals } = require('../../backend/utils/tabularFile.js');
+    const rows = _internals.splitCsvRecords(table, ';').records.map(record => record.valores.map(value => (value.startsWith("'") ? value.slice(1) : value)));
+    const xlsx = buildXlsx(rows.slice(1), { cabecalho: rows[0] });
+    const xlsxRes = await preview(asFile('csv', xlsx, 'banco.xlsx'));
+    assert.equal(xlsxRes.status, 200, JSON.stringify(xlsxRes.body));
+    assert.deepEqual(xlsxRes.body.itens.map(item => [item.type, item.questionText]), res.body.itens.map(item => [item.type, item.questionText]));
+
+    // Sem cabeçalho com "Enunciado": erro do arquivo inteiro.
+    const noHeader = await preview({ formato: 'csv', conteudo: 'Qual?;Sim;Não;A\r\n' });
+    assert.equal(noHeader.status, 400);
+    assert.equal(noHeader.body.code, 'csv_header');
+    // Tipo que não existe e letra fora das alternativas: erro da linha.
+    const wrong = await preview({ formato: 'csv', conteudo: 'Tipo;Enunciado;Alternativa A;Alternativa B;Correta\r\nAssociação;Q1;a;b;A\r\nUma correta;Q2;a;b;C\r\n' });
+    assert.equal(wrong.status, 200);
+    assert.deepEqual(wrong.body.erros.map(item => item.linha), [2, 3]);
+    assert.match(wrong.body.erros[0].mensagem, /tipo "Associação" não existe/);
+    assert.match(wrong.body.erros[1].mensagem, /letra C, mas a linha só tem 2 alternativas \(A a B\)/);
+    assert.equal(bankItems().length, 0);
+});
+
+test('[UC-BANCO-002] repetida: no banco (também arquivada) ou mais acima no arquivo fica de fora, a não ser que o professor peça', async () => {
+    seed();
+    await create(ITEMS.multiple_choice);
+    const archived = await create(ITEMS.true_false);
+    await asAdmin('post', '/api/admin/question-bank/archive').send({ key: archived.key }).expect(200);
+    const gift = [
+        'Qual porta o HTTP usa? {=80 ~21}', '',
+        '  IPV4 tem 32 BITS. {T}', '',
+        'Nova questão? {=sim ~não}', '',
+        'Nova questão? {=sim ~não}',
+    ].join('\n');
+    const payload = { formato: 'gift', conteudo: gift };
+    const res = await preview(payload);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.validas, 1);
+    assert.equal(res.body.duplicadas, 3);
+    assert.deepEqual(res.body.itens.map(item => [item.duplicada, item.arquivada, item.noArquivo]), [[true, false, null], [true, true, null], [false, false, null], [true, false, 5]]);
+
+    const saved = await confirm(payload, res.body.sha256);
+    assert.equal(saved.body.importadas, 1);
+    assert.equal(saved.body.ignoradas, 3);
+    assert.equal(bankItems().length, 3);
+    // Agora tudo já está no banco: nada a importar (400), a não ser com ignorarDuplicadas false.
+    const again = await preview(payload);
+    assert.equal(again.body.validas, 0);
+    const nothing = await confirm(payload, again.body.sha256);
+    assert.equal(nothing.status, 400);
+    assert.equal(nothing.body.code, 'nothing_to_import');
+    const forced = await confirm(payload, again.body.sha256, { ignorarDuplicadas: false });
+    assert.equal(forced.status, 200);
+    assert.equal(forced.body.importadas, 4);
+    assert.equal(bankItems().length, 7);
+});
+
+test('[UC-BANCO-002] exportar e importar de novo dá as mesmas questões, em GIFT e em planilha; CSV com BOM e fórmula neutralizada', async () => {
+    seed();
+    for (const item of Object.values(ITEMS)) await create(item, { category: item.type === 'essay' ? 'Redes/TCP: avançado' : 'Redes' });
+    await create({ type: 'multiple_choice', text: '=CMD()|calc', alternatives: [{ text: '+1', isCorrect: true }, { text: '-1' }, { text: '@x' }], explanation: 'Linha 1\n\nLinha 3 com \\d+ e {chave} # = ~ :' }, { category: 'Fórmulas' });
+    // Item antigo do banco, sem tipo e com alternativas em texto.
+    db.memory.questionBank.push({ key: 'qb_antigo', category: 'Antigas', questionText: 'Qual é a capital?', alternatives: ['Brasília', 'Rio'], correctAnswer: 'A', createdAt: '2025-01-01' });
+    const original = bankItems().map(item => ({ category: item.category, question: withoutKey(normalizeBankQuestion({}, { previous: item })) }));
+    const sortKey = entry => `${entry.category}\u0000${entry.question.questionText}`;
+    original.sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
+
+    for (const formato of ['gift', 'csv']) {
+        const exported = await asAdmin('get', `/api/admin/question-bank/export?formato=${formato}`).buffer(true).parse((res, cb) => {
+            const chunks = [];
+            res.on('data', chunk => chunks.push(chunk));
+            res.on('end', () => cb(null, Buffer.concat(chunks)));
+        });
+        assert.equal(exported.status, 200);
+        const file = exported.body;
+        const entry = audits('question_bank_exported').pop();
+        assert.equal(entry.details.formato, formato);
+        assert.equal(entry.details.quantidade, original.length);
+        if (formato === 'gift') {
+            assert.match(exported.headers['content-type'], /^text\/plain; charset=utf-8/);
+            assert.match(exported.headers['content-disposition'], /banco-de-questoes_\d{4}-\d{2}-\d{2}\.gift\.txt/);
+            const text = file.toString('utf8');
+            assert.match(text, /\$CATEGORY: Redes\/\/TCP\\: avançado/);
+            assert.match(text, /\/\/ \[tag:redes\] \[tag:HTTP\]/);
+            assert.match(text, /\/\/ iclass: \{"points":2,"difficulty":"facil","skills":\["Competência 3"\]\}/);
+        } else {
+            assert.match(exported.headers['content-type'], /^text\/csv; charset=utf-8/);
+            assert.deepEqual([...file.subarray(0, 3)], [0xEF, 0xBB, 0xBF], 'BOM para o Excel');
+            const text = file.toString('utf8');
+            assert.ok(text.includes('\r\n'));
+            assert.ok(text.split('\r\n')[0].includes('Categoria;Tipo;Enunciado;Alternativa A'));
+            assert.ok(text.includes(`"'=CMD()|calc"`) || text.includes("'=CMD()|calc"), 'enunciado que começa com = não vira fórmula');
+            assert.ok(text.includes(";'+1;'-1;'@x;"), 'alternativa com +, - e @ neutralizada');
+            assert.ok(!/;=CMD/.test(text));
+        }
+        // Importa num banco vazio.
+        const saved = db.memory.questionBank;
+        db.memory.questionBank = [];
+        const res = await preview(asFile(formato, file, formato === 'gift' ? 'banco.gift.txt' : 'banco.csv'));
+        assert.equal(res.status, 200, JSON.stringify(res.body));
+        assert.deepEqual(res.body.erros, [], formato);
+        const confirmRes = await confirm(asFile(formato, file, 'x'), res.body.sha256);
+        assert.equal(confirmRes.body.importadas, original.length, formato);
+        const back = bankItems().map(item => ({ category: item.category, question: withoutKey(normalizeBankQuestion({}, { previous: item })) }));
+        back.sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
+        // A rubrica volta com os ids c1, c2 (o modelo dá de novo).
+        assert.deepEqual(back, original, formato);
+        db.memory.questionBank = saved;
+    }
+});
+
+test('[UC-BANCO-002] exportar segue os filtros e o escopo de quem pede; a coordenação exporta e não importa', async () => {
+    seedWithCoordination();
+    await create(ITEMS.multiple_choice, { category: 'Redes' });
+    await create(ITEMS.short_answer, { category: 'Linux' });
+    await create(ITEMS.numeric, { category: 'Redes', sourceExamKey: otherExamKey });
+    const csvOf = async (who, query) => {
+        const res = await who('get', `/api/admin/question-bank/export?formato=csv${query}`);
+        return res;
+    };
+    const filtered = await csvOf(asAdmin, '&categoria=Linux');
+    assert.equal(filtered.status, 200);
+    assert.equal(filtered.text.trim().split('\r\n').length, 2, 'cabeçalho e a questão de Linux');
+    assert.deepEqual(audits('question_bank_exported').pop().details.filtros, { categoria: 'Linux' });
+    // O professor não leva a questão da prova de outro curso.
+    const professor = await csvOf(asProfessor, '');
+    assert.equal(professor.status, 200);
+    assert.ok(!professor.text.includes('Quantos hosts numa /26?'));
+    assert.ok(professor.text.includes('Qual porta o HTTP usa?'));
+    const admin = await csvOf(asAdmin, '');
+    assert.ok(admin.text.includes('Quantos hosts numa /26?'));
+    // Sem questão: 404; formato errado: 400.
+    const none = await csvOf(asAdmin, '&categoria=Nada');
+    assert.equal(none.status, 404);
+    assert.equal(none.body.code, 'nothing_to_export');
+    const badFormat = await asAdmin('get', '/api/admin/question-bank/export?formato=xml');
+    assert.equal(badFormat.status, 400);
+    assert.equal(badFormat.body.field, 'formato');
+    // Arquivadas só com arquivadas=1.
+    const linux = bankItems().find(item => item.category === 'Linux');
+    await asAdmin('post', '/api/admin/question-bank/archive').send({ key: linux.key }).expect(200);
+    assert.equal((await csvOf(asAdmin, '&categoria=Linux')).status, 404);
+    assert.equal((await csvOf(asAdmin, '&categoria=Linux&arquivadas=1')).status, 200);
+    // Coordenação com Provas concedido: só de consulta, exporta e não importa.
+    const asCoord = (method, url) => request(app)[method](url).set('x-admin-session', coordToken);
+    assert.equal((await asCoord('get', '/api/admin/question-bank/export?formato=gift')).status, 200);
+    const refused = await preview({ formato: 'gift', conteudo: 'Q? {=a ~b}' }, asCoord);
+    assert.equal(refused.status, 403);
+    assert.equal(refused.body.code, 'read_only_account');
+});
+
+test('[UC-BANCO-002] limites: 2 MB, 2.000 questões, arquivo que não é GIFT nem planilha e formato desconhecido', async () => {
+    seed();
+    const tooBig = await preview({ formato: 'gift', conteudo: `Q? {=a ~b}\n\n// ${'x'.repeat(2 * 1024 * 1024)}` });
+    assert.equal(tooBig.status, 413);
+    assert.equal(tooBig.body.code, 'file_too_large');
+    const many = Array.from({ length: 2001 }, (_, index) => `Questão ${index}? {=a ~b}`).join('\n\n');
+    const tooMany = await preview({ formato: 'gift', conteudo: many });
+    assert.equal(tooMany.status, 400);
+    assert.equal(tooMany.body.code, 'too_many_questions');
+    const exactly = await preview({ formato: 'gift', conteudo: Array.from({ length: 2000 }, (_, index) => `Questão ${index}? {=a ~b}`).join('\n\n') });
+    assert.equal(exactly.status, 200);
+    assert.equal(exactly.body.validas, 2000);
+    const rows = ['Enunciado;Alternativa A;Alternativa B;Correta', ...Array.from({ length: 2001 }, (_, index) => `Q${index};a;b;A`)].join('\r\n');
+    const tooManyRows = await preview({ formato: 'csv', conteudo: rows });
+    assert.equal(tooManyRows.status, 400);
+    assert.equal(tooManyRows.body.code, 'too_many_rows');
+    const zip = await preview(asFile('gift', buildXlsx([['a']]), 'banco.xlsx'));
+    assert.equal(zip.status, 400);
+    assert.equal(zip.body.code, 'unsupported_format');
+    const pdf = await preview(asFile('csv', Buffer.from('%PDF-1.4 ...'), 'banco.pdf'));
+    assert.equal(pdf.status, 400);
+    assert.equal(pdf.body.code, 'unsupported_format');
+    assert.equal((await preview({ formato: 'xml', conteudo: 'x' })).status, 400);
+    const empty = await preview({ formato: 'gift', conteudo: '   \n' });
+    assert.equal(empty.status, 400);
+    assert.equal(empty.body.code, 'file_empty');
+    const comments = await preview({ formato: 'gift', conteudo: '// só comentário\n' });
+    assert.equal(comments.status, 400);
+    assert.equal(comments.body.code, 'no_questions');
+    const badBase64 = await preview({ formato: 'gift', arquivo: '%%%' });
+    assert.equal(badBase64.status, 400);
+    assert.equal(bankItems().length, 0);
+});
+
+test('[UC-BANCO-002] GIFT: escapes, peso parcial, palavra que falta, HTML do Moodle e o comentário // iclass:', () => {
+    const { giftEscape, protectGift, restoreGift, htmlToText } = questionFormats._internals;
+    for (const sample of ['a{b}c', 'x = y ~ z # w : v', 'barra \\ e \\n literal', 'linha 1\nlinha 2\r\nlinha 3', '\\{já escapado\\}']) {
+        const escaped = giftEscape(sample);
+        assert.ok(!/\n/.test(escaped));
+        assert.equal(restoreGift(protectGift(escaped)), sample.replace(/\r\n/g, '\n'));
+    }
+    assert.deepEqual(htmlToText('<p>Um <strong>dois</strong> &amp; <code>tr&eacute;s</code></p><p>Linha<br>nova</p><img src="x">'), { text: 'Um **dois** & `tr&eacute;s`\nLinha\nnova', image: true });
+    const parsed = questionFormats.parseGift([
+        '// [tag:a] [tag:b]',
+        '// iclass: {"points":2.5,"difficulty":"dificil","skills":["S1"],"partialCredit":false,"ignorado":1}',
+        'Quais? {~%50%x ~%50%y ~%-100%z}',
+        '',
+        'Uma com meio ponto {=certa ~%50%quase ~errada}',
+        '',
+        'O Moodle custa {~muito =nada} para baixar.',
+        '',
+        '// iclass: {quebrado',
+        '::T::[html]<p>Qual &lt;b&gt;?</p><img src="@@PLUGINFILE@@/x.png">{=sim ~não}',
+        '',
+        '$CATEGORY: $course$/top',
+        '',
+        'Numérica com várias {#=10:0 =%50%9:1}',
+        '',
+        '// iclass: {"unit":"ms","review":"professor"}',
+        'Tempo? {#3,5:0,5}',
+    ].join('\n'));
+    assert.deepEqual(parsed.erros, []);
+    const [many, partial, missing, html, numeric, comma] = parsed.entradas;
+    assert.equal(many.questao.type, 'multiple_answer');
+    assert.equal(many.questao.points, 2.5);
+    assert.equal(many.questao.partialCredit, false);
+    assert.deepEqual(many.questao.tags, ['a', 'b']);
+    assert.equal(many.questao.ignorado, undefined, 'só os campos conhecidos do comentário');
+    assert.equal(partial.questao.type, 'multiple_choice');
+    assert.deepEqual(partial.questao.alternatives.map(item => item.isCorrect), [true, false, false]);
+    assert.match(partial.avisos[0], /virou errada/);
+    assert.equal(missing.questao.text, 'O Moodle custa _____ para baixar.');
+    assert.equal(html.questao.text, 'Qual <b>?');
+    assert.ok(html.avisos.some(text => /imagem/.test(text)));
+    assert.ok(html.avisos.some(text => /iclass/.test(text)), 'comentário // iclass: quebrado vira aviso');
+    assert.equal(numeric.categoria, '', '$course$/top não é categoria');
+    assert.deepEqual(numeric.questao.numeric, { value: 10, tolerance: 0 });
+    assert.match(numeric.avisos[0], /primeira que vale 100%/);
+    assert.deepEqual(comma.questao.numeric, { value: 3.5, tolerance: 0.5, unit: 'ms' });
+    assert.equal(comma.questao.review, 'professor');
 });

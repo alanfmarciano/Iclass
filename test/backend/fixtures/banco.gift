@@ -1,0 +1,39 @@
+// Banco de questões de exemplo no formato GIFT, como o Moodle exporta (P3-S9b).
+// Usado por test/backend/question-bank-io.test.js: seis tipos, título, [html],
+// escapes, comentário geral, etiquetas e categoria.
+
+// question: 101  name: Porta HTTP
+$CATEGORY: $course$/top/Padrão para Redes/Protocolos
+
+// [tag:redes] [tag:HTTP]
+::Porta HTTP::[html]<p dir\="ltr">Qual porta o <b>HTTP</b> usa por padrão?</p>{
+	=80#Isso.
+	~21#Essa é do FTP.
+	~443
+	####A porta **80** é a do HTTP sem TLS.
+}
+
+::Transporte::Quais protocolos são da camada de transporte?{
+	~%50%TCP
+	~%50%UDP
+	~%-100%HTTP
+}
+
+::IPv4::Um endereço IPv4 tem 32 bits.{T}
+
+$CATEGORY: $course$/top/Padrão para Redes/Sub-redes
+
+::Hosts::Quantos hosts cabem numa rede /26?{#62:0}
+
+::Faixa::Qual a latência típica, em ms, numa rede local?{#1..3}
+
+$CATEGORY: Linux
+
+// [tag:comandos]
+::ls::Qual comando lista os arquivos de uma pasta?{=ls =dir}
+
+::Handshake::Explique o handshake de três vias do TCP.\nUse as palavras SYN e ACK.{
+	####Espera-se SYN, SYN-ACK e ACK.
+}
+
+Use \{chaves\}, \= e \~ e \# e \: no texto: qual é o sinal de atribuição em C? {=\= ~\=\=}

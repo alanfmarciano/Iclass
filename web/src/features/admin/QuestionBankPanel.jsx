@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import { Archive, ArchiveRestore, Edit3, Library, Plus, Trash2 } from 'lucide-react'
+import { Archive, ArchiveRestore, Download, Edit3, FileUp, Library, Plus, Trash2 } from 'lucide-react'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
@@ -8,9 +8,11 @@ import { Input } from '../../components/ui/Input'
 import { Modal } from '../../components/ui/Modal'
 import { Select } from '../../components/ui/Select'
 import { Switch } from '../../components/ui/Switch'
+import { useAuth } from '../../context/AuthProvider'
 import { useToast } from '../../context/ToastProvider'
 import { api } from '../../lib/api'
 import { QuestionCard } from './QuestionEditor'
+import QuestionImportDialog, { QuestionExportDialog } from './QuestionImportDialog'
 import {
   QUESTION_TYPE_OPTIONS,
   answerSummary,
@@ -45,7 +47,10 @@ import {
 //   servidor só com as entregas consideradas das turmas de quem vê;
 // - "Editar" e "Nova questão" usam o mesmo cartão do editor da prova (os seis tipos, com
 //   os metadados em "Mais detalhes"); "Arquivar" tira da lista sem apagar; "Excluir" pede
-//   confirmação no ConfirmDialog (contrato C12 do P3).
+//   confirmação no ConfirmDialog (contrato C12 do P3);
+// - "Importar" (GIFT ou planilha, com prévia) e "Exportar" (a lista com os filtros de
+//   agora, em GIFT ou CSV) ficam em QuestionImportDialog.jsx (P3-S9b). A conta só de
+//   consulta (Coordenação) exporta, mas não importa.
 const CATEGORY_COUNTER_FROM = 450
 const SEARCH_DELAY_MS = 300
 
@@ -56,6 +61,10 @@ function capitalize(text) {
 
 export default function QuestionBankPanel({ open, onClose, onAddToExam = null, defaultCategory = '' }) {
   const toast = useToast()
+  const { auth } = useAuth() || {}
+  const readOnly = auth?.readOnly === true
+  const [importing, setImporting] = useState(false)
+  const [exporting, setExporting] = useState(false)
   const [filters, setFilters] = useState(EMPTY_BANK_FILTERS)
   const [search, setSearch] = useState('')
   const [data, setData] = useState({ questions: [], categorias: [], etiquetas: [], total: 0, archivedCount: 0 })
@@ -254,6 +263,8 @@ export default function QuestionBankPanel({ open, onClose, onAddToExam = null, d
               />
               <div className="flex flex-wrap gap-2">
                 {filtered && <Button size="sm" variant="ghost" onClick={clearFilters}>Limpar filtros</Button>}
+                {!readOnly && <Button size="sm" variant="ghost" icon={FileUp} onClick={() => setImporting(true)}>Importar</Button>}
+                <Button size="sm" variant="ghost" icon={Download} disabled={loading || !!loadError || questions.length === 0} onClick={() => setExporting(true)}>Exportar</Button>
                 <Button size="sm" variant="secondary" icon={Plus} onClick={startNew}>Nova questão</Button>
               </div>
             </div>
@@ -300,11 +311,22 @@ export default function QuestionBankPanel({ open, onClose, onAddToExam = null, d
             {!loading && !loadError && questions.length === 0 && (
               filtered || (filters.arquivadas === false && data.archivedCount > 0)
                 ? <EmptyState icon={Library} title="Nenhuma questão com estes filtros" description="Mude ou limpe os filtros, ou ligue “Mostrar arquivadas”." />
-                : <EmptyState icon={Library} title="Banco vazio" description="Use “Nova questão” ou “Salvar no banco” numa questão da prova para iniciar o acervo." />
+                : <EmptyState icon={Library} title="Banco vazio" description="Use “Nova questão”, “Importar” (GIFT do Moodle ou planilha) ou “Salvar no banco” numa questão da prova para iniciar o acervo." />
             )}
           </div>
         )}
       </Modal>
+      <QuestionImportDialog
+        open={open && importing}
+        onClose={() => setImporting(false)}
+        onImported={() => setReloadTick((tick) => tick + 1)}
+      />
+      <QuestionExportDialog
+        open={open && exporting}
+        onClose={() => setExporting(false)}
+        filters={filters}
+        questions={questions}
+      />
       <ConfirmDialog
         open={!!deleting}
         onClose={() => setDeleting(null)}

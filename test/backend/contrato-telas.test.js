@@ -412,6 +412,20 @@ test('[UC-ERRO-003] contrato das telas do professor: Alunos (certificado, observ
     const tooLong = await asInstructor('/api/admin/question-bank/create').send({ ...bankBodies[2], category: 'T'.repeat(501) });
     assert.equal(tooLong.status, 400);
     assert.equal(tooLong.body.field, 'category');
+    // Importar (P3-S9b): o corpo de QuestionImportDialog (requestBody), com o arquivo em
+    // base64 perto dos 2 MB, o nome do arquivo e a categoria com o máximo da tela (500).
+    screen('features/admin/QuestionImportDialog.jsx', "api.post('/api/admin/question-bank/import/preview', requestBody())");
+    screen('features/admin/QuestionImportDialog.jsx', "api.post('/api/admin/question-bank/import', { ...requestBody(), sha256: preview.sha256, ignorarDuplicadas: !includeDuplicates })");
+    screen('features/admin/QuestionImportDialog.jsx', 'maxLength={BANK_CATEGORY_MAX}');
+    screen('features/admin/QuestionImportDialog.jsx', "const body = { formato, categoriaPadrao: categoria.trim() || null }");
+    const giftBlock = 'Qual porta o HTTP usa? {=80 ~21}\n\n';
+    const bigGift = giftBlock + `// ${'x'.repeat(2 * 1024 * 1024 - giftBlock.length - 10)}\n`;
+    const fileBody = { formato: 'gift', categoriaPadrao: 'C'.repeat(500), arquivo: Buffer.from(bigGift).toString('base64'), nomeArquivo: `${'n'.repeat(240)}.gift.txt` };
+    const preview = ok(await asInstructor('/api/admin/question-bank/import/preview').send(fileBody), 'banco importar prévia (arquivo)');
+    assert.equal(preview.body.validas, 1);
+    ok(await asInstructor('/api/admin/question-bank/import').send({ ...fileBody, sha256: preview.body.sha256, ignorarDuplicadas: true }), 'banco importar');
+    const pasted = { formato: 'csv', categoriaPadrao: null, conteudo: 'Enunciado;Alternativa A;Alternativa B;Correta\r\nQual?;Sim;Não;A\r\n' };
+    ok(await asInstructor('/api/admin/question-bank/import/preview').send(pasted), 'banco importar prévia (colado)');
 });
 
 // ------------------------------------------------------------------ públicas e saída

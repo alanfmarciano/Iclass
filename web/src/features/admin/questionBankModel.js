@@ -91,3 +91,60 @@ export function bankExcerpt(text, max = 180) {
   const clean = String(text || '').replace(/\s+/g, ' ').trim()
   return clean.length > max ? `${clean.slice(0, max - 3)}...` : clean
 }
+
+// ---------------------------------------------------------------- importar e exportar
+// (fase 3, P3-S9b: AVA-15; D22). GIFT (Moodle e outro IClass) e planilha (CSV ou XLSX),
+// sempre com prévia no servidor antes de gravar.
+export const BANK_IMPORT_MAX_BYTES = 2 * 1024 * 1024
+export const BANK_IMPORT_FORMATS = Object.freeze([
+  Object.freeze({ value: 'gift', label: 'GIFT (Moodle ou outro IClass)', accept: '.txt,.gift', exportLabel: 'Baixar em GIFT' }),
+  Object.freeze({ value: 'csv', label: 'Planilha (CSV ou XLSX)', accept: '.csv,.txt,.xlsx', exportLabel: 'Baixar planilha (CSV)' }),
+])
+export const BANK_IMPORT_PREVIEW_MAX = 50
+
+// '/api/admin/question-bank/export?formato=gift&categoria=...': os mesmos filtros da lista.
+export function bankExportPath(filters = {}, formato = 'gift') {
+  const query = bankQuery(filters)
+  return `/api/admin/question-bank/export?formato=${encodeURIComponent(formato)}${query ? `&${query.slice(1)}` : ''}`
+}
+
+// Quantas questões a confirmação grava: as sem erro, menos as repetidas (a não ser que o
+// professor peça para importar também as repetidas).
+export function importCount(preview, includeDuplicates = false) {
+  if (!preview) return 0
+  const valid = Number(preview.validas) || 0
+  return includeDuplicates ? valid + (Number(preview.duplicadas) || 0) : valid
+}
+
+export function importConfirmLabel(count) {
+  return count === 1 ? 'Importar 1 questão' : `Importar ${count} questões`
+}
+
+// "47 questões prontas para importar, 2 já estão no banco e 3 com erro."
+export function importSummaryText(preview) {
+  if (!preview) return ''
+  const valid = Number(preview.validas) || 0
+  const duplicates = Number(preview.duplicadas) || 0
+  const errors = Number(preview.comErro) || 0
+  const parts = [valid === 1 ? '1 questão pronta para importar' : `${valid} questões prontas para importar`]
+  if (duplicates) parts.push(duplicates === 1 ? '1 repetida (já está no banco ou mais acima no arquivo)' : `${duplicates} repetidas (já estão no banco ou mais acima no arquivo)`)
+  if (errors) parts.push(errors === 1 ? '1 com erro' : `${errors} com erro`)
+  const last = parts.pop()
+  return `${parts.length ? `${parts.join(', ')} e ${last}` : last}.`
+}
+
+// Marca de repetida de uma questão da prévia.
+export function importDuplicateText(item) {
+  if (!item?.duplicada) return ''
+  if (item.noArquivo) return `Repetida da linha ${item.noArquivo}`
+  return item.arquivada ? 'Já está no banco (arquivada)' : 'Já está no banco'
+}
+
+// Questões da lista com imagem enviada: a imagem não vai no arquivo exportado (só o
+// endereço dela no Markdown).
+export function questionsWithImages(questions = []) {
+  return (Array.isArray(questions) ? questions : []).filter((question) => {
+    const texts = [question?.questionText, question?.explanation, ...(Array.isArray(question?.alternatives) ? question.alternatives.map((alternative) => (typeof alternative === 'string' ? alternative : alternative?.text)) : [])]
+    return texts.some((text) => /\]\(\/uploads\//.test(String(text || '')))
+  }).length
+}

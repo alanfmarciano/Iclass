@@ -16,6 +16,18 @@
 // - POST import-evaluation: leva as questões de uma avaliação do sistema, de todos os
 //   tipos; a que o modelo recusa fica de fora em skipped, com o motivo.
 // - POST delete: continua, com a cópia da questão na auditoria (question_deleted).
+// - POST import/preview e import (P3-S9b, D22): GIFT ou planilha (CSV ou XLSX), colado
+//   ({ conteudo }) ou escolhido ({ arquivo: base64, nomeArquivo }), até 2 MB e 2.000
+//   questões. A prévia lê tudo (utils/questionFormats.js), não grava e devolve as questões
+//   que entrariam, os erros por linha, os avisos e as repetidas (já no banco, inclusive
+//   arquivada, ou mais acima no arquivo), com o sha256 do arquivo. A confirmação manda o
+//   mesmo arquivo e o sha256: arquivo diferente da prévia dá 409 import_changed; entram as
+//   questões sem erro (a repetida só com ignorarDuplicadas false), como itens do acervo
+//   comum (sem prova de origem), com auditoria question_bank_imported. Nada do arquivo
+//   fica guardado.
+// - GET export?formato=gift|csv (e os filtros do GET): as questões da lista em GIFT
+//   (.gift.txt, UTF-8) ou planilha CSV (UTF-8 com BOM, ";", fórmula neutralizada), com
+//   auditoria question_bank_exported. A coordenação, só de leitura, também exporta.
 // Permissão page.exams para todas (adminPermissions.js); a coordenação, só de leitura,
 // recebe o GET. O escopo do item que veio de uma prova é conferido pelo guarda
 // (validateProfessorRequestScope: sourceExamKey do pedido e do item no update, no
@@ -30,7 +42,7 @@ const {
 } = require('../middlewares.js');
 const { accountScopeKind } = require('../utils/adminRoles.js');
 const { recordAudit } = require('../utils/audit.js');
-const { body, bool, str } = require('../utils/inputSchema.js');
+const { body, bool, oneOf, str } = require('../utils/inputSchema.js');
 const { questionInputFields } = require('../utils/questionModel.js');
 const {
     DEFAULT_CATEGORY,
@@ -47,6 +59,15 @@ const {
     parseBankFilters,
     questionBankStats,
 } = require('../utils/questionBank.js');
+const {
+    FORMATS,
+    IMPORT_LIMITS,
+    QuestionFormatError,
+    readQuestionImport,
+    toCsv,
+    toGift,
+} = require('../utils/questionFormats.js');
+const { schoolDateOf } = require('../utils/schoolTime.js');
 
 // Categoria do banco: até QUESTION_CATEGORY_MAX_CHARS (500, o teto do Tema do editor),
 // o mesmo teto do filtro ?categoria= do GET (questionBank.js).
@@ -59,8 +80,24 @@ const bankFields = () => ({
     sourceExamKey: text(200, 'prova de origem'),
     examKey: text(200, 'prova'),
 });
+// Importação: o texto colado ou o arquivo em base64. O teto do schema é folgado (o
+// base64 tem 4/3 do tamanho); o limite de verdade (2 MB do arquivo) é conferido nos bytes,
+// com a mensagem de tamanho (413).
+const importFields = () => ({
+    formato: oneOf(FORMATS, { required: true, label: 'formato' }),
+    conteudo: str({ max: IMPORT_LIMITS.maxBytes * 2, trim: false, nullable: true, label: 'texto das questões' }),
+    arquivo: str({ max: IMPORT_LIMITS.maxBytes * 2, nullable: true, label: 'arquivo' }),
+    nomeArquivo: text(255, 'nome do arquivo'),
+    categoriaPadrao: text(QUESTION_CATEGORY_MAX_CHARS, 'categoria'),
+});
 const SCHEMAS = {
     item: body(bankFields()),
+    importPreview: body(importFields()),
+    importConfirm: body({
+        ...importFields(),
+        sha256: str({ required: true, pattern: /^[a-f0-9]{64}$/i, label: 'conferência do arquivo' }),
+        ignorarDuplicadas: bool({ nullable: true, label: 'ignorar repetidas' }),
+    }),
     archive: body({ key: text(100, 'questão'), archived: bool({ nullable: true, label: 'arquivada' }) }),
     importEvaluation: body({
         examKey: text(200, 'prova'),
@@ -109,6 +146,69 @@ function categoryOf(value, fallback = DEFAULT_CATEGORY) {
 
 function deletedQuestionCopy(question) {
     return { ...(question || {}) };
+}
+
+// Prévia de cada questão para a tela: o suficiente para conferir (tipo, começo do
+// enunciado, alternativas, resposta, pontos, categoria e etiquetas) sem mandar 2.000
+// enunciados inteiros.
+const PREVIEW_TEXT_MAX = 300;
+const PREVIEW_ALTERNATIVE_MAX = 160;
+function cut(value, max) {
+    const textValue = String(value || '');
+    return textValue.length > max ? `${textValue.slice(0, max - 3)}...` : textValue;
+}
+function previewItem(item) {
+    const { question } = item;
+    return {
+        linha: item.linha,
+        category: item.category,
+        type: question.type,
+        points: question.points,
+        questionText: cut(question.questionText, PREVIEW_TEXT_MAX),
+        alternatives: (question.alternatives || []).map(alternative => ({ letter: alternative.letter, text: cut(alternative.text, PREVIEW_ALTERNATIVE_MAX), isCorrect: alternative.isCorrect === true })),
+        correctAnswer: question.correctAnswer || '',
+        ...(question.correctAnswers ? { correctAnswers: question.correctAnswers } : {}),
+        ...(question.numeric ? { numeric: question.numeric } : {}),
+        ...(question.acceptedAnswers ? { acceptedAnswers: question.acceptedAnswers.slice(0, 5) } : {}),
+        ...(question.difficulty ? { difficulty: question.difficulty } : {}),
+        tags: question.tags || [],
+        duplicada: item.duplicada,
+        arquivada: item.arquivada,
+        noArquivo: item.noArquivo,
+        avisos: item.avisos,
+    };
+}
+
+function importSummary(result) {
+    const duplicadas = result.itens.filter(item => item.duplicada).length;
+    return {
+        formato: result.formato,
+        sha256: result.sha256,
+        total: result.itens.length + result.erros.length,
+        validas: result.itens.length - duplicadas,
+        duplicadas,
+        comErro: result.erros.length,
+    };
+}
+
+function readImport(req, account) {
+    return readQuestionImport({
+        formato: req.body.formato,
+        conteudo: req.body.conteudo,
+        arquivo: req.body.arquivo,
+        nomeArquivo: req.body.nomeArquivo,
+        categoriaPadrao: req.body.categoriaPadrao,
+        existingItems: visibleItems(account),
+    });
+}
+
+// Recusa do arquivo (QuestionFormatError: mensagem fixa em português, com o código e o
+// status 400 ou 413); qualquer outro erro vai pelo sendRouteError.
+function sendFormatError(formatError, req, res) {
+    if (formatError instanceof QuestionFormatError) {
+        return res.status(formatError.status || 400).json({ success: false, error: formatError.message, code: formatError.code });
+    }
+    return sendRouteError(formatError, req, res);
 }
 
 function createAdminQuestionBankRouter() {
@@ -314,6 +414,123 @@ function createAdminQuestionBankRouter() {
                 skipped,
                 ...(skipped.length ? { message: skippedMessage } : {}),
             });
+        });
+    });
+
+    router.post('/api/admin/question-bank/import/preview', SCHEMAS.importPreview, (req, res) => {
+        validateAdmin(req, res, (config, matchedAdmin) => {
+            let result;
+            try {
+                result = readImport(req, matchedAdmin);
+            } catch (error) {
+                return sendFormatError(error, req, res);
+            }
+            res.json({
+                success: true,
+                ...importSummary(result),
+                itens: result.itens.map(previewItem),
+                erros: result.erros,
+                avisos: result.avisos,
+            });
+        });
+    });
+
+    router.post('/api/admin/question-bank/import', SCHEMAS.importConfirm, (req, res) => {
+        validateAdmin(req, res, (config, matchedAdmin) => {
+            let result;
+            try {
+                result = readImport(req, matchedAdmin);
+            } catch (error) {
+                return sendFormatError(error, req, res);
+            }
+            if (result.sha256 !== String(req.body.sha256).toLowerCase()) {
+                return res.status(409).json({ success: false, error: 'O arquivo não é o mesmo da prévia. Veja a prévia de novo antes de importar.', code: 'import_changed' });
+            }
+            const skipDuplicates = req.body.ignorarDuplicadas !== false;
+            const chosen = result.itens.filter(item => !skipDuplicates || !item.duplicada);
+            const ignoradas = result.itens.length - chosen.length;
+            if (!chosen.length) {
+                return res.status(400).json({
+                    success: false,
+                    code: 'nothing_to_import',
+                    error: result.itens.length
+                        ? 'Todas as questões do arquivo já estão no banco. Para importar assim mesmo, ligue "Importar também as repetidas".'
+                        : 'Nenhuma questão do arquivo pode ser importada: corrija os erros da prévia e tente de novo.',
+                });
+            }
+            const now = new Date().toISOString();
+            const author = actorEmail(matchedAdmin);
+            // A chave leva a posição: 2.000 questões no mesmo milissegundo não repetem.
+            const created = chosen.map((item, index) => ({
+                key: newKey(`imp${index}`),
+                category: item.category,
+                curriculumKey: '',
+                ...item.question,
+                sourceExamKey: null,
+                author,
+                revision: 1,
+                archived: false,
+                createdAt: now,
+                updatedAt: now,
+                updatedBy: author,
+            }));
+            const existingKeys = new Set(bankList().filter(Boolean).map(item => item.key));
+            created.forEach((item, index) => {
+                while (existingKeys.has(item.key)) item.key = newKey(`imp${index}`);
+                existingKeys.add(item.key);
+            });
+            bankList().push(...created);
+            const categorias = [...new Set(created.map(item => item.category))];
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'question_bank_imported',
+                details: {
+                    formato: result.formato,
+                    importadas: created.length,
+                    ignoradas,
+                    comErro: result.erros.length,
+                    arquivo: typeof req.body.nomeArquivo === 'string' && req.body.nomeArquivo ? req.body.nomeArquivo.slice(0, 200) : null,
+                    sha256: result.sha256,
+                    categorias: categorias.slice(0, 20),
+                    tipos: [...new Set(created.map(item => item.type))],
+                    keys: created.slice(0, 100).map(item => item.key),
+                },
+            });
+            db.save({ only: ['questionBank', 'auditLogs'] });
+            res.json({ success: true, importadas: created.length, ignoradas, comErro: result.erros.length, categorias });
+        });
+    });
+
+    router.get('/api/admin/question-bank/export', (req, res) => {
+        validateAdmin(req, res, (config, matchedAdmin) => {
+            const formato = typeof req.query?.formato === 'string' ? req.query.formato.trim() : '';
+            if (!FORMATS.includes(formato)) {
+                return res.status(400).json({ success: false, error: 'Escolha o formato da exportação: gift ou csv.', field: 'formato' });
+            }
+            const parsed = parseBankFilters(req.query || {});
+            if (parsed.error) return res.status(400).json({ success: false, error: parsed.error, field: parsed.field });
+            const items = visibleItems(matchedAdmin).filter(item => matchesBankFilters(item, parsed.filters));
+            if (!items.length) {
+                return res.status(404).json({ success: false, error: 'Nenhuma questão do banco com estes filtros para exportar.', code: 'nothing_to_export' });
+            }
+            const today = schoolDateOf(Date.now()) || new Date().toISOString().slice(0, 10);
+            const built = formato === 'gift' ? toGift(items, { exportedAt: today }) : toCsv(items);
+            if (!built.quantidade) {
+                return res.status(404).json({ success: false, error: 'As questões desta lista estão incompletas e não podem ser exportadas. Abra e salve cada uma no banco.', code: 'nothing_to_export' });
+            }
+            recordAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                action: 'question_bank_exported',
+                details: { formato, quantidade: built.quantidade, foraDoArquivo: built.foraDoArquivo, filtros: parsed.filters },
+            });
+            db.save({ only: ['auditLogs'] });
+            const fileName = formato === 'gift' ? `banco-de-questoes_${today}.gift.txt` : `banco-de-questoes_${today}.csv`;
+            res.setHeader('Content-Type', formato === 'gift' ? 'text/plain; charset=utf-8' : 'text/csv; charset=utf-8');
+            res.setHeader('Content-Disposition', `attachment; filename="${fileName}"`);
+            res.setHeader('Cache-Control', 'no-store');
+            res.send(built.text);
         });
     });
 
