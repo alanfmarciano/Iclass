@@ -57,7 +57,7 @@ const {
 const { markGradeChangeNotice } = require('../utils/gradeChangeNotices.js');
 const { compareText } = require('../utils/textSearch.js');
 const { bankItemQuestion } = require('../utils/questionBank.js');
-const { body, bool, either, int, list, num, oneOf, shape, str } = require('../utils/inputSchema.js');
+const { body, bool, either, int, list, num, oneOf, query, shape, str } = require('../utils/inputSchema.js');
 const {
     AUDIENCE_INPUT_FIELDS,
     MAX_EXTRA_ATTEMPTS,
@@ -420,6 +420,22 @@ const PREPARE_AUDIENCE_SCHEMA = body({
     }, { nullable: true, label: 'opções da aplicação' }),
 });
 const PARTICIPANTS_SCHEMA = body(AUDIENCE_INPUT_FIELDS);
+
+// Montagem online no servidor (P3-S11, D23): quantas versões montar. O tipo aqui (inteiro,
+// também em texto); de 1 a 4 em examVersions.buildOnlineVersions, com a mesma frase.
+const EXAM_HISTORY_ADD_SCHEMA = body({
+    versionCount: int({ coerce: true, nullable: true, label: 'versões online', typeMessage: examVersions.ONLINE_VERSION_COUNT_ERROR }),
+    onlineVersions: int({ coerce: true, nullable: true, label: 'versões online', typeMessage: examVersions.ONLINE_VERSION_COUNT_ERROR }),
+});
+
+// Questões que o sorteio pode usar (P3-S11, D24): numbers é a lista da montagem, '1,2,3'.
+const DRAW_POOL_QUERY = query({
+    studentClass: str({ max: 200, label: 'turma' }),
+    courseId: str({ max: 200, label: 'curso' }),
+    examKey: str({ max: 200, label: 'avaliação' }),
+    historyId: str({ max: 200, label: 'configuração salva' }),
+    numbers: str({ max: 4000, pattern: /^\d{1,6}(?:\s*,\s*\d{1,6})*$/, label: 'questões' }),
+});
 
 // Ações por aluno no Monitor (fase 3, P3-S8: AVA-14; D18 do desenho do P3), numa rota só:
 // recolher a prova em andamento, reabrir a entrega, dar uma tentativa extra, anular a
@@ -1090,22 +1106,24 @@ function createAdminExamConfigRouter() {
     // em cada grupo; quem confere de verdade é a preparação (parseDrawInput). Só leitura.
     router.get('/api/admin/exam-applications/draw-pool', (req, res) => {
         validateAdmin(req, res, (config, matchedAdmin) => {
-            const cls = findClassByNameAndCourse(db.memory.classes || [], String(req.query.studentClass || '').trim(), req.query.courseId);
+            const params = DRAW_POOL_QUERY.check(req, res);
+            if (!params) return;
+            const cls = findClassByNameAndCourse(db.memory.classes || [], params.studentClass || '', params.courseId);
             if (!cls) return res.status(404).json({ error: 'Turma não encontrada.' });
             if (!adminCanAccessClass(matchedAdmin, cls.name, cls.courseId)) {
                 return res.status(403).json({ error: 'A turma não está atribuída a esta conta.' });
             }
-            const examKey = String(req.query.examKey || '').trim();
+            const examKey = params.examKey || '';
             if (!examKey || !isCourseExamKey(cls, examKey)) return res.status(400).json({ error: 'Avaliação não pertence ao curso da turma.' });
             const evaluation = evaluationFor(examKey);
-            const historyId = String(req.query.historyId || '').trim();
+            const historyId = params.historyId || '';
             let snapshots;
             if (historyId) {
                 const entry = findOnlineHistoryEntry(cls, examKey, historyId);
                 if (!entry) return res.status(404).json({ error: 'Configuração salva não encontrada ou sem questões.' });
                 snapshots = getHistoryVersionSnapshots(entry);
             } else {
-                const wanted = String(req.query.numbers || '').split(',').map(item => Number(item.trim())).filter(Number.isInteger);
+                const wanted = (params.numbers ? params.numbers.split(',') : []).map(item => Number(item.trim()));
                 const evaluationQuestions = Array.isArray(evaluation?.questions) ? evaluation.questions : [];
                 const chosen = wanted.length ? new Set(wanted) : null;
                 snapshots = [{ questions: evaluationQuestions.filter((question, index) => !chosen || chosen.has(questionNumber(question, index))) }];
@@ -2628,6 +2646,7 @@ function createAdminExamConfigRouter() {
 
     router.post('/api/admin/exam-history/add', (req, res) => {
         validateAdmin(req, res, async () => {
+            if (!EXAM_HISTORY_ADD_SCHEMA.check(req, res)) return;
             const { studentClass, courseId, examKey, type, label, questionNumbers, examCode, printSnapshot, questionCount, excludedQuestions, shuffleQuestions, shuffleAnswers, durationMinutes, timerEnabled, waitingRoomMinutes, maxAttempts, tokenEnabled } = req.body;
             if (!studentClass || !examKey || !Array.isArray(questionNumbers) || questionNumbers.length === 0) {
                 return res.status(400).json({ error: 'Dados incompletos para registrar histórico.' });

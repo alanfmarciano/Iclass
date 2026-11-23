@@ -1,7 +1,7 @@
 import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import MonitorPage, { classifyKeystroke } from './MonitorPage'
+import MonitorPage, { classifyKeystroke, drawSentence } from './MonitorPage'
 import { keystrokeLiveEmptyText, keystrokeLiveTitle } from '../../lib/keystrokeModes'
 
 const mocks = vi.hoisted(() => ({
@@ -1107,5 +1107,14 @@ describe('[UC-PROVA-007] MonitorPage · sorteio por aluno', () => {
       </MemoryRouter>,
     )
     expect(await screen.findByTestId('monitor-draw')).toHaveTextContent('Sorteio por aluno: cada aluno recebe 3 questões da montagem (2 de 4 questões fáceis; 1 de 2 questões difíceis).')
+  })
+
+  it('um grupo sem filtro é a montagem inteira: a frase não repete a conta', () => {
+    expect(drawSentence({ modo: 'por_aluno', total: 3, grupos: [{ filtro: {}, quantidade: 3, disponiveis: 4, descricao: 'questões' }] }))
+      .toBe('cada aluno recebe 3 de 4 questões da montagem.')
+    expect(drawSentence({ modo: 'por_aluno', total: 1, grupos: [{ filtro: {}, quantidade: 1, disponiveis: 1, descricao: 'questões' }] }))
+      .toBe('cada aluno recebe 1 de 1 questão da montagem.')
+    expect(drawSentence({ modo: 'por_aluno', total: 2, grupos: [{ filtro: { dificuldade: 'facil' }, quantidade: 2, disponiveis: 4, descricao: 'questões fáceis' }] }))
+      .toBe('cada aluno recebe 2 questões da montagem (2 de 4 questões fáceis).')
   })
 })

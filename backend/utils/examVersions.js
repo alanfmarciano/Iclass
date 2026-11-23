@@ -30,6 +30,7 @@ const ONLINE_VERSIONS_MAX = ONLINE_VERSION_LABELS.length;
 // Prova impressa: até 10 versões (a tela vai até 10, com um código por versão).
 const PRINT_VERSIONS_MAX = 10;
 const ONLINE_VERSIONS_ERROR = `No máximo ${ONLINE_VERSIONS_MAX} versões online (A a D).`;
+const ONLINE_VERSION_COUNT_ERROR = `Informe quantas versões online (de 1 a ${ONLINE_VERSIONS_MAX}).`;
 // Campos de correção que vão com a questão da versão (a prévia e a impressão mostram o tipo
 // e os pontos); freezeSnapshotGrading regrava todos a partir da avaliação.
 const VERSION_QUESTION_FIELDS = Object.freeze(['type', 'points', 'partialCredit', 'numeric', 'acceptedAnswers', 'review', 'expectedAnswer', 'rubric']);
@@ -49,6 +50,9 @@ function generateExamCode(random = cryptoRandom) {
     for (let i = 0; i < 4; i++) code += alphabet[Math.floor(random() * alphabet.length) % alphabet.length];
     return code;
 }
+
+// O que String() devolve para um objeto: era o texto da alternativa vazia na tela de antes.
+const OBJECT_TEXT = String({});
 
 // Enunciado e alternativas da questão como a tela os lê (examTools.normalizeQuestion): o
 // texto em text ou questionText e as alternativas em lista ou no objeto antigo { A: '...' }.
@@ -137,7 +141,7 @@ function buildOnlineVersions(evaluation, options = {}) {
     const index = evaluationIndex(evaluation);
     if (!index.size) return fail('A prova não tem questões para montar.', 'questionNumbers');
     const requested = Number(options.versionCount ?? 1);
-    if (!Number.isInteger(requested) || requested < 1) return fail('Informe quantas versões online (de 1 a 4).', 'versionCount');
+    if (!Number.isInteger(requested) || requested < 1) return fail(ONLINE_VERSION_COUNT_ERROR, 'versionCount');
     if (requested > ONLINE_VERSIONS_MAX) return fail(ONLINE_VERSIONS_ERROR, 'versionCount', { code: 'too_many_versions' });
     const numbers = (Array.isArray(options.questionNumbers) ? options.questionNumbers : []).map(Number);
     if (!numbers.length) return fail('Nenhuma questão selecionada.', 'questionNumbers');
@@ -248,9 +252,18 @@ function conferVersionSnapshots(snapshots, evaluation, { maxVersions = PRINT_VER
                     const alternative = question.alternatives[position2];
                     const letter = String((alternative && typeof alternative === 'object' && alternative.letter) || LETTERS[position2] || '').toUpperCase();
                     const text = alternative && typeof alternative === 'object' ? (alternative.text || alternative.label || '') : String(alternative ?? '');
-                    if (!byLetter.has(letter) || letters.has(letter) || (text && text !== byLetter.get(letter))) {
+                    // Alternativa vazia na prova: a tela de antes mandava '[object Object]' no
+                    // lugar do texto (examTools.normalizeQuestion). Vale como vazia, e o texto
+                    // guardado passa a ser o da prova.
+                    const blankInSource = byLetter.has(letter) && !byLetter.get(letter);
+                    const garbled = blankInSource && text === OBJECT_TEXT;
+                    if (!byLetter.has(letter) || letters.has(letter) || (text && !garbled && text !== byLetter.get(letter))) {
                         problems.push({ version: label, questionNumber: number, motivo: `as alternativas da ${where} não são as da prova` });
                         return;
+                    }
+                    if (garbled && alternative && typeof alternative === 'object') {
+                        alternative.text = byLetter.get(letter);
+                        if (alternative.label === OBJECT_TEXT) delete alternative.label;
                     }
                     const display = alternative && typeof alternative === 'object' ? alternative.displayLetter : null;
                     if (display && String(display).toUpperCase() !== LETTERS[position2]) {
@@ -373,6 +386,7 @@ function preparationAnswerKeyProblem(entry, evaluation) {
 }
 
 module.exports = {
+    ONLINE_VERSION_COUNT_ERROR,
     ONLINE_VERSION_LABELS,
     ONLINE_VERSIONS_ERROR,
     ONLINE_VERSIONS_MAX,

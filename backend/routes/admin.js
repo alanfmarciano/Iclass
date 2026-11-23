@@ -35,6 +35,7 @@ const {
 } = require('../middlewares.js');
 const { importWarningsFor, parseEvaluationMarkdown, parseEvaluationMarkdownWithWarnings } = require('../utils/parser.js');
 const { gradeAttempt, correctAnswerFor, newCorrection } = require('../utils/examGrading.js');
+const { isPerStudentDraw } = require('../utils/examDraw.js');
 const { alternativeLabelsMode, seenAlternativeLetter, seenLetterFor } = require('../utils/examAnswerIds.js');
 const { DEFAULT_POINTS, describeAnswer, isAnswered, questionType } = require('../utils/examScoring.js');
 
@@ -5138,6 +5139,10 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
             snapshot = versionSnapshots.find(s => String(s.version || 'A').toUpperCase() === assignedVersion) || versionSnapshots[0] || null;
         }
         let questions = snapshot && Array.isArray(snapshot.questions) ? snapshot.questions : [];
+        // Sorteio por aluno (P3-S11): quem ainda não abriu a prova não sorteou; a revisão não
+        // mostra o pool inteiro como se fosse a prova dele.
+        const drawPending = !submission && isPerStudentDraw(application) && !state.drawSeed;
+        if (drawPending) questions = [];
 
         // Fallback: prova finalizada sem snapshot — sintetiza a partir das respostas corrigidas.
         if (questions.length === 0 && submission && Array.isArray(submission.gradedAnswers)) {
@@ -5217,7 +5222,9 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
         const answeredCount = reviewQuestions.filter(q => q.answered).length;
         const correctCount = reviewQuestions.filter(q => q.isCorrect).length;
         // Sorteio por aluno (P3-S11): as questões da tentativa dele.
-        const totalCount = (state.drawSeed ? reviewQuestions.length : 0) || Number(currentConfig.questionCount) || reviewQuestions.length;
+        const totalCount = drawPending
+            ? (Number(application.sorteio.total) || 0)
+            : ((state.drawSeed ? reviewQuestions.length : 0) || Number(currentConfig.questionCount) || reviewQuestions.length);
         // Quem já iniciou a tentativa (startedAt) está "em andamento" mesmo sem resposta.
         const status = submission ? 'finished' : ((answeredCount > 0 || state.startedAt) ? 'in_progress' : 'not_started');
 
@@ -5233,6 +5240,7 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
             correctCount,
             totalCount,
             hasSnapshot: !!(snapshot && Array.isArray(snapshot.questions) && snapshot.questions.length > 0),
+            ...(drawPending ? { drawPending: true } : {}),
             questions: reviewQuestions,
         });
     });

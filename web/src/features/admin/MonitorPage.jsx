@@ -1324,7 +1324,7 @@ export default function MonitorPage() {
                 )}
                 {drawView?.modo === 'por_aluno' && (
                   <p className="mt-2 text-sm text-text" data-testid="monitor-draw">
-                    <strong>Sorteio por aluno:</strong> cada aluno recebe {drawView.total} {drawView.total === 1 ? 'questão' : 'questões'} da montagem ({(drawView.grupos || []).map((grupo) => `${grupo.quantidade} de ${grupo.disponiveis} ${grupo.descricao}`).join('; ')}). O progresso de cada um conta as questões que ele tirou.
+                    <strong>Sorteio por aluno:</strong> {drawSentence(drawView)} O progresso de cada um conta as questões que ele tirou.
                   </p>
                 )}
                 {scheduleApplication?.agendaView && (
@@ -1742,6 +1742,20 @@ export default function MonitorPage() {
 
 // Limites do ajuste de tempo por aluno no diálogo (D20 do P3): de 30 minutos a menos a
 // 120 a mais, em minutos inteiros e diferente de zero.
+// O sorteio por aluno em uma frase (sorteioView do servidor). Um grupo sem filtro é a
+// montagem inteira: "cada aluno recebe 3 de 4 questões da montagem.".
+export function drawSentence(view) {
+  const grupos = Array.isArray(view?.grupos) ? view.grupos : []
+  const total = Number(view?.total) || 0
+  const noun = (count) => (count === 1 ? 'questão' : 'questões')
+  const unfiltered = (grupo) => !grupo?.filtro || Object.keys(grupo.filtro).length === 0
+  if (grupos.length === 1 && unfiltered(grupos[0])) {
+    return `cada aluno recebe ${grupos[0].quantidade} de ${grupos[0].disponiveis} ${noun(grupos[0].disponiveis)} da montagem.`
+  }
+  const partes = grupos.map((grupo) => `${grupo.quantidade} de ${grupo.disponiveis} ${grupo.descricao}`).join('; ')
+  return `cada aluno recebe ${total} ${noun(total)} da montagem (${partes}).`
+}
+
 export const ADJUST_MINUTES_MIN = -30
 export const ADJUST_MINUTES_MAX = 120
 export const MONITOR_MESSAGE_MAX = 500

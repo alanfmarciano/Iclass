@@ -330,7 +330,7 @@ test('[UC-PROVA-007] sorteio por aluno: grupo maior que a montagem dá 400; filt
     });
     assert.equal(tooMany.status, 400);
     assert.equal(tooMany.body.error, 'Grupo 1: pediu 3 questões difíceis, mas a montagem só tem 2.');
-    assert.equal(tooMany.body.field, 'applicationOptions.sorteio.grupos.0.quantidade');
+    assert.equal(tooMany.body.field, 'applicationOptions.sorteio.grupos[0].quantidade');
     // A questão que serve para dois grupos fica no primeiro.
     const overlap = await admin('post', '/api/admin/exam-applications').send({
         studentClass, courseId, examKey, historyId,
@@ -399,4 +399,123 @@ test('[UC-PROVA-007] sorteio pela semente: determinístico, sem repetir, e 200 s
     const state = { assignedQuestionNumbers: null };
     assert.equal(examDraw.ensureAttemptDraw(state, { versionSnapshots: [] }, null), false);
     assert.equal(state.assignedQuestionNumbers, null);
+});
+
+// Ajuste 1 da revisão (P3-S11): a entrada nova passa pelo inputSchema (um formato só de
+// campo no erro), o aluno não recebe a semente do sorteio, a revisão do Monitor não mostra
+// o pool inteiro de quem ainda não sorteou e a frase dos dois grupos só sai quando é a causa.
+test('[UC-PROVA-007] versões e sorteio: entrada conferida por schema, semente fora da resposta do aluno e revisão de quem não sorteou', async () => {
+    // versionCount: inteiro (também em texto); o resto é recusado com a frase de sempre.
+    for (const bad of [4.5, 'abc', true, '2,5']) {
+        const refused = await addHistory({ questionNumbers: [1, 2], versionCount: bad });
+        assert.equal(refused.status, 400, `versionCount ${JSON.stringify(bad)}`);
+        assert.equal(refused.body.error, 'Informe quantas versões online (de 1 a 4).');
+        assert.equal(refused.body.field, 'versionCount');
+    }
+    const alias = await addHistory({ questionNumbers: [1, 2], onlineVersions: 'x' });
+    assert.equal(alias.status, 400);
+    assert.equal(alias.body.field, 'onlineVersions');
+    const zero = await addHistory({ questionNumbers: [1, 2], versionCount: 0 });
+    assert.equal(zero.status, 400);
+    assert.equal(zero.body.error, 'Informe quantas versões online (de 1 a 4).');
+    const asText = await addHistory({ questionNumbers: [1, 2], versionCount: '3' });
+    assert.equal(asText.status, 200, JSON.stringify(asText.body));
+    assert.equal(asText.body.entry.versionSnapshots.length, 3);
+    const asNull = await addHistory({ questionNumbers: [1, 2], versionCount: null });
+    assert.equal(asNull.status, 200);
+    assert.equal(asNull.body.entry.versionSnapshots.length, 1);
+
+    // draw-pool: numbers é uma lista de números separados por vírgula.
+    const poolUrl = `/api/admin/exam-applications/draw-pool?studentClass=${encodeURIComponent(studentClass)}&courseId=${courseId}&examKey=${examKey}`;
+    for (const bad of ['1;2', 'abc', '1,,2']) {
+        const refused = await admin('get', `${poolUrl}&numbers=${encodeURIComponent(bad)}`);
+        assert.equal(refused.status, 400, `numbers ${bad}`);
+        assert.equal(refused.body.field, 'numbers');
+        assert.equal(refused.body.error, 'O campo "questões" tem caracteres não permitidos.');
+    }
+    // Parâmetro repetido: vale o último (parseQueryLastValue do server.js).
+    const repeated = await admin('get', `${poolUrl}&numbers=1&numbers=2`).expect(200);
+    assert.deepEqual(repeated.body.questions.map(question => question.number), [2]);
+    const spaced = await admin('get', `${poolUrl}&numbers=${encodeURIComponent('1, 7')}`).expect(200);
+    assert.deepEqual(spaced.body.questions.map(question => question.number), [1, 7]);
+
+    // O campo do erro no mesmo formato do schema, venha a recusa do tipo ou da quantidade.
+    const saved = await addHistory({ questionNumbers: [1, 2, 3, 4, 5, 6, 7, 8], versionCount: 1 });
+    const historyId = saved.body.entry.id;
+    const prepare = sorteio => admin('post', '/api/admin/exam-applications').send({ studentClass, courseId, examKey, historyId, applicationOptions: { sorteio } });
+    const asWord = await prepare({ modo: 'por_aluno', grupos: [{ filtro: {}, quantidade: 'dois' }] });
+    assert.equal(asWord.status, 400);
+    assert.equal(asWord.body.field, 'applicationOptions.sorteio.grupos[0].quantidade');
+    const none = await prepare({ modo: 'por_aluno', grupos: [{ filtro: {}, quantidade: 0 }] });
+    assert.equal(none.status, 400);
+    assert.equal(none.body.field, 'applicationOptions.sorteio.grupos[0].quantidade');
+    // Etiqueta que não existe no grupo 2: o filtro não combina com nada, sem a frase dos
+    // dois grupos (ela só sai quando o grupo de cima levou as questões).
+    const missingTag = await prepare({ modo: 'por_aluno', grupos: [{ filtro: { dificuldade: 'facil' }, quantidade: 1 }, { filtro: { tag: 'inexistente' }, quantidade: 1 }] });
+    assert.equal(missingTag.status, 400);
+    assert.equal(missingTag.body.error, 'Grupo 2: nenhuma questão da montagem combina com o filtro (questões com a etiqueta inexistente).');
+    assert.equal(missingTag.body.field, 'applicationOptions.sorteio.grupos[1].quantidade');
+    const taken = await prepare({ modo: 'por_aluno', grupos: [{ filtro: {}, quantidade: 1 }, { filtro: { dificuldade: 'dificil' }, quantidade: 1 }] });
+    assert.equal(taken.status, 400);
+    assert.match(taken.body.error, /\(a questão que serve para dois grupos fica no primeiro\)\.$/);
+
+    const application = await prepareAndStart(historyId, { sorteio: DRAW });
+    const [ana, bruno] = STUDENTS;
+    const reviewOf = student => admin('get', `/api/admin/monitor-review/${encodeURIComponent(studentClass)}/${examKey}?courseId=${courseId}&applicationId=${application.id}&studentEmail=${encodeURIComponent(student.email)}`);
+
+    // Quem ainda não abriu a prova não sorteou: a revisão não mostra as 8 questões do pool.
+    const pending = await reviewOf(ana).expect(200);
+    assert.equal(pending.body.drawPending, true);
+    assert.equal(pending.body.status, 'not_started');
+    assert.deepEqual(pending.body.questions, []);
+    assert.equal(pending.body.totalCount, 3);
+
+    // O aluno recebe as questões que tirou, nunca a semente nem a contagem por grupo.
+    const before = await request(app).get('/api/student/sync').set('x-session-token', ana.token)
+        .query({ email: ana.email, studentClass, courseId, examKey, applicationId: application.id }).expect(200);
+    assert.equal(JSON.stringify(before.body).includes('drawSeed'), false);
+    assert.equal(JSON.stringify(before.body).includes('drawGroups'), false);
+    const started = await request(app).post(`/api/student/exam-applications/${application.id}/start-attempt`)
+        .set('x-session-token', ana.token).send({}).expect(200);
+    assert.equal(JSON.stringify(started.body).includes('drawSeed'), false);
+    assert.equal(JSON.stringify(started.body).includes('drawGroups'), false);
+    assert.equal(started.body.questions.length, 3);
+    const after = await request(app).get('/api/student/sync').set('x-session-token', ana.token)
+        .query({ email: ana.email, studentClass, courseId, examKey, applicationId: application.id }).expect(200);
+    assert.equal(JSON.stringify(after.body).includes('drawSeed'), false);
+    assert.ok(stateOf(started.body.attemptId).drawSeed, 'a semente continua guardada no servidor');
+
+    // Depois de sortear, a revisão mostra só as 3 dele; a de quem não abriu continua vazia.
+    const drawn = await reviewOf(ana).expect(200);
+    assert.equal(drawn.body.drawPending, undefined);
+    assert.deepEqual(drawn.body.questions.map(question => question.questionNumber), started.body.questions.map(question => question.originalNumber));
+    assert.equal(drawn.body.totalCount, 3);
+    const other = await reviewOf(bruno).expect(200);
+    assert.equal(other.body.drawPending, true);
+    assert.deepEqual(other.body.questions, []);
+});
+
+test('[UC-PROVA-007] impressa com alternativa vazia na prova passa na conferência (a tela de antes mandava "[object Object]")', async () => {
+    db.memory.evaluations[examKey].questions[0].alternatives[2].text = '';
+    const garbled = browserVersion([1, 2]);
+    garbled.questions[0].alternatives[2].text = '[object Object]';
+    const saved = await addHistory({ type: 'impressa', questionNumbers: [1, 2], printSnapshot: [garbled] });
+    assert.equal(saved.status, 200, JSON.stringify(saved.body));
+    assert.equal(saved.body.entry.printSnapshot[0].questions[0].alternatives[2].text, '', 'o texto guardado é o da prova');
+    assert.equal(saved.body.entry.versionSnapshots[0].questions[0].alternatives[2].text, '');
+
+    const blank = browserVersion([1, 2]);
+    blank.questions[0].alternatives[2].text = '';
+    assert.equal((await addHistory({ type: 'impressa', questionNumbers: [1, 2], printSnapshot: [blank] })).status, 200);
+
+    // Texto de verdade diferente do da prova continua recusado, e '[object Object]' só vale
+    // onde a prova tem a alternativa vazia.
+    const invented = browserVersion([1, 2]);
+    invented.questions[0].alternatives[2].text = 'Inventada';
+    assert.equal((await addHistory({ type: 'impressa', questionNumbers: [1, 2], printSnapshot: [invented] })).status, 400);
+    const elsewhere = browserVersion([1, 2]);
+    elsewhere.questions[1].alternatives[2].text = '[object Object]';
+    const refused = await addHistory({ type: 'impressa', questionNumbers: [1, 2], printSnapshot: [elsewhere] });
+    assert.equal(refused.status, 400);
+    assert.equal(refused.body.code, 'snapshot_mismatch');
 });

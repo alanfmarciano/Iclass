@@ -266,6 +266,24 @@ function body(fields) {
     return middleware;
 }
 
+// Parâmetros da URL de uma rota GET: query({ campo: str(...) }). Mesmas regras do corpo;
+// como o Express 5 lê req.query de novo a cada acesso, o valor normalizado não volta para
+// req.query: .check(req, res) devolve uma cópia conferida, ou null depois de responder o
+// 400 { success:false, error, field } (para usar dentro do callback de validateAdmin).
+function query(fields) {
+    const check = (req, res) => {
+        const source = req.query && typeof req.query === 'object' ? req.query : {};
+        const copy = { ...source };
+        const problem = checkFields(copy, fields, '');
+        if (problem) {
+            res.status(400).json({ success: false, error: problem.error, field: problem.field });
+            return null;
+        }
+        return copy;
+    };
+    return { check, fields };
+}
+
 // Chave de unidade, tópico ou caderno (apostilaKey, 'geral'): letras (com acento),
 // números, espaço, _ . : e -, até 200 caracteres.
 const KEY_PATTERN = /^[\p{L}\p{N} _.:-]{1,200}$/u;
@@ -284,6 +302,7 @@ module.exports = {
     list,
     num,
     oneOf,
+    query,
     shape,
     str,
 };

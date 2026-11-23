@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, Trash2 } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
@@ -118,7 +118,11 @@ export function drawProblem(draw, pool) {
     const wanted = quantityOf(grupos[index])
     if (wanted > available[index]) {
       const what = describeGroup(grupos[index])
-      const others = index > 0 ? ' (a questão que serve para dois grupos fica no primeiro)' : ''
+      // A frase dos dois grupos só quando um grupo de cima levou questões que este filtro
+      // também aceita (não quando o filtro não combina com nada).
+      const filtro = filterOf(grupos[index])
+      const matching = pool.filter((meta) => matches(meta, filtro)).length
+      const others = matching > available[index] ? ' (a questão que serve para dois grupos fica no primeiro)' : ''
       return available[index] === 0
         ? `Grupo ${index + 1}: nenhuma questão da montagem combina com o filtro (${what})${others}.`
         : `Grupo ${index + 1}: pediu ${wanted} ${what}, mas a montagem só tem ${available[index]}${others}.`
@@ -187,10 +191,10 @@ function DrawGroupRow({ group, index, available, categorias, etiquetas, canRemov
           onChange={(e) => set({ quantidade: e.target.value })}
           helper={available === null ? 'Questões deste grupo para cada aluno.' : `${available} ${available === 1 ? 'questão combina' : 'questões combinam'} com o filtro.`}
         />
-        <Select label="Origem" className="h-11" value={group.origem} onChange={(e) => set({ origem: e.target.value })}>
+        <Select label="Origem" className="min-h-[44px]" value={group.origem} onChange={(e) => set({ origem: e.target.value })}>
           {DRAW_ORIGINS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </Select>
-        <Select label="Dificuldade" className="h-11" value={group.dificuldade} onChange={(e) => set({ dificuldade: e.target.value })}>
+        <Select label="Dificuldade" className="min-h-[44px]" value={group.dificuldade} onChange={(e) => set({ dificuldade: e.target.value })}>
           {DRAW_DIFFICULTIES.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}
         </Select>
         <div>
@@ -222,17 +226,34 @@ export function ApplicationDrawFields({ value, onChange, versionsField = null, p
   const addGroup = () => onChange({ ...draw, grupos: [...draw.grupos, newDrawGroup()] })
   const choose = (modo) => onChange({ ...draw, modo, grupos: draw.grupos?.length ? draw.grupos : [newDrawGroup()] })
   const current = DRAW_MODES.find((option) => option.value === draw.modo) || DRAW_MODES[0]
+  // Grupo de rádio pelo teclado: Tab entra na opção marcada; as setas trocam e levam o foco.
+  const radioRefs = useRef([])
+  const currentIndex = Math.max(0, DRAW_MODES.findIndex((option) => option.value === draw.modo))
+  const onRadioKeyDown = (event) => {
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key]
+    let next = null
+    if (step) next = (currentIndex + step + DRAW_MODES.length) % DRAW_MODES.length
+    else if (event.key === 'Home') next = 0
+    else if (event.key === 'End') next = DRAW_MODES.length - 1
+    if (next === null) return
+    event.preventDefault()
+    choose(DRAW_MODES[next].value)
+    radioRefs.current[next]?.focus()
+  }
   return (
     <div className="space-y-3" data-testid="application-draw">
       <fieldset className="space-y-2">
         <legend className="text-[13px] font-medium text-muted">Como montar</legend>
         <div role="radiogroup" aria-label="Como montar" className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-          {DRAW_MODES.map((option) => (
+          {DRAW_MODES.map((option, index) => (
             <button
               key={option.value}
+              ref={(node) => { radioRefs.current[index] = node }}
               type="button"
               role="radio"
               aria-checked={draw.modo === option.value}
+              tabIndex={index === currentIndex ? 0 : -1}
+              onKeyDown={onRadioKeyDown}
               onClick={() => choose(option.value)}
               className={`min-h-[44px] rounded-lg border px-3 py-2 text-left text-sm font-semibold transition ${draw.modo === option.value ? 'border-primary bg-primary-soft text-primary' : 'border-border bg-surface text-text hover:bg-surface-2'}`}
             >

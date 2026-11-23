@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import { createRequire } from 'node:module'
-import { ONLINE_VERSIONS_MAX, buildExamVersions, examPrintHtml, liveCorrectionDraft, runningApplicationOf, snapshotsFromHistory } from './examTools'
+import { ONLINE_VERSIONS_MAX, buildExamVersions, examPrintHtml, liveCorrectionDraft, normalizeQuestion, runningApplicationOf, snapshotsFromHistory } from './examTools'
 import { editorQuestion, editorQuestionPayload } from './questionEditorModel'
 
 describe('runningApplicationOf', () => {
@@ -230,5 +230,19 @@ describe('versões conferidas no servidor', () => {
     built.versions.forEach((snapshot) => expect(snapshot.questions.map((q) => q.originalNumber).sort()).toEqual([2, 4]))
     expect(serverVersions.buildOnlineVersions(choiceEvaluation, { questionNumbers: [2, 4], versionCount: ONLINE_VERSIONS_MAX + 1 }).ok).toBe(false)
     expect(serverVersions.ONLINE_VERSIONS_MAX).toBe(ONLINE_VERSIONS_MAX)
+  })
+
+  it('[UC-PROVA-007] alternativa vazia na prova fica vazia na impressa e passa na conferência do servidor', () => {
+    const withBlank = {
+      ...choiceEvaluation,
+      questions: choiceEvaluation.questions.map((question, index) => (index === 0
+        ? { ...question, alternatives: question.alternatives.map((alt) => (alt.letter === 'D' ? { ...alt, text: '' } : alt)) }
+        : question)),
+    }
+    expect(normalizeQuestion(withBlank.questions[0]).alternatives.find((alt) => alt.letter === 'D').text).toBe('')
+    expect(normalizeQuestion({ alternatives: { A: 'Sim', B: 'Não' } }).alternatives.map((alt) => alt.text)).toEqual(['Sim', 'Não'])
+    const printed = buildExamVersions(withBlank, { questionCount: 5, shuffleQuestions: true, shuffleAnswers: true, versionCount: 3, seed: 7 })
+    printed.forEach((snapshot) => snapshot.questions.forEach((question) => question.alternatives.forEach((alt) => expect(alt.text).not.toBe('[object Object]'))))
+    expect(serverVersions.conferVersionSnapshots(printed, withBlank, { maxVersions: serverVersions.PRINT_VERSIONS_MAX }).ok).toBe(true)
   })
 })

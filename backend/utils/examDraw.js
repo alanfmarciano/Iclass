@@ -185,7 +185,7 @@ function parseDrawInput(raw, { pool = [] } = {}) {
     const quantities = [];
     for (let index = 0; index < grupos.length; index++) {
         const group = grupos[index] && typeof grupos[index] === 'object' && !Array.isArray(grupos[index]) ? grupos[index] : null;
-        const field = `sorteio.grupos.${index}`;
+        const field = `sorteio.grupos[${index}]`;
         if (!group) return fail(`Grupo ${index + 1} do sorteio em formato inválido.`, field);
         const filter = cleanFilter(group.filtro);
         if (filter.origem && !DRAW_ORIGINS.includes(filter.origem)) return fail(`Grupo ${index + 1}: a origem deve ser "escritas na prova" ou "vindas do banco".`, `${field}.filtro.origem`);
@@ -204,11 +204,14 @@ function parseDrawInput(raw, { pool = [] } = {}) {
         const available = numbers[index].length;
         if (quantities[index] > available) {
             const what = describeDrawFilter(filters[index]);
-            const others = index > 0 ? ' (a questão que serve para dois grupos fica no primeiro)' : '';
+            // A frase dos dois grupos só quando um grupo de cima levou questões que este
+            // filtro também aceita (não quando o filtro não combina com nada).
+            const matching = pool.filter(meta => matchesDrawFilter(meta, filters[index])).length;
+            const others = matching > available ? ' (a questão que serve para dois grupos fica no primeiro)' : '';
             const error = available === 0
                 ? `Grupo ${index + 1}: nenhuma questão da montagem combina com o filtro (${what})${others}.`
                 : `Grupo ${index + 1}: pediu ${quantities[index]} ${what}, mas a montagem só tem ${available}${others}.`;
-            return fail(error, `sorteio.grupos.${index}.quantidade`);
+            return fail(error, `sorteio.grupos[${index}].quantidade`);
         }
     }
     const total = quantities.reduce((sum, value) => sum + value, 0);

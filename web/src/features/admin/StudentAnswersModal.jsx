@@ -104,9 +104,11 @@ export function StudentAnswersModal({ open, onClose, student, className, courseI
 
           {(!review.questions || review.questions.length === 0) && (
             <div className="border-y border-border py-6 text-center text-sm text-muted">
-              {review.hasSnapshot
-                ? 'Este aluno ainda não respondeu nenhuma questão.'
-                : 'Não há um snapshot desta versão para reconstruir as questões.'}
+              {review.drawPending
+                ? 'As questões deste aluno são sorteadas quando ele começar a prova.'
+                : review.hasSnapshot
+                  ? 'Este aluno ainda não respondeu nenhuma questão.'
+                  : 'Não há um snapshot desta versão para reconstruir as questões.'}
             </div>
           )}
 
