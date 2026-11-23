@@ -112,6 +112,32 @@ Mostra as entregas das provas da turma, aluno por aluno, com as notas. Daqui voc
 
 <!-- P2 escreve aqui: quadro de notas, plano de avaliação, média, etapas, situação e boletim. -->
 
+No alto, **Média geral** é a média das médias dos alunos da turma (a mesma do quadro de notas) e **Aprovação** diz quantos alunos passam: com os critérios de avaliação do curso, os aprovados entre os que já têm a situação fechada; sem eles, os alunos com média a partir da média mínima. Com o filtro de uma prova ou de uma aplicação, as duas contas valem só para ela.
+
+### Quadro de notas
+
+A aba **Quadro de notas** mostra uma linha por aluno e uma coluna por prova ou avaliação da turma. Com os critérios de avaliação do curso ligados (veja "Cursos e turmas"), as colunas ficam agrupadas por etapa ("1º bimestre · peso 1"), cada etapa tem a **Média da etapa** (com "(rec.)" quando a recuperação mudou a nota) e, no fim, vêm a **Média final**, a **Frequência**, a **Situação** (Aprovado, Em recuperação, Reprovado por nota, Reprovado por falta, Cursando ou Sem notas) e a **Menção**, se o curso usa menções. A cor de cada nota e das médias segue a média mínima do curso. Tudo é calculado pelo IClass com a mesma conta do boletim e da planilha exportada.
+
+No celular, o quadro vira uma lista de alunos: toque no aluno para ver as notas de cada etapa.
+
+### Plano de avaliação
+
+A aba **Plano de avaliação** diz em que etapa e com que peso entra cada avaliação da turma:
+
+- **Etapa** e **Peso**: o peso aceita vírgula (1,5).
+- **Recuperação de**: marque quando a avaliação é a recuperação de uma etapa ou a recuperação final. A regra da recuperação é a dos critérios do curso.
+- **Não conta**: a avaliação fica no quadro e sai da média (um simulado, por exemplo).
+
+Clique em **Salvar plano** para gravar. Se a turma já tem nota publicada, o IClass pede o motivo, que fica na Auditoria. Se uma avaliação ficou sem etapa, o quadro avisa no alto.
+
+**Nova avaliação da turma** cria um trabalho, uma prática, um seminário ou a participação: uma avaliação sem questões, com título, tipo, data, módulo, etapa e peso. Para lançar a nota, use **Lançar nota**: a avaliação aparece na lista com o tipo na frente ("Seminário - Seminário de redes") e você digita só a nota de 0 a 10, sem acertos nem cartão-resposta. A nota aparece para o aluno depois de publicada. **Arquivar** tira a avaliação da média e guarda as notas; **Reativar** devolve.
+
+Com os critérios do curso desligados, a média é a de sempre (a média simples das notas), e etapa, peso e recuperação só passam a valer quando os critérios forem ligados.
+
+### Boletim
+
+O **Boletim (PDF)**, na página do aluno e na ficha dele, sai com o cabeçalho e o nome da escola. Ele mostra a média final, a situação e a menção, as notas por etapa, as avaliações de cada módulo, a frequência por disciplina (com a carga horária e as aulas previstas no período letivo) e os avisos da conta. Salve como PDF pela caixa de impressão do navegador.
+
 ## Correção de provas {#correcao}
 
 <!-- P3 (A9 e A18) escreve aqui: correção manual, anular por cola, revisão pedida pelo aluno e corrigir gabarito. -->
@@ -164,7 +190,21 @@ Registra a presença por aula. Escolha a data, marque quem veio e salve. A prese
 
 ## Calendário {#calendario}
 
-<!-- P2 (B7) escreve aqui: dias não letivos e feriados. -->
+Mostra as aulas, provas, entregas e avisos do curso e os dias sem aula. Clique num dia para criar um evento; o aluno vê o evento no calendário dele.
+
+**Dia não letivo** cadastra um feriado, recesso, ponto facultativo ou evento da escola. Para vários dias seguidos (o recesso de julho, por exemplo), preencha também "Até". Em "Para quem vale" aparecem só os alcances que a sua conta pode usar: o professor cadastra para a própria turma; o administrador e quem gerencia as turmas cadastram também para o curso, a escola ou a instituição inteira. Nesses dias:
+
+- a Chamada avisa que não há aula e o Dashboard não cobra a chamada (se houve reposição, use "Fazer a chamada mesmo assim": ela conta normalmente);
+- a presença automática de quem entrou no IClass não conta na frequência (o registro fica guardado e volta a contar se você excluir o dia);
+- o aluno vê "Sem aula" no calendário e no Início.
+
+Os dias do mês aparecem pintados e listados em "Feriados e recessos deste mês"; clique num deles para alterar ou excluir. O dia que vale para toda a instituição só o administrador ou quem gerencia as turmas altera.
+
+**Feriados nacionais de 2027** (o ano do mês que está na tela) traz de uma vez os feriados nacionais do ano, calculados pelo próprio IClass, sem internet. Carnaval e Corpus Christi vêm como ponto facultativo: desmarque se a escola tem aula nesses dias. Feriados estaduais e municipais você cadastra em "Dia não letivo". Adicionar de novo não repete nenhum.
+
+**Baixar agenda (.ics)** gera um arquivo com os eventos e os dias sem aula da turma para abrir no Google Agenda, no Outlook ou no celular. Importar de novo atualiza a agenda em vez de repetir os eventos.
+
+No celular, o mês aparece como uma lista dos dias que têm evento.
 
 ## Fórum e dúvidas {#forum}
 
@@ -192,9 +232,41 @@ Lista os cursos da instituição e as turmas de cada um. Daqui você cria turmas
 
 A importação é tudo ou nada: se o arquivo estiver corrompido, for alterado depois da prévia ou tiver algo que não é de um curso (um programa, um backup do IClass, um caminho para fora das pastas do pacote), nada é gravado e a tela diz o motivo. Uma prova do pacote com questão que o editor não aceitaria (tipo desconhecido, sem enunciado) também recusa o pacote, com o número da questão. Pacote feito por uma versão mais nova do IClass só entra depois de atualizar este. A prévia também avisa quando uma avaliação da estrutura não existia no computador de origem (a unidade chega sem as questões) e quando o pacote traz um arquivo que nenhuma apostila, avaliação ou item da Biblioteca usa (esse arquivo não é gravado). Exportar e importar ficam na Auditoria.
 
+**Critérios de avaliação** (botão do curso) define como a média final e a situação do aluno são calculadas em todas as turmas do curso:
+
+1. Ligue **Usar critérios de avaliação neste curso**.
+2. Informe a **média mínima** (de 0 a 10, com vírgula) e a **frequência mínima** (%).
+3. Monte as **etapas** (de 1 a 6, por exemplo dois bimestres), cada uma com o nome e o peso.
+4. Escolha a regra da **recuperação de cada etapa** e da **recuperação final**. Embaixo de cada regra aparece um exemplo.
+5. Se a escola usa conceitos, ligue as **menções** (MB, B, R, I) e ajuste a nota a partir da qual cada uma vale. A mais baixa começa em 0,0.
+6. Clique em **Salvar critérios**. Antes de gravar, o IClass mostra a prévia: quantos alunos mudam de média ou de situação, e quem. Confira e clique em **Salvar critérios** de novo para gravar. O botão **Ver prévia** mostra a prévia sem salvar.
+
+Se o curso já tem nota publicada, o IClass pede o motivo, que fica na Auditoria. Desligar os critérios volta à média de sempre e guarda os valores para quando você ligar de novo. Só quem gerencia cursos altera os critérios; o professor e a Coordenação veem os critérios sem alterar. A etapa e o peso de cada avaliação ficam no **Plano de avaliação**, em Resultados.
+
+No formulário da turma, **Turno** é Manhã, Tarde ou Noite, e **Período letivo** liga a turma ao semestre ou ano letivo (veja "Período letivo", abaixo). Cada turma mostra o período dela ou o selo "Sem período letivo".
+
+**Disciplinas** (botão do curso) lista as disciplinas usadas na grade horária. Em cada uma você informa:
+
+- a **carga horária** em horas (deixe em branco se não souber; apagar o número apaga o valor);
+- o **professor responsável** (só informativo: não muda quem acessa a turma);
+- os **módulos do curso** que são dela. Cada módulo fica em uma disciplina só: o módulo que já está em outra aparece travado, com o nome dela. Assim o boletim liga a frequência, que é por disciplina, às notas, que são por módulo.
+
 ## Período letivo {#periodo-letivo}
 
 <!-- P2 (B5 e B8) escreve aqui: períodos, etapas e carga horária. -->
+
+Em **Cursos e turmas**, a seção **Períodos letivos** guarda o semestre ou o ano letivo (por exemplo, "2027 · 1º semestre"), com o início, o fim e as etapas (bimestres, trimestres). O período vale para toda a instituição ou para uma escola.
+
+1. Clique em **Novo período letivo**, dê o nome e preencha o início e o fim.
+2. Em **Dividir o período em**, escolha quantas etapas (o IClass já sugere o número de etapas dos critérios de avaliação do curso escolhido) e clique em **Sugerir datas das etapas**. As etapas saem em partes iguais; ajuste as datas se houver recesso. As etapas são opcionais.
+3. Salve. Se uma data estiver errada (etapa fora do período ou cruzada com a anterior), o IClass mostra o aviso no campo.
+4. Ligue cada turma ao período em **Editar** da turma, no campo **Período letivo**.
+
+Com a turma ligada, fora das datas do período a Chamada avisa que não há aula e o Dashboard não cobra a chamada. A turma sem período continua como sempre: todo dia da grade tem aula. Nenhuma turma é ligada sozinha.
+
+**Encerrar** o período não encerra as turmas nem muda nota ou chamada: o período só deixa de receber turma nova e de mudar as datas. **Reabrir** pede o motivo, que fica na Auditoria.
+
+Na ficha do aluno, a "Evolução das notas" passa a filtrar pelo período letivo; as notas de antes do período (ou de turma sem período) continuam pelo semestre ("2026.2").
 
 ## Certificados {#certificados}
 

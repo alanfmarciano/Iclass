@@ -16,7 +16,7 @@ import { useToast } from '../../context/ToastProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { matchesSearch } from '../../lib/textSearch'
-import { isFullAdmin } from '../../lib/adminPermissions'
+import { ADMIN_PERMISSIONS, canWriteAdminPermission, isFullAdmin } from '../../lib/adminPermissions'
 
 function when(ts) { try { return new Date(ts).toLocaleString('pt-BR') } catch { return '' } }
 
@@ -24,6 +24,9 @@ export default function AvisosPage() {
   const { auth } = useAuth()
   const { courseId: activeCourseId, courseName, className: activeClassName } = useAdminWorkspace()
   const isAdmin = isFullAdmin(auth)
+  // A Coordenação (só consulta) lê os avisos, sem o formulário de publicar, editar nem
+  // excluir (o servidor recusaria com 403; B4).
+  const canPublish = canWriteAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_FORUM)
   const contextQuery = new URLSearchParams({ courseId: activeCourseId, studentClass: activeClassName }).toString()
   const { data: classes } = useApi(`/api/admin/classes?${contextQuery}`)
   const { data: list, loading, error, refetch } = useApi(`/api/admin/announcements?${contextQuery}`)
@@ -75,7 +78,7 @@ export default function AvisosPage() {
   function reset() { setEditingId(null); setTarget('turma'); setTargetValue(activeClassName); setTitle(''); setMessage(''); setPriority('normal'); setPinned(false); setExpiresAt('') }
 
   // Aviso para toda a instituição: o professor lê, mas só o administrador muda (o servidor também recusa).
-  const canChange = (a) => a.canEdit !== false
+  const canChange = (a) => canPublish && a.canEdit !== false
 
   function startEdit(a) {
     if (!canChange(a)) return
@@ -107,9 +110,9 @@ export default function AvisosPage() {
 
   return (
     <div className="max-w-4xl mx-auto space-y-6">
-      <PageHeader title="Avisos & Comunicados" subtitle={`Comunique alunos e turmas · ${courseName || activeCourseId} · ${activeClassName}`} />
+      <PageHeader title="Avisos & Comunicados" subtitle={`${canPublish ? 'Comunique alunos e turmas' : 'Avisos da turma (só consulta)'} · ${courseName || activeCourseId} · ${activeClassName}`} />
 
-      <Card className="p-4 space-y-3">
+      {canPublish && <Card className="p-4 space-y-3">
         <div className="flex items-center justify-between">
           <p className="text-sm font-semibold text-text">{editingId ? 'Editar aviso' : 'Novo aviso'}</p>
           {editingId && <Button size="sm" variant="ghost" icon={X} onClick={reset}>Cancelar edição</Button>}
@@ -144,7 +147,7 @@ export default function AvisosPage() {
           </label>
           <Button className="ml-auto" icon={editingId ? Save : Send} loading={busy} onClick={submit}>{editingId ? 'Salvar alterações' : 'Publicar aviso'}</Button>
         </div>
-      </Card>
+      </Card>}
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
         <div className="relative w-full sm:max-w-md">
@@ -168,7 +171,7 @@ export default function AvisosPage() {
 
       <PageState loading={loading} error={error} onRetry={refetch}>
         {filtered.length === 0 ? (
-          <Card><EmptyState icon={Megaphone} title="Nenhum aviso encontrado" description={visible.length ? 'Tente mudar a busca ou o filtro.' : 'Publique o primeiro comunicado acima.'} /></Card>
+          <Card><EmptyState icon={Megaphone} title="Nenhum aviso encontrado" description={visible.length ? 'Tente mudar a busca ou o filtro.' : (canPublish ? 'Publique o primeiro comunicado acima.' : 'Nenhum aviso publicado para esta turma.')} /></Card>
         ) : (
           <div className="space-y-2">
             <p className="px-1 text-xs text-subtle">
@@ -197,7 +200,7 @@ export default function AvisosPage() {
                   </div>
                   {canChange(a)
                     ? <Button size="sm" variant="ghost" icon={Trash2} onClick={(ev) => { ev.stopPropagation(); setPendingDelete(a) }} className="text-danger shrink-0">Excluir</Button>
-                    : <span className="shrink-0 text-xs text-subtle">Só o administrador edita</span>}
+                    : canPublish ? <span className="shrink-0 text-xs text-subtle">Só o administrador edita</span> : null}
                 </div>
               </Card>
             ))}

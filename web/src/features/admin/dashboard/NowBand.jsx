@@ -1,4 +1,4 @@
-import { CircleOff, MonitorPlay, Timer } from 'lucide-react'
+import { CalendarOff, CircleOff, MonitorPlay, Timer } from 'lucide-react'
 import { cn } from '../../../lib/cn'
 
 function fmtHora(ts) {
@@ -27,14 +27,33 @@ const K = ({ children }) => <p className="text-[11px] font-semibold uppercase tr
 // Faixa "Agora": aula corrente + chamada, aplicação de prova, presença online.
 // Fora de horário (`aula` e `aplicacao` nulos) colapsa numa linha única e
 // devolve o espaço à fila — às 22h de sábado a tela não abre com caixas vazias.
+// Dia sem aula (B7 / P2-S6, FUN-15): o servidor manda naoLetivo ({ nome, tipoRotulo, fim })
+// ou foraDoPeriodo; a faixa diz "Hoje não tem aula: <nome>" e a próxima aula já vem
+// pulando o feriado e o recesso.
+function semAulaHoje(now) {
+  if (now.naoLetivo) {
+    const tipo = String(now.naoLetivo.tipoRotulo || '').toLowerCase()
+    return `Hoje não tem aula: ${now.naoLetivo.nome}${tipo ? ` (${tipo})` : ''}`
+  }
+  if (now.foraDoPeriodo) return 'Hoje não tem aula: a turma está fora do período letivo'
+  return null
+}
+
 export function NowBand({ now, onChamada, onProva }) {
   if (!now) return null
   const { aula, proximaAula, aplicacao, proximaAplicacao, online } = now
+  const semAula = semAulaHoje(now)
 
   const foraDeHorario = !aula && !aplicacao
   if (foraDeHorario) {
     return (
       <div className="premium-card flex flex-wrap items-center gap-x-6 gap-y-1 rounded-2xl px-5 py-3.5 text-sm">
+        {semAula && (
+          <span role="status" className="inline-flex items-center gap-2 font-medium text-text">
+            <CalendarOff size={15} className="text-warning" aria-hidden="true" />
+            {semAula}
+          </span>
+        )}
         <span className="inline-flex items-center gap-2 text-muted">
           <Timer size={15} className="text-subtle" aria-hidden="true" />
           {proximaAula
@@ -65,6 +84,10 @@ export function NowBand({ now, onChamada, onProva }) {
               {aula.chamadaStatus === 'concluida' ? 'Chamada lançada ✓' : aula.chamadaStatus === 'rascunho' ? 'Chamada em rascunho →' : 'Chamada ainda não lançada →'}
             </p>
           </>
+        ) : semAula ? (
+          <p role="status" className="mt-1 text-sm font-medium text-text">
+            {semAula}{proximaAula ? <span className="block font-normal text-muted">Próxima aula: {fmtData(proximaAula.data)}{proximaAula.inicio ? `, ${proximaAula.inicio}` : ''}</span> : null}
+          </p>
         ) : (
           <p className="mt-1 text-sm text-muted">
             {proximaAula ? <>Sem aula agora · próxima: {fmtData(proximaAula.data)}{proximaAula.inicio ? `, ${proximaAula.inicio}` : ''}</> : 'Sem aula agora'}

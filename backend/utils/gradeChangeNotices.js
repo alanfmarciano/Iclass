@@ -48,7 +48,7 @@ function noticeItems(ctx) {
     const scoped = scopeSubmissionsToContext(own, { courseId, studentClass, students: memory.students || [], classes: memory.classes || [] });
     const items = [];
     scoped.forEach(submission => {
-        const title = examTitle(submission.examKey, { evaluations: memory.evaluations || {} });
+        const title = examTitle(submission.examKey, { evaluations: memory.evaluations || {}, classes: memory.classes || [] });
         const label = String(title || 'Prova').replace(/^Avaliacao_/, '').replace(/_/g, ' ');
         submission.scoreHistory.forEach((entry, index) => {
             const notice = entry && entry.avisoAluno;

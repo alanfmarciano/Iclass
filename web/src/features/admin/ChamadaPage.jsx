@@ -11,6 +11,8 @@ import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { matchesSearch } from '../../lib/textSearch'
+import { useAuth } from '../../context/AuthProvider'
+import { ADMIN_PERMISSIONS, canWriteAdminPermission } from '../../lib/adminPermissions'
 
 // ---------------------------------------------------------------------------
 // Status exibido por ALUNO. O backend guarda status por AULA (presente/falta/
@@ -93,10 +95,29 @@ const arrMissing = (u) => u.st === 'a' && !u.arrOrdem && !u.arrHora
 const lvMissing = (u) => u.early && !u.lvOrdem && !u.lvHora
 const jMissing = (u) => u.st === 'j' && (EXIGE_DOC.has(u.just?.tipo) ? !u.just?.arquivo : !(u.just?.arquivo || (u.just?.texto || '').trim()))
 const isInvalid = (u) => arrMissing(u) || lvMissing(u) || jMissing(u)
+// '2027-11-15' → '15/11/2027'.
+const brDate = (v) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v || ''); return m ? `${m[3]}/${m[2]}/${m[1]}` : (v || '') }
+// A linha embaixo do título da faixa de dia sem aula: o tipo (e o intervalo do recesso)
+// ou o período letivo da turma com as datas dele.
+function semAulaDetalhe(semAula) {
+  const dia = semAula.naoLetivo
+  if (dia) {
+    const intervalo = dia.fim && dia.inicio && dia.fim !== dia.inicio ? `, de ${brDate(dia.inicio)} a ${brDate(dia.fim)}` : ''
+    return `${dia.tipoRotulo || 'Dia sem aula'}${intervalo}.`
+  }
+  const termo = semAula.periodo
+  if (!termo?.nome) return 'A data está fora do período letivo da turma.'
+  const datas = termo.inicio && termo.fim ? ` (de ${brDate(termo.inicio)} a ${brDate(termo.fim)})` : ''
+  return `Fora do período letivo ${termo.nome}${datas}.`
+}
 const freqTone = (f) => (f == null ? 'text-subtle bg-surface-2' : f < 75 ? 'text-danger bg-danger-soft' : f < 85 ? 'text-warning bg-warning-soft' : 'text-success bg-success-soft')
 
 export default function ChamadaPage() {
   const { courseId: activeCourseId, courseName, className } = useAdminWorkspace()
+  const auth = useAuth()?.auth
+  // A Coordenação (só consulta) vê a chamada como foi salva: sem marcar, anexar, concluir
+  // nem salvar sozinha (o servidor recusaria com 403; B4).
+  const readOnly = !canWriteAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_STUDENTS)
   const [date, setDate] = useState(() => new Date().toISOString().slice(0, 10))
   const [grade, setGrade] = useState([])
   const [roster, setRoster] = useState([])
@@ -130,7 +151,7 @@ export default function ChamadaPage() {
       setGrade(r.aulas || [])
       // O "mesmo assim" segue o servidor: vale o pedido do professor e a chamada já lançada.
       setMesmoAssim(!!r.mesmoAssim)
-      setSemAula(r.naoLetivo || r.foraDoPeriodo ? { naoLetivo: r.naoLetivo || null, foraDoPeriodo: !!r.foraDoPeriodo, temGrade: (r.aulasGrade || []).length > 0 } : null)
+      setSemAula(r.naoLetivo || r.foraDoPeriodo ? { naoLetivo: r.naoLetivo || null, foraDoPeriodo: !!r.foraDoPeriodo, periodo: r.periodoLetivo || null, temGrade: (r.aulasGrade || []).length > 0 } : null)
       setRoster(r.roster || [])
       setTolerancia(r.toleranciaMin ?? 10)
       const next = {}
@@ -156,9 +177,10 @@ export default function ChamadaPage() {
 
   // ---- edição ----
   const patch = useCallback((email, p) => {
+    if (readOnly) return
     setUi((m) => ({ ...m, [email]: { ...m[email], ...(typeof p === 'function' ? p(m[email]) : p) } }))
     setDirty(true)
-  }, [])
+  }, [readOnly])
 
   const setStatus = useCallback((email, st) => {
     patch(email, (cur) => {
@@ -171,6 +193,7 @@ export default function ChamadaPage() {
   }, [patch])
 
   const marcarTodos = (st) => {
+    if (readOnly) return
     setUndoSnap(ui)
     setUi((m) => {
       const n = { ...m }
@@ -208,7 +231,7 @@ export default function ChamadaPage() {
   }), [roster, ui, grade, tolerancia])
 
   const salvar = useCallback(async (concluida) => {
-    if (!className || !activeCourseId || !grade.length) return
+    if (readOnly || !className || !activeCourseId || !grade.length) return false
     setSaving(true)
     try {
       const r = await api.post('/api/admin/attendance/bulk', {
@@ -219,15 +242,15 @@ export default function ChamadaPage() {
       if (concluida) { toast.success(`Chamada concluída (${r.saved} alunos)`); load() }
       return true
     } catch (e) { toast.error(e.message); return false } finally { setSaving(false) }
-  }, [className, activeCourseId, date, grade.length, buildEntries]) // eslint-disable-line
+  }, [readOnly, className, activeCourseId, date, grade.length, buildEntries]) // eslint-disable-line
 
   // Autosave de rascunho: 2s após a última alteração. Não conclui a chamada.
   useEffect(() => {
-    if (!dirty || !grade.length || !roster.length) return
+    if (readOnly || !dirty || !grade.length || !roster.length) return
     clearTimeout(autosaveRef.current)
     autosaveRef.current = setTimeout(() => { salvar(false) }, 2000)
     return () => clearTimeout(autosaveRef.current)
-  }, [dirty, ui, grade.length, roster.length, salvar])
+  }, [readOnly, dirty, ui, grade.length, roster.length, salvar])
 
   async function exportCsv() {
     try {
@@ -317,7 +340,7 @@ export default function ChamadaPage() {
         {className && roster.length > 0 && grade.length > 0 && (
           <div className="flex gap-2">
             <Button size="sm" variant="secondary" icon={Download} onClick={exportCsv}>Exportar CSV</Button>
-            <Button size="sm" icon={ClipboardCheck} loading={saving} onClick={abrirConclusao}>Concluir chamada</Button>
+            {!readOnly && <Button size="sm" icon={ClipboardCheck} loading={saving} onClick={abrirConclusao}>Concluir chamada</Button>}
           </div>
         )}
       </PageHeader>
@@ -337,14 +360,18 @@ export default function ChamadaPage() {
           {roster.length === 0 ? (
             <div className="bg-surface border border-border rounded-xl p-6"><EmptyState icon={Users} title="Turma sem alunos" description="Nenhum aluno matriculado nesta turma." /></div>
           ) : grade.length === 0 && semAula ? (
-            <div className="bg-surface border border-border rounded-xl p-6">
-              <EmptyState
-                icon={CalendarOff}
-                title={semAula.naoLetivo ? `Não há aula neste dia: ${semAula.naoLetivo.nome}` : 'Fora do período letivo da turma'}
-                description={`${semAula.naoLetivo ? `${semAula.naoLetivo.tipoRotulo || 'Dia sem aula'}. ` : ''}A chamada não é cobrada e a presença automática do acesso não conta na frequência.${semAula.temGrade ? ' Se houve aula (reposição), faça a chamada mesmo assim: ela conta normalmente.' : ''}`}
-                action={semAula.temGrade ? 'Fazer a chamada mesmo assim' : undefined}
-                onAction={fazerMesmoAssim}
-              />
+            // Dia sem aula (B3 e B7 / P2-S6, FUN-15): a faixa diz por quê, sem a grade; no
+            // celular o texto quebra e o botão ocupa a largura toda.
+            <div role="status" className="space-y-3 rounded-xl border border-warning/40 bg-warning-soft p-4 sm:p-5">
+              <div className="flex items-start gap-3">
+                <CalendarOff size={20} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+                <div className="min-w-0 space-y-1">
+                  <h3 className="text-[15px] font-semibold text-text">{semAula.naoLetivo ? `Não há aula neste dia: ${semAula.naoLetivo.nome}` : 'Fora do período letivo da turma'}</h3>
+                  <p className="text-sm text-muted">{semAulaDetalhe(semAula)}</p>
+                  <p className="text-sm text-muted">A chamada não é cobrada e a presença automática do acesso não conta na frequência.{semAula.temGrade && !readOnly ? ' Se houve aula (reposição), faça a chamada mesmo assim: ela conta normalmente.' : ''}</p>
+                </div>
+              </div>
+              {semAula.temGrade && !readOnly && <Button className="w-full sm:w-auto" onClick={fazerMesmoAssim}>Fazer a chamada mesmo assim</Button>}
             </div>
           ) : grade.length === 0 ? (
             <div className="bg-surface border border-border rounded-xl p-6"><EmptyState icon={Clock} title="Sem aulas neste dia" description="Esta turma não tem grade horária configurada para este dia da semana. Configure a grade em Cursos e turmas, ou escolha outra data." /></div>
@@ -353,7 +380,14 @@ export default function ChamadaPage() {
               {semAula && (
                 <div role="status" className="flex items-center gap-2 rounded-xl border border-warning/40 bg-warning-soft px-4 py-2 text-sm text-text">
                   <CalendarOff size={16} className="shrink-0 text-warning" />
-                  <span>{semAula.naoLetivo ? `${semAula.naoLetivo.nome} (${String(semAula.naoLetivo.tipoRotulo || 'dia sem aula').toLowerCase()})` : 'Fora do período letivo'}: chamada lançada mesmo assim, que conta na frequência.</span>
+                  <span>{semAula.naoLetivo ? `${semAula.naoLetivo.nome} (${String(semAula.naoLetivo.tipoRotulo || 'dia sem aula').toLowerCase()})` : ['Fora do período letivo', semAula.periodo?.nome].filter(Boolean).join(' ')}: chamada lançada mesmo assim, que conta na frequência.</span>
+                </div>
+              )}
+              {readOnly && (
+                <div role="status" className="rounded-xl border border-info/40 bg-info-soft px-4 py-2 text-sm text-text">
+                  {roster.some((s) => s.salvo)
+                    ? 'Sua conta é só de consulta: a chamada aparece como foi salva, sem alterar.'
+                    : 'Sua conta é só de consulta. A chamada deste dia ainda não foi salva: as marcações abaixo são o padrão da tela, não um registro.'}
                 </div>
               )}
               {/* Barra de progresso + autosave */}
@@ -361,9 +395,11 @@ export default function ChamadaPage() {
                 <div className="flex-1 min-w-[240px]">
                   <div className="flex items-baseline justify-between mb-1.5 text-xs">
                     <span className="text-muted font-medium">Progresso da chamada</span>
-                    <span className={counts.invalid ? 'text-danger font-semibold' : 'text-success font-semibold'}>
-                      {counts.invalid ? `${counts.invalid} com pendência` : 'pronto para concluir'}
-                    </span>
+                    {readOnly
+                      ? <span className="text-muted font-semibold">só consulta</span>
+                      : <span className={counts.invalid ? 'text-danger font-semibold' : 'text-success font-semibold'}>
+                          {counts.invalid ? `${counts.invalid} com pendência` : 'pronto para concluir'}
+                        </span>}
                   </div>
                   <div className="h-2 rounded-full bg-surface-2 overflow-hidden flex" role="img" aria-label={`${counts.p} presentes, ${counts.a} atrasados, ${counts.f} faltas, ${counts.j} justificados`}>
                     <span className="bg-success h-full" style={{ width: `${pct(counts.p)}%` }} />
@@ -424,11 +460,12 @@ export default function ChamadaPage() {
                     <button type="button" onClick={() => setDensity('comfort')} className={`px-2.5 py-1.5 text-xs font-semibold ${density === 'comfort' ? 'bg-primary-soft text-primary' : 'text-subtle'}`}>Confortável</button>
                     <button type="button" onClick={() => setDensity('compact')} className={`px-2.5 py-1.5 text-xs font-semibold ${density === 'compact' ? 'bg-primary-soft text-primary' : 'text-subtle'}`}>Compacto</button>
                   </div>
-                  <Button size="sm" variant="ghost" icon={Check} onClick={() => marcarTodos('p')}>Todos presente</Button>
+                  {!readOnly && <Button size="sm" variant="ghost" icon={Check} onClick={() => marcarTodos('p')}>Todos presente</Button>}
                 </div>
               </div>
 
-              {/* Lista */}
+              {/* Lista (só consulta: tudo desabilitado dentro do fieldset) */}
+              <fieldset disabled={readOnly} aria-label={readOnly ? 'Chamada (só consulta)' : undefined} className="m-0 min-w-0 border-0 p-0">
               <div ref={listRef} className="bg-surface border border-border rounded-xl divide-y divide-border">
                 {visible.map((s, idx) => {
                   const u = ui[s.email] || {}
@@ -566,16 +603,17 @@ export default function ChamadaPage() {
                   <div className="p-6"><EmptyState icon={Search} title="Nenhum aluno encontrado" description="Ajuste a busca ou o filtro para ver os alunos." /></div>
                 )}
               </div>
+              </fieldset>
 
               {/* Ajuda de teclado */}
-              <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted px-1">
+              {!readOnly && <div className="flex flex-wrap gap-x-4 gap-y-1 text-xs text-muted px-1">
                 <span className="font-semibold text-subtle">Atalhos:</span>
                 <span><Kbd>↑</Kbd><Kbd>↓</Kbd> navegar</span>
                 <span><Kbd>P</Kbd> presente</span><span><Kbd>A</Kbd> atrasado</span>
                 <span><Kbd>F</Kbd> falta</span><span><Kbd>J</Kbd> justificado</span>
                 <span><Kbd>S</Kbd> saiu cedo</span><span><Kbd>1</Kbd>–<Kbd>{grade.length}</Kbd> aula</span>
                 <span><Kbd>N</Kbd> observação</span>
-              </div>
+              </div>}
             </>
           )}
         </PageState>

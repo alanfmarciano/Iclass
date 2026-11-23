@@ -5,15 +5,18 @@ import { EmptyLine } from '../../../components/ui/EmptyLine'
 const TIPO_BORDA = {
   prova: 'border-primary', entrega: 'border-warning', aula: 'border-info',
   reuniao: 'border-primary/60', aviso: 'border-border', outro: 'border-border',
+  nao_letivo: 'border-warning',
 }
 const DIAS = ['dom', 'seg', 'ter', 'qua', 'qui', 'sex', 'sáb']
 
 // Agenda dos próximos 7 dias: eventos do calendário + próxima aplicação de prova.
+// Cada evento traz eventDate e, opcionalmente, agendaDate (o dia em que aparece aqui).
 export function WeekAgenda({ events = [], onOpen }) {
   return (
     <div className="premium-card flex flex-col rounded-2xl p-0">
       {events.map((ev) => {
-        const d = new Date(`${ev.eventDate}T12:00:00`)
+        // agendaDate: o dia em que o evento aparece na semana (o recesso em andamento, hoje).
+        const d = new Date(`${ev.agendaDate || ev.eventDate}T12:00:00`)
         return (
           <button key={ev.id} onClick={() => onOpen && onOpen(ev)}
             className="flex items-center gap-3.5 border-b border-border px-5 py-3 text-left transition-colors last:border-0 hover:bg-surface-2">
@@ -24,7 +27,7 @@ export function WeekAgenda({ events = [], onOpen }) {
             <span className={cn('min-w-0 flex-1 border-l-2 pl-3.5', TIPO_BORDA[ev.eventType] || TIPO_BORDA.outro)}>
               <span className="block truncate text-[13.5px] font-medium text-text">{ev.title}</span>
               <span className="mt-0.5 block truncate text-xs text-subtle">
-                {[ev.startTime, ev.subtitle].filter(Boolean).join(' · ') || (ev.eventType === 'prova' ? 'avaliação' : ev.eventType)}
+                {[ev.startTime, ev.subtitle].filter(Boolean).join(' · ') || (ev.eventType === 'prova' ? 'avaliação' : ev.eventType === 'nao_letivo' ? 'sem aula' : ev.eventType)}
               </span>
             </span>
           </button>

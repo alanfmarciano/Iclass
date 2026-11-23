@@ -430,6 +430,82 @@ test('[UC-ERRO-003] contrato das telas do professor: Alunos (certificado, observ
 
 // ------------------------------------------------------------------ públicas e saída
 
+test('[UC-CURSO-002] contrato das telas de Turmas: disciplinas, assistente de horários e turma sem o período letivo não apagam a carga horária nem o período', async () => {
+    // DisciplinasModal (TurmaPresencaConfig.jsx), desde o B8 / P2-S8: a lista inteira com
+    // carga horária, professor e módulos, como a tela os mostrou (o valor gravado volta
+    // igual; vazio apaga, porque é o que a pessoa vê). O assistente de horários manda a
+    // lista do curso com as novas no fim. A tela de antes (bundle velho no navegador)
+    // mandava só id, nome e cor: o campo ausente não apaga (B5 / P2-S7).
+    const course = db.memory.courses.find(item => item.id === COURSE_ID);
+    course.disciplinas = [
+        { id: 'FUTEC', nome: 'Fundamentos de TI', cor: '#4f9bf5', cargaHoraria: 80, professor: 'Profa. Ana', modulos: ['FUTEC'] },
+        { id: 'FECOP', nome: 'Colaboração e Produtividade', cor: '#33c579' },
+    ];
+    screen('features/admin/TurmaPresencaConfig.jsx', `clean.push({
+        id,
+        nome,
+        cor: d.cor || '',
+        cargaHoraria: carga === '' || carga === null ? null : carga,
+        professor: String(d.professor || '').trim(),
+        modulos: [...new Set(d.modulos || [])],
+      })`);
+    screen('features/admin/TurmasPage.jsx', "api.post('/api/admin/course/disciplinas', { courseId: selectedCourse.id, disciplinas })");
+    const fromScreen = ok(await asInstructor('/api/admin/course/disciplinas').send({ courseId: COURSE_ID, disciplinas: [
+        { id: 'FUTEC', nome: 'Fundamentos de TI', cor: '#4f9bf5', cargaHoraria: 80, professor: 'Profa. Ana', modulos: ['FUTEC'] },
+        { id: 'FECOP', nome: 'Colaboração e Produtividade', cor: '#33c579', cargaHoraria: null, professor: '', modulos: ['FECOP'] },
+        { id: 'IRCOM', nome: 'Instalação de Rec. Comp.', cor: '', cargaHoraria: 2000, professor: 'P'.repeat(80), modulos: [] },
+    ] }), 'disciplinas pela tela de Turmas');
+    assert.deepEqual(fromScreen.body.disciplinas[0], { id: 'FUTEC', nome: 'Fundamentos de TI', cor: '#4f9bf5', cargaHoraria: 80, professor: 'Profa. Ana', modulos: ['FUTEC'] });
+    assert.deepEqual(fromScreen.body.disciplinas[1], { id: 'FECOP', nome: 'Colaboração e Produtividade', cor: '#33c579', modulos: ['FECOP'] });
+    assert.deepEqual(fromScreen.body.disciplinas[2], { id: 'IRCOM', nome: 'Instalação de Rec. Comp.', cor: '', cargaHoraria: 2000, professor: 'P'.repeat(80) });
+    const saved = ok(await asInstructor('/api/admin/course/disciplinas').send({ courseId: COURSE_ID, disciplinas: [
+        { id: 'FUTEC', nome: 'Fundamentos de TI', cor: '#4f9bf5' },
+        { id: 'FECOP', nome: 'Colaboração e Produtividade', cor: '#33c579' },
+        { id: 'IRCOM', nome: 'Instalação de Rec. Comp.', cor: '' },
+    ] }), 'disciplinas pela tela antiga');
+    assert.deepEqual(saved.body.disciplinas[0], { id: 'FUTEC', nome: 'Fundamentos de TI', cor: '#4f9bf5', cargaHoraria: 80, professor: 'Profa. Ana', modulos: ['FUTEC'] });
+    assert.deepEqual(saved.body.disciplinas[2], { id: 'IRCOM', nome: 'Instalação de Rec. Comp.', cor: '', cargaHoraria: 2000, professor: 'P'.repeat(80) });
+    screen('features/admin/AssistenteHorariosPage.jsx', "api.post('/api/admin/course/disciplinas', { courseId: course.id, disciplinas: [...(course.disciplinas || []), ...newDisciplinas] })");
+    const wizard = ok(await asInstructor('/api/admin/course/disciplinas').send({ courseId: COURSE_ID, disciplinas: [...saved.body.disciplinas, { id: 'LOGICA', nome: 'Lógica', cor: '' }] }), 'disciplinas pelo assistente');
+    assert.equal(wizard.body.disciplinas[0].cargaHoraria, 80);
+    assert.deepEqual(wizard.body.disciplinas[0].modulos, ['FUTEC']);
+
+    // Formulário da turma (TurmasPage.jsx) sem periodoLetivoId: a turma fica no período.
+    db.memory.academicTerms = [{ id: 'per_contrato', schemaVersion: 1, nome: '2027 · 1º semestre', inicio: '2027-02-01', fim: '2027-07-09', schoolId: null, etapas: [], situacao: 'aberto' }];
+    const cls = db.memory.classes.find(item => item.name === CLASS_NAME && item.courseId === COURSE_ID);
+    cls.periodoLetivoId = 'per_contrato';
+    // Desde o B8 a tela só manda periodoLetivoId quando o seletor mudou (term vazio = sem o campo).
+    screen('features/admin/TurmasPage.jsx', "const term = (classForm.periodoLetivoId || '') !== (classForm.periodoLetivoInicial || '') ? { periodoLetivoId: classForm.periodoLetivoId || null } : {}");
+    screen('features/admin/TurmasPage.jsx', "api.post('/api/admin/class/update', { name: classForm.name, period: classForm.period, registrationEnabled: classForm.registrationEnabled, courseId: selectedCourse.id, attendanceConfig, ...term })");
+    ok(await asInstructor('/api/admin/class/update').send({ name: CLASS_NAME, period: cls.period || 'Manhã', registrationEnabled: true, courseId: COURSE_ID, attendanceConfig: { toleranciaMin: 10, limiarRiscoPct: 75, grade: {} } }), 'turma pela tela');
+    assert.equal(db.memory.classes.find(item => item.name === CLASS_NAME && item.courseId === COURSE_ID).periodoLetivoId, 'per_contrato');
+    screen('features/admin/AssistenteHorariosPage.jsx', "api.post('/api/admin/class/update', { name: turma.name, courseId: course.id, attendanceConfig })");
+    ok(await asInstructor('/api/admin/class/update').send({ name: CLASS_NAME, courseId: COURSE_ID, attendanceConfig: { toleranciaMin: 10, limiarRiscoPct: 75, grade: {} } }), 'grade pelo assistente');
+    assert.equal(db.memory.classes.find(item => item.name === CLASS_NAME && item.courseId === COURSE_ID).periodoLetivoId, 'per_contrato');
+    screen('features/admin/TurmasPage.jsx', "api.post('/api/admin/class/create', { name: classForm.name, period: classForm.period, courseId: selectedCourse.id, attendanceConfig, ...term })");
+    ok(await asInstructor('/api/admin/class/create').send({ name: '9CTR', period: 'Noite', courseId: COURSE_ID, attendanceConfig: { toleranciaMin: 10, limiarRiscoPct: 75, grade: {} } }), 'turma nova pela tela');
+    assert.equal('periodoLetivoId' in db.memory.classes.find(item => item.name === '9CTR'), false, 'turma nova sem período, como sempre');
+    // Com o período escolhido no seletor (o id do período, ou null para tirar).
+    ok(await asInstructor('/api/admin/class/create').send({ name: '9CTS', period: 'Noite', courseId: COURSE_ID, attendanceConfig: { toleranciaMin: 10, limiarRiscoPct: 75, grade: {} }, periodoLetivoId: 'per_contrato' }), 'turma nova no período pela tela');
+    assert.equal(db.memory.classes.find(item => item.name === '9CTS').periodoLetivoId, 'per_contrato');
+    ok(await asInstructor('/api/admin/class/update').send({ name: '9CTS', period: 'Noite', registrationEnabled: true, courseId: COURSE_ID, attendanceConfig: { toleranciaMin: 10, limiarRiscoPct: 75, grade: {} }, periodoLetivoId: null }), 'tirar do período pela tela');
+    assert.equal('periodoLetivoId' in db.memory.classes.find(item => item.name === '9CTS'), false);
+    // A seção Períodos letivos (AcademicTermsSection.jsx) cria e altera com o formulário inteiro.
+    screen('features/admin/AcademicTermsSection.jsx', "etapas: form.etapas.map((stage, index) => ({ ordem: index + 1, nome: stage.nome.trim(), inicio: stage.inicio, fim: stage.fim })),");
+    screen('features/admin/AcademicTermsSection.jsx', "await api.post('/api/admin/academic/terms/create', payload)");
+    const term = ok(await asInstructor('/api/admin/academic/terms/create').send({ nome: 'N'.repeat(80), inicio: '2027-08-02', fim: '2027-12-17', schoolId: null, etapas: [
+        { ordem: 1, nome: 'E'.repeat(40), inicio: '2027-08-02', fim: '2027-10-08' },
+        { ordem: 2, nome: '', inicio: '2027-10-11', fim: '2027-12-17' },
+    ] }), 'período pela tela');
+    assert.equal(term.body.periodo.etapas[1].nome, '2ª etapa', 'etapa sem nome ganha o nome padrão');
+    screen('features/admin/AcademicTermsSection.jsx', "await api.post('/api/admin/academic/terms/update', { id: form.id, ...payload })");
+    ok(await asInstructor('/api/admin/academic/terms/update').send({ id: term.body.periodo.id, nome: 'N'.repeat(80), inicio: '2027-08-02', fim: '2027-12-17', schoolId: null, etapas: [] }), 'alterar período pela tela');
+    screen('features/admin/AcademicTermsSection.jsx', "await api.post('/api/admin/academic/terms/close', { id: closing.id, ...(reason ? { reason } : {}) })");
+    ok(await asInstructor('/api/admin/academic/terms/close').send({ id: term.body.periodo.id, reason: 'R'.repeat(500) }), 'encerrar pela tela');
+    screen('features/admin/AcademicTermsSection.jsx', "await api.post('/api/admin/academic/terms/reopen', { id: reopening.id, reason })");
+    ok(await asInstructor('/api/admin/academic/terms/reopen').send({ id: term.body.periodo.id, reason: 'R'.repeat(500) }), 'reabrir pela tela');
+});
+
 test('[UC-ERRO-003] contrato das telas públicas: cadastro (com e sem responsável), recuperação, troca de senha do professor e Sair', async () => {
     // LoginPage: cadastro com o formulário inteiro; guardian só quando algo foi preenchido.
     screen('features/LoginPage.jsx', "const emptyGuardian = { name: '', phone: '', email: '', parentesco: '' }");
@@ -536,12 +612,12 @@ test('[UC-BUSCA-002] guarda: nenhuma busca com toLowerCase().includes nem locale
 // e não dizem o que vai acontecer: tela tocada na fase 3 usa o ConfirmDialog
 // (web/src/components/ui/ConfirmDialog.jsx, contrato C12 do P3). As que ainda existem
 // estão na lista abaixo, com quantas há em cada arquivo; a lista só diminui (a Biblioteca,
-// o Fórum, o Monitor e Provas do professor saíram no C0a; Resultados, no P3-S8). Arquivo novo ou chamada nova
+// o Fórum, o Monitor e Provas do professor saíram no C0a; Resultados, no P3-S8; o
+// assistente de horários, em TurmaPresencaConfig.jsx, no B8). Arquivo novo ou chamada nova
 // reprova. E, onde há o histórico do git, arquivo da lista que mudou desde o começo da
 // fase 3 (PHASE3_BASE) também reprova: quem toca a tela troca as caixas dela.
 const NATIVE_DIALOGS_LEFT = {
     'features/admin/EditorPage.jsx': 2,
-    'features/admin/TurmaPresencaConfig.jsx': 1,
 };
 // Exceções combinadas no plano (a tela muda antes de quem troca a caixa dela).
 // A K15 (ResultadosPage até o P3-S8) acabou: o confirm das questões em branco virou o

@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, BookOpen, CalendarDays, CheckCircle2, Clock, Megaphone, Sparkles, TrendingUp, UserCheck } from 'lucide-react'
+import { AlertTriangle, ArrowRight, BookOpen, CalendarDays, CalendarOff, CheckCircle2, Clock, Megaphone, Sparkles, TrendingUp, UserCheck } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { Card } from '../../components/ui/Card'
 import { Badge } from '../../components/ui/Badge'
@@ -6,8 +6,9 @@ import { PageState } from '../../components/ui/PageState'
 import { useApi } from '../../hooks/useApi'
 import { useStudent } from './useStudent'
 import { fmtGradeValue } from '../../lib/grades'
+import { eventDates as calendarEventDates, NON_SCHOOL_EVENT_TYPE } from '../../components/calendar/MonthCalendar'
 
-const EVENT_TONES = { aula: 'info', prova: 'danger', entrega: 'warning', aviso: 'neutral', reuniao: 'success' }
+const EVENT_TONES = { aula: 'info', prova: 'danger', entrega: 'warning', aviso: 'neutral', reuniao: 'success', nao_letivo: 'warning' }
 // Rótulo do tipo de evento (o dia não letivo, feriado ou recesso, aparece como "Sem aula").
 const EVENT_LABELS = { nao_letivo: 'Sem aula', reuniao: 'reunião' }
 
@@ -49,7 +50,15 @@ function MiniCalendar({ events = [], onOpen }) {
   })
   const keyOf = (date) => `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`
   const todayKey = keyOf(today)
-  const eventDates = new Set(events.map((event) => event.eventDate))
+  // O recesso de vários dias marca todos os dias dele; o dia sem aula ganha o anel âmbar.
+  const eventDates = new Set()
+  const semAulaDates = new Set()
+  events.forEach((event) => {
+    calendarEventDates(event).forEach((key) => {
+      eventDates.add(key)
+      if (event.eventType === NON_SCHOOL_EVENT_TYPE) semAulaDates.add(key)
+    })
+  })
   const title = new Intl.DateTimeFormat('pt-BR', { month: 'long', year: 'numeric' }).format(today)
 
   return (
@@ -66,10 +75,11 @@ function MiniCalendar({ events = [], onOpen }) {
           const key = keyOf(date)
           const outside = date.getMonth() !== today.getMonth()
           const isToday = key === todayKey
+          const semAula = semAulaDates.has(key)
           return (
-            <button key={key} type="button" onClick={onOpen} className={`relative mx-auto grid h-8 w-8 place-items-center rounded-full text-xs transition hover:bg-surface-2 ${outside ? 'text-subtle opacity-40' : 'text-muted'} ${isToday ? 'bg-primary font-bold text-primary-fg hover:bg-primary' : ''}`}>
+            <button key={key} type="button" onClick={onOpen} aria-label={semAula ? `${date.getDate()}: sem aula` : undefined} className={`relative mx-auto grid h-8 w-8 place-items-center rounded-full text-xs transition hover:bg-surface-2 ${outside ? 'text-subtle opacity-40' : 'text-muted'} ${semAula && !isToday ? 'bg-warning-soft text-warning' : ''} ${isToday ? 'bg-primary font-bold text-primary-fg hover:bg-primary' : ''}`}>
               {date.getDate()}
-              {eventDates.has(key) && <span className={`absolute bottom-0.5 h-1 w-1 rounded-full ${isToday ? 'bg-primary-fg' : 'bg-primary'}`} />}
+              {eventDates.has(key) && <span className={`absolute bottom-0.5 h-1 w-1 rounded-full ${isToday ? 'bg-primary-fg' : semAula ? 'bg-warning' : 'bg-primary'}`} />}
             </button>
           )
         })}
@@ -86,6 +96,8 @@ export default function InicioPage() {
   const data = dashboard.data || {}
   const modules = data.modules || []
   const firstName = (displayName || name || 'aluno').split(' ')[0]
+  // Hoje é dia sem aula para a turma (feriado, recesso): o servidor marca o item com hoje.
+  const semAulaHoje = (data.calendar || []).find((item) => item.eventType === NON_SCHOOL_EVENT_TYPE && item.hoje)
 
   return (
     <div className="mx-auto max-w-[1320px] space-y-5">
@@ -94,6 +106,12 @@ export default function InicioPage() {
         <div className="hidden rounded-full border border-border bg-surface-glass px-4 py-2 text-xs text-muted backdrop-blur-lg md:block">{new Intl.DateTimeFormat('pt-BR', { weekday: 'long', day: '2-digit', month: 'long' }).format(new Date())}</div>
       </div>
       <PageState loading={dashboard.loading} error={dashboard.error} onRetry={dashboard.refetch}>
+        {semAulaHoje && (
+          <div role="status" className="flex items-start gap-2 rounded-xl border border-warning/40 bg-warning-soft px-4 py-3 text-sm text-text">
+            <CalendarOff size={16} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+            <span>Hoje não tem aula: <strong>{semAulaHoje.title}</strong>{semAulaHoje.endDate ? ` (até ${formatDate(semAulaHoje.endDate)})` : ''}.</span>
+          </div>
+        )}
         <Card className="relative grid min-h-[210px] items-center gap-6 overflow-hidden p-6 md:grid-cols-[minmax(0,1fr)_auto] md:px-8">
           <span className="ambient-orb pointer-events-none absolute -right-16 -top-20 h-64 w-64 rounded-full bg-primary-soft blur-3xl" aria-hidden />
           <span className="pointer-events-none absolute bottom-0 left-1/3 h-28 w-80 rounded-full bg-info-soft blur-3xl" aria-hidden />
@@ -136,7 +154,7 @@ export default function InicioPage() {
             {data.performance?.length > 0 && <Card>
               <div className="flex items-center justify-between border-b border-border px-5 py-4"><h2 className="font-semibold text-text">Seu desempenho</h2><span className="text-xs text-muted">Últimas notas publicadas</span></div>
               <div className="flex h-40 items-end gap-3 p-5">
-                {data.performance.map((item) => <div key={item.id} className="flex h-full flex-1 flex-col justify-end text-center"><span className="mb-1 text-xs font-semibold text-text">{fmtGradeValue(item.note)}</span><div className="mx-auto w-full max-w-10 rounded-t bg-info" style={{ height: `${Math.max(8, item.note * 10)}%` }} /><span className="mt-2 truncate text-[10px] text-subtle" title={item.examKey}>{item.examKey?.replace(/^Avaliacao_/, '')}</span></div>)}
+                {data.performance.map((item) => <div key={item.id} className="flex h-full flex-1 flex-col justify-end text-center"><span className="mb-1 text-xs font-semibold text-text">{fmtGradeValue(item.note)}</span><div className="mx-auto w-full max-w-10 rounded-t bg-info" style={{ height: `${Math.max(8, item.note * 10)}%` }} /><span className="mt-2 truncate text-[10px] text-subtle" title={item.title || item.examKey}>{item.title || item.examKey?.replace(/^Avaliacao_/, '')}</span></div>)}
               </div>
             </Card>}
           </div>
@@ -146,7 +164,7 @@ export default function InicioPage() {
 
             <Card>
               <div className="flex items-center justify-between border-b border-border px-4 py-3"><h2 className="flex items-center gap-2 font-semibold text-text"><CalendarDays size={17} /> Próximos compromissos</h2><button type="button" onClick={() => nav('/aluno/calendario')} className="text-xs text-muted hover:text-text">Calendário</button></div>
-              {data.calendar?.length ? data.calendar.map((item) => <button key={item.id} type="button" onClick={() => nav('/aluno/calendario')} className="flex w-full items-center gap-3 border-b border-border px-4 py-3 text-left transition last:border-0 hover:bg-surface-2/40"><span className="grid h-10 min-w-10 place-items-center rounded-md bg-primary-soft px-1 text-[11px] font-semibold uppercase text-primary">{formatDate(item.eventDate)}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm text-text">{item.title}</strong><span className="mt-0.5 flex items-center gap-1 text-xs text-muted"><Clock size={11} /> {item.startTime || 'Dia todo'}</span></span><Badge tone={EVENT_TONES[item.eventType] || 'neutral'}>{EVENT_LABELS[item.eventType] || item.eventType}</Badge></button>) : <p className="p-4 text-sm text-muted">Nenhum compromisso agendado.</p>}
+              {data.calendar?.length ? data.calendar.map((item) => <button key={item.id} type="button" onClick={() => nav('/aluno/calendario')} className="flex w-full items-center gap-3 border-b border-border px-4 py-3 text-left transition last:border-0 hover:bg-surface-2/40"><span className="grid h-10 min-w-10 place-items-center rounded-md bg-primary-soft px-1 text-[11px] font-semibold uppercase text-primary">{formatDate(item.eventDate)}</span><span className="min-w-0 flex-1"><strong className="block truncate text-sm text-text">{item.title}</strong><span className="mt-0.5 flex items-center gap-1 text-xs text-muted"><Clock size={11} /> {item.endDate ? `até ${formatDate(item.endDate)}` : (item.startTime || 'Dia todo')}</span></span><Badge tone={EVENT_TONES[item.eventType] || 'neutral'}>{EVENT_LABELS[item.eventType] || item.eventType}</Badge></button>) : <p className="p-4 text-sm text-muted">Nenhum compromisso agendado.</p>}
             </Card>
 
             <Card>

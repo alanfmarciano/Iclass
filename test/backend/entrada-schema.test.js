@@ -99,6 +99,14 @@ test('[UC-ERRO-003] inputSchema: números, lista de valores, listas, objetos, ma
     assert.equal(number.run('7a', 'n').error, 'O campo "questão" está em formato inválido.');
     assert.equal(number.run(0, 'n').error, 'O campo "questão" deve estar entre 1 e 100.');
     assert.equal(schema.int().run(1.5, 'n').ok, false);
+    // emptyAsNull: o campo numérico vazio vale null (só com nullable); sem a opção, é tipo errado.
+    const optional = schema.int({ coerce: true, nullable: true, emptyAsNull: true, label: 'carga' });
+    assert.deepEqual(optional.run('', 'c'), { ok: true, value: null });
+    assert.deepEqual(optional.run('   ', 'c'), { ok: true, value: null });
+    assert.deepEqual(optional.run(' 12 ', 'c'), { ok: true, value: 12 });
+    assert.equal(optional.run('x', 'c').ok, false);
+    assert.equal(schema.int({ coerce: true, nullable: true, label: 'carga' }).run('', 'c').ok, false);
+    assert.equal(schema.int({ coerce: true, emptyAsNull: true, label: 'carga' }).run('', 'c').ok, false);
     assert.equal(schema.num().run(1.5, 'n').ok, true);
     assert.equal(schema.bool().run('true', 'b').ok, false);
 

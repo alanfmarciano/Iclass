@@ -392,6 +392,37 @@ describe('Ficha do aluno · critério de nota', () => {
   })
 })
 
+describe('Ficha do aluno · avaliação manual da turma', () => {
+  it('[UC-NOTAS-006] a nota de avaliação manual aparece pelo título, sem o id man_* nem o "módulo" do id', async () => {
+    // Antes a ficha mostrava "man_1795400571237_2ae278" no Acadêmico e na linha do tempo, e
+    // "1795400571237" no filtro de módulos e no gráfico.
+    const user = userEvent.setup()
+    const fallback = mocks.get.getMockImplementation()
+    mocks.get.mockImplementation(async (path) => {
+      if (path.startsWith('/api/admin/student/academic')) {
+        return {
+          submissions: [
+            { id: 's1', examKey: 'Avaliacao_IRCOM_1', score: 70, timestamp: '2026-03-01T12:00:00.000Z' },
+            { id: 's2', examKey: 'man_1795400571237_2ae278', manual: true, examTitle: 'Seminário de redes', score: 95, timestamp: '2026-03-02T12:00:00.000Z' },
+          ],
+          progress: { completedCount: 0 }, moduleAccess: [], attendance: { count: 0, recent: [] }, certificates: [],
+        }
+      }
+      return fallback(path)
+    })
+    render(
+      <MemoryRouter initialEntries={['/alunos/bia%40x.local']}>
+        <Routes><Route path="/alunos/:id" element={<AlunoDetailPage />} /></Routes>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByText(/Seminário de redes · nota 9,5/)).toBeInTheDocument()
+    expect(screen.queryByRole('option', { name: '1795400571237' })).not.toBeInTheDocument()
+    await user.click(await screen.findByRole('button', { name: 'Acadêmico' }))
+    expect(await screen.findByText('Seminário de redes')).toBeInTheDocument()
+    expect(document.body.textContent).not.toMatch(/man_1795|1795400571237/)
+  })
+})
+
 // P4-S3 (fase 3): a ficha abre pelo id estável; o endereço antigo, com o e-mail, troca pelo
 // do id. O aluno sem e-mail aparece como "sem e-mail" e a tela segue mandando o endereço
 // interno nas rotas (é a chave do cadastro).

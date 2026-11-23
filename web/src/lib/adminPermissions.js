@@ -191,6 +191,26 @@ export function canAccessAdminPermission(auth, permission) {
   return (Array.isArray(permission) ? permission : [permission]).some((item) => permissions.has(item))
 }
 
+// Papéis só de consulta (somenteLeitura no catálogo de backend/utils/adminRoles.js): a
+// reserva para a sessão guardada por uma versão anterior, sem o readOnly do whoami (a
+// abertura troca pelo valor do servidor).
+const READ_ONLY_ROLE_FALLBACK = new Set(['coordenacao'])
+
+// Conta só de consulta (Coordenação, D17 do P4): o servidor recusa todo POST com 403
+// read_only_account, fora do autoatendimento da própria conta. Vale o readOnly do whoami
+// e do login (B0a); a tela nunca mostra botão de gravar a essa conta.
+export function isReadOnlyAccount(auth) {
+  if (typeof auth?.readOnly === 'boolean') return auth.readOnly
+  return READ_ONLY_ROLE_FALLBACK.has(accountRoleOf(auth))
+}
+
+// A conta pode GRAVAR com esta permissão: tem a permissão e não é só de consulta. Os
+// botões que alteram (lançar nota, publicar, salvar chamada, publicar aviso, criar
+// evento, responder no fórum) usam esta conferência; ver usa canAccessAdminPermission.
+export function canWriteAdminPermission(auth, permission) {
+  return canAccessAdminPermission(auth, permission) && !isReadOnlyAccount(auth)
+}
+
 export function canAccessAdminPath(auth, pathname) {
   const cleanPath = pathname === '/' ? '/' : String(pathname || '').replace(/\/+$/, '')
   const permission = ADMIN_PATH_PERMISSIONS[cleanPath]

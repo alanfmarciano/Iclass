@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Archive, BookCopy, BookOpen, Building2, Pencil, Plus, RotateCcw, Search, School, Trash2, UserPlus, Users, Wand2 } from 'lucide-react'
+import { Archive, BookCopy, BookOpen, Building2, ClipboardList, Pencil, Plus, RotateCcw, Search, School, Trash2, UserPlus, Users, Wand2 } from 'lucide-react'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { Card, CardBody } from '../../components/ui/Card'
@@ -16,7 +16,9 @@ import { useAuth } from '../../context/AuthProvider'
 import { CourseExportButton, CourseImportButton } from './CoursePackageDialog'
 import { useToast } from '../../context/ToastProvider'
 import { DisciplinasModal, GradeEditor } from './TurmaPresencaConfig'
-import { isFullAdmin, isProfessorRoleAccount } from '../../lib/adminPermissions'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission, isFullAdmin, isProfessorRoleAccount } from '../../lib/adminPermissions'
+import { GradingCriteriaDialog } from './GradingCriteriaDialog'
+import { AcademicTermsSection, brDate, termOptionLabel, termOptionsForCourse } from './AcademicTermsSection'
 
 const CLASS_PERIODS = ['Manhã', 'Tarde', 'Noite']
 
@@ -47,6 +49,35 @@ function OriginBadges({ sources }) {
   return <span className="flex flex-wrap gap-1">{sources.map(source => <Badge key={source} tone={source === 'Turma específica' ? 'neutral' : 'info'}>{source}</Badge>)}</span>
 }
 
+// Seletor "Período letivo" do formulário da turma (B8 / P2-S8): os períodos abertos de
+// toda a instituição ou da escola do curso, mais o que a turma já tem. Enquanto a lista
+// não carrega (ou falhou), o seletor fica travado e o pedido não leva o campo.
+function ClassTermField({ form, setForm, termsApi, course }) {
+  const periodos = Array.isArray(termsApi?.data?.periodos) ? termsApi.data.periodos : []
+  const ready = !!termsApi?.data && !termsApi?.error
+  const options = termOptionsForCourse(periodos, course, form.periodoLetivoInicial || '')
+  const current = options.find(term => term.id === form.periodoLetivoId)
+  const missing = !!form.periodoLetivoId && !current
+  const helper = !ready
+    ? (termsApi?.error ? 'Não foi possível carregar os períodos letivos; o período da turma fica como está.' : 'Carregando os períodos letivos...')
+    : current
+      ? `Aulas de ${brDate(current.inicio)} a ${brDate(current.fim)}: fora dessas datas a Chamada avisa que não há aula e o Dashboard não cobra a chamada.`
+      : options.length === 0
+        ? `Nenhum período letivo aberto para ${course?.name || 'este curso'}. Cadastre em "Períodos letivos", nesta tela.`
+        : 'Sem período, todo dia da grade horária tem aula, como antes.'
+  return (
+    <div className="space-y-1.5">
+      <Select label="Período letivo" value={form.periodoLetivoId || ''} disabled={!ready}
+        onChange={event => setForm(currentForm => ({ ...currentForm, periodoLetivoId: event.target.value }))}>
+        <option value="">Sem período letivo</option>
+        {missing && <option value={form.periodoLetivoId}>Período atual da turma</option>}
+        {options.map(term => <option key={term.id} value={term.id}>{termOptionLabel(term)}</option>)}
+      </Select>
+      <p className="text-xs text-subtle">{helper}</p>
+    </div>
+  )
+}
+
 export default function TurmasPage() {
   const { auth } = useAuth()
   const toast = useToast()
@@ -54,11 +85,18 @@ export default function TurmasPage() {
   // Criar e mudar cursos e turmas, atribuir professor e arquivo: só o administrador pleno
   // (contrato C2 do P4; antes era "não é professor").
   const isAdmin = isFullAdmin(auth)
+  // Critérios de avaliação do curso (B9): abrir pede page.results, como GET /grading/criteria
+  // e /grading/preview no servidor; quem também gerencia cursos (course.manage) altera, e
+  // o resto (professor, Coordenação) vê sem alterar (o diálogo segue o podeAlterar).
+  const canSeeCriteria = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_RESULTS)
   const coursesApi = useApi('/api/admin/course-summaries?includeDeleted=1')
   const classesApi = useApi('/api/admin/classes')
   const schoolsApi = useApi('/api/admin/schools')
   const accountsApi = useApi(isAdmin ? '/api/admin/accounts' : null)
   const archivedApi = useApi(isAdmin ? '/api/admin/archived-courses' : null)
+  // Períodos letivos (B8 / P2-S8): a seção da tela, o seletor do formulário da turma e o
+  // selo de cada turma leem a mesma lista (GET /api/admin/academic/terms, page.dashboard).
+  const termsApi = useApi('/api/admin/academic/terms')
   const [search, setSearch] = useState('')
   const [schoolFilter, setSchoolFilter] = useState('')
   const [professorFilter, setProfessorFilter] = useState('')
@@ -68,6 +106,7 @@ export default function TurmasPage() {
   const [courseForm, setCourseForm] = useState(null)
   const [classForm, setClassForm] = useState(null)
   const [disciplinasForm, setDisciplinasForm] = useState(null)
+  const [criteriaCourse, setCriteriaCourse] = useState(null)
   const [assignmentForm, setAssignmentForm] = useState(null)
   const [confirm, setConfirm] = useState(null)
   const [saving, setSaving] = useState(false)
@@ -76,6 +115,7 @@ export default function TurmasPage() {
   const classes = classesApi.data || []
   const schools = schoolsApi.data || []
   const professors = (accountsApi.data || []).filter(isProfessorRoleAccount)
+  const periodos = Array.isArray(termsApi.data?.periodos) ? termsApi.data.periodos : []
 
   const filteredCourses = useMemo(() => courses.filter(course => {
     const courseClasses = classes.filter(cls => cls.courseId === course.id)
@@ -102,7 +142,7 @@ export default function TurmasPage() {
   }, [selectedCourse, selectedCourseId])
 
   const refresh = async () => {
-    await Promise.all([coursesApi.refetch(), classesApi.refetch(), schoolsApi.refetch(), accountsApi.refetch(), archivedApi.refetch()])
+    await Promise.all([coursesApi.refetch(), classesApi.refetch(), schoolsApi.refetch(), accountsApi.refetch(), archivedApi.refetch(), termsApi.refetch()])
   }
 
   const run = async (operation, success) => {
@@ -142,13 +182,27 @@ export default function TurmasPage() {
   }
 
   async function saveClass() {
-    if (!classForm?.name?.trim() || !CLASS_PERIODS.includes(classForm?.period)) return toast.error('Informe o nome e selecione Manhã, Tarde ou Noite.')
+    if (!classForm?.name?.trim() || !CLASS_PERIODS.includes(classForm?.period)) return toast.error('Informe o nome e selecione o turno: Manhã, Tarde ou Noite.')
     const attendanceConfig = classForm.attendanceConfig || { toleranciaMin: 10, limiarRiscoPct: 75, grade: {} }
+    // Período letivo só vai no pedido quando mudou: sem o campo o servidor não mexe, e a
+    // lista de períodos que não carregou nunca tira a turma do período por engano.
+    const term = (classForm.periodoLetivoId || '') !== (classForm.periodoLetivoInicial || '') ? { periodoLetivoId: classForm.periodoLetivoId || null } : {}
     const ok = await run(() => classForm.mode === 'create'
-      ? api.post('/api/admin/class/create', { name: classForm.name, period: classForm.period, courseId: selectedCourse.id, attendanceConfig })
-      : api.post('/api/admin/class/update', { name: classForm.name, period: classForm.period, registrationEnabled: classForm.registrationEnabled, courseId: selectedCourse.id, attendanceConfig }),
+      ? api.post('/api/admin/class/create', { name: classForm.name, period: classForm.period, courseId: selectedCourse.id, attendanceConfig, ...term })
+      : api.post('/api/admin/class/update', { name: classForm.name, period: classForm.period, registrationEnabled: classForm.registrationEnabled, courseId: selectedCourse.id, attendanceConfig, ...term }),
     classForm.mode === 'create' ? 'Turma criada.' : 'Turma atualizada.')
     if (ok) setClassForm(null)
+  }
+
+  // Período letivo da turma para o selo: pela lista de períodos; o que a conta não vê
+  // (escola fora do escopo) vem do resumo do curso (course-summaries).
+  function classTerm(cls) {
+    const id = cls?.periodoLetivoId || ''
+    if (!id) return null
+    const found = periodos.find(term => term.id === id)
+    if (found) return found
+    const summary = (selectedCourse?.classes || []).find(item => item.name === cls.name)?.periodoLetivo
+    return summary ? { ...summary, situacao: 'aberto' } : null
   }
 
   async function saveDisciplinas(disciplinas) {
@@ -218,7 +272,7 @@ export default function TurmasPage() {
           <p className="mt-1.5 text-sm text-muted">Gerencie cursos, turmas e o escopo de atuação dos professores.</p>
           <CourseImportButton className="mt-3" schools={schools} onImported={course => { setStatusFilter('active'); setSelectedCourseId(course.id); refresh() }} />
         </div>
-        {isAdmin && <div className="flex gap-2"><Button variant="secondary" icon={Plus} onClick={openNewCourse}>Novo curso</Button><Button icon={Plus} disabled={!selectedCourse || isDeleted(selectedCourse)} onClick={() => setClassForm({ mode: 'create', name: '', period: 'Manhã', registrationEnabled: true, attendanceConfig: { toleranciaMin: 10, limiarRiscoPct: 75, grade: {} } })}>Nova turma</Button></div>}
+        {isAdmin && <div className="flex gap-2"><Button variant="secondary" icon={Plus} onClick={openNewCourse}>Novo curso</Button><Button icon={Plus} disabled={!selectedCourse || isDeleted(selectedCourse)} onClick={() => setClassForm({ mode: 'create', name: '', period: 'Manhã', registrationEnabled: true, periodoLetivoId: '', periodoLetivoInicial: '', attendanceConfig: { toleranciaMin: 10, limiarRiscoPct: 75, grade: {} } })}>Nova turma</Button></div>}
       </div>
 
       <PageState loading={loading} error={error} onRetry={refresh}>
@@ -250,7 +304,7 @@ export default function TurmasPage() {
               <Card><CardBody className="space-y-5 pt-5">
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div><div className="flex items-center gap-2"><h2 className="text-xl font-semibold text-text">{selectedCourse.name}</h2>{isDeleted(selectedCourse) && <Badge tone="warning">Excluído</Badge>}</div><p className="mt-1 flex items-center gap-1.5 text-sm text-muted"><Building2 size={15} /> {selectedSchool?.name || 'Sem escola vinculada'}</p></div>
-                  {isAdmin && <div className="flex flex-wrap gap-2">{isDeleted(selectedCourse) ? <Button size="sm" icon={RotateCcw} onClick={() => run(() => api.put(`/api/admin/courses/${encodeURIComponent(selectedCourse.id)}`, { status: 'active', deleted: false, deletedAt: null }), 'Curso restaurado.')}>Restaurar</Button> : <><Button size="sm" variant="secondary" icon={Pencil} onClick={openEditCourse}>Editar</Button><Button size="sm" variant="secondary" icon={BookOpen} onClick={() => setDisciplinasForm(selectedCourse)}>Disciplinas</Button><Button size="sm" variant="secondary" icon={BookCopy} onClick={openCloneCourse}>Duplicar</Button><Button size="sm" variant="secondary" icon={Archive} onClick={() => setConfirm({ type: 'archive', target: selectedCourse })}>Arquivar</Button><Button size="sm" variant="destructive" icon={Trash2} onClick={() => setConfirm({ type: 'course', target: selectedCourse })}>Excluir</Button></>}</div>}
+                  {(isAdmin || canSeeCriteria) && <div className="flex flex-wrap gap-2">{isAdmin && (isDeleted(selectedCourse) ? <Button size="sm" icon={RotateCcw} onClick={() => run(() => api.put(`/api/admin/courses/${encodeURIComponent(selectedCourse.id)}`, { status: 'active', deleted: false, deletedAt: null }), 'Curso restaurado.')}>Restaurar</Button> : <><Button size="sm" variant="secondary" icon={Pencil} onClick={openEditCourse}>Editar</Button><Button size="sm" variant="secondary" icon={BookOpen} onClick={() => setDisciplinasForm(selectedCourse)}>Disciplinas</Button><Button size="sm" variant="secondary" icon={BookCopy} onClick={openCloneCourse}>Duplicar</Button><Button size="sm" variant="secondary" icon={Archive} onClick={() => setConfirm({ type: 'archive', target: selectedCourse })}>Arquivar</Button><Button size="sm" variant="destructive" icon={Trash2} onClick={() => setConfirm({ type: 'course', target: selectedCourse })}>Excluir</Button></>)}{canSeeCriteria && !isDeleted(selectedCourse) && <Button size="sm" variant="secondary" icon={ClipboardList} onClick={() => setCriteriaCourse(selectedCourse)}>Critérios de avaliação</Button>}</div>}
                 </div>
 
                 {!isDeleted(selectedCourse) && <CourseExportButton course={selectedCourse} />}
@@ -261,22 +315,28 @@ export default function TurmasPage() {
               </CardBody></Card>
 
               <Card><CardBody className="pt-5">
-                <div className="mb-4 flex items-center justify-between"><div><h3 className="font-semibold text-text">Turmas</h3><p className="text-xs text-subtle">Período, matrículas e equipe por turma.</p></div><Badge tone="neutral">{selectedClasses.length}</Badge></div>
+                <div className="mb-4 flex items-center justify-between"><div><h3 className="font-semibold text-text">Turmas</h3><p className="text-xs text-subtle">Turno, período letivo, matrículas e equipe por turma.</p></div><Badge tone="neutral">{selectedClasses.length}</Badge></div>
                 {selectedClasses.length === 0 ? <EmptyState icon={School} title="Nenhuma turma" description="Crie a primeira turma deste curso." /> : <div className="space-y-3">{selectedClasses.map(cls => {
                   const classProfessors = professors.filter(professor => teacherSources(professor, selectedCourse, cls.name).length > 0)
                   // A lista de contas só vem para o administrador; as outras contas usam a
                   // contagem que o servidor manda com a turma (antes aparecia "0 professor(es)").
                   const professorTotal = isAdmin ? classProfessors.length : Number(cls.professorCount || 0)
+                  const term = classTerm(cls)
+                  // Sem período letivo: aviso só quando há período aberto que serve a esta
+                  // turma (há o que ligar); senão é só a informação (D17: nada é ligado sozinho).
+                  const canLink = !term && termOptionsForCourse(periodos, selectedCourse).length > 0
                   return <div key={`${cls.courseId}-${cls.name}`} className="rounded-lg border border-border p-4">
-                    <div className="flex flex-wrap items-start justify-between gap-3"><div><h4 className="font-semibold text-text">{cls.name}</h4><p className="text-sm text-muted">{cls.period ? canonicalClassPeriod(cls.period) : 'Sem período'}</p></div><div className="flex flex-wrap items-center gap-2"><Badge tone={cls.registrationEnabled ? 'success' : 'neutral'}>{cls.registrationEnabled ? 'Matrícula aberta' : 'Matrícula fechada'}</Badge><Badge tone="neutral">{cls.studentCount || 0} aluno(s)</Badge><Badge tone={professorTotal ? 'info' : 'warning'}>{professorTotal} professor(es)</Badge></div></div>
+                    <div className="flex flex-wrap items-start justify-between gap-3"><div><h4 className="font-semibold text-text">{cls.name}</h4><p className="text-sm text-muted">{cls.period ? canonicalClassPeriod(cls.period) : 'Sem turno'}</p></div><div className="flex flex-wrap items-center gap-2">{term ? <Badge tone={term.situacao === 'encerrado' ? 'neutral' : 'info'}>{term.situacao === 'encerrado' ? `${term.nome} · encerrado` : term.nome}</Badge> : <Badge tone={canLink ? 'warning' : 'neutral'}>Sem período letivo</Badge>}<Badge tone={cls.registrationEnabled ? 'success' : 'neutral'}>{cls.registrationEnabled ? 'Matrícula aberta' : 'Matrícula fechada'}</Badge><Badge tone="neutral">{cls.studentCount || 0} aluno(s)</Badge><Badge tone={professorTotal ? 'info' : 'warning'}>{professorTotal} professor(es)</Badge></div></div>
                     <div className="mt-3 flex flex-wrap gap-2">{professorTotal === 0 ? <span className="text-xs text-warning">Sem professor</span> : classProfessors.map(professor => <span key={professor.email} className="inline-flex items-center gap-1.5 rounded-full bg-surface-2 px-2.5 py-1 text-xs text-text">{professor.name}<span className="text-subtle">· {teacherSources(professor, selectedCourse, cls.name)[0]}</span></span>)}</div>
-                    {isAdmin && !isDeleted(selectedCourse) && <div className="mt-3 flex flex-wrap gap-2 border-t border-border pt-3"><Button size="sm" variant="secondary" className="border-primary/60 bg-primary/10 text-primary hover:bg-primary/20 hover:border-primary" icon={Wand2} aria-label={`Abrir assistente de horários da turma ${cls.name}`} onClick={() => navigate(`/turmas/${encodeURIComponent(selectedCourse.id)}/${encodeURIComponent(cls.name)}/assistente`)}>Assistente de horários</Button><Button size="sm" variant="secondary" icon={Users} aria-label={`Atribuir professor à turma ${cls.name}`} onClick={() => openAssignments()}>Atribuir</Button><Button size="sm" variant="ghost" icon={Pencil} aria-label={`Editar turma ${cls.name}`} onClick={() => setClassForm({ mode: 'edit', name: cls.name, period: canonicalClassPeriod(cls.period), registrationEnabled: cls.registrationEnabled !== false, attendanceConfig: cls.attendanceConfig || { toleranciaMin: 10, limiarRiscoPct: 75, grade: {} } })}>Editar</Button><Button size="sm" variant="ghost" icon={Trash2} aria-label={`Excluir turma ${cls.name}`} onClick={() => setConfirm({ type: 'class', target: cls })}>Excluir</Button></div>}
+                    {isAdmin && !isDeleted(selectedCourse) && <div className="mt-3 flex flex-wrap gap-2 border-t border-border pt-3"><Button size="sm" variant="secondary" className="border-primary/60 bg-primary/10 text-primary hover:bg-primary/20 hover:border-primary" icon={Wand2} aria-label={`Abrir assistente de horários da turma ${cls.name}`} onClick={() => navigate(`/turmas/${encodeURIComponent(selectedCourse.id)}/${encodeURIComponent(cls.name)}/assistente`)}>Assistente de horários</Button><Button size="sm" variant="secondary" icon={Users} aria-label={`Atribuir professor à turma ${cls.name}`} onClick={() => openAssignments()}>Atribuir</Button><Button size="sm" variant="ghost" icon={Pencil} aria-label={`Editar turma ${cls.name}`} onClick={() => setClassForm({ mode: 'edit', name: cls.name, period: canonicalClassPeriod(cls.period), registrationEnabled: cls.registrationEnabled !== false, periodoLetivoId: cls.periodoLetivoId || '', periodoLetivoInicial: cls.periodoLetivoId || '', attendanceConfig: cls.attendanceConfig || { toleranciaMin: 10, limiarRiscoPct: 75, grade: {} } })}>Editar</Button><Button size="sm" variant="ghost" icon={Trash2} aria-label={`Excluir turma ${cls.name}`} onClick={() => setConfirm({ type: 'class', target: cls })}>Excluir</Button></div>}
                   </div>
                 })}</div>}
               </CardBody></Card>
             </div>
           )}
         </div>
+
+        <AcademicTermsSection termsApi={termsApi} course={selectedCourse} onChanged={() => Promise.all([coursesApi.refetch(), classesApi.refetch()])} />
 
         {isAdmin && (archivedApi.data || []).length > 0 && <Card><CardBody className="pt-5"><div className="mb-3 flex items-center gap-2"><Archive size={18} className="text-muted" /><h2 className="font-semibold text-text">Cursos arquivados</h2></div><div className="space-y-2">{archivedApi.data.map(item => <div key={item.folder} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border border-border p-3"><span><span className="block text-sm font-medium text-text">{item.name}</span><span className="text-xs text-subtle">{item.counts?.turmas || 0} turma(s) · arquivado em {new Date(item.archivedAt).toLocaleDateString('pt-BR')}</span></span><span className="flex gap-2"><Button size="sm" variant="secondary" icon={RotateCcw} onClick={() => run(() => api.post('/api/admin/archived-courses/restore', { folder: item.folder }, { timeoutMs: 0 }), 'Curso restaurado do arquivo.')}>Restaurar</Button><Button size="sm" variant="ghost" icon={Trash2} onClick={() => setConfirm({ type: 'archive-delete', target: item })}>Excluir arquivo</Button></span></div>)}</div></CardBody></Card>}
       </PageState>
@@ -289,8 +349,9 @@ export default function TurmasPage() {
         {classForm && <div className="space-y-4">
           <div className="grid gap-4 sm:grid-cols-2">
             <Input label="Nome da turma" disabled={classForm.mode === 'edit'} value={classForm.name} onChange={event => setClassForm(current => ({ ...current, name: event.target.value }))} placeholder="EX.: 1DES" />
-            <Select label="Período" value={classForm.period} onChange={event => setClassForm(current => ({ ...current, period: event.target.value }))}>{CLASS_PERIODS.map(period => <option key={period} value={period}>{period}</option>)}</Select>
+            <Select label="Turno" value={classForm.period} onChange={event => setClassForm(current => ({ ...current, period: event.target.value }))}>{CLASS_PERIODS.map(period => <option key={period} value={period}>{period}</option>)}</Select>
           </div>
+          <ClassTermField form={classForm} setForm={setClassForm} termsApi={termsApi} course={selectedCourse} />
           {classForm.mode === 'edit' && <label className="flex items-center gap-2 text-sm text-text"><input type="checkbox" checked={classForm.registrationEnabled} onChange={event => setClassForm(current => ({ ...current, registrationEnabled: event.target.checked }))} /> Matrículas abertas</label>}
           <div className="border-t border-border pt-4">
             <h3 className="mb-3 font-semibold text-text">Presença e grade horária</h3>
@@ -298,6 +359,8 @@ export default function TurmasPage() {
           </div>
         </div>}
       </Modal>
+
+      <GradingCriteriaDialog open={!!criteriaCourse} onClose={() => setCriteriaCourse(null)} course={criteriaCourse} />
 
       <DisciplinasModal open={!!disciplinasForm} onClose={() => setDisciplinasForm(null)} course={disciplinasForm} onSave={saveDisciplinas} saving={saving} />
 

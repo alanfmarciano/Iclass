@@ -6,7 +6,7 @@ import { clearAllExamDrafts } from '../lib/examDrafts'
 import { usePolling } from '../hooks/usePolling'
 import { useOnReconnect } from '../hooks/useServerConnection'
 import { reduceStoredStudentAuth, studentSessionProfile } from '../lib/studentProfile'
-import { adminAccountFields } from '../lib/adminPermissions'
+import { adminAccountFields, isReadOnlyAccount } from '../lib/adminPermissions'
 
 const AuthCtx = createContext()
 const LS = 'iclass-v3-auth'
@@ -408,8 +408,12 @@ export function AuthProvider({ children }) {
     doLogout(typeof reason === 'string' ? reason : undefined, typeof message === 'string' ? message : undefined)
   }, [doLogout])
 
+  // Conta do painel só de consulta (Coordenação): as telas escondem os botões de gravar.
+  // Vem do readOnly do whoami e do login (adminAccountFields); o aluno nunca é.
+  const readOnly = auth?.role === 'admin' && isReadOnlyAccount(auth)
+
   return (
-    <AuthCtx.Provider value={{ auth, authReady, maintenance, loginAdmin, loginAdminSetup, loginLocalQuick, loginStudent, logout, endSessionFromError, setAuth, setActiveClass, setActiveCourse, setActiveWorkspace, clearActiveWorkspace, syncPasswordChange }}>
+    <AuthCtx.Provider value={{ auth, readOnly, authReady, maintenance, loginAdmin, loginAdminSetup, loginLocalQuick, loginStudent, logout, endSessionFromError, setAuth, setActiveClass, setActiveCourse, setActiveWorkspace, clearActiveWorkspace, syncPasswordChange }}>
       {children}
     </AuthCtx.Provider>
   )

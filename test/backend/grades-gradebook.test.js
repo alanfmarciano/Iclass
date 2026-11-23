@@ -390,6 +390,9 @@ test('[UC-NOTAS-002] planilha da turma: uma linha por aluno, coluna por prova, m
         'Prova 2',
         'Prova 3',
     ]);
+    // O nome da prova na estrutura vai junto (Resultados monta a estrutura por ele para quem
+    // não abre o editor de cursos); o CSV continua só com o rótulo.
+    assert.deepEqual(json.body.columns.map(column => column.unitName), ['Prova 1', 'Prova 1', 'Prova 2', 'Prova 3']);
     assert.deepEqual(json.body.rows.map(row => row.email).sort(), ['ana@notas.local', 'bia@notas.local', 'hack@notas.local'], 'Caio é de 1DES de outro curso');
     const ana = json.body.rows.find(row => row.email === 'ana@notas.local');
     const list = await admin(request(app).get(`/api/admin/submissions?courseId=${COURSE_A}&studentClass=1DES`));
@@ -951,13 +954,19 @@ test('[UC-NOTAS-003] portal do aluno (Provas) faz a média como o painel e o bol
     // Provas não recebia o registro antigo e fazia a média por tentativa: (6+8+10)/3 = 8,0.
     assert.equal(dashboard.body.overallNote, 7);
     assert.equal(report.body.overallAverage, 7);
-    assert.equal(webGrades.fmtGrade(webGrades.consolidatedAverage(mine.body.submissions)), '7,0');
+    // A tela Provas lê a média do resumo de notas do servidor (B9 / P2-S4, D3 do P2): o
+    // navegador não refaz a conta (antes, consolidatedAverage sobre my-submissions).
+    const summary = await request(app).get(`/api/student/grades-summary?courseId=${COURSE_A}&studentClass=1DES`).set('x-session-token', token);
+    assert.equal(summary.status, 200, summary.body.error);
+    assert.equal(webGrades.fmtGradeValue(summary.body.mediaFinal), '7,0');
 
     db.memory.submissions = db.memory.submissions.filter(item => item.id !== 'p3_antiga');
     const mine2 = await request(app).post('/api/student/my-submissions').set('x-session-token', token).send({ courseId: COURSE_A, studentClass: '1DES' });
     const dashboard2 = await request(app).get(`/api/student/dashboard?courseId=${COURSE_A}&studentClass=1DES`).set('x-session-token', token);
     assert.equal(dashboard2.body.overallNote, 8.5);
-    assert.equal(webGrades.fmtGrade(webGrades.consolidatedAverage(mine2.body.submissions)), '8,5', 'antes a tela Provas mostrava 8,0');
+    assert.equal(mine2.status, 200);
+    const summary2 = await request(app).get(`/api/student/grades-summary?courseId=${COURSE_A}&studentClass=1DES`).set('x-session-token', token);
+    assert.equal(webGrades.fmtGradeValue(summary2.body.mediaFinal), '8,5', 'antes a tela Provas mostrava 8,0');
 });
 
 test('[UC-NOTAS-004] excluir o aluno anonimiza as cópias das notas dele na lixeira (fica só prova e nota)', async () => {

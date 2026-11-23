@@ -1,8 +1,8 @@
 import { cleanup, render, screen, waitFor, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
-import { MemoryRouter, Route, Routes } from 'react-router-dom'
+import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import ResultadosPage from './ResultadosPage'
+import ResultadosPage, { structureFromGradebook, studentResultsPath } from './ResultadosPage'
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
@@ -12,6 +12,10 @@ const mocks = vi.hoisted(() => ({
   refetch: vi.fn(),
   applications: [],
   deletedItems: [],
+  auth: undefined,
+  // Quadro e plano da turma (useApi); null = como antes (sem quadro carregado).
+  gradebook: null,
+  plan: null,
   // Mesmos objetos a cada render, como o useApi de verdade: a tela da prova corrigida
   // (rota com :submissionId) recarrega a revisão quando a entrega muda de referência.
   stable: {
@@ -32,6 +36,8 @@ vi.mock('../../hooks/useAdminWorkspace', () => ({
 
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
 
+vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: mocks.auth }) }))
+
 vi.mock('../../hooks/useApi', () => ({
   useApi: (path) => {
     if (!path) return { data: null, loading: false, error: null, refetch: vi.fn() }
@@ -51,6 +57,8 @@ vi.mock('../../hooks/useApi', () => ({
       }
     }
     if (path.startsWith('/api/admin/exam-applications')) return { data: { applications: mocks.applications }, loading: false, error: null, refetch: vi.fn() }
+    if (path.startsWith('/api/admin/gradebook')) return { data: mocks.gradebook, loading: false, error: null, refetch: vi.fn() }
+    if (path.startsWith('/api/admin/grading/plan')) return { data: mocks.plan, loading: false, error: null, refetch: vi.fn() }
     if (path.startsWith('/api/admin/submissions/deleted')) return { data: { items: mocks.deletedItems }, loading: false, error: null, refetch: mocks.refetch }
     if (path.startsWith('/api/admin/submissions')) {
       return { data: mocks.stable.submissions, loading: false, error: null, refetch: mocks.refetch }
@@ -77,10 +85,24 @@ afterEach(() => {
   vi.clearAllMocks()
   mocks.applications = []
   mocks.deletedItems = []
+  mocks.auth = undefined
+  mocks.gradebook = null
+  mocks.plan = null
 })
 
 function renderPage() {
   return render(<MemoryRouter initialEntries={['/resultados']}><ResultadosPage /></MemoryRouter>)
+}
+
+// Quadro sem critérios como GET /api/admin/gradebook devolve, com o resumo da turma (B9):
+// a tela mostra a média do aluno, a média geral e a aprovação daqui, sem conta própria.
+// alunos: [[email, nome, média (0 a 100) ou null]]; resumo: os números do servidor.
+function quadroSemCriterios(alunos, resumo = {}) {
+  return {
+    criterio: { mediaMinima: 6, mencoes: null, regraAntiga: true }, etapas: [], mencoes: null, avisos: [], columns: [],
+    rows: alunos.map(([email, name, averageScore]) => ({ email, name, cells: {}, average: averageScore == null ? null : Math.round(averageScore) / 10, averageScore, gradedCount: averageScore == null ? 0 : 1, pendingCount: 0 })),
+    resumo: { media: null, mediaScore: null, comNota: 0, acimaDaMinima: 0, aprovacao: null, aprovacaoPor: 'media', porProva: {}, porAplicacao: {}, alunos: {}, ...resumo },
+  }
 }
 
 async function openManual(user) {
@@ -322,6 +344,7 @@ describe('Resultados · regra de nota única', () => {
       entrega('b1', 'bia@x.local', 'Bia', 89.6, 89.6),
       entrega('d1', 'davi@x.local', 'Davi', 35, 35),
     ]
+    mocks.gradebook = quadroSemCriterios([['ana@x.local', 'Ana', 49.6], ['bia@x.local', 'Bia', 89.6], ['davi@x.local', 'Davi', 35]], { mediaScore: 58.07, media: 5.8, comNota: 3, acimaDaMinima: 1, aprovacao: 33 })
     try {
       renderPage()
       const dist = screen.getByText('Distribuição de notas').closest('div').parentElement
@@ -354,10 +377,14 @@ describe('Resultados · regra de nota única', () => {
       entrega('c1', 'caio@x.local', 'Caio', 90, undefined, { countsTowardResult: undefined }),
       entrega('c2', 'caio@x.local', 'Caio', 70, undefined, { countsTowardResult: undefined }),
     ]
+    // O servidor: Ana 6,0 (59,6) e Bia 4,0; Caio sem nota válida. Média geral 5,0 (média das
+    // médias) e aprovação 50% (alunos com média a partir de 6,0).
+    mocks.gradebook = quadroSemCriterios([['ana@x.local', 'Ana', 59.6], ['bia@x.local', 'Bia', 40], ['caio@x.local', 'Caio', null]], { mediaScore: 49.8, media: 5, comNota: 2, acimaDaMinima: 1, aprovacao: 50 })
     try {
       renderPage()
       const aprovacao = screen.getByText('Aprovação').closest('div').parentElement
       await waitFor(() => expect(within(aprovacao).getByText('50%')).toBeInTheDocument())
+      expect(within(aprovacao).getByText('Alunos com média a partir de 6,0')).toBeInTheDocument()
       const media = screen.getByText('Média geral').closest('div').parentElement
       expect(within(media).getByText('5,0')).toBeInTheDocument()
       const ana = screen.getByText('Ana').closest('tr')
@@ -375,5 +402,379 @@ describe('Resultados · regra de nota única', () => {
       mocks.stable.submissions = original
       window.matchMedia = matchMedia
     }
+  })
+})
+
+describe('Resultados · Coordenação (só consulta)', () => {
+  const coordenacao = {
+    role: 'admin', accountRole: 'coordenacao', readOnly: true,
+    effectivePermissions: ['page.dashboard', 'page.results', 'page.classes', 'page.students', 'page.forum', 'page.assignments', 'reports.view'],
+  }
+
+  it('[UC-PAPEIS-004] não mostra lançar, publicar, ocultar, excluir nem a regra, e não pede estrutura nem aplicações (403)', async () => {
+    mocks.auth = coordenacao
+    mocks.get.mockImplementation(async (path) => {
+      if (path.startsWith('/api/admin/gradebook')) return { columns: [{ examKey: 'Avaliacao_P2', label: 'Prova 2', moduleName: 'Módulo 1' }], rows: [] }
+      return {}
+    })
+    renderPage()
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledWith('/api/admin/gradebook?courseId=DES&studentClass=1DES'))
+    for (const name of ['Lançar nota', 'Publicar notas', 'Ocultar notas', 'Notas excluídas']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
+    }
+    expect(screen.getByRole('button', { name: 'Exportar planilha (CSV)' })).toBeInTheDocument()
+    const gets = mocks.get.mock.calls.map(([path]) => path)
+    // Antes: GET /courses/:id/structure (pede o editor) e /exam-applications (Provas ou Monitor) davam 403 ao abrir.
+    expect(gets.some((path) => path.includes('/structure'))).toBe(false)
+    expect(gets.some((path) => path.includes('/exam-applications'))).toBe(false)
+    expect(mocks.post).not.toHaveBeenCalled()
+  })
+
+  it('[UC-PAPEIS-004] na página do aluno, o nome da prova é o da estrutura e a dica não fala em ajustar', async () => {
+    mocks.auth = coordenacao
+    mocks.stable.submissions[0].scoreInvalid = false
+    mocks.stable.submissions[0].score = 80
+    mocks.stable.submissions[0].consolidatedScore = 80
+    mocks.get.mockImplementation(async (path) => {
+      if (path.startsWith('/api/admin/gradebook')) return { columns: [{ examKey: 'Avaliacao_P2', label: 'Avaliação — Prova 2 completa', moduleName: 'Módulo 1', unitName: 'Prova 2' }], rows: [] }
+      return {}
+    })
+    try {
+      render(
+        <MemoryRouter initialEntries={['/resultados/aluno/ana%40x.local']}>
+          <Routes>
+            <Route path="/resultados/aluno/:studentId" element={<ResultadosPage />} />
+          </Routes>
+        </MemoryRouter>,
+      )
+      await userEvent.click(await screen.findByRole('button', { name: 'Expandir tudo' }))
+      expect(await screen.findByText(/Cada prova em uma linha\. Clique para ver a composição\.$/)).toBeInTheDocument()
+      expect(screen.queryByText(/e ajustar/)).not.toBeInTheDocument()
+      expect(screen.getAllByText('Prova 2').length).toBeGreaterThan(0)
+      expect(screen.queryByText(/Avaliação — Prova 2 completa/)).not.toBeInTheDocument()
+    } finally {
+      Object.assign(mocks.stable.submissions[0], { scoreInvalid: true, score: 150, consolidatedScore: null })
+    }
+  })
+
+  it('[UC-PAPEIS-004] na prova do aluno, só ver e exportar: sem publicar, excluir, usar esta nota nem desconsiderar', async () => {
+    mocks.auth = coordenacao
+    render(
+      <MemoryRouter initialEntries={['/resultados/aluno/ana%40x.local/prova/old']}>
+        <Routes>
+          <Route path="/resultados/aluno/:studentId/prova/:submissionId" element={<ResultadosPage />} />
+        </Routes>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByRole('button', { name: 'Exportar CSV da turma' })).toBeInTheDocument()
+    for (const name of ['Excluir registro', 'Ocultar do aluno', 'Publicar para o aluno', 'Usar esta nota', 'Desconsiderar', 'Reconsiderar']) {
+      expect(screen.queryByRole('button', { name })).not.toBeInTheDocument()
+    }
+    expect(screen.queryByRole('combobox', { name: /Regra de cálculo/ })).not.toBeInTheDocument()
+  })
+
+  it('[UC-PAPEIS-004] o administrador continua vendo os botões de escrita', async () => {
+    mocks.auth = { role: 'admin', accountRole: 'admin', readOnly: false }
+    renderPage()
+    expect(screen.getByRole('button', { name: 'Lançar nota' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Publicar notas' })).toBeInTheDocument()
+    await waitFor(() => expect(mocks.get.mock.calls.some(([path]) => path.includes('/structure'))).toBe(true))
+  })
+
+  it('[UC-PAPEIS-004] monta módulo e nome das provas pelo quadro de notas, sem "Outras avaliações"', () => {
+    expect(structureFromGradebook({
+      columns: [
+        { examKey: 'P1', label: 'Prova 1', moduleName: 'Módulo 1' },
+        { examKey: 'P2', label: 'Prova 2 (1ª aplicação)', moduleName: 'Módulo 1' },
+        { examKey: 'P2', label: 'Prova 2 (2ª aplicação)', moduleName: 'Módulo 1' },
+        { examKey: 'P3', label: 'Prova 3', moduleName: 'Módulo 2' },
+        { examKey: 'X', label: 'Avulsa', moduleName: 'Outras avaliações' },
+      ],
+    })).toEqual([
+      { id: 'Módulo 1', name: 'Módulo 1', units: [{ avaliacaoKey: 'P1', name: 'Prova 1' }, { avaliacaoKey: 'P2', name: 'Prova 2' }] },
+      { id: 'Módulo 2', name: 'Módulo 2', units: [{ avaliacaoKey: 'P3', name: 'Prova 3' }] },
+    ])
+    expect(structureFromGradebook(null)).toEqual([])
+    // Com o nome da estrutura (unitName), a Coordenação vê o mesmo nome que o professor, e
+    // não o título da avaliação que rotula a coluna do quadro.
+    expect(structureFromGradebook({
+      columns: [
+        { examKey: 'W', label: 'Avaliação — Instalação de Windows', moduleName: 'Módulo 1', unitName: 'Instalação de Windows Server + KMS' },
+        { examKey: 'R', label: 'Redes (1ª aplicação)', moduleName: 'Módulo 1', unitName: 'Redes locais' },
+        { examKey: 'R', label: 'Redes (2ª aplicação)', moduleName: 'Módulo 1', unitName: 'Redes locais' },
+        { examKey: 'S', label: 'Sem nome na estrutura', moduleName: 'Módulo 1', unitName: '' },
+      ],
+    })).toEqual([
+      { id: 'Módulo 1', name: 'Módulo 1', units: [
+        { avaliacaoKey: 'W', name: 'Instalação de Windows Server + KMS' },
+        { avaliacaoKey: 'R', name: 'Redes locais' },
+        { avaliacaoKey: 'S', name: 'Sem nome na estrutura' },
+      ] },
+    ])
+  })
+})
+
+describe('Resultados · avaliação manual da turma', () => {
+  it('[UC-NOTAS-006] o filtro e a página do aluno mostram o título da avaliação manual, nunca o id man_*', async () => {
+    // Antes o filtro "Todas as provas" e o detalhe do aluno mostravam "man_1795400571237_2ae278".
+    const manual = { id: 'm1', student: { name: 'Ana', email: 'ana@x.local', courseId: 'DES', studentClass: '1DES' }, courseId: 'DES', examKey: 'man_1795400571237_2ae278', examTitle: 'Seminário de redes', score: 95, consolidatedScore: 95, gradePublished: true, timestamp: '2026-03-02T10:00:00Z' }
+    mocks.stable.submissions.push(manual)
+    try {
+      render(
+        <MemoryRouter initialEntries={['/resultados/aluno/ana%40x.local']}>
+          <Routes>
+            <Route path="/resultados" element={<ResultadosPage />} />
+            <Route path="/resultados/aluno/:studentId" element={<ResultadosPage />} />
+          </Routes>
+        </MemoryRouter>,
+      )
+      await userEvent.click(await screen.findByRole('button', { name: 'Expandir tudo' }))
+      expect((await screen.findAllByText('Seminário de redes')).length).toBeGreaterThan(0)
+      expect(document.body.textContent).not.toMatch(/man_1795/)
+      cleanup()
+      renderPage()
+      expect(await screen.findByRole('option', { name: 'Seminário de redes' })).toHaveValue('man_1795400571237_2ae278')
+      expect(screen.queryByRole('option', { name: /man_1795/ })).not.toBeInTheDocument()
+    } finally {
+      mocks.stable.submissions.pop()
+    }
+  })
+
+  it('[UC-NOTAS-006] nota de avaliação manual arquivada fica na página do aluno, marcada, e sai da média geral', async () => {
+    const base = mocks.stable.submissions[0]
+    Object.assign(base, { scoreInvalid: false, score: 60, consolidatedScore: 60 })
+    mocks.stable.submissions.push({ id: 'm1', student: { name: 'Ana', email: 'ana@x.local', courseId: 'DES', studentClass: '1DES' }, courseId: 'DES', examKey: 'man_1795400571237_2ae278', examTitle: 'Seminário de redes', assessmentArchived: true, score: 100, consolidatedScore: 100, gradePublished: true, timestamp: '2026-03-02T10:00:00Z' })
+    // O quadro do servidor já deixa a nota arquivada fora da média da Ana (6,0).
+    mocks.gradebook = quadroSemCriterios([['ana@x.local', 'Ana', 60]], { mediaScore: 60, media: 6, comNota: 1, acimaDaMinima: 1, aprovacao: 100, alunos: { 'ana@x.local': { porProva: { Avaliacao_P2: { score: 60, grade: 6 } }, porAplicacao: {}, porModulo: { m1: { score: 60, grade: 6 } } } } })
+    try {
+      render(
+        <MemoryRouter initialEntries={['/resultados/aluno/ana%40x.local']}>
+          <Routes><Route path="/resultados/aluno/:studentId" element={<ResultadosPage />} /></Routes>
+        </MemoryRouter>,
+      )
+      const media = (await screen.findByText('Média geral')).parentElement
+      // Antes: (6,0 + 10,0) / 2 = 8,0, contando o seminário arquivado.
+      expect(within(media).getByText('6,0')).toBeInTheDocument()
+      await userEvent.click(await screen.findByRole('button', { name: 'Expandir tudo' }))
+      expect((await screen.findAllByText('Seminário de redes (arquivada, fora da média)')).length).toBeGreaterThan(0)
+    } finally {
+      mocks.stable.submissions.pop()
+      Object.assign(base, { scoreInvalid: true, score: 150, consolidatedScore: null })
+    }
+  })
+})
+
+describe('Resultados · endereço do aluno pelo id', () => {
+  function LocationProbe() {
+    const location = useLocation()
+    return <output data-testid="location">{location.pathname}</output>
+  }
+  function renderAt(path) {
+    return render(
+      <MemoryRouter initialEntries={[path]}>
+        <Routes>
+          <Route path="/resultados" element={<><ResultadosPage /><LocationProbe /></>} />
+          <Route path="/resultados/aluno/:studentId" element={<><ResultadosPage /><LocationProbe /></>} />
+          <Route path="/resultados/aluno/:studentId/prova/:submissionId" element={<><ResultadosPage /><LocationProbe /></>} />
+        </Routes>
+      </MemoryRouter>,
+    )
+  }
+  const internal = 'aluno-alu_00000000000000c1@sem-email.invalid'
+  function withIds(fn) {
+    return async () => {
+      const { students, submissions } = mocks.stable
+      mocks.stable.students = [
+        { ...students[0], id: 'alu_00000000000000a1' },
+        { id: 'alu_00000000000000c1', name: 'Caio', email: internal, semEmail: true, classes: [{ name: '1DES', courseId: 'DES' }] },
+      ]
+      mocks.stable.submissions = [...submissions, { id: 'caio1', student: { name: 'Caio', email: internal, courseId: 'DES', studentClass: '1DES' }, courseId: 'DES', examKey: 'Avaliacao_P2', score: 70, consolidatedScore: 70, gradePublished: true, timestamp: '2026-03-02T10:00:00Z' }]
+      try { await fn() } finally {
+        mocks.stable.students = students
+        mocks.stable.submissions = submissions
+      }
+    }
+  }
+
+  it('[UC-IDENT-003] studentResultsPath usa o id; sem id, o e-mail', () => {
+    expect(studentResultsPath({ id: 'alu_00000000000000c1', email: internal })).toBe('/resultados/aluno/alu_00000000000000c1')
+    expect(studentResultsPath({ email: 'ana@x.local' })).toBe('/resultados/aluno/ana%40x.local')
+  })
+
+  it('[UC-IDENT-003] abrir o aluno vai para /resultados/aluno/<id>; o endereço interno do aluno sem e-mail nunca vai para a barra', withIds(async () => {
+    const user = userEvent.setup()
+    renderAt('/resultados')
+    const caio = (await screen.findAllByText('Caio')).find((node) => node.closest('tr'))
+    await user.click(caio.closest('button'))
+    // Antes: /resultados/aluno/aluno-alu_00000000000000c1%40sem-email.invalid
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/resultados/aluno/alu_00000000000000c1'))
+    expect(screen.getByTestId('location').textContent).not.toContain('sem-email')
+    expect(document.body.textContent).not.toContain('sem-email.invalid')
+  }))
+
+  it('[UC-IDENT-003] endereço pelo id abre os resultados do aluno', withIds(async () => {
+    renderAt('/resultados/aluno/alu_00000000000000a1')
+    expect(await screen.findByRole('button', { name: 'Boletim (PDF)' })).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Ana' })).toBeInTheDocument()
+    expect(screen.getByTestId('location')).toHaveTextContent('/resultados/aluno/alu_00000000000000a1')
+  }))
+
+  it('[UC-IDENT-003] endereço antigo com e-mail troca pelo id, mantendo a prova aberta', withIds(async () => {
+    renderAt('/resultados/aluno/ana%40x.local/prova/old')
+    await waitFor(() => expect(screen.getByTestId('location')).toHaveTextContent('/resultados/aluno/alu_00000000000000a1/prova/old'))
+    expect(await screen.findByRole('button', { name: 'Exportar CSV da turma' })).toBeInTheDocument()
+  }))
+})
+
+describe('Resultados · critérios do curso (B9)', () => {
+  const entrega = (id, email, name, score, extra = {}) => ({
+    id, student: { name, email, courseId: 'DES', studentClass: '1DES' }, courseId: 'DES', studentClass: '1DES',
+    examKey: 'Avaliacao_P2', applicationId: `app_${email}`, score, consolidatedScore: score, countsTowardResult: true,
+    gradePublished: true, timestamp: '2026-03-01T10:00:00Z', ...extra,
+  })
+  const linha = (email, name, averageScore, situacao, situacaoRotulo) => ({
+    email, name, cells: {}, average: averageScore / 10, averageScore, gradedCount: 1, pendingCount: 0,
+    etapas: [{ ordem: 1, nome: '1º bimestre', peso: 1, media: averageScore / 10, final: averageScore / 10, semNota: false }, { ordem: 2, nome: '2º bimestre', peso: 2, media: null, final: null, semNota: true }],
+    mediaFinal: averageScore / 10, situacao, situacaoRotulo, mencao: null, frequencia: 90, avisos: [],
+  })
+
+  it('[UC-NOTAS-008] média mínima do curso (5,0), média do aluno e aprovação pela situação vêm do quadro do servidor', async () => {
+    const original = mocks.stable.submissions
+    const matchMedia = window.matchMedia
+    window.matchMedia = (query) => ({ matches: query.includes('reduce'), media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} })
+    mocks.stable.submissions = [entrega('a1', 'ana@x.local', 'Ana', 55), entrega('b1', 'bia@x.local', 'Bia', 45)]
+    mocks.gradebook = {
+      criterio: { mediaMinima: 5, mencoes: null, regraAntiga: false },
+      etapas: [{ ordem: 1, nome: '1º bimestre', peso: 1 }, { ordem: 2, nome: '2º bimestre', peso: 2 }],
+      columns: [], avisos: [], mencoes: null,
+      rows: [linha('ana@x.local', 'Ana', 52, 'aprovado', 'Aprovado'), linha('bia@x.local', 'Bia', 45, 'em_recuperacao', 'Em recuperação')],
+      resumo: { media: 4.9, mediaScore: 48.5, comNota: 2, acimaDaMinima: 1, aprovacaoPor: 'situacao', situacoesFechadas: 2, aprovados: 1, aprovacao: 50, porProva: {}, porAplicacao: {}, alunos: {} },
+    }
+    try {
+      renderPage()
+      // Antes: média mínima fixa 6,0 — Ana (5,5) aparecia abaixo da média.
+      const ana = screen.getByText('Ana').closest('tr')
+      expect(within(ana).getByText('5,2').className).toMatch(/text-success/)
+      const bia = screen.getByText('Bia').closest('tr')
+      expect(within(bia).getByText('4,5').className).toMatch(/text-(warning|danger)/)
+      const aprovacao = screen.getByText('Aprovação').closest('div').parentElement
+      await waitFor(() => expect(within(aprovacao).getByText('50%')).toBeInTheDocument())
+      expect(within(aprovacao).getByText('Pela situação no curso')).toBeInTheDocument()
+    } finally {
+      mocks.stable.submissions = original
+      window.matchMedia = matchMedia
+    }
+  })
+
+  it('[UC-NOTAS-008] com todos "Cursando", a aprovação fica "—" (ninguém com a situação fechada), não 0%', async () => {
+    const original = mocks.stable.submissions
+    mocks.stable.submissions = [entrega('a1', 'ana@x.local', 'Ana', 85)]
+    mocks.gradebook = {
+      criterio: { mediaMinima: 6, mencoes: null, regraAntiga: false },
+      etapas: [{ ordem: 1, nome: '1º bimestre', peso: 1 }, { ordem: 2, nome: '2º bimestre', peso: 1 }],
+      columns: [], avisos: [], mencoes: null,
+      rows: [linha('ana@x.local', 'Ana', 85, 'cursando', 'Cursando')],
+      resumo: { media: 8.5, mediaScore: 85, comNota: 1, acimaDaMinima: 1, aprovacaoPor: 'situacao', situacoesFechadas: 0, aprovados: 0, aprovacao: null, porProva: {}, porAplicacao: {}, alunos: {} },
+    }
+    try {
+      renderPage()
+      const aprovacao = screen.getByText('Aprovação').closest('div').parentElement
+      expect(within(aprovacao).getByText('—')).toBeInTheDocument()
+      expect(within(aprovacao).getByText('Ninguém com a situação fechada ainda')).toBeInTheDocument()
+      expect(within(aprovacao).queryByText('0%')).not.toBeInTheDocument()
+    } finally {
+      mocks.stable.submissions = original
+    }
+  })
+
+  it('[UC-NOTAS-008] "Média geral" é a do servidor, a mesma do quadro (médias finais por etapa), não a média das notas da lista', async () => {
+    // Antes: a média simples das notas consolidadas da lista (aqui (100 + 40) / 2 = 7,0),
+    // diferente da média final ponderada do quadro.
+    const original = mocks.stable.submissions
+    const matchMedia = window.matchMedia
+    window.matchMedia = (query) => ({ matches: query.includes('reduce'), media: query, addEventListener() {}, removeEventListener() {}, addListener() {}, removeListener() {} })
+    mocks.stable.submissions = [entrega('a1', 'ana@x.local', 'Ana', 100), entrega('a2', 'ana@x.local', 'Ana', 40, { examKey: 'Avaliacao_P3', applicationId: 'app_p3' })]
+    mocks.gradebook = {
+      criterio: { mediaMinima: 6, mencoes: null, regraAntiga: false },
+      etapas: [{ ordem: 1, nome: '1º bimestre', peso: 1 }, { ordem: 2, nome: '2º bimestre', peso: 2 }],
+      columns: [], avisos: [], mencoes: null,
+      rows: [linha('ana@x.local', 'Ana', 60, 'aprovado', 'Aprovado')],
+      resumo: { media: 6, mediaScore: 60, comNota: 1, acimaDaMinima: 1, aprovacaoPor: 'situacao', situacoesFechadas: 1, aprovados: 1, aprovacao: 100, porProva: { Avaliacao_P3: { media: 4, mediaScore: 40, comNota: 1, acimaDaMinima: 0, aprovacao: 0 } }, porAplicacao: {}, alunos: { 'ana@x.local': { porProva: { Avaliacao_P3: { score: 40, grade: 4 } }, porAplicacao: {}, porModulo: {} } } },
+    }
+    try {
+      renderPage()
+      const media = screen.getByText('Média geral').closest('div').parentElement
+      await waitFor(() => expect(within(media).getByText('6,0')).toBeInTheDocument())
+      expect(within(media).queryByText('7,0')).not.toBeInTheDocument()
+      // Filtro de prova: a média e a aprovação da turma nela, e a nota do aluno nela, do servidor.
+      await userEvent.selectOptions(screen.getByLabelText('Filtrar por prova'), 'Avaliacao_P3')
+      await waitFor(() => expect(within(media).getByText('4,0')).toBeInTheDocument())
+      const aprovacao = screen.getByText('Aprovação').closest('div').parentElement
+      expect(within(aprovacao).getByText('0%')).toBeInTheDocument()
+      expect(within(aprovacao).getByText('Alunos com nota a partir de 6,0')).toBeInTheDocument()
+      const ana = screen.getByText('Ana').closest('tr')
+      expect(within(ana).getByText('4,0')).toBeInTheDocument()
+    } finally {
+      mocks.stable.submissions = original
+      window.matchMedia = matchMedia
+    }
+  })
+
+  it('[UC-NOTAS-008] sem o quadro do servidor, a média fica "-" (o navegador não calcula)', async () => {
+    const original = mocks.stable.submissions
+    mocks.stable.submissions = [entrega('a1', 'ana@x.local', 'Ana', 80)]
+    mocks.gradebook = null
+    try {
+      renderPage()
+      const media = screen.getByText('Média geral').closest('div').parentElement
+      expect(within(media).getByText('-')).toBeInTheDocument()
+      const ana = screen.getByText('Ana').closest('tr')
+      expect(within(ana).queryByText('8,0')).not.toBeInTheDocument()
+    } finally {
+      mocks.stable.submissions = original
+    }
+  })
+
+  it('[UC-NOTAS-008] lançamento rápido de avaliação da turma: tipo no seletor, só a nota, sem acertos nem cartão', async () => {
+    const user = userEvent.setup()
+    mocks.plan = {
+      ativo: true, etapas: [{ ordem: 1, nome: 'Etapa única', peso: 1 }], itens: [], modulos: [], tipos: [], avisos: [], podeAlterar: true,
+      manuais: [
+        { id: 'man_1', titulo: 'Seminário de redes', tipo: 'seminario', tipoRotulo: 'Seminário', arquivado: false },
+        { id: 'man_2', titulo: 'Trabalho antigo', tipo: 'trabalho', tipoRotulo: 'Trabalho', arquivado: true },
+      ],
+    }
+    renderPage()
+    await user.click(screen.getByRole('button', { name: 'Lançar nota' }))
+    const dialog = await screen.findByRole('dialog')
+    await user.selectOptions(within(dialog).getByLabelText('Aluno'), 'ana@x.local')
+    const select = within(dialog).getByLabelText('Prova ou avaliação')
+    expect(within(select).getByRole('option', { name: 'Seminário - Seminário de redes' })).toBeInTheDocument()
+    expect(within(select).queryByRole('option', { name: /Trabalho antigo/ })).not.toBeInTheDocument()
+    await user.selectOptions(select, 'man_1')
+    expect(within(dialog).queryByLabelText('Acertos')).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Total de questões')).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('button', { name: 'Cartão-resposta' })).not.toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Salvar nota' }))
+    expect(await within(dialog).findByText('Informe a nota de 0 a 10 (ex.: 8,5).')).toBeInTheDocument()
+    await user.type(within(dialog).getByLabelText('Nota (0 a 10)'), '8,5')
+    await user.click(within(dialog).getByRole('button', { name: 'Salvar nota' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/submissions/create', { studentEmail: 'ana@x.local', examKey: 'man_1', courseId: 'DES', studentClass: '1DES', grade: 8.5 }))
+    // Avaliação da turma não pede questões, histórico nem totais da prova.
+    const gets = mocks.get.mock.calls.map(([path]) => path)
+    expect(gets.some((path) => path.includes('examKey=man_1') || path.includes('/evaluation/man_1'))).toBe(false)
+  })
+
+  it('[UC-NOTAS-008] a aba "Plano de avaliação" mostra o plano da turma', async () => {
+    const user = userEvent.setup()
+    mocks.plan = {
+      ativo: true, etapas: [{ ordem: 1, nome: 'Etapa única', peso: 1 }], manuais: [], modulos: [], tipos: [], avisos: [], podeAlterar: true,
+      itens: [{ id: 'Avaliacao_P2', titulo: 'Prova 2', origem: 'prova', etapa: 1, peso: 1, recuperacaoDe: null, fora: false, notasLancadas: 1, notasPublicadas: 1 }],
+    }
+    renderPage()
+    await user.click(screen.getByRole('tab', { name: 'Plano de avaliação' }))
+    const panel = screen.getByRole('region', { name: 'Plano de avaliação da turma' })
+    expect(within(panel).getByRole('listitem', { name: 'Prova 2' })).toBeInTheDocument()
+    expect(within(panel).getByRole('button', { name: 'Salvar plano' })).toBeDisabled()
   })
 })

@@ -5,12 +5,14 @@ const attendanceUtil = require('./attendance.js');
 const { effectiveScore } = require('./submissionAttempts.js');
 const {
     buildStudentReportModules,
+    classGradingContext,
     consolidatedStudentAverage,
     createSubmissionContextResolver,
     formatGradeBR,
     formatMinimumGrade,
     gradeCriterionFor,
     isPassingGrade,
+    studentAverageFor,
     studentMemberships,
     submissionMatchesContext,
     withResolvedContext,
@@ -45,9 +47,35 @@ function courseUnitStats(memory, courseId) {
 // escolhida), e nota inválida de registro antigo fica fora. Antes era a média simples
 // de todas as tentativas, e a ficha, Alunos e o boletim mostravam médias diferentes.
 // As entregas chegam já recortadas e com curso/turma completados (scopeSubmissions).
-function mediaOf(subs) {
-    const { average } = consolidatedStudentAverage(subs);
-    return average === null ? null : average / 10;
+// grading (classGradingContext da turma, B6 / P2-S3): a média final da conta única do
+// boletim e do quadro (com os critérios do curso ligados, a ponderada por etapa; sem eles,
+// a mesma média simples, sem a nota de avaliação manual arquivada e com os itens dos
+// provedores). Sem turma conhecida, a consolidação de sempre.
+function mediaOf(subs, grading = null, email = '') {
+    const average = grading ? studentAverageFor(subs, grading, { email }) : consolidatedStudentAverage(subs).average;
+    return average === null || average === undefined ? null : average / 10;
+}
+
+// Contexto de notas da turma do recorte (B6), um por turma e pedido (options.index guarda
+// os já montados). null sem turma no recorte (a média continua a de sempre).
+function gradingContextFor(memory, { courseId = '', studentClass = '' } = {}, options = {}) {
+    const className = String(studentClass || '').trim();
+    if (!className) return null;
+    const wantedCourse = String(courseId || '').trim();
+    const classes = memory.classes || [];
+    const cls = classes.find(c => c && c.name === className && (!wantedCourse || String(c.courseId || '') === wantedCourse))
+        || (wantedCourse ? null : classes.find(c => c && c.name === className));
+    if (!cls) return null;
+    const resolvedCourse = String(cls.courseId || wantedCourse || '');
+    const cache = options.index ? (options.index.grading || (options.index.grading = new Map())) : null;
+    const key = `${resolvedCourse}\u0000${className}`;
+    if (cache && cache.has(key)) return cache.get(key);
+    const course = (memory.courses || []).find(c => c && String(c.id) === resolvedCourse) || null;
+    const structure = (typeof options.structureFor === 'function' && options.structureFor(resolvedCourse, className))
+        || (course && course.structure) || [];
+    const grading = classGradingContext(memory, { course, cls, structure, hoje: options.hoje || null });
+    if (cache) cache.set(key, grading);
+    return grading;
 }
 
 // Entregas do aluno no curso/turma pedidos, com curso e turma de registros antigos
@@ -162,7 +190,8 @@ function computeStudentDashboard(memory, email, options = {}) {
     // Uma unidade só conta como concluída se tiver progresso real: array vazio não é "feito".
     const isDone = (v) => Array.isArray(v) ? v.length > 0 : !!v;
     const completed = Object.keys(progressMap).filter(k => isDone(progressMap[k])).length;
-    const media = withGrades ? mediaOf(subs) : null;
+    const grading = withGrades ? gradingContextFor(memory, scope, options) : null;
+    const media = withGrades ? mediaOf(subs, grading, email) : null;
     const stats = attendanceUtil.computeAttendanceStats(attendanceRecordsFor(memory, email, courseId));
     const limiar = riskThreshold(memory, student, courseId);
     // null = sem chamada lançada (desconhecido), distinto de 0% de presença.
@@ -188,6 +217,8 @@ function computeStudentDashboard(memory, email, options = {}) {
         structure,
         evaluations: memory.evaluations || {},
         applications: memory.examApplications || [],
+        // Avaliações manuais e itens dos provedores no módulo deles (B6).
+        ...(grading ? { grading, extraGroups: grading.providerGroups({ emails: [email] }) } : {}),
     }).modules
         .filter(module => module.average !== null)
         .map(module => ({ id: module.id, modulo: module.name, media: module.average }));
@@ -208,7 +239,7 @@ function computeStudentDashboard(memory, email, options = {}) {
         if (withGrades) {
             const ss = scopeSubmissions((memory.submissions || []).filter(x => x.student && x.student.email && x.student.email.toLowerCase() === e), scope, resolve);
             // Colega só com notas inválidas (registro antigo) não tem média: não entra como 0.
-            const media = ss.length ? mediaOf(ss) : null;
+            const media = ss.length ? mediaOf(ss, grading, e) : null;
             if (media !== null) turmaMedias.push(media);
         }
         const f = freqPct(memory, e, courseId);
@@ -314,7 +345,11 @@ function studentOverview(memory, student, options = {}) {
     const subs = scopeSubmissions(todasSubs, { courseId, studentClass: options.studentClass || '' }, resolve);
     // options.withGrades === false: sem média (e o risco sem o motivo 'media'), para quem
     // não lê nota (canReadStudentGrades).
-    const media = options.withGrades === false ? null : round1(mediaOf(subs));
+    // Com o curso ou a turma no recorte, a média final da turma do aluno (B6).
+    const grading = options.withGrades === false || (!courseId && !options.studentClass)
+        ? null
+        : gradingContextFor(memory, studentScope(memory, student, { courseId, studentClass: options.studentClass || '' }), options);
+    const media = options.withGrades === false ? null : round1(mediaOf(subs, grading, email));
     const stats = attendanceUtil.computeAttendanceStats(attendanceRecordsFor(memory, email, courseId, index));
     const limiar = riskThreshold(memory, student, courseId);
     // null = "sem aula lançada". Nunca 0: isso acusaria o aluno de faltar a tudo.

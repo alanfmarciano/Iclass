@@ -44,7 +44,7 @@ const studentFeeds = require('../utils/studentFeeds.js');
 require('../utils/gradeChangeNotices.js');
 const attendanceUtil = require('../utils/attendance.js');
 const { lessonsForDate } = require('../utils/academicCalendar.js');
-const { studentCalendarEvents } = require('../utils/calendarFeed.js');
+const { studentCalendarEvents, upcomingNonSchoolDayEvents } = require('../utils/calendarFeed.js');
 const examSchedule = require('../utils/examSchedule.js');
 const settingsUtil = require('../utils/settings.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
@@ -71,7 +71,9 @@ const {
     normalizeMaxAttempts,
 } = require('../utils/examAttempts.js');
 const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, integrityDecision, isAwaitingCorrection, normalizeScore, roundGrade } = require('../utils/submissionAttempts.js');
-const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
+const { scopeSubmissionsToContext, manualAssessmentTitle, manualItemOfClass, structureModuleId } = require('../utils/gradebook.js');
+const { normalizeCriteria } = require('../utils/gradingRules.js');
+const { buildStudentGradesSummary } = require('../utils/studentReport.js');
 const { createStudentSession, hasSessionCredential, revokeStudentSession, pruneExpiredSessions, studentSessionByEmail } = require('../utils/authSessions.js');
 const { applicationSessionPolicy, lockedAttemptMessage, noteAttemptIp, noteSessionEnded, recordSessionReplaced, requestUserAgent } = require('../utils/examSessionIntegrity.js');
 const { attemptPasswordLogin } = require('../utils/passwordLogin.js');
@@ -554,6 +556,10 @@ function studentApplicationLabel(application, cls) {
         const unit = (module?.units || []).find(item => item?.avaliacaoKey === application.examKey);
         if (unit?.name || unit?.title) return unit.name || unit.title;
     }
+    // Avaliação manual da turma (B6): o título dela, primeiro na turma do aluno.
+    const manual = manualAssessmentTitle(cls ? [cls] : [], application.examKey)
+        || manualAssessmentTitle(db.memory.classes || [], application.examKey);
+    if (manual) return manual;
     return String(application.examKey || 'Prova').replace(/_/g, ' ');
 }
 
@@ -2128,14 +2134,24 @@ router.post('/api/student/my-submissions', validateStudentSession, STUDENT_SCHEM
         enrichSubmissionsWithAttemptResult(ownSubmissions.filter(item => item.gradePublished === true))
             .map(item => [String(item.id), item])
     );
+    // Nota de avaliação manual arquivada (classes[].avaliacao.manuais com arquivadoEm, B6 /
+    // P2-S3) fica guardada e aparece na lista, mas sai da média, como no Início, no boletim
+    // e no resumo de notas (conta única do gradebook.js): sem nota consolidada e fora do
+    // resultado, com assessmentArchived para a tela dizer "Fora da média".
+    const isArchivedManual = examKey => !!(manualItemOfClass(cls, examKey) || {}).arquivadoEm;
     const mySubmissions = ownSubmissions
-        .map(s => ({
-            ...s,
-            resultStatus: s.resultStatus === 'archived' ? 'archived' : 'considered',
-            aggregationPolicy: publishedResultById.get(String(s.id))?.aggregationPolicy || s.aggregationPolicy || 'highest',
-            consolidatedScore: publishedResultById.get(String(s.id))?.consolidatedScore ?? null,
-            countsTowardResult: publishedResultById.get(String(s.id))?.countsTowardResult === true,
-        }))
+        .map(s => {
+            const archivedAssessment = isArchivedManual(s.examKey);
+            const published = publishedResultById.get(String(s.id));
+            return {
+                ...s,
+                resultStatus: s.resultStatus === 'archived' ? 'archived' : 'considered',
+                aggregationPolicy: published?.aggregationPolicy || s.aggregationPolicy || 'highest',
+                consolidatedScore: archivedAssessment ? null : (published?.consolidatedScore ?? null),
+                countsTowardResult: !archivedAssessment && published?.countsTowardResult === true,
+                ...(archivedAssessment ? { assessmentArchived: true } : {}),
+            };
+        })
         .map(s => {
             const canViewAnswerKey = canStudentViewAnswerKey(s, normalizedEmail);
             const sanitized = {
@@ -2328,14 +2344,28 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         { courseId, studentClass: className, students: db.memory.students || [], classes: db.memory.classes || [] },
     );
 
+    // Notas pela conta única do boletim (contrato C1 do P2; B6): a média geral, a média de
+    // cada módulo (com a avaliação manual ligada ao módulo) e a situação saem do resumo de
+    // notas do aluno (só o publicado), o mesmo de GET /api/student/grades-summary. Nota de
+    // avaliação manual arquivada fica guardada e sai da média, como no boletim.
+    const gradesCls = (db.memory.classes || []).find(item => item.name === cls.name && String(item.courseId || '') === String(cls.courseId || '')) || cls;
+    const gradesSummary = buildStudentGradesSummary(db.memory, { email, course, cls: gradesCls, hoje: settingsUtil.today() });
+    const withCriteria = !!(course && normalizeCriteria(course.avaliacao));
+    const isArchivedManual = examKey => !!(manualItemOfClass(gradesCls, examKey) || {}).arquivadoEm;
+
     const modules = structure.map((module, moduleIndex) => {
         const units = module.units || module.items || [];
         const unitKeys = units.map(unit => unit.apostilaKey || unit.key).filter(Boolean);
-        const examKeys = new Set(units.map(unit => unit.avaliacaoKey).filter(Boolean));
+        const moduleId = structureModuleId(module, moduleIndex);
+        const examKeys = new Set([
+            ...units.map(unit => unit.avaliacaoKey).filter(Boolean),
+            ...gradesSummary.itens.filter(item => item.origem !== 'prova' && item.moduloId === moduleId).map(item => item.id),
+        ]);
         const moduleSubmissions = submissions.filter(item => examKeys.has(item.examKey));
-        const published = moduleSubmissions.filter(item => item.gradePublished === true && Number.isFinite(Number(item.score)));
-        const consolidated = consolidateSubmissions(published).filter(item => item.score != null);
-        const note = consolidated.length ? roundGrade(consolidated.reduce((sum, item) => sum + Number(item.score), 0) / consolidated.length) : null;
+        // As médias do resumo seguem a ordem da estrutura (o módulo "Outras avaliações" vem
+        // depois dos da estrutura).
+        const summaryModule = gradesSummary.modulos[moduleIndex];
+        const note = summaryModule && summaryModule.id === moduleId ? summaryModule.media : null;
         const done = unitKeys.filter(key => completed[key]).length;
         return {
             id: module.id || module.key || `module_${moduleIndex}`,
@@ -2348,7 +2378,7 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         };
     });
 
-    const publishedSubmissions = consolidateSubmissions(submissions.filter(item => item.gradePublished === true && Number.isFinite(Number(item.score))))
+    const publishedSubmissions = consolidateSubmissions(submissions.filter(item => item.gradePublished === true && Number.isFinite(Number(item.score)) && !isArchivedManual(item.examKey)))
         .filter(item => item.score != null);
     const totalUnits = structure.flatMap(module => module.units || module.items || []).map(unit => unit.apostilaKey || unit.key).filter(Boolean);
     const completedCount = totalUnits.filter(key => completed[key]).length;
@@ -2384,11 +2414,15 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
         .slice(0, 3)
         .map(item => ({ id: item.id, title: item.title, message: item.message, createdAt: item.createdAt, priority: item.priority }));
+    // Próximos compromissos: os eventos do calendário e, desde o B7 (P2-S6, FUN-15), os dias
+    // não letivos da turma que ainda não acabaram (o recesso em andamento também), como
+    // "Sem aula", com o mesmo id do calendário do aluno (nao-letivo:<id>).
     const calendar = (db.memory.announcements || [])
         .filter(item => item.kind === 'calendar' && visibleTarget(item) && item.eventDate >= today)
+        .map(item => ({ id: item.id, title: item.title, eventDate: item.eventDate, startTime: item.startTime || '', eventType: item.eventType || 'outro' }))
+        .concat(upcomingNonSchoolDayEvents(db.memory, gradesCls, today))
         .sort((a, b) => String(a.eventDate).localeCompare(String(b.eventDate)) || String(a.startTime || '').localeCompare(String(b.startTime || '')))
-        .slice(0, 4)
-        .map(item => ({ id: item.id, title: item.title, eventDate: item.eventDate, startTime: item.startTime || '', eventType: item.eventType || 'outro' }));
+        .slice(0, 4);
 
     res.json({
         courseName: course?.name || courseId,
@@ -2397,7 +2431,9 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         completedCount,
         totalUnits: totalUnits.length,
         // Mesmo arredondamento do boletim, do quadro e das planilhas (roundGrade).
-        overallNote: publishedSubmissions.length ? roundGrade(publishedSubmissions.reduce((sum, item) => sum + Number(item.score), 0) / publishedSubmissions.length) : null,
+        // Com critérios, a média final; sem eles, a média de sempre (a do boletim).
+        overallNote: gradesSummary.mediaFinal,
+        ...(withCriteria ? { situacao: gradesSummary.situacao, situacaoRotulo: gradesSummary.situacaoRotulo, mencao: gradesSummary.mencao } : {}),
         frequency,
         pendingCount,
         continueItem,
@@ -2407,7 +2443,9 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         performance: publishedSubmissions
             .map(group => {
                 const latest = [...group.attempts].sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0))[0] || {};
-                return { id: latest.id, examKey: latest.examKey, timestamp: latest.timestamp, note: roundGrade(group.score) };
+                // Avaliação manual (B6): leva o título, para o gráfico não mostrar o id.
+                const manualTitle = manualAssessmentTitle([gradesCls], latest.examKey);
+                return { id: latest.id, examKey: latest.examKey, ...(manualTitle ? { title: manualTitle } : {}), timestamp: latest.timestamp, note: roundGrade(group.score) };
             })
             .sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0))
             .slice(-5)

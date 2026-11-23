@@ -646,6 +646,64 @@ test('[UC-PRESENCA-005] .ics do painel e do aluno: eventos e dias não letivos d
     assert.equal((await request(app).get('/api/student/calendar.ics?courseId=ADM&studentClass=1ADM').set('x-session-token', anaToken)).status, 403);
 });
 
+test('[UC-PRESENCA-005] lista do Calendário: contexto com a escola do curso; sem escola não oferece "Toda a escola"; a Coordenação recebe escopos vazios e nada alterável (B7)', async () => {
+    db.memory.nonSchoolDays = [day({ id: 'nl_esc', inicio: '2027-11-15', nome: 'Aniversário da escola', escopo: 'escola', schoolId: 'esc_a' })];
+    const full = await admin('get', '/api/admin/calendar/non-school-days?courseId=TI&studentClass=1DES');
+    assert.equal(full.status, 200);
+    // Antes não vinha a escola do curso, e a tela não tinha como mandar o schoolId do dia de escola.
+    assert.deepEqual(full.body.contexto, { courseId: 'TI', studentClass: '1DES', schoolId: 'esc_a', escolaNome: 'Escola A' });
+    assert.deepEqual(full.body.escopos.map(item => item.value), ['instituicao', 'escola', 'curso', 'turma']);
+    assert.equal(full.body.dias[0].podeAlterar, true);
+
+    // Curso sem escola: o dia de escola não valeria para ele, então o escopo não aparece.
+    db.memory.courses.find(course => course.id === 'TI').schoolId = '';
+    const noSchool = await admin('get', '/api/admin/calendar/non-school-days?courseId=TI&studentClass=1DES');
+    assert.deepEqual(noSchool.body.escopos.map(item => item.value), ['instituicao', 'curso', 'turma']);
+    assert.equal(noSchool.body.contexto.schoolId, null);
+    db.memory.courses.find(course => course.id === 'TI').schoolId = 'esc_a';
+
+    // Pedido sem turma: não oferece "Só a turma".
+    const courseOnly = await admin('get', '/api/admin/calendar/non-school-days?courseId=TI');
+    assert.deepEqual(courseOnly.body.escopos.map(item => item.value), ['instituicao', 'escola', 'curso']);
+
+    // A Coordenação tem a escola no escopo, mas é só de consulta: nada para cadastrar nem alterar.
+    const coord = await request(app).get('/api/admin/calendar/non-school-days?courseId=TI&studentClass=1DES').set('x-admin-session', coordToken);
+    assert.equal(coord.status, 200, JSON.stringify(coord.body));
+    assert.deepEqual(coord.body.escopos, []);
+    assert.equal(coord.body.podeAdicionarFeriadosNacionais, false);
+    assert.deepEqual(coord.body.dias.map(item => [item.nome, item.podeAlterar]), [['Aniversário da escola', false]]);
+
+    // O dia de escola cadastrado com a escola do contexto vale para a turma.
+    const created = await admin('post', '/api/admin/calendar/non-school-days/create')
+        .send({ inicio: '2027-11-22', tipo: 'evento_escolar', nome: 'Feira de ciências', escopo: 'escola', schoolId: full.body.contexto.schoolId });
+    assert.equal(created.status, 200, JSON.stringify(created.body));
+    assert.equal(calendar.isNonSchoolDay(db.memory, db.memory.classes[0], '2027-11-22').nome, 'Feira de ciências');
+});
+
+test('[UC-PRESENCA-005] Início do aluno: os dias sem aula que ainda não acabaram entram nos próximos compromissos, com o de hoje marcado (B7)', async () => {
+    const today = settingsUtil.today();
+    db.memory.nonSchoolDays = [
+        day({ id: 'nl_hoje', inicio: calendar.addDays(today, -1), fim: calendar.addDays(today, 1), tipo: 'recesso', nome: 'Recesso em andamento', escopo: 'instituicao' }),
+        day({ id: 'nl_passou', inicio: calendar.addDays(today, -5), fim: calendar.addDays(today, -1), nome: 'Já passou', escopo: 'instituicao' }),
+        day({ id: 'nl_depois', inicio: calendar.addDays(today, 3), nome: 'Feriado logo ali', escopo: 'curso', courseId: 'TI' }),
+        day({ id: 'nl_2des', inicio: calendar.addDays(today, 2), nome: 'Só da 2DES', escopo: 'turma', courseId: 'TI', studentClass: '2DES' }),
+    ];
+    db.memory.announcements = [
+        { id: 'cal_futuro', kind: 'calendar', title: 'Prova de Redes', eventDate: calendar.addDays(today, 2), startTime: '08:00', eventType: 'prova', target: 'turma', targetValue: '1DES', courseId: 'TI', readBy: [] },
+    ];
+    const res = await request(app).get('/api/student/dashboard?courseId=TI&studentClass=1DES').set('x-session-token', anaToken);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    // Antes só vinham os eventos do calendário (o dia sem aula não aparecia no Início).
+    assert.deepEqual(res.body.calendar.map(item => [item.title, item.eventType, item.hoje === true]), [
+        ['Recesso em andamento', 'nao_letivo', true],
+        ['Prova de Redes', 'prova', false],
+        ['Feriado logo ali', 'nao_letivo', false],
+    ]);
+    const recesso = res.body.calendar[0];
+    assert.equal(recesso.id, 'nao-letivo:nl_hoje', 'o mesmo id do calendário do aluno');
+    assert.equal(recesso.endDate, calendar.addDays(today, 1));
+});
+
 // Por último: a restauração troca o banco inteiro (o beforeEach dos testes acima semeia de novo).
 test('[UC-BACKUP-008] backup de antes dos dias não letivos mantém os dias de hoje e marca a presença do login dele; backup com os dias os traz', async () => {
     const backup = require('../../backend/utils/backup.js');

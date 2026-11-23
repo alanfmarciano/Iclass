@@ -214,7 +214,12 @@ function readOverrides(cls) {
 // uma turma usa só as chaves vistas até ali. Quem grava arquivo e avaliação é quem chama.
 // Campos novos com chave de módulo, item ou disciplina (disciplinas[].modulos e
 // classes[].avaliacao.itens do P2, contrato C6) entram aqui pelo dono do campo.
-function remapCourseKeys({ course = null, classes = [], newCourseId, mapKey }) {
+// Plano de avaliação da turma (classes[].avaliacao, P2): as chaves de classes[].avaliacao.itens
+// seguem as avaliações remapeadas; com mapManualId(idAntigo), a avaliação manual (man_*) de
+// avaliacao.manuais ganha o id que ele devolver (o "Duplicar curso" dá id novo, porque o
+// título é achado pelo id em qualquer turma) e o item do plano acompanha. Os módulos não mudam
+// de id, então course.disciplinas[].modulos continua valendo sem remapear.
+function remapCourseKeys({ course = null, classes = [], newCourseId, mapKey, mapManualId = null }) {
     const materialKeys = new Map();
     const evaluationKeys = new Map();
     const materialKey = oldKey => {
@@ -292,6 +297,20 @@ function remapCourseKeys({ course = null, classes = [], newCourseId, mapKey }) {
                     : mappedItemKey(key);
                 return [clonedKey, deepCopy(rest)];
             }));
+        }
+        if (isPlainObject(cloned.avaliacao)) {
+            const manualIds = new Map();
+            if (typeof mapManualId === 'function' && Array.isArray(cloned.avaliacao.manuais)) {
+                cloned.avaliacao.manuais = cloned.avaliacao.manuais.map(item => {
+                    if (!isPlainObject(item) || typeof item.id !== 'string' || !item.id.startsWith('man_')) return item;
+                    if (!manualIds.has(item.id)) manualIds.set(item.id, mapManualId(item.id));
+                    return { ...item, id: manualIds.get(item.id) };
+                });
+            }
+            if (isPlainObject(cloned.avaliacao.itens)) {
+                cloned.avaliacao.itens = Object.fromEntries(Object.entries(cloned.avaliacao.itens)
+                    .map(([key, value]) => [evaluationKeys.get(key) || manualIds.get(key) || key, value]));
+            }
         }
         return cloned;
     });

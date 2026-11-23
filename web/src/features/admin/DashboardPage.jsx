@@ -21,7 +21,7 @@ import { displayEmail, studentRouteKey } from '../../lib/studentProfile'
 import { snoozedWith } from './dashboard/snooze'
 import { compareOrdinal } from '../../lib/textSearch'
 import { useAuth } from '../../context/AuthProvider'
-import { ADMIN_PERMISSIONS, canAccessAdminPermission, canReadStudentGrades } from '../../lib/adminPermissions'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission, canReadStudentGrades, isReadOnlyAccount } from '../../lib/adminPermissions'
 
 // Dashboard v3 — "fila de trabalho do dia", não relatório em miniatura.
 // São 4 endpoints com volatilidades diferentes; cada seção carrega, falha e
@@ -52,7 +52,9 @@ function Stepper({ value, onChange, min = 1, max = 50 }) {
   )
 }
 
-const ymd = (d) => d.toISOString().slice(0, 10)
+// Data pelo relógio do computador (não em UTC: às 22 h de Brasília ainda é hoje e a
+// agenda não pode começar amanhã).
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 
 export default function DashboardPage() {
   const { courseId, courseName, className, period } = useAdminWorkspace()
@@ -70,6 +72,8 @@ export default function DashboardPage() {
   const canResults = can(ADMIN_PERMISSIONS.PAGE_RESULTS)
   const canMonitor = can(ADMIN_PERMISSIONS.PAGE_MONITOR)
   const canChamada = can(ADMIN_PERMISSIONS.PAGE_STUDENTS)
+  // A Coordenação (só consulta) abre a Chamada para ver, sem lançar (B4).
+  const chamadaLabel = isReadOnlyAccount(auth) ? 'Ver chamada' : 'Lançar chamada'
   const gradesHidden = !canReadStudentGrades(auth)
 
   const ctx = new URLSearchParams({ courseId, studentClass: className }).toString()
@@ -109,17 +113,19 @@ export default function DashboardPage() {
   const agenda = useMemo(() => {
     const fim = ymd(new Date(Date.now() + 7 * 86400000))
     const inicio = ymd(new Date())
+    // O recesso que já começou e ainda não acabou também entra (endDate, B7 / P2-S6), na
+    // data de hoje (agendaDate), não na de início, que já passou.
     const eventos = (calendar.data || [])
-      .filter((ev) => ev.eventDate >= inicio && ev.eventDate <= fim)
-      .map((ev) => ({ ...ev, subtitle: ev.message ? ev.message.slice(0, 80) : '' }))
+      .filter((ev) => (ev.endDate && ev.endDate > ev.eventDate ? ev.endDate : ev.eventDate) >= inicio && ev.eventDate <= fim)
+      .map((ev) => ({ ...ev, agendaDate: ev.eventDate < inicio ? inicio : ev.eventDate, subtitle: ev.message ? ev.message.slice(0, 80) : '' }))
     const prox = now.data?.proximaAplicacao
     if (prox && !now.data?.aplicacao) {
       const data = ymd(new Date(prox.startsAt))
       if (data <= fim && !eventos.some((ev) => ev.eventType === 'prova' && ev.eventDate === data)) {
-        eventos.push({ id: `app_${prox.id}`, eventDate: data, eventType: 'prova', title: prox.titulo, subtitle: 'aplicação agendada', startTime: '' })
+        eventos.push({ id: `app_${prox.id}`, eventDate: data, agendaDate: data, eventType: 'prova', title: prox.titulo, subtitle: 'aplicação agendada', startTime: '' })
       }
     }
-    return eventos.sort((a, b) => compareOrdinal(a.eventDate, b.eventDate) || compareOrdinal(a.startTime, b.startTime)).slice(0, 6)
+    return eventos.sort((a, b) => compareOrdinal(a.agendaDate, b.agendaDate) || compareOrdinal(a.startTime, b.startTime)).slice(0, 6)
   }, [calendar.data, now.data])
 
   // Qualidade dos dados — junto do conteúdo, não no porão da tela.
@@ -127,14 +133,14 @@ export default function DashboardPage() {
     const notes = []
     if (semDado > 0) notes.push({
       text: `${semDado} ${semDado === 1 ? 'aluno sem nenhuma chamada registrada — fica' : 'alunos sem nenhuma chamada registrada — ficam'} fora de todos os números acima`,
-      ...(canChamada ? { action: { label: 'Lançar chamada', onClick: () => nav('/chamada') } } : {}),
+      ...(canChamada ? { action: { label: chamadaLabel, onClick: () => nav('/chamada') } } : {}),
     })
     const cob = trends.data?.disciplinas?.cobertura
     if (cob && cob.total > 0 && cob.comDisciplina < cob.total) {
       notes.push({ text: `${cob.total - cob.comDisciplina} de ${cob.total} registros de presença sem disciplina — a frequência por matéria cobre só ${cob.comDisciplina}` })
     }
     return notes
-  }, [semDado, trends.data, nav, canChamada])
+  }, [semDado, trends.data, nav, canChamada, chamadaLabel])
 
   // Exportar ≠ imprimir: gera CSV do overview (imprimir continua no navegador).
   const exportCsv = () => {
@@ -167,7 +173,7 @@ export default function DashboardPage() {
       <PageHeader title="Dashboard" subtitle={contexto}>
         <RoomAddressButton />
         <Button variant="secondary" icon={Download} onClick={exportCsv}>Exportar</Button>
-        {canChamada && <Button icon={ClipboardCheck} onClick={() => nav('/chamada')}>Lançar chamada</Button>}
+        {canChamada && <Button icon={ClipboardCheck} onClick={() => nav('/chamada')}>{chamadaLabel}</Button>}
       </PageHeader>
 
       {/* AGORA — some numa linha fora de horário, devolvendo o espaço à fila. */}

@@ -115,8 +115,13 @@ const {
     MANUAL_TYPES,
     buildClassGradebook,
     buildCsv,
-    buildStudentReportModules,
+    MANUAL_TYPE_LABELS,
+    classGradingContext,
     consolidatedStudentAverage,
+    isManualItemId,
+    newManualItemId,
+    manualAssessmentTitleForSubmission,
+    manualItemOfClass,
     createResolvedGroupKey,
     describeSubmissionGrade,
     examTitle,
@@ -124,6 +129,8 @@ const {
     formatGradeBR,
     gradeCountsMismatch,
     gradeCriterionFor,
+    attendanceAllowanceFor,
+    structureModuleIds,
     gradeFromScore,
     gradebookCsv,
     gradebookXlsx,
@@ -141,6 +148,7 @@ const {
     structureExamIndex,
 } = require('../utils/gradebook.js');
 const { XLSX_CONTENT_TYPE } = require('../utils/tabularFile.js');
+const { buildStudentReport } = require('../utils/studentReport.js');
 const { isStudentSessionOnline, sessionLastSeen } = require('../utils/studentSessions.js');
 const { revokeStudentSession, studentSessionByEmail } = require('../utils/authSessions.js');
 const loginGuard = require('../utils/loginGuard.js');
@@ -192,7 +200,8 @@ const fileStore = require('../utils/storage.js');
 const settingsUtil = require('../utils/settings.js');
 const { computeStudentDashboard, studentOverview, buildOverviewIndex } = require('../utils/studentAnalytics.js');
 const { computeNow, computeQueue, computeTrends } = require('../utils/dashboardAggregates.js');
-const { assertClassOpen, classOfSubmission, classesOfSubmissions, dayStatus, weeklyLessons } = require('../utils/academicCalendar.js');
+const { assertClassOpen, classOfSubmission, classesOfSubmissions, dayStatus, weeklyLessons, termForClass, termSummary, normalizeTerm, submissionTerm } = require('../utils/academicCalendar.js');
+const { schoolDateOf } = require('../utils/schoolTime.js');
 const { renameStudentData } = require('../utils/studentDataHandlers.js');
 const studentIdentity = require('../utils/studentIdentity.js');
 const attendanceUtil = require('../utils/attendance.js');
@@ -208,7 +217,7 @@ const { createAdminAuditRouter } = require('./adminAudit.js');
 const { createAdminPrivacyRouter } = require('./adminPrivacy.js');
 const { createAdminStudentRecordsRouter } = require('./adminStudentRecords.js');
 const { createAdminCoursesRouter, courseIdError, parseCourseName, schoolExists } = require('./adminCourses.js');
-const { createAdminAcademicRouter } = require('./adminAcademic.js');
+const { createAdminAcademicRouter, resolveClassTermInput, CLASS_TERM_SCHEMA } = require('./adminAcademic.js');
 const { createAdminCorrectionsRouter } = require('./adminCorrections.js');
 const { nonSchoolDayCalendarItems } = require('../utils/calendarFeed.js');
 const { createAdminQuestionBankRouter } = require('./adminQuestionBank.js');
@@ -216,7 +225,7 @@ const { createAdminPreviewRouter } = require('./adminPreview.js');
 const { createAdminAssignmentsRouter } = require('./adminAssignments.js');
 const { createAdminCoursePackageRouter } = require('./adminCoursePackage.js');
 const { remapCourseKeys } = require('../utils/coursePackage.js');
-const { body, either, list, num, shape, str } = require('../utils/inputSchema.js');
+const { body, either, int, list, num, shape, str } = require('../utils/inputSchema.js');
 const { normalizeEvaluationQuestions, questionInputSchema } = require('../utils/questionModel.js');
 
 // Entrada das rotas do professor que respondiam 500 com um campo de tipo errado (fase 2,
@@ -655,7 +664,22 @@ router.get('/api/admin/submissions', (req, res) => {
         // grosso da resposta (13,2 MB por turma num ano de dados, 1,96 MB sem ele).
         const enriched = enrichSubmissionsWithAttemptResult(scoped)
             .filter(item => !applicationId || String(item.applicationId || '') === applicationId);
-        res.json(enriched.map(({ examSnapshot, ...rest }) => rest));
+        // Avaliação manual da turma (man_*, B6 / P2-S3): o título vai junto (examTitle), para
+        // Resultados não mostrar o id técnico, e a avaliação arquivada vem marcada
+        // (assessmentArchived: a nota fica na lista e sai da média do aluno, como no quadro e
+        // no boletim); as provas continuam como sempre.
+        const archivedManual = (item) => {
+            const cls = (db.memory.classes || []).find(entry => entry && String(entry.name || '') === String(item.studentClass || item.student?.studentClass || '')
+                && String(entry.courseId || '') === String(item.courseId || item.student?.courseId || ''));
+            return !!(manualItemOfClass(cls, item.examKey) || {}).arquivadoEm;
+        };
+        res.json(enriched.map(({ examSnapshot, ...rest }) => (isManualItemId(rest.examKey)
+            ? {
+                ...rest,
+                examTitle: manualAssessmentTitleForSubmission(db.memory.classes || [], rest) || 'Avaliação da turma',
+                ...(archivedManual(rest) ? { assessmentArchived: true } : {}),
+            }
+            : rest)));
     });
 });
 
@@ -720,7 +744,7 @@ router.post('/api/admin/submissions/result-control', (req, res) => {
 
         const refreshed = groupResult();
         const after = refreshed.find(item => String(item.id) === String(target.id));
-        const title = examTitle(target.examKey, { evaluations: db.memory.evaluations });
+        const title = examTitle(target.examKey, { evaluations: db.memory.evaluations, classes: db.memory.classes });
         const policyLabel = value => RESULT_POLICY_LABELS[value] || value || 'Melhor nota';
         const consolidated = item => (item && item.consolidatedScore != null ? formatGradeBR(item.consolidatedScore) : 'sem nota');
         const actionLabel = {
@@ -912,7 +936,7 @@ router.post('/api/admin/submissions/publish', (req, res) => {
                     submission: item,
                     action: published ? 'grade_publish' : 'grade_unpublish',
                     field: 'Publicação da nota',
-                    oldValue: `${describeSubmissionGrade(item, examTitle(item.examKey, { evaluations: db.memory.evaluations }))} · ${wasPublished ? 'publicada' : 'em revisão'}`,
+                    oldValue: `${describeSubmissionGrade(item, examTitle(item.examKey, { evaluations: db.memory.evaluations, classes: db.memory.classes }))} · ${wasPublished ? 'publicada' : 'em revisão'}`,
                     newValue: published ? 'publicada para o aluno' : 'oculta do aluno',
                     reason: motive.reason,
                 });
@@ -962,7 +986,7 @@ router.post('/api/admin/submissions/delete', (req, res) => {
                 submission: item,
                 action: 'grade_delete',
                 field: 'Nota',
-                oldValue: `${describeSubmissionGrade(item, examTitle(item.examKey, { evaluations: db.memory.evaluations }))} · tentativa ${item.attemptNumber || 1}${item.gradePublished === true ? ' · publicada' : ''}`,
+                oldValue: `${describeSubmissionGrade(item, examTitle(item.examKey, { evaluations: db.memory.evaluations, classes: db.memory.classes }))} · tentativa ${item.attemptNumber || 1}${item.gradePublished === true ? ' · publicada' : ''}`,
                 newValue: 'registro excluído',
                 details: { deletedSubmission: item },
                 reason: motive.reason,
@@ -1063,7 +1087,7 @@ router.get('/api/admin/submissions/deleted', (req, res) => {
                 studentEmail: email,
                 studentName: (student && student.name) || copy.student?.name || copy.studentName || email,
                 examKey: copy.examKey || '',
-                examTitle: examTitle(copy.examKey, { evaluations: db.memory.evaluations }),
+                examTitle: examTitle(copy.examKey, { evaluations: db.memory.evaluations, classes: db.memory.classes }),
                 applicationId: copy.applicationId || null,
                 attemptNumber: copy.attemptNumber || 1,
                 type: copy.type || '',
@@ -1151,7 +1175,7 @@ router.post('/api/admin/submissions/restore', (req, res) => {
             action: 'grade_restore',
             field: 'Nota',
             oldValue: 'registro excluído',
-            newValue: `${describeSubmissionGrade(restored, examTitle(restored.examKey, { evaluations: db.memory.evaluations }))} · restaurada da lixeira (${restored.gradePublished === true ? 'publicada' : 'em revisão'})${notes.length ? ` · ${notes.join(' · ')}` : ''}`,
+            newValue: `${describeSubmissionGrade(restored, examTitle(restored.examKey, { evaluations: db.memory.evaluations, classes: db.memory.classes }))} · restaurada da lixeira (${restored.gradePublished === true ? 'publicada' : 'em revisão'})${notes.length ? ` · ${notes.join(' · ')}` : ''}`,
             details: { fromAuditId: entry.id },
         });
         writeJSON(DB_SUBMISSIONS_FILE, submissions);
@@ -1216,6 +1240,16 @@ router.get('/api/admin/submissions/manual-context', (req, res) => {
         const classes = readJSON(DB_CLASSES_FILE);
         const cls = findClassByNameAndCourse(classes, studentClass, courseId);
         if (!cls) return res.status(404).json({ error: 'Turma não encontrada neste curso.' });
+        // Avaliação manual da turma (B6): sem questões, só a nota (a tela esconde acertos e total).
+        if (isManualItemId(examKey)) {
+            const manual = manualItemOfClass(cls, examKey);
+            if (!manual || manual.arquivadoEm) return res.status(404).json({ error: 'Avaliação manual não encontrada nesta turma.' });
+            return res.json({
+                examKey, studentClass: cls.name, courseId: cls.courseId || courseId, manual: true, titulo: manual.titulo,
+                tipo: manual.tipo, tipoRotulo: MANUAL_TYPE_LABELS[manual.tipo] || MANUAL_TYPE_LABELS.outro,
+                questionCount: 0, defaultTotal: null, configuredCount: null, excludedCount: 0,
+            });
+        }
         const questions = loadManualExamQuestions(examKey);
         if (questions.length === 0) return res.status(404).json({ error: 'Avaliação não encontrada ou sem questões cadastradas.' });
         const { defaultTotal, questionCount, configuredCount, excludedCount } = manualExamTotals(cls, examKey, questions);
@@ -1272,9 +1306,12 @@ router.post('/api/admin/submissions/create', (req, res) => {
         const studentClass = membership.name || '';
         const studentCourseId = membership.courseId || requestedCourse || registeredStudent.courseId || null;
 
+        // Avaliação manual da turma (trabalho, prática, seminário; B6 / P2-S3, D6 do P2):
+        // examKey 'man_*' do plano da turma do aluno. Não tem questões: só a nota.
+        const isManualItem = isManualItemId(examKey);
         // Busca informações sobre a avaliação para correção ou contagem
-        const questions = loadManualExamQuestions(examKey);
-        if (questions.length === 0) {
+        const questions = isManualItem ? [] : loadManualExamQuestions(examKey);
+        if (!isManualItem && questions.length === 0) {
             return res.status(400).json({ error: 'Avaliação não encontrada ou sem questões cadastradas.' });
         }
         const questionByNumber = new Map(questions.map(question => [question.originalNumber, question]));
@@ -1284,7 +1321,16 @@ router.post('/api/admin/submissions/create', (req, res) => {
         const cls = findClassByNameAndCourse(classes, studentClass, studentCourseId) || classes.find(c => c.name === studentClass);
         // Turma encerrada não recebe lançamento (sem efeito até o B10).
         if (!assertClassOpen(cls, { res })) return;
-        if (cls) {
+        let manualItem = null;
+        if (isManualItem) {
+            manualItem = manualItemOfClass(cls, examKey);
+            if (!manualItem) return res.status(400).json({ error: 'Avaliação manual não encontrada na turma do aluno.' });
+            if (manualItem.arquivadoEm) return res.status(400).json({ error: 'Esta avaliação manual está arquivada. Reative-a no plano de avaliação para lançar nota.' });
+            const hasAnswers = answers && typeof answers === 'object' && !Array.isArray(answers) && Object.values(answers).some(letter => !isEmptyInput(letter));
+            if (hasAnswers || body.mode === 'card' || !isEmptyInput(body.correctCount) || !isEmptyInput(body.totalCount)) {
+                return res.status(400).json({ error: 'Avaliação manual recebe só a nota.' });
+            }
+        } else if (cls) {
             const course = getCourseForClass(cls);
             const structure = effectiveStructure(course?.id || cls.courseId, cls.name)?.structure || course?.structure || [];
             const courseHasExams = structure.some(mod => (mod.units || mod.items || []).some(unit => unit.avaliacaoKey));
@@ -1311,7 +1357,13 @@ router.post('/api/admin/submissions/create', (req, res) => {
             return res.status(400).json({ error: 'Marque ao menos uma resposta no cartão.' });
         }
 
-        if (answeredEntries.length > 0) {
+        if (manualItem) {
+            const gradeInput = parseGradeInput(body.grade);
+            if (gradeInput.error) return res.status(400).json({ error: gradeInput.error });
+            if (gradeInput.empty) return res.status(400).json({ error: 'Informe a nota (0 a 10).' });
+            finalScore = scoreFromGrade(gradeInput.value);
+            gradedAnswers = [];
+        } else if (answeredEntries.length > 0) {
             // Correção baseada no cartão-resposta (respostas fornecidas)
             entryMode = 'card';
             if (reqQuestionNumbers !== undefined && reqQuestionNumbers !== null && !Array.isArray(reqQuestionNumbers)) {
@@ -1450,7 +1502,7 @@ router.post('/api/admin/submissions/create', (req, res) => {
                 answersOnPaper: true,
                 ...(printedDetails.pendingCount > 0 ? { correcao: newCorrection() } : {}),
             } : {}),
-            type,
+            type: manualItem ? 'manual' : type,
             entryMode,
             launchedBy: matchedAdmin?.email || 'admin',
             ...(ignoredQuestionNumbers.length ? { ignoredQuestionNumbers } : {}),
@@ -1474,7 +1526,7 @@ router.post('/api/admin/submissions/create', (req, res) => {
             action: 'grade_create',
             field: 'Nota',
             oldValue: '',
-            newValue: `${describeSubmissionGrade(submissionObj, examTitle(examKey, { evaluations: db.memory.evaluations }))} · lançamento ${entryMode === 'card' ? 'pelo cartão-resposta' : 'manual'} (${type})${printedDetails && printedDetails.pendingCount > 0 ? ' · aguardando correção' : ''}${ignoredNote ? ` · ${ignoredNote}` : ''}`,
+            newValue: `${describeSubmissionGrade(submissionObj, manualItem ? manualItem.titulo : examTitle(examKey, { evaluations: db.memory.evaluations, classes: db.memory.classes }))} · lançamento ${entryMode === 'card' ? 'pelo cartão-resposta' : 'manual'} (${submissionObj.type})${printedDetails && printedDetails.pendingCount > 0 ? ' · aguardando correção' : ''}${ignoredNote ? ` · ${ignoredNote}` : ''}`,
         });
         writeJSON(DB_SUBMISSIONS_FILE, submissions);
 
@@ -2217,6 +2269,15 @@ router.get('/api/admin/student/academic', (req, res) => {
                     assignedVersion: s.assignedVersion,
                     gradePublished: s.gradePublished === true,
                     timestamp: s.timestamp,
+                    // Avaliação manual da turma (man_*, B6): o título, para a ficha não mostrar o id.
+                    ...(isManualItemId(s.examKey) ? { manual: true, examTitle: manualAssessmentTitleForSubmission(db.memory.classes || [], s) || 'Avaliação da turma' } : {}),
+                    // Período letivo da turma da entrega, quando a data dela cai dentro dele (B8 /
+                    // P2-S8): o filtro da ficha passa a ser por período; sem período, null e a
+                    // tela usa o semestre do calendário, como antes.
+                    periodoLetivo: submissionTerm(db.memory, s, schoolDateOf(s.timestamp)),
+                    // Critério do curso da entrega (C1 do P2, B9): a cor da nota na ficha de
+                    // Alunos segue a média mínima do curso dela (sem critérios, 6,0).
+                    criterio: gradeCriterionFor(db.memory, { courseId: String(s.student.courseId || s.courseId || ''), studentClass: String(s.student.studentClass || s.studentClass || '') }),
                 };
             })
             .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
@@ -2236,10 +2297,12 @@ router.get('/api/admin/student/academic', (req, res) => {
     });
 });
 
-// Boletim consolidado do aluno (provas por módulo + frequência por disciplina),
-// pronto para o frontend imprimir/salvar em PDF. Só notas publicadas entram na média.
-// As notas usam a mesma consolidação da tela Resultados: cada aplicação da prova é
-// um grupo com a regra escolhida pelo professor, e a média é a dos grupos (UXI-X1, FUN-X1).
+// Boletim consolidado do aluno (provas por módulo + frequência por disciplina), pronto
+// para o frontend imprimir/salvar em PDF. Só notas publicadas entram na média. A conta
+// mora em utils/studentReport.js (buildStudentReport, B6 / P2-S3), lida também pelo
+// boletim em lote, pelo aviso ao responsável e pelo autoatendimento do aluno; aqui ficam
+// o escopo da conta e quem lê nota (canReadStudentGrades: o Professor auxiliar recebe o
+// boletim sem as provas, gradesHidden: true).
 router.get('/api/admin/student/report', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const email = String(req.query.email || '').trim().toLowerCase();
@@ -2247,73 +2310,15 @@ router.get('/api/admin/student/report', (req, res) => {
         const student = (db.memory.students || []).find(s => s.email && s.email.toLowerCase() === email);
         if (!student) return res.status(404).json({ error: 'Aluno não encontrado.' });
         if (!adminCanAccessStudent(matchedAdmin, student)) return res.status(403).json({ error: 'Aluno fora do seu escopo.' });
-
-        const requestedCourseId = String(req.query.courseId || '').trim();
-        const requestedClass = String(req.query.studentClass || '').trim();
-        const memberships = (Array.isArray(student.classes) && student.classes.length ? student.classes : (student.studentClass ? [student.studentClass] : []))
-            .map(item => typeof item === 'string'
-                ? { name: item, courseId: String(student.courseId || '') }
-                : { name: item?.name || item?.className || '', courseId: String(item?.courseId || student.courseId || '') })
-            .filter(item => item.name);
-        const inCourse = item => !requestedCourseId || !item.courseId || item.courseId === requestedCourseId;
-        let membership;
-        if (requestedCourseId || requestedClass) {
-            membership = memberships.find(item => inCourse(item) && (!requestedClass || item.name === requestedClass))
-                || memberships.find(inCourse);
-            if (!membership) return res.status(400).json({ error: 'O aluno não tem matrícula no curso selecionado.' });
-        } else {
-            membership = memberships[0] || { name: student.studentClass || '', courseId: '' };
-        }
-        const cls = findClassByNameAndCourse(db.memory.classes || [], membership.name, membership.courseId || requestedCourseId)
-            || (db.memory.classes || []).find(c => c.name === membership.name) || null;
-        const courseId = String((cls && cls.courseId) || membership.courseId || requestedCourseId || '');
-        const course = (db.memory.courses || []).find(c => String(c.id) === courseId) || null;
-        const className = cls?.name || membership.name || '';
-        const structure = effectiveStructure(courseId, cls?.name)?.structure || course?.structure || [];
-
-        // Conta que não lê nota (Professor auxiliar, canReadStudentGrades): o boletim vem
-        // sem as provas (modules vazio, overallAverage null, gradesHidden: true); a
-        // frequência e o progresso continuam.
-        const withGrades = canReadStudentGrades(matchedAdmin);
-        const ownSubmissions = !withGrades ? [] : (db.memory.submissions || []).filter(s => s.student && String(s.student.email || '').toLowerCase() === email);
-        const contextSubmissions = scopeSubmissionsToContext(ownSubmissions, gradeScope(courseId, className));
-        const { modules, overallAverage } = !withGrades ? { modules: [], overallAverage: null } : buildStudentReportModules({
-            submissions: contextSubmissions.filter(s => s.gradePublished === true),
-            allSubmissions: contextSubmissions,
-            structure,
-            evaluations: db.memory.evaluations || {},
-            applications: db.memory.examApplications || [],
-        });
-
-        const attendanceRows = attendanceUtil.dedupeByDate((db.memory.attendance || []).filter(a => a.studentEmail === email
-            && (!courseId || !a.courseId || String(a.courseId) === courseId) && (!cls || !a.studentClass || a.studentClass === cls.name)));
-        const stats = attendanceUtil.computeAttendanceStats(attendanceRows);
-        const discNome = {};
-        ((course && course.disciplinas) || []).forEach(d => { discNome[d.id] = d.nome; });
-        const disciplines = Object.entries(stats.porDisciplina).map(([id, value]) => ({ id, name: discNome[id] || id || 'Sem disciplina', ...value }));
-        const progressMap = (db.memory.progress && db.memory.progress[email]) || {};
-        const unitKeys = structure.flatMap(module => (module.units || module.items || []).map(unit => unit.apostilaKey).filter(Boolean));
-        const completedUnits = unitKeys.filter(key => Array.isArray(progressMap[key]) ? progressMap[key].length > 0 : !!progressMap[key]).length;
-        const school = (db.memory.schools || []).find(s => s.id === (course && course.schoolId)) || null;
-
-        res.json({
-            ...(withGrades ? {} : { gradesHidden: true }),
-            generatedAt: Date.now(),
-            institution: (school && (school.name || school.info?.tradeName)) || db.memory.branding?.displayName || db.memory.branding?.institutionName || 'IClass',
-            // Boletim impresso: o aluno sem e-mail aparece com 'sem e-mail' (C1 / P4-S3).
-            student: { name: student.name, nomeSocial: student.nomeSocial || '', email: studentIdentity.publicStudentEmail(student), matricula: student.matricula || '', status: student.status || '' },
-            course: { id: courseId, name: course?.name || courseId || '' },
-            className,
-            period: cls?.period || student.period || '',
-            modules,
-            overallAverage,
-            // Critério de nota da matrícula (C1 do P2): a nota em vermelho do boletim é a
-            // que fica abaixo de criterio.mediaMinima (sem critérios, o padrão 6,0).
-            criterio: gradeCriterionFor(db.memory, { courseId, studentClass: className }),
-            attendance: { frequency: stats.frequenciaGeral, presentes: stats.presentes, faltas: stats.faltasContam, totalAulas: stats.totalAulas, days: attendanceRows.length, disciplines, riskThreshold: attendanceUtil.effectiveAttendanceConfig(cls).limiarRiscoPct },
-            progress: { completedUnits, totalUnits: unitKeys.length },
+        const built = buildStudentReport(db.memory, {
+            student,
+            courseId: String(req.query.courseId || '').trim(),
+            studentClass: String(req.query.studentClass || '').trim(),
+            withGrades: canReadStudentGrades(matchedAdmin),
             issuedBy: (matchedAdmin && (matchedAdmin.name || matchedAdmin.email)) || 'Instrutor',
         });
+        if (!built.ok) return res.status(built.status).json({ error: built.error });
+        res.json(built.report);
     });
 });
 
@@ -2331,6 +2336,8 @@ router.get('/api/admin/student/dashboard', (req, res) => {
             structureFor: (courseId, className) => (courseId ? effectiveStructure(courseId, className)?.structure : null),
             // Sem nota para quem não lê nota (Professor auxiliar): gradesHidden: true.
             withGrades: canReadStudentGrades(matchedAdmin),
+            // Fim do período letivo da turma, para a situação da conta única (B6).
+            hoje: settingsUtil.today(),
         }));
     });
 });
@@ -3141,6 +3148,10 @@ router.get('/api/admin/course-summaries', (req, res) => {
                     period: cls.period || '',
                     registrationEnabled: cls.registrationEnabled !== false,
                     attendanceConfig: attendanceUtil.effectiveAttendanceConfig(cls),
+                    // Período letivo da turma (B5 / P2-S7): o id gravado e o resumo do
+                    // período (null quando não tem, ou quando o período não vale mais).
+                    periodoLetivoId: cls.periodoLetivoId || null,
+                    periodoLetivo: termSummary(termForClass(db.memory, cls)),
                     studentCount: students.filter(student => studentBelongsToClass(student, cls.name, cls.courseId)).length,
                     professorCount: (db.memory.admins || []).filter(account => isProfessorAccount(account) && adminCanAccessClass(account, cls.name, cls.courseId)).length,
                 })),
@@ -3162,6 +3173,7 @@ router.get('/api/admin/course-summaries', (req, res) => {
 // Cadastrar nova turma (administrador)
 router.post('/api/admin/class/create', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
+        if (!CLASS_TERM_SCHEMA.check(req, res)) return;
         const { name, period, courseId } = req.body;
         const normalizedPeriod = normalizeClassPeriod(period);
         if (!name || !normalizedPeriod || name.trim() === '' || !courseId) {
@@ -3196,6 +3208,10 @@ router.post('/api/admin/class/create', (req, res) => {
         const disciplinaIds = new Set(((course && course.disciplinas) || []).map(d => d.id));
         const attendanceConfig = attendanceUtil.sanitizeAttendanceConfig(req.body.attendanceConfig, disciplinaIds)
             || attendanceUtil.configDefault();
+        // Período letivo da turma (fase 3, B5 / P2-S7): opcional; sem ele a turma funciona
+        // como sempre (todo dia de grade é letivo).
+        const term = resolveClassTermInput(db.memory, matchedAdmin, course, req.body.periodoLetivoId);
+        if (!term.ok) return res.status(term.status).json({ success: false, error: term.error, field: term.field, ...(term.code ? { code: term.code } : {}) });
 
         const newClass = {
             name: className,
@@ -3207,16 +3223,18 @@ router.post('/api/admin/class/create', (req, res) => {
             attendanceConfig,
             contentOverrides: { materials: {}, evaluations: {}, unitNames: {}, extraUnits: [], structure: null }
         };
+        if (term.change && term.value) newClass.periodoLetivoId = term.value;
         classes.push(newClass);
 
         recordAcademicAudit(req, matchedAdmin, 'class_created', { courseId, className }, null, newClass);
-        writeJSON(DB_CLASSES_FILE, classes);
+        db.save({ only: ['classes', 'auditLogs'] });
         res.json({ success: true });
     });
 });
 
 router.post('/api/admin/class/update', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
+        if (!CLASS_TERM_SCHEMA.check(req, res)) return;
         const name = String(req.body.name || '').trim().toUpperCase();
         const courseId = String(req.body.courseId || '').trim();
         if (!name || !courseId) return res.status(400).json({ error: 'Nome da turma ou curso não informado.' });
@@ -3224,6 +3242,12 @@ router.post('/api/admin/class/update', (req, res) => {
         const cls = classes.find(item => item.name === name && String(item.courseId) === courseId);
         if (!cls) return res.status(404).json({ error: 'Turma não encontrada.' });
         const before = { ...cls };
+        const course = (db.memory.courses || []).find(c => String(c.id) === courseId);
+        // Período letivo (fase 3, B5 / P2-S7), conferido antes de mudar qualquer coisa: sem
+        // o campo, fica como está; null ou vazio tira a turma do período; o id liga (a um
+        // período encerrado, só se já era o dela).
+        const term = resolveClassTermInput(db.memory, matchedAdmin, course, req.body.periodoLetivoId, cls.periodoLetivoId);
+        if (!term.ok) return res.status(term.status).json({ success: false, error: term.error, field: term.field, ...(term.code ? { code: term.code } : {}) });
         if (req.body.period !== undefined) {
             const period = normalizeClassPeriod(req.body.period);
             if (!period) return res.status(400).json({ error: 'Período inválido. Selecione Manhã, Tarde ou Noite.' });
@@ -3231,31 +3255,56 @@ router.post('/api/admin/class/update', (req, res) => {
         }
         if (req.body.registrationEnabled !== undefined) cls.registrationEnabled = !!req.body.registrationEnabled;
         if (req.body.attendanceConfig !== undefined) {
-            const course = (db.memory.courses || []).find(c => String(c.id) === courseId);
             const disciplinaIds = new Set(((course && course.disciplinas) || []).map(d => d.id));
             const cfg = attendanceUtil.sanitizeAttendanceConfig(req.body.attendanceConfig, disciplinaIds);
             if (!cfg) return res.status(400).json({ error: 'Configuração de presença inválida.' });
             cls.attendanceConfig = cfg;
         }
+        if (term.change) {
+            if (term.value) cls.periodoLetivoId = term.value;
+            else delete cls.periodoLetivoId;
+        }
         recordAcademicAudit(req, matchedAdmin, 'class_updated', { courseId, className: name }, before, { ...cls });
-        writeJSON(DB_CLASSES_FILE, classes);
+        db.save({ only: ['classes', 'auditLogs'] });
         res.json({ success: true, class: cls });
     });
 });
 
-// Define a lista de disciplinas de um curso (usada na grade de presença das turmas).
+// Disciplina (fase 3, B5 / P2-S7): os campos novos são opcionais; id, nome e cor seguem
+// a normalização de sempre (sanitizeDisciplinas).
+const DISCIPLINAS_SCHEMA = body({
+    disciplinas: list(shape({
+        cargaHoraria: int({ min: 0, max: attendanceUtil.DISCIPLINA_CARGA_MAX, coerce: true, nullable: true, emptyAsNull: true, label: 'carga horária' }),
+        professor: str({ max: 80, nullable: true, label: 'professor responsável' }),
+        modulos: list(str({ max: 200, label: 'módulo' }), { max: 60, nullable: true, label: 'módulos da disciplina' }),
+    }, { nullable: true, label: 'disciplina' }), { max: 100, label: 'disciplinas' }),
+});
+
+// Define a lista de disciplinas de um curso (usada na grade de presença das turmas) e,
+// desde a fase 3 (B5 / P2-S7, FUN-05), a carga horária, o professor responsável e os
+// módulos de cada uma. Item sem um campo novo mantém o que estava gravado na disciplina
+// de mesmo id (a tela de antes manda só id, nome e cor); null ou vazio apaga. Módulo novo
+// na disciplina que não existe no curso, ou módulo em duas disciplinas, é recusado (400
+// com field); o que a disciplina já tinha e saiu da estrutura fica como estava.
 router.post('/api/admin/course/disciplinas', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const courseId = String(req.body.courseId || '').trim();
         if (!courseId) return res.status(400).json({ error: 'Curso não informado.' });
         const course = (db.memory.courses || []).find(c => String(c.id) === courseId);
         if (!course) return res.status(404).json({ error: 'Curso não encontrado.' });
-        const disciplinas = attendanceUtil.sanitizeDisciplinas(req.body.disciplinas);
+        if (!Array.isArray(req.body.disciplinas)) return res.status(400).json({ error: 'Lista de disciplinas inválida.' });
+        if (!DISCIPLINAS_SCHEMA.check(req, res)) return;
+        const disciplinas = attendanceUtil.sanitizeDisciplinas(req.body.disciplinas, course.disciplinas);
         if (!disciplinas) return res.status(400).json({ error: 'Lista de disciplinas inválida.' });
+        const moduleIds = structureModuleIds(course.structure, ...(db.memory.classes || [])
+            .filter(cls => cls && String(cls.courseId) === courseId)
+            .map(cls => effectiveStructure(courseId, cls.name)?.structure));
+        const problem = attendanceUtil.disciplinasModuleProblem(req.body.disciplinas, disciplinas, moduleIds, course.disciplinas);
+        if (problem) return res.status(400).json({ success: false, error: problem.error, field: problem.field });
         const before = { disciplinas: course.disciplinas || [] };
         course.disciplinas = disciplinas;
         recordAcademicAudit(req, matchedAdmin, 'course_disciplinas_updated', { courseId }, before, { disciplinas });
-        db.save();
+        db.save({ only: ['courses', 'auditLogs'] });
         res.json({ success: true, disciplinas });
     });
 });
@@ -3292,7 +3341,7 @@ router.post('/api/admin/class/toggle-registration', (req, res) => {
         const before = { ...cls };
         cls.registrationEnabled = !!registrationEnabled;
         recordAcademicAudit(req, matchedAdmin, 'class_updated', { courseId, className: name }, before, { ...cls });
-        writeJSON(DB_CLASSES_FILE, classes);
+        db.save({ only: ['classes', 'auditLogs'] });
         res.json({ success: true, classes });
     });
 });
@@ -5291,7 +5340,7 @@ router.get('/api/admin/export-grades/:class/:examKey', (req, res) => {
         const submissions = enrichSubmissionsWithAttemptResult(scoped).sort((a, b) =>
             String(a.student?.name || a.studentName || '').localeCompare(String(b.student?.name || b.studentName || ''), 'pt-BR')
             || new Date(a.timestamp || 0) - new Date(b.timestamp || 0));
-        const title = examTitle(examKey, { evaluations: db.memory.evaluations, examIndex: structureExamIndex(effectiveStructure(courseId, studentClass)?.structure || []) });
+        const title = examTitle(examKey, { evaluations: db.memory.evaluations, classes: db.memory.classes, examIndex: structureExamIndex(effectiveStructure(courseId, studentClass)?.structure || []) });
         const applicationsById = new Map((db.memory.examApplications || []).map(item => [String(item.id), item]));
 
         const header = ['Aluno', 'E-mail', 'Turma', 'Avaliação', 'Aplicação', 'Tentativa', 'Versão', 'Acertos', 'Questões', 'Nota da tentativa', 'Compõe a nota', 'Nota da aplicação', 'Publicada', 'Data de envio'];
@@ -5335,12 +5384,16 @@ router.get('/api/admin/gradebook', (req, res) => {
         const submissions = scopeSubmissionsToContext(filterSubmissionsForAdmin(db.memory.submissions || [], matchedAdmin), gradeScope(courseId, studentClass));
         const students = filterStudentsForAdmin(db.memory.students || [], matchedAdmin)
             .filter(student => studentBelongsToClass(student, studentClass, courseId));
+        // Contexto de notas da turma (B6 / P2-S3): avaliações manuais, itens dos provedores
+        // e, com os critérios do curso ligados, etapas, média final, situação e menção.
+        const grading = classGradingContext(db.memory, { course, cls, structure, hoje: settingsUtil.today() });
         const gradebook = buildClassGradebook({
             students,
             submissions,
             structure,
             evaluations: db.memory.evaluations || {},
             applications: db.memory.examApplications || [],
+            grading,
         });
 
         const format = String(req.query.format || '').toLowerCase();
@@ -5587,7 +5640,15 @@ router.get('/api/admin/dashboard/students-overview', (req, res) => {
             email: st.email,
             name: (st.nomeSocial && st.nomeSocial.trim()) || st.name || st.email,
             className: studentClass || scn(st)[0] || '',
-            ...studentOverview(db.memory, st, { courseId, studentClass, index, withGrades }),
+            ...studentOverview(db.memory, st, {
+                courseId,
+                studentClass,
+                index,
+                withGrades,
+                // Média final da turma pela conta única (B6), com a estrutura da turma.
+                structureFor: (cid, className) => (cid ? effectiveStructure(cid, className)?.structure : null),
+                hoje: settingsUtil.today(),
+            }),
         }));
         res.json(overview);
     });
@@ -5919,6 +5980,7 @@ router.post('/api/admin/courses/:id/clone', (req, res) => {
             classes: (db.memory.classes || []).filter(cls => String(cls.courseId) === String(src.id)),
             newCourseId: newId,
             mapKey: oldKey => `${oldKey}_${newId}`,
+            mapManualId: () => newManualItemId(),
         });
         remapped.materialKeys.forEach((newKey, oldKey) => copyContentFile(oldKey, newKey));
         remapped.evaluationKeys.forEach((newKey, oldKey) => {
@@ -5946,6 +6008,19 @@ router.post('/api/admin/courses/:id/clone', (req, res) => {
             cloned.onlineExamConfigs = {};
             cloned.activeExamKey = null;
             cloned.activeApplicationId = null;
+            // Período letivo (B5 / P2-S7): a cópia fica no mesmo período enquanto ele está
+            // aberto e vale para a escola do curso novo; com o período encerrado, de outra
+            // escola ou que não existe mais, a cópia nasce sem período (funciona como
+            // sempre, e a tela Turmas mostra "Sem período letivo").
+            if (cloned.periodoLetivoId) {
+                const term = normalizeTerm((db.memory.academicTerms || []).find(item => item && String(item.id) === String(cloned.periodoLetivoId)));
+                if (!term || term.situacao === 'encerrado' || (term.schoolId && term.schoolId !== String(schoolId))) delete cloned.periodoLetivoId;
+            }
+            // Encerramento da turma (B10) não passa para a cópia: ela nasce aberta.
+            delete cloned.encerramento;
+            // Plano de avaliação da turma (contrato C6 do P2): as chaves dos itens e o id
+            // novo das avaliações manuais (man_*) vêm de remapCourseKeys (mapManualId); as
+            // notas não vêm para a cópia. Tarefa (asg_*) fica com o mesmo id.
             return cloned;
         });
         db.memory.classes.push(...clonedClasses);

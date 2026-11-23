@@ -1,15 +1,19 @@
 // Calendário acadêmico no painel (fase 3, grupo P2; B3 / P2-S5, FUN-15): dias não
 // letivos (feriado, recesso, ponto facultativo, evento escolar) e a agenda da turma em
-// .ics. As próximas subetapas da trilha B acrescentam aqui critérios de avaliação, plano
-// da turma, avaliações manuais, período letivo e encerrar turma (D20 do P2: rotas novas
-// fora de admin.js).
+// .ics. As próximas subetapas da trilha B acrescentam aqui período letivo e encerrar turma
+// (D20 do P2: rotas novas fora de admin.js). Critérios de avaliação, plano da turma e
+// avaliações manuais (B6 / P2-S3) ficam em adminGrading.js, registrados neste router.
 //
 // Rotas (a guarda de /api/admin pede page.forum, a mesma do Calendário; o escopo do dia
 // é decidido aqui):
 // - GET  /api/admin/calendar/non-school-days?from=&to=&courseId=&studentClass=
-//   { dias: [...com podeAlterar], tipos, escopos, podeCriar }. Com curso (e turma), os
-//   dias que valem para aquele contexto (instituição, escola do curso, curso e turma);
-//   sem curso, os do escopo da conta.
+//   { dias: [...com podeAlterar], tipos, escopos, podeAdicionarFeriadosNacionais,
+//   contexto }. Com curso (e turma), os dias que valem para aquele contexto (instituição,
+//   escola do curso, curso e turma) e contexto { courseId, studentClass, schoolId,
+//   escolaNome } (a escola do curso, que o formulário do Calendário manda no dia de
+//   escopo 'escola'; curso sem escola não oferece esse escopo, nem o pedido sem turma o
+//   de turma); sem curso, os do escopo da conta e contexto null. A conta só de consulta
+//   (Coordenação) recebe escopos vazios e podeAlterar false (B7 / P2-S6).
 // - GET  /api/admin/calendar/non-school-days/national-holidays?ano=
 //   os feriados nacionais do ano (academicCalendar.nationalHolidays) com jaCadastrado.
 // - POST /api/admin/calendar/non-school-days/create, /update e /delete.
@@ -17,6 +21,18 @@
 //   que ainda não existem (idempotente pela data, pelo nome e pelo escopo instituição).
 // - GET  /api/admin/calendar/ics?courseId=&studentClass=: a agenda da turma (eventos do
 //   calendário e dias não letivos) em text/calendar.
+// - Períodos letivos (B5 / P2-S7, FUN-05; permissão page.dashboard para ler e
+//   classes.manage para gravar, pela guarda de /api/admin):
+//   GET  /api/admin/academic/terms: { periodos, escolas, podeCriar }, do início mais novo
+//   para o mais antigo, cada um com as turmas ligadas que a conta enxerga e podeAlterar;
+//   POST /api/admin/academic/terms/create { nome, inicio, fim, schoolId?, etapas? },
+//   /update { id, ...os mesmos (o que não vier fica como está) }, /close { id } e
+//   /reopen { id, reason }. A turma liga ao período por classes[].periodoLetivoId em
+//   class/create e class/update (routes/admin.js, com resolveClassTermInput daqui).
+//   Encerrar o período não encerra turma nem muda nota (o encerramento da turma é do
+//   B10): o período encerrado não recebe turma nova nem muda de data até reabrir, e
+//   reabrir pede motivo. Nada é apagado. Gravação parcial (academicTerms e auditLogs) e
+//   auditoria academic_term_created/updated/closed/reopened.
 //
 // Quem cadastra cada escopo: 'instituicao' o administrador ou quem tem "Gerenciar
 // turmas" (classes.manage); 'escola' o administrador, quem tem classes.manage e a
@@ -48,14 +64,15 @@ const {
     adminAllowedSchoolIds,
     findClassByNameAndCourse,
 } = require('../middlewares.js');
-const { isFullAdmin, accountScopeKind, outOfScopeMessage } = require('../utils/adminRoles.js');
+const { isFullAdmin, isReadOnlyAccount, accountScopeKind, outOfScopeMessage } = require('../utils/adminRoles.js');
 const { canAccessAdminPermission } = require('../utils/adminPermissions.js');
 const { recordAudit } = require('../utils/audit.js');
-const { body, str, int, list, oneOf } = require('../utils/inputSchema.js');
+const { body, str, int, list, oneOf, shape } = require('../utils/inputSchema.js');
 const settingsUtil = require('../utils/settings.js');
 const academicCalendar = require('../utils/academicCalendar.js');
 const { nonSchoolDayCalendarItems } = require('../utils/calendarFeed.js');
 const { buildIcs, icsFileName, calendarEventToIcs } = require('../utils/icsCalendar.js');
+const { registerGradingRoutes } = require('./adminGrading.js');
 
 const {
     NON_SCHOOL_DAY_TYPES,
@@ -89,7 +106,30 @@ const SCHEMAS = {
     }),
 };
 
+const TERM_STAGE = shape({
+    ordem: int({ min: 1, max: academicCalendar.MAX_TERM_STAGES, coerce: true, nullable: true, label: 'número da etapa' }),
+    nome: str({ max: 40, nullable: true, label: 'nome da etapa' }),
+    inicio: str({ max: 10, nullable: true, label: 'início da etapa' }),
+    fim: str({ max: 10, nullable: true, label: 'fim da etapa' }),
+}, { label: 'etapa' });
+
+const TERM_FIELDS = {
+    nome: str({ max: 80, label: 'nome do período letivo' }),
+    inicio: str({ max: 10, label: 'data de início' }),
+    fim: str({ max: 10, label: 'data de fim' }),
+    schoolId: str({ max: 120, nullable: true, label: 'escola' }),
+    etapas: list(TERM_STAGE, { max: academicCalendar.MAX_TERM_STAGES, nullable: true, label: 'etapas' }),
+};
+
+const TERM_SCHEMAS = {
+    create: body(TERM_FIELDS),
+    update: body({ id: str({ ...ID_FIELD, required: true }), ...TERM_FIELDS }),
+    close: body({ id: str({ ...ID_FIELD, required: true }), reason: str({ max: 500, nullable: true, label: 'motivo' }) }),
+    reopen: body({ id: str({ ...ID_FIELD, required: true }), reason: str({ max: 500, nullable: true, label: 'motivo' }) }),
+};
+
 const randomHex = () => crypto.randomBytes(3).toString('hex');
+const newTermId = () => `per_${Date.now()}_${randomHex()}`;
 const newDayId = () => `nl_${Date.now()}_${randomHex()}`;
 const text = value => String(value === undefined || value === null ? '' : value).trim();
 const lowerName = value => text(value).normalize('NFC').toLocaleLowerCase('pt-BR');
@@ -256,7 +296,8 @@ function dayView(account, raw) {
         criadoEm: raw.criadoEm || null,
         criadoPor: raw.criadoPor || null,
         atualizadoEm: raw.atualizadoEm || null,
-        podeAlterar: canManageDay(account, day),
+        // A conta só de consulta (Coordenação) nunca altera, mesmo com o dia no escopo dela.
+        podeAlterar: !isReadOnlyAccount(account) && canManageDay(account, day),
     };
 }
 
@@ -290,8 +331,321 @@ function dayKey(day) {
     return JSON.stringify(['inicio', 'fim', 'tipo', 'nome', 'escopo', 'schoolId', 'courseId', 'studentClass'].map(field => text(day && day[field])));
 }
 
+// --- períodos letivos (B5 / P2-S7) -----------------------------------------------------
+
+// Escola do curso (curso antigo sem escola é da escola padrão, como no duplicar curso).
+function courseSchoolId(course) {
+    return text(course && course.schoolId) || 'escola_default';
+}
+
+function termsList() {
+    if (!Array.isArray(db.memory.academicTerms)) db.memory.academicTerms = [];
+    return db.memory.academicTerms;
+}
+
+// As turmas ligadas ao período (todas, sem olhar o escopo de quem pede).
+function termClasses(termId) {
+    const id = text(termId);
+    return (db.memory.classes || []).filter(cls => cls && text(cls.periodoLetivoId) === id);
+}
+
+// A conta enxerga o período? O da instituição, todos; o de uma escola, quem tem a escola.
+function canSeeTerm(account, term) {
+    if (!term) return false;
+    if (accountScopeKind(account) === 'tudo' || !term.schoolId) return true;
+    return adminCanAccessSchool(account, term.schoolId);
+}
+
+// A conta pode alterar, encerrar e reabrir o período? O administrador sempre; os outros,
+// com classes.manage (a guarda já pede para gravar; aqui vale também para o podeAlterar
+// da lista), quando a escola do período é do escopo deles e todas as turmas ligadas
+// também (mudar a data muda a Chamada dessas turmas).
+function canManageTerm(account, term) {
+    if (!term) return false;
+    if (isFullAdmin(account)) return true;
+    if (isReadOnlyAccount(account) || !canAccessAdminPermission(account, 'classes.manage')) return false;
+    if (accountScopeKind(account) === 'tudo') return true;
+    if (term.schoolId && !adminCanAccessSchool(account, term.schoolId)) return false;
+    return termClasses(term.id).every(cls => adminCanAccessClass(account, cls.name, cls.courseId));
+}
+
+// Escola escolhida no formulário: null (toda a instituição) ou uma escola que existe e é do
+// escopo da conta. Devolve { schoolId } ou { error, field, status }.
+function readTermSchool(account, value) {
+    const schoolId = text(value);
+    if (!schoolId) return { schoolId: null };
+    if (!(db.memory.schools || []).some(school => school && String(school.id) === schoolId)) {
+        return { error: 'Escola não encontrada.', field: 'schoolId', status: 400 };
+    }
+    if (!isFullAdmin(account) && !adminCanAccessSchool(account, schoolId)) {
+        return { error: 'A escola escolhida não está no escopo da sua conta.', field: 'schoolId', status: 403 };
+    }
+    return { schoolId };
+}
+
+function schoolName(schoolId) {
+    if (!schoolId) return null;
+    const school = (db.memory.schools || []).find(item => item && String(item.id) === String(schoolId));
+    return school ? (school.name || school.info?.tradeName || school.id) : schoolId;
+}
+
+function findTermDuplicate(nome, schoolId, ignoreId) {
+    return termsList().find(item => {
+        if (!item || item.id === ignoreId) return false;
+        return lowerName(item.nome) === lowerName(nome) && (text(item.schoolId) || null) === (schoolId || null);
+    });
+}
+
+// Registro gravado do período: só os campos do formato, na mesma ordem sempre.
+function storedTerm(fields, base) {
+    const out = {
+        id: base.id,
+        schemaVersion: 1,
+        nome: fields.nome,
+        inicio: fields.inicio,
+        fim: fields.fim,
+        schoolId: fields.schoolId || null,
+        etapas: fields.etapas.map(stage => ({ ordem: stage.ordem, nome: stage.nome, inicio: stage.inicio, fim: stage.fim })),
+        situacao: base.situacao === 'encerrado' ? 'encerrado' : 'aberto',
+        criadoEm: base.criadoEm,
+        criadoPor: base.criadoPor,
+        atualizadoEm: base.atualizadoEm,
+    };
+    ['atualizadoPor', 'encerradoEm', 'encerradoPor', 'reabertoEm', 'reabertoPor'].forEach(field => {
+        if (base[field]) out[field] = base[field];
+    });
+    return out;
+}
+
+// Os campos que definem o período (sem datas de gravação nem autor).
+function termKey(term) {
+    return JSON.stringify([text(term.nome), text(term.inicio), text(term.fim), text(term.schoolId) || null,
+        (term.etapas || []).map(stage => [stage.ordem, text(stage.nome), text(stage.inicio), text(stage.fim)])]);
+}
+
+function classLabel(cls) {
+    const course = (db.memory.courses || []).find(item => item && String(item.id) === String(cls.courseId));
+    return { courseId: String(cls.courseId || ''), courseName: (course && course.name) || String(cls.courseId || ''), name: cls.name };
+}
+
+// Período para a resposta: o normalizado, com rótulos, as turmas ligadas que a conta vê,
+// o total ligado e podeAlterar.
+function termView(account, raw) {
+    const term = academicCalendar.normalizeTerm(raw);
+    if (!term) return null;
+    const linked = termClasses(term.id);
+    return {
+        ...term,
+        situacaoRotulo: academicCalendar.TERM_SITUACAO_LABELS[term.situacao],
+        escolaNome: schoolName(term.schoolId),
+        turmas: linked.filter(cls => adminCanAccessClass(account, cls.name, cls.courseId)).map(classLabel)
+            .sort((a, b) => a.courseName.localeCompare(b.courseName, 'pt-BR') || a.name.localeCompare(b.name, 'pt-BR')),
+        totalTurmas: linked.length,
+        criadoEm: raw.criadoEm || null,
+        criadoPor: raw.criadoPor || null,
+        atualizadoEm: raw.atualizadoEm || null,
+        // O registro guarda o último encerramento e a última reabertura (histórico); na
+        // resposta, 'Encerrado em' só aparece no período encerrado e 'Reaberto em' só no
+        // aberto que já foi reaberto, para a tela não mostrar "Encerrado em" num aberto.
+        encerradoEm: term.situacao === 'encerrado' ? (raw.encerradoEm || null) : null,
+        encerradoPor: term.situacao === 'encerrado' ? (raw.encerradoPor || null) : null,
+        reabertoEm: term.situacao === 'aberto' ? (raw.reabertoEm || null) : null,
+        reabertoPor: term.situacao === 'aberto' ? (raw.reabertoPor || null) : null,
+        podeAlterar: canManageTerm(account, term),
+    };
+}
+
+function saveTerms() {
+    return db.save({ only: ['academicTerms', 'auditLogs'] });
+}
+
+// Período letivo pedido para a turma em class/create e class/update (routes/admin.js).
+// value: o periodoLetivoId do corpo (undefined = não mexe; null ou '' = tira o período;
+// texto = o id). currentId: o período que a turma já tem (ligar de novo ao mesmo vale
+// mesmo com ele encerrado). Devolve { ok: true, change: false } (não mexe),
+// { ok: true, change: true, value: id | null } ou { ok: false, status, error, field }.
+function resolveClassTermInput(memory, account, course, value, currentId = null) {
+    if (value === undefined) return { ok: true, change: false };
+    if (value !== null && typeof value !== 'string') return { ok: false, status: 400, error: 'Período letivo inválido.', field: 'periodoLetivoId' };
+    const id = text(value);
+    if (!id) return { ok: true, change: true, value: null };
+    if (id.length > ID_FIELD.max) return { ok: false, status: 400, error: 'Período letivo inválido.', field: 'periodoLetivoId' };
+    const raw = ((memory && memory.academicTerms) || []).find(item => item && String(item.id) === id);
+    const term = academicCalendar.normalizeTerm(raw);
+    if (!term || !canSeeTerm(account, term)) return { ok: false, status: 400, error: 'Período letivo não encontrado.', field: 'periodoLetivoId' };
+    if (id === text(currentId)) return { ok: true, change: true, value: id };
+    if (term.situacao === 'encerrado') {
+        return { ok: false, status: 409, code: 'term_closed', error: `O período letivo ${term.nome} está encerrado: escolha outro ou reabra o período.`, field: 'periodoLetivoId' };
+    }
+    if (term.schoolId && term.schoolId !== courseSchoolId(course)) {
+        return { ok: false, status: 400, error: `O período letivo ${term.nome} é de outra escola: escolha um período desta escola ou de toda a instituição.`, field: 'periodoLetivoId' };
+    }
+    return { ok: true, change: true, value: id };
+}
+
+// O periodoLetivoId de class/create e class/update (inputSchema): texto até 120 ou null.
+// O resto (existe, a conta vê, mesma escola, aberto) é de resolveClassTermInput.
+const CLASS_TERM_SCHEMA = body({ periodoLetivoId: str({ ...ID_FIELD, nullable: true, label: 'período letivo' }) });
+
 function createAdminAcademicRouter() {
     const router = express.Router();
+
+    router.get('/api/admin/academic/terms', (req, res) => {
+        validateAdmin(req, res, (config, account) => {
+            const periodos = termsList()
+                .map(raw => (canSeeTerm(account, academicCalendar.normalizeTerm(raw)) ? termView(account, raw) : null))
+                .filter(Boolean)
+                .sort((a, b) => b.inicio.localeCompare(a.inicio) || a.nome.localeCompare(b.nome, 'pt-BR'));
+            const podeCriar = canAccessAdminPermission(account, 'classes.manage') && !isReadOnlyAccount(account);
+            res.json({
+                periodos,
+                escolas: (db.memory.schools || []).filter(school => school && (isFullAdmin(account) || adminCanAccessSchool(account, school.id)))
+                    .map(school => ({ id: school.id, nome: school.name || school.info?.tradeName || school.id })),
+                situacoes: academicCalendar.TERM_SITUACOES.map(value => ({ value, label: academicCalendar.TERM_SITUACAO_LABELS[value] })),
+                podeCriar,
+            });
+        });
+    });
+
+    router.post('/api/admin/academic/terms/create', TERM_SCHEMAS.create, (req, res) => {
+        validateAdmin(req, res, (config, account) => {
+            const parsed = academicCalendar.readTermInput(req.body);
+            if (parsed.error) return fieldError(res, parsed.error, parsed.field);
+            const school = readTermSchool(account, req.body.schoolId);
+            if (school.error) return fieldError(res, school.error, school.field, school.status);
+            if (findTermDuplicate(parsed.term.nome, school.schoolId)) {
+                return res.status(409).json({ success: false, code: 'duplicate', error: 'Já existe um período letivo com este nome.', field: 'nome' });
+            }
+            const now = Date.now();
+            const record = storedTerm({ ...parsed.term, schoolId: school.schoolId }, {
+                id: newTermId(), situacao: 'aberto', criadoEm: now, criadoPor: actorEmail(account), atualizadoEm: now,
+            });
+            termsList().push(record);
+            recordAudit(db.memory, { req, actor: account, action: 'academic_term_created', category: 'academic', after: record });
+            saveTerms();
+            res.json({ success: true, periodo: termView(account, record) });
+        });
+    });
+
+    router.post('/api/admin/academic/terms/update', TERM_SCHEMAS.update, (req, res) => {
+        validateAdmin(req, res, (config, account) => {
+            const list = termsList();
+            const index = list.findIndex(item => item && item.id === req.body.id);
+            if (index === -1) return res.status(404).json({ error: 'Período letivo não encontrado.' });
+            const current = list[index];
+            const currentTerm = academicCalendar.normalizeTerm(current);
+            if (currentTerm ? !canManageTerm(account, currentTerm) : !isFullAdmin(account)) {
+                return res.status(403).json({ error: outOfScopeMessage(account, 'O período letivo') });
+            }
+            if (currentTerm && currentTerm.situacao === 'encerrado') {
+                return res.status(409).json({ success: false, code: 'term_closed', error: 'Este período letivo está encerrado. Reabra o período para mudar as datas.' });
+            }
+            const parsed = academicCalendar.readTermInput(req.body, currentTerm || current);
+            if (parsed.error) return fieldError(res, parsed.error, parsed.field);
+            const school = req.body.schoolId === undefined
+                ? { schoolId: currentTerm ? currentTerm.schoolId : (text(current.schoolId) || null) }
+                : readTermSchool(account, req.body.schoolId);
+            if (school.error) return fieldError(res, school.error, school.field, school.status);
+            if (findTermDuplicate(parsed.term.nome, school.schoolId, current.id)) {
+                return res.status(409).json({ success: false, code: 'duplicate', error: 'Já existe um período letivo com este nome.', field: 'nome' });
+            }
+            // Período de uma escola não fica com turma de curso de outra escola.
+            if (school.schoolId) {
+                const outside = termClasses(current.id).filter(cls => {
+                    const course = (db.memory.courses || []).find(item => item && String(item.id) === String(cls.courseId));
+                    return courseSchoolId(course) !== school.schoolId;
+                });
+                if (outside.length) {
+                    return fieldError(res, `${outside.length === 1 ? 'A turma' : `${outside.length} turmas`} ligada${outside.length === 1 ? '' : 's'} a este período ${outside.length === 1 ? 'é' : 'são'} de outra escola (${outside.map(cls => cls.name).join(', ')}). Tire a turma do período ou deixe o período para toda a instituição.`, 'schoolId');
+                }
+            }
+            const next = { ...parsed.term, schoolId: school.schoolId };
+            if (currentTerm && termKey(next) === termKey(currentTerm)) {
+                return res.json({ success: true, periodo: termView(account, current), semMudanca: true });
+            }
+            const now = Date.now();
+            const record = storedTerm(next, {
+                ...current,
+                criadoEm: current.criadoEm || now,
+                criadoPor: current.criadoPor || actorEmail(account),
+                atualizadoEm: now,
+                atualizadoPor: actorEmail(account),
+            });
+            list[index] = record;
+            recordAudit(db.memory, {
+                req,
+                actor: account,
+                action: 'academic_term_updated',
+                category: 'academic',
+                before: current,
+                after: record,
+                details: { turmas: termClasses(record.id).length },
+            });
+            saveTerms();
+            res.json({ success: true, periodo: termView(account, record) });
+        });
+    });
+
+    router.post('/api/admin/academic/terms/close', TERM_SCHEMAS.close, (req, res) => {
+        validateAdmin(req, res, (config, account) => {
+            const list = termsList();
+            const index = list.findIndex(item => item && item.id === req.body.id);
+            if (index === -1) return res.status(404).json({ error: 'Período letivo não encontrado.' });
+            const current = list[index];
+            const currentTerm = academicCalendar.normalizeTerm(current);
+            if (currentTerm ? !canManageTerm(account, currentTerm) : !isFullAdmin(account)) {
+                return res.status(403).json({ error: outOfScopeMessage(account, 'O período letivo') });
+            }
+            if (!currentTerm) return res.status(409).json({ success: false, code: 'invalid_term', error: 'Este período letivo está com as datas inválidas. Corrija as datas antes de encerrar.' });
+            const turmas = termClasses(current.id).map(classLabel);
+            if (currentTerm.situacao === 'encerrado') return res.json({ success: true, periodo: termView(account, current), turmas, semMudanca: true });
+            const now = Date.now();
+            const record = { ...current, situacao: 'encerrado', encerradoEm: now, encerradoPor: actorEmail(account), atualizadoEm: now, atualizadoPor: actorEmail(account) };
+            list[index] = record;
+            recordAudit(db.memory, {
+                req,
+                actor: account,
+                action: 'academic_term_closed',
+                category: 'academic',
+                reason: text(req.body.reason) || undefined,
+                details: { id: record.id, nome: record.nome, turmas: turmas.map(item => `${item.courseId} · ${item.name}`) },
+            });
+            saveTerms();
+            // As turmas ligadas continuam abertas: a tela oferece encerrá-las (B10).
+            res.json({ success: true, periodo: termView(account, record), turmas });
+        });
+    });
+
+    router.post('/api/admin/academic/terms/reopen', TERM_SCHEMAS.reopen, (req, res) => {
+        validateAdmin(req, res, (config, account) => {
+            const list = termsList();
+            const index = list.findIndex(item => item && item.id === req.body.id);
+            if (index === -1) return res.status(404).json({ error: 'Período letivo não encontrado.' });
+            const current = list[index];
+            const currentTerm = academicCalendar.normalizeTerm(current);
+            if (currentTerm ? !canManageTerm(account, currentTerm) : !isFullAdmin(account)) {
+                return res.status(403).json({ error: outOfScopeMessage(account, 'O período letivo') });
+            }
+            if (!currentTerm || currentTerm.situacao !== 'encerrado') return res.json({ success: true, periodo: termView(account, current), semMudanca: true });
+            const reason = text(req.body.reason);
+            if (reason.length < 3) {
+                return res.status(400).json({ success: false, code: 'reason_required', error: 'Informe o motivo para reabrir o período letivo (de 3 a 500 caracteres).', field: 'reason' });
+            }
+            const now = Date.now();
+            const record = { ...current, situacao: 'aberto', reabertoEm: now, reabertoPor: actorEmail(account), atualizadoEm: now, atualizadoPor: actorEmail(account) };
+            list[index] = record;
+            recordAudit(db.memory, {
+                req,
+                actor: account,
+                action: 'academic_term_reopened',
+                category: 'academic',
+                reason,
+                details: { id: record.id, nome: record.nome },
+            });
+            saveTerms();
+            res.json({ success: true, periodo: termView(account, record) });
+        });
+    });
 
     router.get('/api/admin/calendar/non-school-days', (req, res) => {
         validateAdmin(req, res, (config, account) => {
@@ -314,12 +668,21 @@ function createAdminAcademicRouter() {
             }
             const dias = raws.map(raw => dayView(account, raw)).filter(Boolean)
                 .sort((a, b) => a.inicio.localeCompare(b.inicio) || a.id.localeCompare(b.id));
+            // Escola do curso pedido (B7 / P2-S6): o formulário do Calendário manda esta
+            // escola no dia de escopo 'escola'. Curso sem escola não oferece 'Toda a escola'
+            // (o dia de uma escola só vale para os cursos dela, academicCalendar).
+            const contextSchoolId = course ? text(course.schoolId) : '';
+            const escopos = (isReadOnlyAccount(account) ? [] : scopesFor(account, { courseId, studentClass, schoolId: contextSchoolId }))
+                .filter(escopo => escopo !== 'escola' || !course || !!contextSchoolId)
+                .filter(escopo => escopo !== 'turma' || !course || !!studentClass);
             res.json({
                 dias,
                 tipos: NON_SCHOOL_DAY_TYPES.map(value => ({ value, label: NON_SCHOOL_DAY_TYPE_LABELS[value] })),
-                escopos: scopesFor(account, { courseId, studentClass, schoolId: course && course.schoolId })
-                    .map(value => ({ value, label: NON_SCHOOL_DAY_SCOPE_LABELS[value] })),
-                podeAdicionarFeriadosNacionais: canManageInstitution(account),
+                escopos: escopos.map(value => ({ value, label: NON_SCHOOL_DAY_SCOPE_LABELS[value] })),
+                podeAdicionarFeriadosNacionais: !isReadOnlyAccount(account) && canManageInstitution(account),
+                contexto: course
+                    ? { courseId, studentClass: studentClass || null, schoolId: contextSchoolId || null, escolaNome: contextSchoolId ? schoolName(contextSchoolId) : null }
+                    : null,
             });
         });
     });
@@ -533,11 +896,17 @@ function createAdminAcademicRouter() {
         });
     });
 
+    // Critérios de avaliação, plano da turma e avaliações manuais (B6 / P2-S3): adminGrading.js.
+    registerGradingRoutes(router);
+
     return router;
 }
 
 module.exports = {
     createAdminAcademicRouter,
+    resolveClassTermInput,
+    CLASS_TERM_SCHEMA,
+    courseSchoolId,
     canManageDay,
     canSeeDay,
     calendarEventInScope,

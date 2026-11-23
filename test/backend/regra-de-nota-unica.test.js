@@ -4,10 +4,9 @@
 // ou rota compara nota com 6, 7, 9 ou 40 a 90 escritos no código (nem como faixa em dado
 // ou rótulo de gráfico, que saem de gradeBandRanges), o gabarito sai só de
 // examGrading.correctAnswerFor e Resultados não recalcula a regra das tentativas.
-// Pendências com dono, listadas aqui para não crescerem: a média do portal do aluno
-// (consolidatedAverage e a "matéria" por prefixo em student/ProvasPage.jsx) e o
-// critério fixo (CRITERIO_PADRAO) nas telas que ainda leem listas sem critério saem
-// no P2-S4 (B9), quando o servidor manda o critério e o resumo do aluno.
+// As pendências do P2-S4 (B9) estão fechadas: nenhuma tela usa o critério fixo
+// (CRITERIO_PADRAO) e o portal do aluno lê a média do resumo de notas do servidor, sem
+// consolidatedAverage nem a "matéria" pelo prefixo do examKey.
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
@@ -178,24 +177,43 @@ test('[UC-TENTATIVA-003] gabarito só por correctAnswerFor e Resultados sem rec�
     assert.doesNotMatch(resultados, /selectedForResult\s*\|\|/);
 });
 
-test('[UC-TENTATIVA-003] pendências do B9 não crescem: critério fixo e média no navegador só onde já estavam', () => {
+test('[UC-TENTATIVA-003] pendências do B9 fechadas: nenhuma tela usa critério fixo nem faz a média no navegador', () => {
     const telas = walk(path.join(ROOT, 'web', 'src'), file => /\.(jsx?|mjs)$/.test(file)
         && !/\.test\.(jsx?|mjs)$/.test(file)
         && rel(file) !== 'web/src/lib/grades.js');
     const usam = nome => telas.filter(file => new RegExp(`\\b${nome}\\b`).test(fs.readFileSync(file, 'utf8'))).map(rel).sort();
-    // Tela nova recebe o critério do servidor (gradebook, boletim e ficha já mandam
-    // "criterio"); CRITERIO_PADRAO fica só nas telas que leem listas sem critério.
-    // A ficha (AlunoDetailPage) já usa o criterio de GET /api/admin/student/dashboard.
-    assert.deepEqual(usam('CRITERIO_PADRAO'), [
-        'web/src/features/admin/AlunosPage.jsx',
-        'web/src/features/admin/ResultadosPage.jsx',
-        'web/src/features/student/ProvasPage.jsx',
-    ]);
-    // D3 do P2: o navegador não recalcula média. A única exceção é a do portal do aluno,
-    // que passa a ler /api/student/grades-summary no B9.
-    assert.deepEqual(usam('consolidatedAverage'), ['web/src/features/student/ProvasPage.jsx']);
+    // Toda tela recebe o critério do servidor (quadro, critérios do curso, ficha acadêmica,
+    // boletim e resumo de notas do aluno mandam "criterio"); CRITERIO_PADRAO fica só em
+    // web/src/lib/grades.js (B9 / P2-S4). Antes: AlunosPage, ResultadosPage e o portal do aluno.
+    assert.deepEqual(usam('CRITERIO_PADRAO'), []);
+    // D3 do P2: o navegador não recalcula média. O portal do aluno lê a média de
+    // /api/student/grades-summary; consolidatedAverage saiu de grades.js.
+    assert.deepEqual(usam('consolidatedAverage'), []);
+    assert.deepEqual(usam('materiaOf'), []);
     const boletim = fs.readFileSync(path.join(ROOT, 'web', 'src', 'features', 'admin', 'boletimPrint.js'), 'utf8');
     assert.match(boletim, /report\.criterio/, 'o boletim usa o critério que vem com o boletim');
+    // Boletim pelo documento impresso da escola (C5 do P4): sem o "Gerado pelo IClass" fixo.
+    assert.match(boletim, /printDocument/, 'o boletim sai pelo printDocument');
+    assert.doesNotMatch(boletim, /Gerado pelo IClass/);
     const ficha = fs.readFileSync(path.join(ROOT, 'web', 'src', 'features', 'admin', 'AlunoDetailPage.jsx'), 'utf8');
     assert.match(ficha, /dash\?\.criterio/, 'a ficha usa o critério que vem com a ficha');
+});
+
+test('[UC-NOTAS-008] telas de nota sem média feita no navegador (soma / quantidade), nem a média de cada aluno nem a da turma', () => {
+    // B9 (ajuste): o cartão "Média geral" de Resultados era a média simples das notas da
+    // lista (scores.reduce(...) / scores.length), diferente da média final do quadro; a
+    // média do aluno com filtro e a do módulo na página do aluno também eram contas locais.
+    // Agora tudo vem do resumo do quadro (gradebook.resumo). Fórum fica de fora: a média lá
+    // é de tempo de resposta, não de nota.
+    const telas = walk(path.join(ROOT, 'web', 'src'), file => /\.(jsx?|mjs)$/.test(file)
+        && !/\.test\.(jsx?|mjs)$/.test(file)
+        && rel(file) !== 'web/src/lib/grades.js'
+        && rel(file) !== 'web/src/features/admin/ForumPage.jsx');
+    const mediaLocal = /\.reduce\([^\n]*\+[^\n]*\/\s*[A-Za-z_$][\w$.?]*\.length/;
+    assert.ok(mediaLocal.test('const avg = scores.length ? scores.reduce((a, b) => a + b, 0) / scores.length : 0'));
+    assert.ok(mediaLocal.test('average: scores.length ? scores.reduce((sum, value) => sum + value, 0) / scores.length : null'));
+    const comConta = telas.filter(file => fs.readFileSync(file, 'utf8').split('\n').some(line => mediaLocal.test(line))).map(rel).sort();
+    assert.deepEqual(comConta, []);
+    const resultados = fs.readFileSync(path.join(ROOT, 'web', 'src', 'features', 'admin', 'ResultadosPage.jsx'), 'utf8');
+    assert.match(resultados, /gradebookData\?\.resumo/, 'Resultados lê o resumo da turma do quadro');
 });

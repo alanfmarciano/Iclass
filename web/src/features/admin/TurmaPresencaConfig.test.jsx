@@ -1,8 +1,8 @@
 import { useState } from 'react'
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, render, screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, describe, expect, it, vi } from 'vitest'
-import { AssistenteHorariosWizard, DisciplinasModal, GradeEditor } from './TurmaPresencaConfig'
+import { AssistenteHorariosWizard, DisciplinasModal, GradeEditor, courseModuleOptions, readCargaHoraria } from './TurmaPresencaConfig'
 
 afterEach(cleanup)
 
@@ -38,7 +38,77 @@ describe('configuração de presença da turma', () => {
     await user.type(screen.getByLabelText('Código da disciplina'), 'MAT')
     await user.click(screen.getByRole('button', { name: 'Salvar disciplinas' }))
 
-    expect(onSave).toHaveBeenCalledWith([{ id: 'MAT', nome: 'Matemática', cor: '' }])
+    // Desde o B8 a lista vai com os campos novos sempre preenchidos (vazio apaga no servidor).
+    expect(onSave).toHaveBeenCalledWith([{ id: 'MAT', nome: 'Matemática', cor: '', cargaHoraria: null, professor: '', modulos: [] }])
+  })
+})
+
+// Disciplinas com carga horária, professor e módulos (B8 / P2-S8, FUN-05). Antes o diálogo
+// só tinha nome e código, e o código repetido não dizia nada (o botão não fazia nada).
+describe('disciplinas do curso: carga horária, professor e módulos', () => {
+  const course = {
+    id: 'TI',
+    name: 'Informática',
+    structure: [{ id: 'M1', name: 'Redes' }, { id: 'M2', name: 'Banco de Dados' }, { name: 'Projeto' }],
+    disciplinas: [
+      { id: 'REDES', nome: 'Redes', cor: '#112233', cargaHoraria: 80, professor: 'Prof. Carlos', modulos: ['M1', 'M_ANTIGO'] },
+      { id: 'BD', nome: 'Banco de Dados', cor: '' },
+    ],
+  }
+
+  it('[UC-CURSO-002] mostra o que está gravado, trava o módulo de outra disciplina e manda tudo de volta', async () => {
+    const user = userEvent.setup()
+    const onSave = vi.fn()
+    render(<DisciplinasModal open onClose={() => {}} course={course} onSave={onSave} saving={false} />)
+
+    expect(screen.getByLabelText('Carga horária de Redes (horas)')).toHaveValue('80')
+    expect(screen.getByLabelText('Professor responsável por Redes')).toHaveValue('Prof. Carlos')
+    const redesModules = screen.getByRole('group', { name: 'Módulos de Redes' })
+    expect(within(redesModules).getByRole('checkbox', { name: 'Redes' })).toBeChecked()
+    // O módulo que saiu da estrutura continua marcado (o servidor aceita) e avisa.
+    expect(within(redesModules).getByRole('checkbox', { name: /M_ANTIGO \(não está mais na estrutura do curso\)/ })).toBeChecked()
+    // Na outra disciplina, o módulo de Redes aparece travado com o nome dela.
+    const bdModules = screen.getByRole('group', { name: 'Módulos de Banco de Dados' })
+    expect(within(bdModules).getByRole('checkbox', { name: 'Redes (em Redes)' })).toBeDisabled()
+    // Módulo sem id: o servidor usa o nome como id.
+    await user.click(within(bdModules).getByRole('checkbox', { name: 'Banco de Dados' }))
+    await user.click(within(bdModules).getByRole('checkbox', { name: 'Projeto' }))
+    await user.type(screen.getByLabelText('Carga horária de Banco de Dados (horas)'), '60')
+    await user.type(screen.getByLabelText('Professor responsável por Banco de Dados'), '  Profa. Bia ')
+    // Limpar a carga de Redes apaga o valor.
+    await user.clear(screen.getByLabelText('Carga horária de Redes (horas)'))
+    await user.click(screen.getByRole('button', { name: 'Salvar disciplinas' }))
+
+    expect(onSave).toHaveBeenCalledWith([
+      { id: 'REDES', nome: 'Redes', cor: '#112233', cargaHoraria: null, professor: 'Prof. Carlos', modulos: ['M1', 'M_ANTIGO'] },
+      { id: 'BD', nome: 'Banco de Dados', cor: '', cargaHoraria: 60, professor: 'Profa. Bia', modulos: ['M2', 'Projeto'] },
+    ])
+  })
+
+  it('[UC-CURSO-002] carga horária que não é número e código repetido são avisados no campo, sem salvar', async () => {
+    const user = userEvent.setup()
+    const onSave = vi.fn()
+    render(<DisciplinasModal open onClose={() => {}} course={course} onSave={onSave} saving={false} />)
+    const carga = screen.getByLabelText('Carga horária de Redes (horas)')
+    await user.clear(carga)
+    await user.type(carga, '80h')
+    const codes = screen.getAllByLabelText('Código da disciplina')
+    await user.clear(codes[1])
+    await user.type(codes[1], 'REDES')
+    await user.click(screen.getByRole('button', { name: 'Salvar disciplinas' }))
+    expect(onSave).not.toHaveBeenCalled()
+    expect(screen.getByText(/Carga horária em horas: um número inteiro de 0 a 2000/)).toBeVisible()
+    expect(screen.getByText('O código REDES já está na disciplina Redes. Cada disciplina tem um código.')).toBeVisible()
+    expect(carga).toHaveAttribute('aria-invalid', 'true')
+  })
+
+  it('[UC-CURSO-002] courseModuleOptions e readCargaHoraria seguem o servidor', () => {
+    expect(courseModuleOptions([{ id: 'M1', name: 'Redes' }, { key: 'K', title: 'Título' }, { name: 'Só nome' }, {}, null]))
+      .toEqual([{ id: 'M1', nome: 'Redes' }, { id: 'K', nome: 'Título' }, { id: 'Só nome', nome: 'Só nome' }, { id: 'module_3', nome: 'module_3' }])
+    expect(readCargaHoraria('')).toBe('')
+    expect(readCargaHoraria(' 40 ')).toBe(40)
+    expect(readCargaHoraria('2001')).toBeNull()
+    expect(readCargaHoraria('4,5')).toBeNull()
   })
 })
 

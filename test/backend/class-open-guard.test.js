@@ -83,6 +83,13 @@ const ROTAS_QUE_GRAVAM = [
     ['adminAssignments.js', 'POST', '/api/admin/assignments/:id/return-all'],
     ['adminAssignments.js', 'POST', '/api/admin/assignments/:id/manual-entry'],
     ['adminAssignments.js', 'POST', '/api/admin/assignments/:id/extension'],
+    // Plano de avaliação e avaliações manuais (B6 / P2-S3): etapa, peso, recuperação e
+    // "fora da média" mudam a média; arquivar tira a nota da média (saveClassPlan).
+    ['adminGrading.js', 'POST', '/api/admin/grading/plan'],
+    ['adminGrading.js', 'POST', '/api/admin/grading/manual-items/create'],
+    ['adminGrading.js', 'POST', '/api/admin/grading/manual-items/update'],
+    ['adminGrading.js', 'POST', '/api/admin/grading/manual-items/archive'],
+    ['adminGrading.js', 'POST', '/api/admin/grading/manual-items/restore'],
 ];
 
 // Rotas que gravam entregas ou presença e não passam pelo portão, com o motivo.
@@ -127,6 +134,8 @@ const DIRECT_WRITE_MARKERS = [
     // em mãos gravam em assignmentSubmissions.
     /\.assignmentSubmissions\.(?:push|splice)\(/,
     /only:\s*\[[^\]]*['"]assignmentSubmissions['"]/,
+    // Plano de avaliação da turma e avaliações manuais (B6): gravam classes[].avaliacao.
+    /\bsaveClassPlan\(/,
 ];
 
 const UTILS_DIR = path.join(__dirname, '../../backend/utils');

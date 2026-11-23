@@ -1,0 +1,1770 @@
+{
+ "boletim_ana": {
+  "status": 200,
+  "body": {
+   "generatedAt": "<agora>",
+   "institution": "Escola Alfa",
+   "student": {
+    "name": "Ana Souza",
+    "nomeSocial": "",
+    "email": "ana@notas-b6.local",
+    "matricula": "2026-001",
+    "status": "Ativo"
+   },
+   "course": {
+    "id": "DES",
+    "name": "Desenvolvimento"
+   },
+   "className": "1DES",
+   "period": "Manhã",
+   "modules": [
+    {
+     "id": "m1",
+     "name": "Lógica",
+     "exams": [
+      {
+       "examKey": "Avaliacao_P1",
+       "applicationId": "app_1",
+       "title": "Prova 1 — Lógica (1ª aplicação, 01/03/2026)",
+       "attempts": 1,
+       "pendingAttempts": 0,
+       "grade": 5.5,
+       "policy": "highest",
+       "lastAt": 1772452800000
+      },
+      {
+       "examKey": "Avaliacao_P1",
+       "applicationId": "app_2",
+       "title": "Prova 1 — Lógica (2ª aplicação, 15/03/2026)",
+       "attempts": 2,
+       "pendingAttempts": 0,
+       "grade": 8.1,
+       "policy": "average",
+       "lastAt": 1773576000000
+      },
+      {
+       "examKey": "Avaliacao_P2",
+       "applicationId": null,
+       "title": "Prova 2",
+       "attempts": 1,
+       "pendingAttempts": 0,
+       "grade": 8.7,
+       "policy": "highest",
+       "lastAt": 1772452800000
+      }
+     ],
+     "average": 7.4
+    },
+    {
+     "id": "m2",
+     "name": "Banco",
+     "exams": [
+      {
+       "examKey": "Avaliacao_P3",
+       "applicationId": null,
+       "title": "Prova 3",
+       "attempts": 0,
+       "pendingAttempts": 1,
+       "grade": null,
+       "policy": null,
+       "lastAt": null
+      }
+     ],
+     "average": null
+    }
+   ],
+   "overallAverage": 7.4,
+   "criterio": {
+    "mediaMinima": 6,
+    "mencoes": null,
+    "regraAntiga": true
+   },
+   "periodoLetivo": {
+    "id": "per_1_aaaaaa",
+    "nome": "2026 · 1º semestre",
+    "inicio": "2026-02-02",
+    "fim": "2026-06-26"
+   },
+   "attendance": {
+    "frequency": 67,
+    "presentes": 2,
+    "faltas": 1,
+    "totalAulas": 3,
+    "days": 2,
+    "disciplines": [
+     {
+      "id": "PROG",
+      "name": "Programação",
+      "presentes": 2,
+      "faltas": 0,
+      "total": 2,
+      "frequencia": 100,
+      "cargaHoraria": 80,
+      "professor": "Prof. Paula",
+      "aulasPrevistas": 42,
+      "faltasPermitidasRestantes": null
+     },
+     {
+      "id": "BD",
+      "name": "Banco de Dados",
+      "presentes": 0,
+      "faltas": 1,
+      "total": 1,
+      "frequencia": 0,
+      "cargaHoraria": null,
+      "professor": "",
+      "aulasPrevistas": 21,
+      "faltasPermitidasRestantes": null
+     }
+    ],
+    "riskThreshold": 75,
+    "aulasPrevistas": 63,
+    "frequenciaMinima": null,
+    "faltasNoPeriodo": 1,
+    "faltasPermitidasRestantes": null
+   },
+   "progress": {
+    "completedUnits": 1,
+    "totalUnits": 3
+   },
+   "issuedBy": "Administração"
+  }
+ },
+ "boletim_bia": {
+  "status": 200,
+  "body": {
+   "generatedAt": "<agora>",
+   "institution": "Escola Alfa",
+   "student": {
+    "name": "Bia Lima",
+    "nomeSocial": "",
+    "email": "bia@notas-b6.local",
+    "matricula": "2026-002",
+    "status": "Ativo"
+   },
+   "course": {
+    "id": "DES",
+    "name": "Desenvolvimento"
+   },
+   "className": "1DES",
+   "period": "Manhã",
+   "modules": [
+    {
+     "id": "m1",
+     "name": "Lógica",
+     "exams": [
+      {
+       "examKey": "Avaliacao_P1",
+       "applicationId": null,
+       "title": "Prova 1 — Lógica",
+       "attempts": 1,
+       "pendingAttempts": 0,
+       "grade": 4,
+       "policy": "highest",
+       "lastAt": 1772452800000
+      },
+      {
+       "examKey": "Avaliacao_P2",
+       "applicationId": null,
+       "title": "Prova 2",
+       "attempts": 0,
+       "pendingAttempts": 0,
+       "grade": null,
+       "policy": null,
+       "lastAt": null
+      }
+     ],
+     "average": 4
+    },
+    {
+     "id": "m2",
+     "name": "Banco",
+     "exams": [
+      {
+       "examKey": "Avaliacao_P3",
+       "applicationId": null,
+       "title": "Prova 3",
+       "attempts": 0,
+       "pendingAttempts": 0,
+       "grade": null,
+       "policy": null,
+       "lastAt": null
+      }
+     ],
+     "average": null
+    }
+   ],
+   "overallAverage": 4,
+   "criterio": {
+    "mediaMinima": 6,
+    "mencoes": null,
+    "regraAntiga": true
+   },
+   "periodoLetivo": {
+    "id": "per_1_aaaaaa",
+    "nome": "2026 · 1º semestre",
+    "inicio": "2026-02-02",
+    "fim": "2026-06-26"
+   },
+   "attendance": {
+    "frequency": 33,
+    "presentes": 1,
+    "faltas": 2,
+    "totalAulas": 3,
+    "days": 2,
+    "disciplines": [
+     {
+      "id": "PROG",
+      "name": "Programação",
+      "presentes": 0,
+      "faltas": 2,
+      "total": 2,
+      "frequencia": 0,
+      "cargaHoraria": 80,
+      "professor": "Prof. Paula",
+      "aulasPrevistas": 42,
+      "faltasPermitidasRestantes": null
+     },
+     {
+      "id": "BD",
+      "name": "Banco de Dados",
+      "presentes": 1,
+      "faltas": 0,
+      "total": 1,
+      "frequencia": 100,
+      "cargaHoraria": null,
+      "professor": "",
+      "aulasPrevistas": 21,
+      "faltasPermitidasRestantes": null
+     }
+    ],
+    "riskThreshold": 75,
+    "aulasPrevistas": 63,
+    "frequenciaMinima": null,
+    "faltasNoPeriodo": 2,
+    "faltasPermitidasRestantes": null
+   },
+   "progress": {
+    "completedUnits": 0,
+    "totalUnits": 3
+   },
+   "issuedBy": "Administração"
+  }
+ },
+ "boletim_caio": {
+  "status": 200,
+  "body": {
+   "generatedAt": "<agora>",
+   "institution": "Escola Alfa",
+   "student": {
+    "name": "=Caio",
+    "nomeSocial": "",
+    "email": "caio@notas-b6.local",
+    "matricula": "2026-003",
+    "status": "Ativo"
+   },
+   "course": {
+    "id": "DES",
+    "name": "Desenvolvimento"
+   },
+   "className": "1DES",
+   "period": "Manhã",
+   "modules": [
+    {
+     "id": "m1",
+     "name": "Lógica",
+     "exams": [
+      {
+       "examKey": "Avaliacao_P1",
+       "applicationId": null,
+       "title": "Prova 1 — Lógica",
+       "attempts": 0,
+       "pendingAttempts": 0,
+       "grade": null,
+       "policy": null,
+       "lastAt": null
+      },
+      {
+       "examKey": "Avaliacao_P2",
+       "applicationId": null,
+       "title": "Prova 2",
+       "attempts": 0,
+       "pendingAttempts": 0,
+       "grade": null,
+       "policy": null,
+       "lastAt": null
+      }
+     ],
+     "average": null
+    },
+    {
+     "id": "m2",
+     "name": "Banco",
+     "exams": [
+      {
+       "examKey": "Avaliacao_P3",
+       "applicationId": null,
+       "title": "Prova 3",
+       "attempts": 2,
+       "pendingAttempts": 0,
+       "grade": 7.2,
+       "policy": "selected",
+       "lastAt": 1772452800000
+      }
+     ],
+     "average": 7.2
+    },
+    {
+     "id": "__outras__",
+     "name": "Outras avaliações",
+     "exams": [
+      {
+       "examKey": "Avaliacao_Extra",
+       "applicationId": null,
+       "title": "Avaliacao_Extra",
+       "attempts": 1,
+       "pendingAttempts": 0,
+       "grade": 8,
+       "policy": "highest",
+       "lastAt": 1772452800000
+      }
+     ],
+     "average": 8
+    }
+   ],
+   "overallAverage": 7.6,
+   "criterio": {
+    "mediaMinima": 6,
+    "mencoes": null,
+    "regraAntiga": true
+   },
+   "periodoLetivo": {
+    "id": "per_1_aaaaaa",
+    "nome": "2026 · 1º semestre",
+    "inicio": "2026-02-02",
+    "fim": "2026-06-26"
+   },
+   "attendance": {
+    "frequency": 33,
+    "presentes": 1,
+    "faltas": 2,
+    "totalAulas": 3,
+    "days": 2,
+    "disciplines": [
+     {
+      "id": "PROG",
+      "name": "Programação",
+      "presentes": 1,
+      "faltas": 2,
+      "total": 3,
+      "frequencia": 33,
+      "cargaHoraria": 80,
+      "professor": "Prof. Paula",
+      "aulasPrevistas": 42,
+      "faltasPermitidasRestantes": null
+     },
+     {
+      "id": "BD",
+      "name": "Banco de Dados",
+      "presentes": 0,
+      "faltas": 0,
+      "total": 0,
+      "frequencia": null,
+      "cargaHoraria": null,
+      "professor": "",
+      "aulasPrevistas": 21,
+      "faltasPermitidasRestantes": null
+     }
+    ],
+    "riskThreshold": 75,
+    "aulasPrevistas": 63,
+    "frequenciaMinima": null,
+    "faltasNoPeriodo": 0,
+    "faltasPermitidasRestantes": null
+   },
+   "progress": {
+    "completedUnits": 0,
+    "totalUnits": 3
+   },
+   "issuedBy": "Administração"
+  }
+ },
+ "boletim_duda": {
+  "status": 200,
+  "body": {
+   "generatedAt": "<agora>",
+   "institution": "Escola Alfa",
+   "student": {
+    "name": "Duda Reis",
+    "nomeSocial": "",
+    "email": "duda@notas-b6.local",
+    "matricula": "2026-004",
+    "status": "Ativo"
+   },
+   "course": {
+    "id": "DES",
+    "name": "Desenvolvimento"
+   },
+   "className": "1DES",
+   "period": "Manhã",
+   "modules": [
+    {
+     "id": "m1",
+     "name": "Lógica",
+     "exams": [
+      {
+       "examKey": "Avaliacao_P1",
+       "applicationId": null,
+       "title": "Prova 1 — Lógica",
+       "attempts": 0,
+       "pendingAttempts": 0,
+       "grade": null,
+       "policy": null,
+       "lastAt": null
+      },
+      {
+       "examKey": "Avaliacao_P2",
+       "applicationId": null,
+       "title": "Prova 2",
+       "attempts": 0,
+       "pendingAttempts": 0,
+       "grade": null,
+       "policy": null,
+       "lastAt": null
+      }
+     ],
+     "average": null
+    },
+    {
+     "id": "m2",
+     "name": "Banco",
+     "exams": [
+      {
+       "examKey": "Avaliacao_P3",
+       "applicationId": null,
+       "title": "Prova 3",
+       "attempts": 0,
+       "pendingAttempts": 0,
+       "grade": null,
+       "policy": null,
+       "lastAt": null
+      }
+     ],
+     "average": null
+    }
+   ],
+   "overallAverage": null,
+   "criterio": {
+    "mediaMinima": 6,
+    "mencoes": null,
+    "regraAntiga": true
+   },
+   "periodoLetivo": {
+    "id": "per_1_aaaaaa",
+    "nome": "2026 · 1º semestre",
+    "inicio": "2026-02-02",
+    "fim": "2026-06-26"
+   },
+   "attendance": {
+    "frequency": null,
+    "presentes": 0,
+    "faltas": 0,
+    "totalAulas": 0,
+    "days": 0,
+    "disciplines": [
+     {
+      "id": "PROG",
+      "name": "Programação",
+      "presentes": 0,
+      "faltas": 0,
+      "total": 0,
+      "frequencia": null,
+      "cargaHoraria": 80,
+      "professor": "Prof. Paula",
+      "aulasPrevistas": 42,
+      "faltasPermitidasRestantes": null
+     },
+     {
+      "id": "BD",
+      "name": "Banco de Dados",
+      "presentes": 0,
+      "faltas": 0,
+      "total": 0,
+      "frequencia": null,
+      "cargaHoraria": null,
+      "professor": "",
+      "aulasPrevistas": 21,
+      "faltasPermitidasRestantes": null
+     }
+    ],
+    "riskThreshold": 75,
+    "aulasPrevistas": 63,
+    "frequenciaMinima": null,
+    "faltasNoPeriodo": 0,
+    "faltasPermitidasRestantes": null
+   },
+   "progress": {
+    "completedUnits": 0,
+    "totalUnits": 3
+   },
+   "issuedBy": "Administração"
+  }
+ },
+ "boletimBiaSemCurso": {
+  "status": 200,
+  "body": {
+   "generatedAt": "<agora>",
+   "institution": "Escola Alfa",
+   "student": {
+    "name": "Bia Lima",
+    "nomeSocial": "",
+    "email": "bia@notas-b6.local",
+    "matricula": "2026-002",
+    "status": "Ativo"
+   },
+   "course": {
+    "id": "DES",
+    "name": "Desenvolvimento"
+   },
+   "className": "1DES",
+   "period": "Manhã",
+   "modules": [
+    {
+     "id": "m1",
+     "name": "Lógica",
+     "exams": [
+      {
+       "examKey": "Avaliacao_P1",
+       "applicationId": null,
+       "title": "Prova 1 — Lógica",
+       "attempts": 1,
+       "pendingAttempts": 0,
+       "grade": 4,
+       "policy": "highest",
+       "lastAt": 1772452800000
+      },
+      {
+       "examKey": "Avaliacao_P2",
+       "applicationId": null,
+       "title": "Prova 2",
+       "attempts": 0,
+       "pendingAttempts": 0,
+       "grade": null,
+       "policy": null,
+       "lastAt": null
+      }
+     ],
+     "average": 4
+    },
+    {
+     "id": "m2",
+     "name": "Banco",
+     "exams": [
+      {
+       "examKey": "Avaliacao_P3",
+       "applicationId": null,
+       "title": "Prova 3",
+       "attempts": 0,
+       "pendingAttempts": 0,
+       "grade": null,
+       "policy": null,
+       "lastAt": null
+      }
+     ],
+     "average": null
+    }
+   ],
+   "overallAverage": 4,
+   "criterio": {
+    "mediaMinima": 6,
+    "mencoes": null,
+    "regraAntiga": true
+   },
+   "periodoLetivo": {
+    "id": "per_1_aaaaaa",
+    "nome": "2026 · 1º semestre",
+    "inicio": "2026-02-02",
+    "fim": "2026-06-26"
+   },
+   "attendance": {
+    "frequency": 33,
+    "presentes": 1,
+    "faltas": 2,
+    "totalAulas": 3,
+    "days": 2,
+    "disciplines": [
+     {
+      "id": "PROG",
+      "name": "Programação",
+      "presentes": 0,
+      "faltas": 2,
+      "total": 2,
+      "frequencia": 0,
+      "cargaHoraria": 80,
+      "professor": "Prof. Paula",
+      "aulasPrevistas": 42,
+      "faltasPermitidasRestantes": null
+     },
+     {
+      "id": "BD",
+      "name": "Banco de Dados",
+      "presentes": 1,
+      "faltas": 0,
+      "total": 1,
+      "frequencia": 100,
+      "cargaHoraria": null,
+      "professor": "",
+      "aulasPrevistas": 21,
+      "faltasPermitidasRestantes": null
+     }
+    ],
+    "riskThreshold": 75,
+    "aulasPrevistas": 63,
+    "frequenciaMinima": null,
+    "faltasNoPeriodo": 2,
+    "faltasPermitidasRestantes": null
+   },
+   "progress": {
+    "completedUnits": 0,
+    "totalUnits": 3
+   },
+   "issuedBy": "Administração"
+  }
+ },
+ "boletimBiaRedes": {
+  "status": 200,
+  "body": {
+   "generatedAt": "<agora>",
+   "institution": "Escola Alfa",
+   "student": {
+    "name": "Bia Lima",
+    "nomeSocial": "",
+    "email": "bia@notas-b6.local",
+    "matricula": "2026-002",
+    "status": "Ativo"
+   },
+   "course": {
+    "id": "RED",
+    "name": "Redes"
+   },
+   "className": "2RED",
+   "period": "Noite",
+   "modules": [
+    {
+     "id": "r1",
+     "name": "Redes",
+     "exams": [
+      {
+       "examKey": "Avaliacao_R1",
+       "applicationId": null,
+       "title": "Prova R",
+       "attempts": 1,
+       "pendingAttempts": 0,
+       "grade": 9.5,
+       "policy": "highest",
+       "lastAt": 1772452800000
+      }
+     ],
+     "average": 9.5
+    }
+   ],
+   "overallAverage": 9.5,
+   "criterio": {
+    "mediaMinima": 6,
+    "mencoes": null,
+    "regraAntiga": true
+   },
+   "periodoLetivo": null,
+   "attendance": {
+    "frequency": null,
+    "presentes": 0,
+    "faltas": 0,
+    "totalAulas": 0,
+    "days": 0,
+    "disciplines": [],
+    "riskThreshold": 75,
+    "aulasPrevistas": null,
+    "frequenciaMinima": null,
+    "faltasNoPeriodo": null,
+    "faltasPermitidasRestantes": null
+   },
+   "progress": {
+    "completedUnits": 0,
+    "totalUnits": 0
+   },
+   "issuedBy": "Administração"
+  }
+ },
+ "boletimMonitor": {
+  "status": 200,
+  "body": {
+   "gradesHidden": true,
+   "generatedAt": "<agora>",
+   "institution": "Escola Alfa",
+   "student": {
+    "name": "Ana Souza",
+    "nomeSocial": "",
+    "email": "ana@notas-b6.local",
+    "matricula": "2026-001",
+    "status": "Ativo"
+   },
+   "course": {
+    "id": "DES",
+    "name": "Desenvolvimento"
+   },
+   "className": "1DES",
+   "period": "Manhã",
+   "modules": [],
+   "overallAverage": null,
+   "criterio": {
+    "mediaMinima": 6,
+    "mencoes": null,
+    "regraAntiga": true
+   },
+   "periodoLetivo": {
+    "id": "per_1_aaaaaa",
+    "nome": "2026 · 1º semestre",
+    "inicio": "2026-02-02",
+    "fim": "2026-06-26"
+   },
+   "attendance": {
+    "frequency": 67,
+    "presentes": 2,
+    "faltas": 1,
+    "totalAulas": 3,
+    "days": 2,
+    "disciplines": [
+     {
+      "id": "PROG",
+      "name": "Programação",
+      "presentes": 2,
+      "faltas": 0,
+      "total": 2,
+      "frequencia": 100,
+      "cargaHoraria": 80,
+      "professor": "Prof. Paula",
+      "aulasPrevistas": 42,
+      "faltasPermitidasRestantes": null
+     },
+     {
+      "id": "BD",
+      "name": "Banco de Dados",
+      "presentes": 0,
+      "faltas": 1,
+      "total": 1,
+      "frequencia": 0,
+      "cargaHoraria": null,
+      "professor": "",
+      "aulasPrevistas": 21,
+      "faltasPermitidasRestantes": null
+     }
+    ],
+    "riskThreshold": 75,
+    "aulasPrevistas": 63,
+    "frequenciaMinima": null,
+    "faltasNoPeriodo": 1,
+    "faltasPermitidasRestantes": null
+   },
+   "progress": {
+    "completedUnits": 1,
+    "totalUnits": 3
+   },
+   "issuedBy": "Monitor Mário"
+  }
+ },
+ "boletimProfessor": {
+  "status": 200,
+  "body": {
+   "generatedAt": "<agora>",
+   "institution": "Escola Alfa",
+   "student": {
+    "name": "Ana Souza",
+    "nomeSocial": "",
+    "email": "ana@notas-b6.local",
+    "matricula": "2026-001",
+    "status": "Ativo"
+   },
+   "course": {
+    "id": "DES",
+    "name": "Desenvolvimento"
+   },
+   "className": "1DES",
+   "period": "Manhã",
+   "modules": [
+    {
+     "id": "m1",
+     "name": "Lógica",
+     "exams": [
+      {
+       "examKey": "Avaliacao_P1",
+       "applicationId": "app_1",
+       "title": "Prova 1 — Lógica (1ª aplicação, 01/03/2026)",
+       "attempts": 1,
+       "pendingAttempts": 0,
+       "grade": 5.5,
+       "policy": "highest",
+       "lastAt": 1772452800000
+      },
+      {
+       "examKey": "Avaliacao_P1",
+       "applicationId": "app_2",
+       "title": "Prova 1 — Lógica (2ª aplicação, 15/03/2026)",
+       "attempts": 2,
+       "pendingAttempts": 0,
+       "grade": 8.1,
+       "policy": "average",
+       "lastAt": 1773576000000
+      },
+      {
+       "examKey": "Avaliacao_P2",
+       "applicationId": null,
+       "title": "Prova 2",
+       "attempts": 1,
+       "pendingAttempts": 0,
+       "grade": 8.7,
+       "policy": "highest",
+       "lastAt": 1772452800000
+      }
+     ],
+     "average": 7.4
+    },
+    {
+     "id": "m2",
+     "name": "Banco",
+     "exams": [
+      {
+       "examKey": "Avaliacao_P3",
+       "applicationId": null,
+       "title": "Prova 3",
+       "attempts": 0,
+       "pendingAttempts": 1,
+       "grade": null,
+       "policy": null,
+       "lastAt": null
+      }
+     ],
+     "average": null
+    }
+   ],
+   "overallAverage": 7.4,
+   "criterio": {
+    "mediaMinima": 6,
+    "mencoes": null,
+    "regraAntiga": true
+   },
+   "periodoLetivo": {
+    "id": "per_1_aaaaaa",
+    "nome": "2026 · 1º semestre",
+    "inicio": "2026-02-02",
+    "fim": "2026-06-26"
+   },
+   "attendance": {
+    "frequency": 67,
+    "presentes": 2,
+    "faltas": 1,
+    "totalAulas": 3,
+    "days": 2,
+    "disciplines": [
+     {
+      "id": "PROG",
+      "name": "Programação",
+      "presentes": 2,
+      "faltas": 0,
+      "total": 2,
+      "frequencia": 100,
+      "cargaHoraria": 80,
+      "professor": "Prof. Paula",
+      "aulasPrevistas": 42,
+      "faltasPermitidasRestantes": null
+     },
+     {
+      "id": "BD",
+      "name": "Banco de Dados",
+      "presentes": 0,
+      "faltas": 1,
+      "total": 1,
+      "frequencia": 0,
+      "cargaHoraria": null,
+      "professor": "",
+      "aulasPrevistas": 21,
+      "faltasPermitidasRestantes": null
+     }
+    ],
+    "riskThreshold": 75,
+    "aulasPrevistas": 63,
+    "frequenciaMinima": null,
+    "faltasNoPeriodo": 1,
+    "faltasPermitidasRestantes": null
+   },
+   "progress": {
+    "completedUnits": 1,
+    "totalUnits": 3
+   },
+   "issuedBy": "Professora Paula"
+  }
+ },
+ "boletimCursoErrado": {
+  "status": 400,
+  "body": {
+   "error": "O aluno não tem matrícula no curso selecionado."
+  }
+ },
+ "quadro": {
+  "status": 200,
+  "body": {
+   "courseId": "DES",
+   "courseName": "Desenvolvimento",
+   "studentClass": "1DES",
+   "generatedAt": "<agora>",
+   "columns": [
+    {
+     "id": "Avaliacao_P1::application:app_1",
+     "examKey": "Avaliacao_P1",
+     "applicationId": "app_1",
+     "label": "Prova 1 — Lógica (1ª aplicação, 01/03/2026)",
+     "moduleName": "Lógica",
+     "unitName": "Prova 1"
+    },
+    {
+     "id": "Avaliacao_P1::application:app_2",
+     "examKey": "Avaliacao_P1",
+     "applicationId": "app_2",
+     "label": "Prova 1 — Lógica (2ª aplicação, 15/03/2026)",
+     "moduleName": "Lógica",
+     "unitName": "Prova 1"
+    },
+    {
+     "id": "Avaliacao_P1::legacy",
+     "examKey": "Avaliacao_P1",
+     "applicationId": null,
+     "label": "Prova 1 — Lógica (lançamento manual)",
+     "moduleName": "Lógica",
+     "unitName": "Prova 1"
+    },
+    {
+     "id": "Avaliacao_P2",
+     "examKey": "Avaliacao_P2",
+     "applicationId": null,
+     "label": "Prova 2",
+     "moduleName": "Lógica",
+     "unitName": "Prova 2"
+    },
+    {
+     "id": "Avaliacao_P3",
+     "examKey": "Avaliacao_P3",
+     "applicationId": null,
+     "label": "Prova 3",
+     "moduleName": "Banco",
+     "unitName": "Prova 3"
+    },
+    {
+     "id": "Avaliacao_Extra",
+     "examKey": "Avaliacao_Extra",
+     "applicationId": null,
+     "label": "Avaliacao_Extra",
+     "moduleName": "Outras avaliações",
+     "unitName": ""
+    }
+   ],
+   "rows": [
+    {
+     "email": "caio@notas-b6.local",
+     "name": "=Caio",
+     "matricula": "2026-003",
+     "status": "Ativo",
+     "cells": {
+      "Avaliacao_P3": {
+       "score": 72,
+       "grade": 7.2,
+       "pending": 0
+      },
+      "Avaliacao_Extra": {
+       "score": 80,
+       "grade": 8,
+       "pending": 0
+      }
+     },
+     "average": 7.6,
+     "averageScore": 76,
+     "gradedCount": 2,
+     "pendingCount": 0
+    },
+    {
+     "email": "ana@notas-b6.local",
+     "name": "Ana Souza",
+     "matricula": "2026-001",
+     "status": "Ativo",
+     "cells": {
+      "Avaliacao_P1::application:app_1": {
+       "score": 55,
+       "grade": 5.5,
+       "pending": 0
+      },
+      "Avaliacao_P1::application:app_2": {
+       "score": 80.5,
+       "grade": 8.1,
+       "pending": 0
+      },
+      "Avaliacao_P2": {
+       "score": 87,
+       "grade": 8.7,
+       "pending": 0
+      },
+      "Avaliacao_P3": {
+       "score": 64,
+       "grade": 6.4,
+       "pending": 1
+      }
+     },
+     "average": 7.2,
+     "averageScore": 71.625,
+     "gradedCount": 4,
+     "pendingCount": 1
+    },
+    {
+     "email": "bia@notas-b6.local",
+     "name": "Bia Lima",
+     "matricula": "2026-002",
+     "status": "Ativo",
+     "cells": {
+      "Avaliacao_P1::legacy": {
+       "score": 40,
+       "grade": 4,
+       "pending": 0
+      }
+     },
+     "average": 4,
+     "averageScore": 40,
+     "gradedCount": 1,
+     "pendingCount": 0
+    },
+    {
+     "email": "duda@notas-b6.local",
+     "name": "Duda Reis",
+     "matricula": "2026-004",
+     "status": "Ativo",
+     "cells": {},
+     "average": null,
+     "averageScore": null,
+     "gradedCount": 0,
+     "pendingCount": 0
+    }
+   ],
+   "criterio": {
+    "mediaMinima": 6,
+    "mencoes": null,
+    "regraAntiga": true
+   }
+  }
+ },
+ "quadroProfessor": {
+  "status": 200,
+  "body": {
+   "courseId": "DES",
+   "courseName": "Desenvolvimento",
+   "studentClass": "1DES",
+   "generatedAt": "<agora>",
+   "columns": [
+    {
+     "id": "Avaliacao_P1::application:app_1",
+     "examKey": "Avaliacao_P1",
+     "applicationId": "app_1",
+     "label": "Prova 1 — Lógica (1ª aplicação, 01/03/2026)",
+     "moduleName": "Lógica",
+     "unitName": "Prova 1"
+    },
+    {
+     "id": "Avaliacao_P1::application:app_2",
+     "examKey": "Avaliacao_P1",
+     "applicationId": "app_2",
+     "label": "Prova 1 — Lógica (2ª aplicação, 15/03/2026)",
+     "moduleName": "Lógica",
+     "unitName": "Prova 1"
+    },
+    {
+     "id": "Avaliacao_P1::legacy",
+     "examKey": "Avaliacao_P1",
+     "applicationId": null,
+     "label": "Prova 1 — Lógica (lançamento manual)",
+     "moduleName": "Lógica",
+     "unitName": "Prova 1"
+    },
+    {
+     "id": "Avaliacao_P2",
+     "examKey": "Avaliacao_P2",
+     "applicationId": null,
+     "label": "Prova 2",
+     "moduleName": "Lógica",
+     "unitName": "Prova 2"
+    },
+    {
+     "id": "Avaliacao_P3",
+     "examKey": "Avaliacao_P3",
+     "applicationId": null,
+     "label": "Prova 3",
+     "moduleName": "Banco",
+     "unitName": "Prova 3"
+    },
+    {
+     "id": "Avaliacao_Extra",
+     "examKey": "Avaliacao_Extra",
+     "applicationId": null,
+     "label": "Avaliacao_Extra",
+     "moduleName": "Outras avaliações",
+     "unitName": ""
+    }
+   ],
+   "rows": [
+    {
+     "email": "caio@notas-b6.local",
+     "name": "=Caio",
+     "matricula": "2026-003",
+     "status": "Ativo",
+     "cells": {
+      "Avaliacao_P3": {
+       "score": 72,
+       "grade": 7.2,
+       "pending": 0
+      },
+      "Avaliacao_Extra": {
+       "score": 80,
+       "grade": 8,
+       "pending": 0
+      }
+     },
+     "average": 7.6,
+     "averageScore": 76,
+     "gradedCount": 2,
+     "pendingCount": 0
+    },
+    {
+     "email": "ana@notas-b6.local",
+     "name": "Ana Souza",
+     "matricula": "2026-001",
+     "status": "Ativo",
+     "cells": {
+      "Avaliacao_P1::application:app_1": {
+       "score": 55,
+       "grade": 5.5,
+       "pending": 0
+      },
+      "Avaliacao_P1::application:app_2": {
+       "score": 80.5,
+       "grade": 8.1,
+       "pending": 0
+      },
+      "Avaliacao_P2": {
+       "score": 87,
+       "grade": 8.7,
+       "pending": 0
+      },
+      "Avaliacao_P3": {
+       "score": 64,
+       "grade": 6.4,
+       "pending": 1
+      }
+     },
+     "average": 7.2,
+     "averageScore": 71.625,
+     "gradedCount": 4,
+     "pendingCount": 1
+    },
+    {
+     "email": "bia@notas-b6.local",
+     "name": "Bia Lima",
+     "matricula": "2026-002",
+     "status": "Ativo",
+     "cells": {
+      "Avaliacao_P1::legacy": {
+       "score": 40,
+       "grade": 4,
+       "pending": 0
+      }
+     },
+     "average": 4,
+     "averageScore": 40,
+     "gradedCount": 1,
+     "pendingCount": 0
+    },
+    {
+     "email": "duda@notas-b6.local",
+     "name": "Duda Reis",
+     "matricula": "2026-004",
+     "status": "Ativo",
+     "cells": {},
+     "average": null,
+     "averageScore": null,
+     "gradedCount": 0,
+     "pendingCount": 0
+    }
+   ],
+   "criterio": {
+    "mediaMinima": 6,
+    "mencoes": null,
+    "regraAntiga": true
+   }
+  }
+ },
+ "quadroCsv": {
+  "status": 200,
+  "type": "text/csv; charset=utf-8",
+  "text": "﻿Aluno;E-mail;Matrícula;Prova 1 — Lógica (1ª aplicação, 01/03/2026);Prova 1 — Lógica (2ª aplicação, 15/03/2026);Prova 1 — Lógica (lançamento manual);Prova 2;Prova 3;Avaliacao_Extra;Média;Notas não publicadas\r\n'=Caio;caio@notas-b6.local;2026-003;;;;;7,2;8,0;7,6;0\r\nAna Souza;ana@notas-b6.local;2026-001;5,5;8,1;;8,7;6,4;;7,2;1\r\nBia Lima;bia@notas-b6.local;2026-002;;;4,0;;;;4,0;0\r\nDuda Reis;duda@notas-b6.local;2026-004;;;;;;;;0\r\n"
+ },
+ "quadroXlsx": {
+  "status": 200,
+  "linhas": [
+   {
+    "numero": 2,
+    "valores": [
+     "=Caio",
+     "caio@notas-b6.local",
+     "2026-003",
+     "",
+     "",
+     "",
+     "",
+     "7,2",
+     "8,0",
+     "7,6",
+     "0"
+    ]
+   },
+   {
+    "numero": 3,
+    "valores": [
+     "Ana Souza",
+     "ana@notas-b6.local",
+     "2026-001",
+     "5,5",
+     "8,1",
+     "",
+     "8,7",
+     "6,4",
+     "",
+     "7,2",
+     "1"
+    ]
+   },
+   {
+    "numero": 4,
+    "valores": [
+     "Bia Lima",
+     "bia@notas-b6.local",
+     "2026-002",
+     "",
+     "",
+     "4,0",
+     "",
+     "",
+     "",
+     "4,0",
+     "0"
+    ]
+   },
+   {
+    "numero": 5,
+    "valores": [
+     "Duda Reis",
+     "duda@notas-b6.local",
+     "2026-004",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "",
+     "0"
+    ]
+   }
+  ]
+ },
+ "ficha_ana": {
+  "status": 200,
+  "body": {
+   "kpis": {
+    "frequencia": 67,
+    "media": 7.2,
+    "progresso": 33,
+    "provasFeitas": 3,
+    "provasTotais": 3
+   },
+   "comparativo": {
+    "studentMedia": 7.2,
+    "turmaMedia": 6.3,
+    "studentFreq": 67,
+    "turmaFreq": 44,
+    "turmaSize": 4
+   },
+   "risco": {
+    "level": "alto",
+    "reasons": [
+     "Frequência baixa (67%)",
+     "Baixa frequência em Banco de Dados"
+    ]
+   },
+   "engajamento": {
+    "weeks": [
+     {
+      "label": "S1",
+      "count": 0
+     },
+     {
+      "label": "S2",
+      "count": 0
+     },
+     {
+      "label": "S3",
+      "count": 0
+     },
+     {
+      "label": "S4",
+      "count": 0
+     },
+     {
+      "label": "S5",
+      "count": 0
+     },
+     {
+      "label": "S6",
+      "count": 0
+     }
+    ],
+    "diasAtivos": 0
+   },
+   "streak": {
+    "atual": 0,
+    "recorde": 1
+   },
+   "temporal": {
+    "mediaAtual": null,
+    "mediaAnterior": null,
+    "presencaAtual": 0,
+    "presencaAnterior": 0
+   },
+   "notas": [
+    {
+     "label": "P1",
+     "value": 5.5
+    },
+    {
+     "label": "P1",
+     "value": 7
+    },
+    {
+     "label": "P2",
+     "value": 8.7
+    },
+    {
+     "label": "P3",
+     "value": 6.4
+    },
+    {
+     "label": "P1",
+     "value": 9.1
+    }
+   ],
+   "modulos": [
+    {
+     "id": "m1",
+     "modulo": "Lógica",
+     "media": 7.4
+    },
+    {
+     "id": "m2",
+     "modulo": "Banco",
+     "media": 6.4
+    }
+   ],
+   "frequenciaDisciplinas": [
+    {
+     "disciplinaId": "BD",
+     "nome": "Banco de Dados",
+     "frequencia": 0,
+     "presentes": 0,
+     "faltas": 1,
+     "total": 1,
+     "emRisco": true
+    },
+    {
+     "disciplinaId": "PROG",
+     "nome": "Programação",
+     "frequencia": 100,
+     "presentes": 2,
+     "faltas": 0,
+     "total": 2,
+     "emRisco": false
+    }
+   ],
+   "faltas": 1,
+   "limiarRisco": 75,
+   "criterio": {
+    "mediaMinima": 6,
+    "mencoes": null,
+    "regraAntiga": true
+   }
+  }
+ },
+ "ficha_bia": {
+  "status": 200,
+  "body": {
+   "kpis": {
+    "frequencia": 33,
+    "media": 4,
+    "progresso": 0,
+    "provasFeitas": 2,
+    "provasTotais": 3
+   },
+   "comparativo": {
+    "studentMedia": 4,
+    "turmaMedia": 6.3,
+    "studentFreq": 33,
+    "turmaFreq": 44,
+    "turmaSize": 4
+   },
+   "risco": {
+    "level": "alto",
+    "reasons": [
+     "Frequência baixa (33%)",
+     "Baixa frequência em Programação",
+     "Média abaixo de 6,0 (4,0)"
+    ]
+   },
+   "engajamento": {
+    "weeks": [
+     {
+      "label": "S1",
+      "count": 0
+     },
+     {
+      "label": "S2",
+      "count": 0
+     },
+     {
+      "label": "S3",
+      "count": 0
+     },
+     {
+      "label": "S4",
+      "count": 0
+     },
+     {
+      "label": "S5",
+      "count": 0
+     },
+     {
+      "label": "S6",
+      "count": 0
+     }
+    ],
+    "diasAtivos": 0
+   },
+   "streak": {
+    "atual": 0,
+    "recorde": 1
+   },
+   "temporal": {
+    "mediaAtual": null,
+    "mediaAnterior": null,
+    "presencaAtual": 0,
+    "presencaAnterior": 0
+   },
+   "notas": [
+    {
+     "label": "P1",
+     "value": 4
+    }
+   ],
+   "modulos": [
+    {
+     "id": "m1",
+     "modulo": "Lógica",
+     "media": 4
+    }
+   ],
+   "frequenciaDisciplinas": [
+    {
+     "disciplinaId": "PROG",
+     "nome": "Programação",
+     "frequencia": 0,
+     "presentes": 0,
+     "faltas": 2,
+     "total": 2,
+     "emRisco": true
+    },
+    {
+     "disciplinaId": "BD",
+     "nome": "Banco de Dados",
+     "frequencia": 100,
+     "presentes": 1,
+     "faltas": 0,
+     "total": 1,
+     "emRisco": false
+    }
+   ],
+   "faltas": 2,
+   "limiarRisco": 75,
+   "criterio": {
+    "mediaMinima": 6,
+    "mencoes": null,
+    "regraAntiga": true
+   }
+  }
+ },
+ "visaoGeral": {
+  "status": 200,
+  "body": [
+   {
+    "id": null,
+    "email": "ana@notas-b6.local",
+    "name": "Ana Souza",
+    "className": "1DES",
+    "frequencia": 67,
+    "presentes": 2,
+    "totalAulas": 3,
+    "faltas": 1,
+    "media": 7.2,
+    "riscoLevel": "alto",
+    "disciplinasEmRisco": 1,
+    "criterio": {
+     "mediaMinima": 6,
+     "mencoes": null,
+     "regraAntiga": true
+    }
+   },
+   {
+    "id": null,
+    "email": "bia@notas-b6.local",
+    "name": "Bia Lima",
+    "className": "1DES",
+    "frequencia": 33,
+    "presentes": 1,
+    "totalAulas": 3,
+    "faltas": 2,
+    "media": 4,
+    "riscoLevel": "alto",
+    "disciplinasEmRisco": 1,
+    "criterio": {
+     "mediaMinima": 6,
+     "mencoes": null,
+     "regraAntiga": true
+    }
+   },
+   {
+    "id": null,
+    "email": "caio@notas-b6.local",
+    "name": "=Caio",
+    "className": "1DES",
+    "frequencia": 33,
+    "presentes": 1,
+    "totalAulas": 3,
+    "faltas": 2,
+    "media": 7.6,
+    "riscoLevel": "alto",
+    "disciplinasEmRisco": 1,
+    "criterio": {
+     "mediaMinima": 6,
+     "mencoes": null,
+     "regraAntiga": true
+    }
+   },
+   {
+    "id": null,
+    "email": "duda@notas-b6.local",
+    "name": "Duda Reis",
+    "className": "1DES",
+    "frequencia": null,
+    "presentes": 0,
+    "totalAulas": 0,
+    "faltas": 0,
+    "media": null,
+    "riscoLevel": "baixo",
+    "disciplinasEmRisco": 0,
+    "criterio": {
+     "mediaMinima": 6,
+     "mencoes": null,
+     "regraAntiga": true
+    }
+   }
+  ]
+ },
+ "visaoGeralSemFiltro": {
+  "status": 200,
+  "body": [
+   {
+    "id": null,
+    "email": "ana@notas-b6.local",
+    "name": "Ana Souza",
+    "className": "1DES",
+    "frequencia": 67,
+    "presentes": 2,
+    "totalAulas": 3,
+    "faltas": 1,
+    "media": 7.2,
+    "riscoLevel": "alto",
+    "disciplinasEmRisco": 1,
+    "criterio": {
+     "mediaMinima": 6,
+     "mencoes": null,
+     "regraAntiga": true
+    }
+   },
+   {
+    "id": null,
+    "email": "bia@notas-b6.local",
+    "name": "Bia Lima",
+    "className": "1DES",
+    "frequencia": 33,
+    "presentes": 1,
+    "totalAulas": 3,
+    "faltas": 2,
+    "media": 6.8,
+    "riscoLevel": "alto",
+    "disciplinasEmRisco": 1,
+    "criterio": {
+     "mediaMinima": 6,
+     "mencoes": null,
+     "regraAntiga": true
+    }
+   },
+   {
+    "id": null,
+    "email": "caio@notas-b6.local",
+    "name": "=Caio",
+    "className": "1DES",
+    "frequencia": 33,
+    "presentes": 1,
+    "totalAulas": 3,
+    "faltas": 2,
+    "media": 7.6,
+    "riscoLevel": "alto",
+    "disciplinasEmRisco": 1,
+    "criterio": {
+     "mediaMinima": 6,
+     "mencoes": null,
+     "regraAntiga": true
+    }
+   },
+   {
+    "id": null,
+    "email": "duda@notas-b6.local",
+    "name": "Duda Reis",
+    "className": "1DES",
+    "frequencia": null,
+    "presentes": 0,
+    "totalAulas": 0,
+    "faltas": 0,
+    "media": null,
+    "riscoLevel": "baixo",
+    "disciplinasEmRisco": 0,
+    "criterio": {
+     "mediaMinima": 6,
+     "mencoes": null,
+     "regraAntiga": true
+    }
+   }
+  ]
+ },
+ "portal_ana": {
+  "status": 200,
+  "body": {
+   "courseName": "Desenvolvimento",
+   "modules": [
+    {
+     "id": "m1",
+     "name": "Lógica",
+     "done": 2,
+     "total": 2,
+     "progress": 100,
+     "note": 7.4,
+     "noteStatus": "published"
+    },
+    {
+     "id": "m2",
+     "name": "Banco",
+     "done": 0,
+     "total": 1,
+     "progress": 0,
+     "note": null,
+     "noteStatus": "review"
+    }
+   ],
+   "progress": 67,
+   "completedCount": 2,
+   "totalUnits": 3,
+   "overallNote": 7.4,
+   "frequency": 67,
+   "pendingCount": 1,
+   "continueItem": {
+    "key": "Ap_1",
+    "title": "Prova 1",
+    "moduleName": "Lógica"
+   },
+   "announcements": [],
+   "calendar": [],
+   "performance": [
+    {
+     "id": "ana_p1_a",
+     "examKey": "Avaliacao_P1",
+     "note": 5.5
+    },
+    {
+     "id": "ana_p2",
+     "examKey": "Avaliacao_P2",
+     "note": 8.7
+    },
+    {
+     "id": "ana_p1_b2",
+     "examKey": "Avaliacao_P1",
+     "note": 8.1
+    }
+   ]
+  }
+ },
+ "portal_bia": {
+  "status": 200,
+  "body": {
+   "courseName": "Desenvolvimento",
+   "modules": [
+    {
+     "id": "m1",
+     "name": "Lógica",
+     "done": 0,
+     "total": 2,
+     "progress": 0,
+     "note": 4,
+     "noteStatus": "published"
+    },
+    {
+     "id": "m2",
+     "name": "Banco",
+     "done": 0,
+     "total": 1,
+     "progress": 0,
+     "note": null,
+     "noteStatus": "none"
+    }
+   ],
+   "progress": 0,
+   "completedCount": 0,
+   "totalUnits": 3,
+   "overallNote": 4,
+   "frequency": 33,
+   "pendingCount": 3,
+   "continueItem": {
+    "key": "Ap_1",
+    "title": "Prova 1",
+    "moduleName": "Lógica"
+   },
+   "announcements": [],
+   "calendar": [],
+   "performance": [
+    {
+     "id": "bia_p1",
+     "examKey": "Avaliacao_P1",
+     "note": 4
+    }
+   ]
+  }
+ }
+}

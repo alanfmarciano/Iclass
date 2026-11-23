@@ -1,9 +1,10 @@
-import { cleanup, render, screen } from '@testing-library/react'
+import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ChamadaPage from './ChamadaPage'
 
-const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn() }))
+const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), auth: undefined }))
+vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: mocks.auth }) }))
 vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post } }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => ({ success: vi.fn(), error: vi.fn() }) }))
 vi.mock('../../hooks/useAdminWorkspace', () => ({
@@ -35,6 +36,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  mocks.auth = undefined
 })
 
 describe('Chamada com presença automática', () => {
@@ -136,5 +138,74 @@ describe('Chamada em dia não letivo', () => {
     render(<ChamadaPage />)
     expect(await screen.findByText('Não há aula neste dia: Proclamação da República')).toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Fazer a chamada mesmo assim' })).not.toBeInTheDocument()
+  })
+})
+
+describe('Chamada em dia sem aula: faixa (B7)', () => {
+  it('[UC-PRESENCA-005] recesso: a faixa diz o tipo e o intervalo, e o botão ocupa a largura toda no celular', async () => {
+    const recesso = { id: 'nl_2', nome: 'Recesso de julho', tipo: 'recesso', tipoRotulo: 'Recesso', inicio: '2027-07-12', fim: '2027-07-23', escopo: 'instituicao' }
+    mocks.get.mockImplementation(async (url) => (url.startsWith('/api/admin/attendance/roster')
+      ? { ...rosterWith([aluno('ana@x.local')]), aulas: [], aulasGrade: aulas, naoLetivo: recesso, foraDoPeriodo: false }
+      : {}))
+    render(<ChamadaPage />)
+    const faixa = (await screen.findByText('Não há aula neste dia: Recesso de julho')).closest('[role="status"]')
+    expect(faixa).toHaveTextContent('Recesso, de 12/07/2027 a 23/07/2027.')
+    expect(screen.getByRole('button', { name: 'Fazer a chamada mesmo assim' }).className).toMatch(/\bw-full\b/)
+  })
+
+  it('[UC-PRESENCA-005] fora do período letivo: a faixa diz o nome e as datas do período', async () => {
+    // Antes dizia só "Fora do período letivo da turma", sem dizer qual.
+    const periodo = { id: 'per_1', nome: '2027 · 1º semestre', inicio: '2027-02-01', fim: '2027-06-30' }
+    mocks.get.mockImplementation(async (url) => (url.startsWith('/api/admin/attendance/roster')
+      ? { ...rosterWith([aluno('ana@x.local')]), aulas: [], aulasGrade: aulas, naoLetivo: null, foraDoPeriodo: true, periodoLetivo: periodo }
+      : {}))
+    render(<ChamadaPage />)
+    const faixa = (await screen.findByText('Fora do período letivo da turma')).closest('[role="status"]')
+    expect(faixa).toHaveTextContent('Fora do período letivo 2027 · 1º semestre (de 01/02/2027 a 30/06/2027).')
+  })
+})
+
+describe('Chamada da Coordenação (só consulta)', () => {
+  const coordenacao = {
+    role: 'admin', accountRole: 'coordenacao', readOnly: true,
+    effectivePermissions: ['page.dashboard', 'page.results', 'page.classes', 'page.students', 'page.forum', 'page.assignments', 'reports.view'],
+  }
+
+  it('[UC-PAPEIS-004] mostra a chamada como foi salva, sem concluir, marcar todos nem salvar sozinha (403)', async () => {
+    mocks.auth = coordenacao
+    const user = userEvent.setup()
+    mocks.get.mockImplementation(async (url) => (url.startsWith('/api/admin/attendance/roster') ? rosterWith([aluno('ana@x.local', { origin: 'chamada', salvo: true })]) : {}))
+    render(<ChamadaPage />)
+    expect(await screen.findByText('Sua conta é só de consulta: a chamada aparece como foi salva, sem alterar.')).toBeInTheDocument()
+    // Antes: "Concluir chamada" e "Todos presente" apareciam e o POST de /attendance/bulk dava 403.
+    expect(screen.queryByRole('button', { name: 'Concluir chamada' })).not.toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Todos presente' })).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Exportar CSV' })).toBeInTheDocument()
+    const lista = screen.getByRole('group', { name: 'Chamada (só consulta)' })
+    expect(lista).toBeDisabled()
+    // Tecla de atalho (F = falta) não muda nada.
+    fireEvent.keyDown(document.body, { key: 'f' })
+    await user.click(lista)
+    await new Promise((resolve) => setTimeout(resolve, 50))
+    expect(mocks.post).not.toHaveBeenCalled()
+  })
+
+  it('[UC-PAPEIS-004] em dia sem aula não oferece "Fazer a chamada mesmo assim"', async () => {
+    mocks.auth = coordenacao
+    const feriado = { id: 'nl_1', nome: 'Proclamação da República', tipo: 'feriado', tipoRotulo: 'Feriado', inicio: '2026-11-15', fim: '2026-11-15', escopo: 'instituicao' }
+    mocks.get.mockImplementation(async (url) => (url.startsWith('/api/admin/attendance/roster')
+      ? { ...rosterWith([aluno('ana@x.local')]), aulas: [], aulasGrade: aulas, naoLetivo: feriado, foraDoPeriodo: false, mesmoAssim: false }
+      : {}))
+    render(<ChamadaPage />)
+    expect(await screen.findByText('Não há aula neste dia: Proclamação da República')).toBeInTheDocument()
+    expect(screen.queryByRole('button', { name: 'Fazer a chamada mesmo assim' })).not.toBeInTheDocument()
+  })
+
+  it('[UC-PAPEIS-004] dia sem chamada salva: avisa que as marcações são o padrão da tela, não um registro', async () => {
+    mocks.auth = coordenacao
+    mocks.get.mockImplementation(async (url) => (url.startsWith('/api/admin/attendance/roster') ? rosterWith([aluno('ana@x.local')]) : {}))
+    render(<ChamadaPage />)
+    expect(await screen.findByText('Sua conta é só de consulta. A chamada deste dia ainda não foi salva: as marcações abaixo são o padrão da tela, não um registro.')).toBeInTheDocument()
+    expect(mocks.post).not.toHaveBeenCalled()
   })
 })

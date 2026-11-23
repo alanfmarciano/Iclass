@@ -33,6 +33,7 @@ const { revokeStudentSession } = require('../utils/authSessions.js');
 const { ACTIVE_APPLICATION_STATUSES } = require('../utils/examApplications.js');
 const { canReadExamVersions, onlineExamConfigsWithoutAnswerKeys } = require('../utils/examAnswerKeyView.js');
 const { finishApplication } = require('../utils/examFinish.js');
+const { manualAssessmentTitle } = require('../utils/gradebook.js');
 const {
     applicationBelongsToClass,
     applicationSummary,
@@ -58,6 +59,8 @@ function examTitleFor(examKey) {
             if (unit?.name || unit?.title) return unit.name || unit.title;
         }
     }
+    const manual = manualAssessmentTitle(db.memory.classes || [], examKey);
+    if (manual) return manual;
     return String(examKey || 'Prova').replace(/_/g, ' ');
 }
 

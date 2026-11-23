@@ -105,3 +105,119 @@ describe('TurmasPage · cursos', () => {
     expect(screen.getAllByText('Sem professor')).toHaveLength(1)
   })
 })
+
+// Período letivo da turma e disciplinas pela tela (B8 / P2-S8, FUN-05). Antes, o
+// formulário da turma não tinha o seletor (o servidor já aceitava periodoLetivoId desde o
+// B5), a turma não mostrava o período e "Período" era o rótulo do turno.
+describe('TurmasPage · período letivo da turma', () => {
+  const TERMS = {
+    periodos: [
+      { id: 'per_1', nome: '2027 · 1º semestre', inicio: '2027-02-01', fim: '2027-07-09', schoolId: null, situacao: 'aberto', etapas: [], turmas: [], totalTurmas: 0, podeAlterar: true },
+      { id: 'per_b', nome: 'Período da Escola B', inicio: '2027-02-01', fim: '2027-07-09', schoolId: 'escola-b', situacao: 'aberto', etapas: [], turmas: [], totalTurmas: 0, podeAlterar: true },
+      { id: 'per_0', nome: '2026 · 2º semestre', inicio: '2026-08-03', fim: '2026-12-18', schoolId: null, situacao: 'encerrado', etapas: [], turmas: [], totalTurmas: 1, podeAlterar: true },
+    ],
+    escolas: [],
+    podeCriar: true,
+  }
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.auth = { role: 'admin', accountRole: 'admin' }
+    mocks.apiData = {
+      '/api/admin/course-summaries?includeDeleted=1': [
+        { id: 'DES', name: 'Técnico em TI', schoolId: 'escola-a', status: 'active', stats: { classCount: 2, studentCount: 3 }, structure: [{ id: 'M1', name: 'Redes' }],
+          disciplinas: [{ id: 'REDES', nome: 'Redes', cor: '', cargaHoraria: 80, professor: 'Prof. Carlos', modulos: ['M1'] }] },
+      ],
+      '/api/admin/classes': [
+        { name: '1DES', courseId: 'DES', period: 'Manhã', periodoLetivoId: 'per_0' },
+        { name: '2DES', courseId: 'DES', period: 'Noite' },
+      ],
+      '/api/admin/schools': [{ id: 'escola-a', name: 'Escola A' }, { id: 'escola-b', name: 'Escola B' }],
+      '/api/admin/accounts': [],
+      '/api/admin/archived-courses': [],
+      '/api/admin/academic/terms': TERMS,
+    }
+    mocks.post.mockResolvedValue({ success: true })
+  })
+  afterEach(cleanup)
+
+  it('[UC-CURSO-002] cada turma mostra o período letivo dela ou "Sem período letivo"; a seção lista os períodos', () => {
+    renderPage()
+    expect(screen.getByText('2026 · 2º semestre · encerrado')).toBeVisible()
+    // Há período aberto que serve ao curso: o selo é um aviso.
+    expect(screen.getByText('Sem período letivo')).toHaveClass('text-warning')
+    expect(screen.getByRole('list', { name: 'Períodos letivos' })).toHaveTextContent('2027 · 1º semestre')
+    expect(screen.getByRole('button', { name: 'Novo período letivo' })).toBeVisible()
+  })
+
+  it('[UC-CURSO-002] o formulário da turma liga ao período (Turno é o Manhã/Tarde/Noite) e só manda o período quando ele muda', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByRole('button', { name: 'Editar turma 2DES' }))
+    let dialog = screen.getByRole('dialog', { name: 'Editar turma' })
+    expect(within(dialog).getByLabelText('Turno')).toHaveValue('Noite')
+    const select = within(dialog).getByLabelText('Período letivo')
+    // Só o aberto da instituição: o da Escola B não vale para este curso e o encerrado não recebe turma.
+    expect(within(select).getAllByRole('option').map(option => option.textContent)).toEqual(['Sem período letivo', '2027 · 1º semestre (01/02/2027 a 09/07/2027)'])
+    await user.selectOptions(select, 'per_1')
+    expect(within(dialog).getByText(/Aulas de 01\/02\/2027 a 09\/07\/2027/)).toBeVisible()
+    await user.click(within(dialog).getByRole('button', { name: 'Salvar' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/class/update', expect.objectContaining({ name: '2DES', courseId: 'DES', period: 'Noite', periodoLetivoId: 'per_1' })))
+
+    // Sem mexer no período: o pedido não leva o campo (o servidor deixa como está).
+    mocks.post.mockClear()
+    await user.click(screen.getByRole('button', { name: 'Editar turma 1DES' }))
+    dialog = screen.getByRole('dialog', { name: 'Editar turma' })
+    expect(within(dialog).getByLabelText('Período letivo')).toHaveValue('per_0')
+    await user.click(within(dialog).getByRole('button', { name: 'Salvar' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/class/update', expect.anything()))
+    expect(mocks.post.mock.calls[0][1]).not.toHaveProperty('periodoLetivoId')
+
+    // Tirar do período: null.
+    mocks.post.mockClear()
+    await user.click(screen.getByRole('button', { name: 'Editar turma 1DES' }))
+    dialog = screen.getByRole('dialog', { name: 'Editar turma' })
+    await user.selectOptions(within(dialog).getByLabelText('Período letivo'), '')
+    await user.click(within(dialog).getByRole('button', { name: 'Salvar' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/class/update', expect.objectContaining({ name: '1DES', periodoLetivoId: null })))
+  })
+
+  it('[UC-CURSO-002] sem a lista de períodos (falhou), o seletor fica travado e o pedido não tira a turma do período', async () => {
+    const user = userEvent.setup()
+    delete mocks.apiData['/api/admin/academic/terms']
+    renderPage()
+    await user.click(screen.getByRole('button', { name: 'Editar turma 1DES' }))
+    const dialog = screen.getByRole('dialog', { name: 'Editar turma' })
+    expect(within(dialog).getByLabelText('Período letivo')).toBeDisabled()
+    await user.click(within(dialog).getByRole('button', { name: 'Salvar' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/class/update', expect.anything()))
+    expect(mocks.post.mock.calls[0][1]).not.toHaveProperty('periodoLetivoId')
+  })
+
+  it('[UC-CURSO-002] "Nova turma" já pode nascer no período', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByRole('button', { name: 'Nova turma' }))
+    const dialog = screen.getByRole('dialog', { name: 'Nova turma' })
+    await user.type(within(dialog).getByLabelText('Nome da turma'), '3DES')
+    await user.selectOptions(within(dialog).getByLabelText('Período letivo'), 'per_1')
+    await user.click(within(dialog).getByRole('button', { name: 'Salvar' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/class/create', expect.objectContaining({ name: '3DES', period: 'Manhã', courseId: 'DES', periodoLetivoId: 'per_1' })))
+  })
+
+  it('[UC-CURSO-002] Disciplinas manda carga horária, professor e módulos de volta', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByRole('button', { name: 'Disciplinas' }))
+    const dialog = screen.getByRole('dialog', { name: 'Disciplinas do curso' })
+    const carga = within(dialog).getByLabelText('Carga horária de Redes (horas)')
+    expect(carga).toHaveValue('80')
+    await user.clear(carga)
+    await user.type(carga, '100')
+    await user.click(within(dialog).getByRole('button', { name: 'Salvar disciplinas' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/course/disciplinas', {
+      courseId: 'DES',
+      disciplinas: [{ id: 'REDES', nome: 'Redes', cor: '', cargaHoraria: 100, professor: 'Prof. Carlos', modulos: ['M1'] }],
+    }))
+  })
+})
+

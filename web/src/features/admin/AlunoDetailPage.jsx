@@ -13,6 +13,8 @@ import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { printBoletim } from './boletimPrint'
+import { openPrintWindow as openDocumentWindow, schoolFromBranding } from '../../lib/printDocument'
+import { useBranding } from '../../context/BrandingProvider'
 import { useAuth } from '../../context/AuthProvider'
 import { StudentAuditPanel } from './StudentAuditPanel'
 import { Modal } from '../../components/ui/Modal'
@@ -24,19 +26,38 @@ import { ANONYMIZED_STATUS, isAnonymizedStatus } from './studentDeletion'
 import { downloadDataExport, openPrintWindow, printDataExport } from '../../lib/dataExportPrint'
 import { ADMIN_PERMISSIONS, canAccessAdminPermission, canReadStudentGrades, isFullAdmin } from '../../lib/adminPermissions'
 import { displayEmail, isStudentIdParam, studentRouteKey } from '../../lib/studentProfile'
+import { compareOrdinal, compareText } from '../../lib/textSearch'
 
 const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning', [ANONYMIZED_STATUS]: 'neutral' }
 const dn = (s) => (s?.nomeSocial && s.nomeSocial.trim()) || s?.name || ''
 const initials = (n) => (n || '?').split(' ').map((x) => x[0]).slice(0, 2).join('')
-const moduleOf = (examKey) => String(examKey || '').split('_')[1] || '—'
+// Avaliação manual da turma (id 'man_<ms>_<hex>', B6): sem módulo no id (o '<ms>' não é
+// módulo) e o rótulo é o título que o servidor manda (examTitle), nunca o id técnico.
+const isManualKey = (examKey) => String(examKey || '').startsWith('man_')
+const moduleOf = (examKey) => (isManualKey(examKey) ? '—' : String(examKey || '').split('_')[1] || '—')
+const examLabelOf = (s) => (isManualKey(s?.examKey) ? (s.examTitle || 'Avaliação da turma') : s?.examKey)
+const chartLabelOf = (s) => (isManualKey(s?.examKey)
+  ? String(s.examTitle || 'Avaliação').slice(0, 12)
+  : moduleOf(s.examKey) + (s.examKey?.split('_')[2] ? ' ' + s.examKey.split('_')[2] : ''))
 const semesterOf = (t) => { const d = new Date(t || 0); return `${d.getFullYear()}.${d.getMonth() < 6 ? 1 : 2}` }
+// Filtro da evolução das notas (B8 / P2-S8, FUN-05): pelo período letivo da turma da
+// entrega, que o servidor manda (periodoLetivo, só quando a data da entrega cai dentro
+// dele); a entrega sem período fica no semestre do calendário, como antes ("2026.2").
+// key separa os dois tipos, label é o texto do seletor e sort põe na ordem das datas.
+export function notePeriodOf(s) {
+  const term = s?.periodoLetivo
+  if (term && term.id) return { key: `per:${term.id}`, label: term.nome || 'Período letivo', sort: String(term.inicio || ''), term: true }
+  const d = new Date(s?.timestamp || 0)
+  const semester = semesterOf(s?.timestamp)
+  return { key: `sem:${semester}`, label: semester, sort: `${d.getFullYear()}-${d.getMonth() < 6 ? '01' : '07'}-01`, term: false }
+}
 const fmtDate = (t) => t ? new Date(t).toLocaleDateString('pt-BR') : '—'
 const fmtDateTime = (t) => t ? new Date(t).toLocaleString('pt-BR') : '—'
 
 function Card({ title, action, children, className = '' }) {
   return (
     <div className={`bg-surface border border-border rounded-xl p-4 sm:p-5 ${className}`}>
-      {title && <div className="flex items-center justify-between mb-3"><p className="text-sm font-medium text-text">{title}</p>{action}</div>}
+      {title && <div className="flex flex-wrap items-center justify-between gap-2 mb-3"><p className="text-sm font-medium text-text">{title}</p>{action}</div>}
       {children}
     </div>
   )
@@ -74,6 +95,7 @@ export default function AlunoDetailPage() {
   const toast = useToast()
   const { auth } = useAuth()
   const workspace = useAdminWorkspace()
+  const branding = useBranding()?.branding
   const [boletimChoices, setBoletimChoices] = useState(null)
   // Boletim do curso/turma ativos (UXI-X1, FUN-X1). Aluno em vários cursos e fora
   // do curso ativo: o professor escolhe a matrícula.
@@ -88,11 +110,17 @@ export default function AlunoDetailPage() {
       return
     }
     setBoletimChoices(null)
+    // Janela aberta no clique, antes de esperar o servidor (depois do await o navegador
+    // costuma bloquear o pop-up).
+    const win = openDocumentWindow('Preparando o boletim…')
     try {
       const query = new URLSearchParams({ email, courseId: ctx.courseId || '', studentClass: ctx.studentClass || '' })
       const report = await api.get(`/api/admin/student/report?${query}`)
-      if (!printBoletim(report)) toast.error('O navegador bloqueou a janela de impressão. Libere pop-ups para este site.')
-    } catch (e) { toast.error(e.message) }
+      if (!printBoletim(report, { escola: schoolFromBranding(branding), displayName: branding?.displayName || '' }, win)) toast.error('O navegador bloqueou a janela de impressão. Libere pop-ups para este site.')
+    } catch (e) {
+      try { win?.close() } catch { /* janela já fechada */ }
+      toast.error(e.message)
+    }
   }
   // Auditoria (audit.view) e Segurança (students.security) seguem a permissão (só o
   // administrador pleno hoje); antes era "não é professor" (contrato C2 do P4).
@@ -175,15 +203,20 @@ export default function AlunoDetailPage() {
   // Nota inválida de registro antigo (vazia ou fora de 0 a 10) não entra em média nem gráfico.
   const validSubs = useMemo(() => subs.filter((s) => gradeOf(s.score) !== null), [subs])
   const modules = useMemo(() => [...new Set(subs.map((s) => moduleOf(s.examKey)))].filter((m) => m !== '—'), [subs])
-  const semesters = useMemo(() => [...new Set(subs.map((s) => semesterOf(s.timestamp)))].sort(), [subs])
-  const filteredSubs = useMemo(() => validSubs.filter((s) => (filterModule === 'all' || moduleOf(s.examKey) === filterModule) && (filterSemester === 'all' || semesterOf(s.timestamp) === filterSemester)), [validSubs, filterModule, filterSemester])
-  const notas = useMemo(() => [...filteredSubs].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0)).map((s) => ({ label: moduleOf(s.examKey) + (s.examKey?.split('_')[2] ? ' ' + s.examKey.split('_')[2] : ''), value: gradeOf(s.score) })), [filteredSubs])
+  const semesters = useMemo(() => {
+    const byKey = new Map()
+    subs.forEach((s) => { const period = notePeriodOf(s); if (!byKey.has(period.key)) byKey.set(period.key, period) })
+    return [...byKey.values()].sort((a, b) => compareOrdinal(a.sort, b.sort) || compareText(a.label, b.label))
+  }, [subs])
+  const byTerm = semesters.some((period) => period.term)
+  const filteredSubs = useMemo(() => validSubs.filter((s) => (filterModule === 'all' || moduleOf(s.examKey) === filterModule) && (filterSemester === 'all' || notePeriodOf(s).key === filterSemester)), [validSubs, filterModule, filterSemester])
+  const notas = useMemo(() => [...filteredSubs].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0)).map((s) => ({ label: chartLabelOf(s), value: gradeOf(s.score) })), [filteredSubs])
   // Média por módulo do servidor: mesma consolidação e mesmo curso/turma da "Média geral"
   // (antes era a média simples de todas as tentativas, feita aqui no navegador).
   const modulos = Array.isArray(dash?.modulos) ? dash.modulos : []
   const timeline = useMemo(() => {
     const ev = []
-    subs.forEach((s) => ev.push({ id: 'g' + s.id, t: new Date(s.timestamp || 0).getTime(), tone: 'bg-success', title: `Prova ${s.examKey} · ${academicGradeText(s)}`, time: fmtDate(s.timestamp) }))
+    subs.forEach((s) => ev.push({ id: 'g' + s.id, t: new Date(s.timestamp || 0).getTime(), tone: 'bg-success', title: `${isManualKey(s.examKey) ? examLabelOf(s) : `Prova ${s.examKey}`} · ${academicGradeText(s)}`, time: fmtDate(s.timestamp) }))
     ;(academic?.moduleAccess || []).forEach((m) => ev.push({ id: 'a' + m.id, t: m.timestamp, tone: 'bg-primary', title: `Abriu ${String(m.key).replace(/_/g, ' ')}`, time: fmtDateTime(m.timestamp) }))
     ;(academic?.attendance?.recent || []).forEach((a) => ev.push({ id: 'p' + a.id, t: a.timestamp, tone: 'bg-surface-2', title: `Presença (${a.origin === 'login' ? (a.naoLetivoId ? 'automática, dia não letivo: não conta' : 'automática') : a.origin === 'chamada' ? 'chamada' : 'manual'})`, time: a.date }))
     return ev.sort((x, y) => y.t - x.t).slice(0, 8)
@@ -242,10 +275,10 @@ export default function AlunoDetailPage() {
               <div className="space-y-4">
                 {!gradesHidden && <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                   <Card title="Evolução das notas" className="lg:col-span-2" action={
-                    <div className="flex gap-2">
-                      <select value={filterSemester} onChange={(e) => setFilterSemester(e.target.value)} className="text-xs bg-surface border border-border rounded-md px-2 py-1 text-text">
-                        <option value="all">Todos os semestres</option>
-                        {semesters.map((sem) => <option key={sem} value={sem}>{sem}</option>)}
+                    <div className="flex min-w-0 flex-wrap gap-2">
+                      <select aria-label={byTerm ? 'Filtrar por período letivo' : 'Filtrar por semestre'} value={filterSemester} onChange={(e) => setFilterSemester(e.target.value)} className="min-w-0 max-w-[11rem] text-xs bg-surface border border-border rounded-md px-2 py-1 text-text">
+                        <option value="all">{byTerm ? 'Todos os períodos' : 'Todos os semestres'}</option>
+                        {semesters.map((period) => <option key={period.key} value={period.key}>{period.label}</option>)}
                       </select>
                       <select value={filterModule} onChange={(e) => setFilterModule(e.target.value)} className="text-xs bg-surface border border-border rounded-md px-2 py-1 text-text">
                         <option value="all">Todas as matérias</option>
@@ -324,7 +357,7 @@ export default function AlunoDetailPage() {
                   <div className="divide-y divide-border">
                     {[...subs].sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0)).map((s) => (
                       <div key={s.id} className="flex items-center justify-between gap-2 py-2.5 text-sm">
-                        <div className="min-w-0"><p className="text-text break-words">{s.examKey}</p><p className="text-xs text-subtle">{Number.isInteger(s.correctCount) && Number.isInteger(s.totalCount) ? `${s.correctCount}/${s.totalCount} acertos · ` : ''}{fmtDate(s.timestamp)}</p></div>
+                        <div className="min-w-0"><p className="text-text break-words">{examLabelOf(s)}</p><p className="text-xs text-subtle">{Number.isInteger(s.correctCount) && Number.isInteger(s.totalCount) ? `${s.correctCount}/${s.totalCount} acertos · ` : ''}{fmtDate(s.timestamp)}</p></div>
                         <AcademicGradeBadge submission={s} criterio={criterio} />
                       </div>
                     ))}

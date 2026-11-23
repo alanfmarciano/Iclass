@@ -54,6 +54,18 @@ Quando a escola usa a conexão segura (o endereço começa com `https`), o naveg
 
 **Prova agendada.** Quando o professor agenda uma prova, ela aparece em **Provas** com a etiqueta **Agendada** e o horário ("A prova abre em 20/11 às 08:00 e fecha às 09:30"), e também no **Calendário**. Antes da hora ela não abre: volte em **Provas** no horário para começar. No horário de fechar, a prova é entregue com o que você salvou: durante a prova, o topo mostra **Fecha em ...**, mesmo que o cronômetro ainda tenha tempo.
 
+### Minhas notas
+
+No alto de Provas, **Minhas notas** mostra o seu resultado na turma com as notas que o professor já publicou:
+
+- a **média final** (ou a média geral, quando o curso não usa etapas);
+- a **situação**: Cursando (ainda falta nota de alguma etapa), Em recuperação, Aprovado, Reprovado por nota ou Reprovado por falta;
+- a **menção** (MB, B, R, I), se a escola usa conceitos;
+- as **notas por etapa** (1º bimestre, 2º bimestre...), com a recuperação quando houver. Toque na etapa para ver as avaliações dela e a nota de cada uma;
+- a **média mínima para aprovação** do seu curso e quantas faltas você ainda pode ter no período.
+
+Embaixo, as suas provas e avaliações (trabalhos, seminários) ficam agrupadas por disciplina ou por módulo. A nota que ainda não foi publicada aparece em "Notas em revisão" e não entra na média. Se o professor arquivar uma avaliação que já tinha nota, a nota continua em "Outras avaliações", marcada "Avaliação arquivada · fora da média".
+
 ### Como responder cada tipo de questão
 
 - **Uma correta**: toque na alternativa. Para trocar, toque em outra.
@@ -98,6 +110,10 @@ Se o professor descobrir, depois da prova, que a resposta certa de uma questão 
 ## Avisos {#avisos}
 
 ## Calendário {#calendario}
+
+Mostra as aulas, provas, entregas e avisos do seu curso. Feriados, recessos e outros dias sem aula aparecem marcados como **Sem aula** (no celular, o mês vira uma lista por dia). No Início, quando hoje não tem aula, aparece o aviso "Hoje não tem aula".
+
+**Baixar agenda (.ics)** baixa um arquivo com o calendário da sua turma. Abra o arquivo no celular ou no computador para levar os eventos para o Google Agenda ou o Outlook. Se baixar de novo depois, a agenda é atualizada sem repetir os eventos.
 
 ## Frequência {#frequencia}
 

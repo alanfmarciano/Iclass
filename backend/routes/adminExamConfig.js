@@ -703,7 +703,7 @@ function regradeApplicationSubmissions(application, cls, { req = null, reason = 
         regradeSubmission({ submission, application, onlineConfig, evaluation, reason, by });
         updated += 1;
         if (before.score !== submission.score || before.correctCount !== submission.correctCount || before.totalCount !== submission.totalCount) {
-            const title = examTitle(submission.examKey, { evaluations: db.memory.evaluations });
+            const title = examTitle(submission.examKey, { evaluations: db.memory.evaluations, classes: db.memory.classes });
             const audit = recordGradeAudit(db.memory, {
                 req,
                 actor: by,
@@ -1247,7 +1247,7 @@ function createAdminExamConfigRouter() {
                 application: {
                     id: application.id,
                     examKey: application.examKey,
-                    examTitle: examTitle(application.examKey, { evaluations: db.memory.evaluations }),
+                    examTitle: examTitle(application.examKey, { evaluations: db.memory.evaluations, classes: db.memory.classes }),
                     studentClass: application.studentClass,
                     courseId: application.courseId || null,
                     status: application.status,

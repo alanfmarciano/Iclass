@@ -18,7 +18,7 @@ import { usePreferences } from '../../context/PreferencesProvider'
 import { usePolling } from '../../hooks/usePolling'
 import { FORUM_TEXT_MAX_CHARS, SHORT_TEXT_COUNTER_FROM, clampText, formatCount, tooLongMessage } from '../../lib/textLimits'
 import { compareOrdinal, matchesSearch } from '../../lib/textSearch'
-import { ADMIN_PERMISSIONS, canAccessAdminPermission } from '../../lib/adminPermissions'
+import { ADMIN_PERMISSIONS, canAccessAdminPermission, canWriteAdminPermission } from '../../lib/adminPermissions'
 
 const EVENT_LABEL = {
   reply: 'respondeu', edit_comment: 'editou a dúvida', edit_reply: 'editou uma resposta',
@@ -49,6 +49,12 @@ export default function ForumPage() {
   const { courseId: activeCourseId, courseName, className: activeClassName } = useAdminWorkspace()
   // Apagar de vez (forum.purge): só o administrador pleno.
   const isAdmin = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.FORUM_PURGE)
+  // A Coordenação (só consulta) lê as dúvidas e o histórico, sem responder, resolver,
+  // marcar FAQ, editar, excluir nem restaurar (o servidor recusaria com 403; B4).
+  const canModerate = canWriteAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_FORUM)
+  // A estrutura do curso (para filtrar pelos itens do curso) pede o editor: sem ele, o
+  // servidor já devolve só as dúvidas da turma (POST /forum/all) e o pedido daria 403.
+  const canReadStructure = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_EDITOR)
   const toast = useToast()
   const { pref, setPref } = usePreferences()
   const [data, setData] = useState(null)
@@ -95,7 +101,7 @@ export default function ForumPage() {
   usePolling((requestOptions) => load(true, requestOptions), { intervalMs: 12000, immediate: false, resetKey: workspaceKey })
 
   useEffect(() => {
-    if (!activeCourseId) { setCourseKeys(null); return }
+    if (!activeCourseId || !canReadStructure) { setCourseKeys(null); return }
     api.get(`/api/admin/courses/${encodeURIComponent(activeCourseId)}/structure?studentClass=${encodeURIComponent(activeClassName)}`)
       .then((r) => {
         const keys = new Set()
@@ -106,7 +112,7 @@ export default function ForumPage() {
         setCourseKeys(keys)
       })
       .catch(() => setCourseKeys(new Set()))
-  }, [activeCourseId, activeClassName])
+  }, [activeCourseId, activeClassName, canReadStructure])
 
   const allComments = (data && (data.comments || data.forum || (Array.isArray(data) ? data : []))) || []
   const courseComments = allComments.filter((c) => !courseKeys || courseKeys.has(c.key))
@@ -206,9 +212,9 @@ export default function ForumPage() {
 
   return (
     <div className="max-w-5xl mx-auto space-y-6">
-      <PageHeader title="Fórum e dúvidas" subtitle={`Modere as dúvidas · ${courseName || activeCourseId} · ${activeClassName}`}>
+      <PageHeader title="Fórum e dúvidas" subtitle={`${canModerate ? 'Modere as dúvidas' : 'Dúvidas dos alunos (só consulta)'} · ${courseName || activeCourseId} · ${activeClassName}`}>
         <div className="flex gap-2">
-          <Button size="sm" variant="secondary" icon={Zap} onClick={() => setTplOpen(true)}>Respostas rápidas</Button>
+          {canModerate && <Button size="sm" variant="secondary" icon={Zap} onClick={() => setTplOpen(true)}>Respostas rápidas</Button>}
           {unreadCount > 0 && <Button size="sm" variant="secondary" onClick={markAllRead}>Marcar lidas ({unreadCount})</Button>}
         </div>
       </PageHeader>
@@ -259,10 +265,10 @@ export default function ForumPage() {
                 {overdue && <span className="inline-flex items-center gap-1 text-xs text-danger"><Clock size={12} /> {Math.floor(hoursSince(c.timestamp))}h sem resposta</span>}
                 <Badge tone={STATUS_TONE[status]}>{STATUS_LABEL[status]}</Badge>
                 <div className="ml-auto flex items-center gap-1">
-                  <button aria-label="FAQ" className={`w-7 h-7 grid place-items-center rounded-md hover:bg-surface-2 ${c.isFaq ? 'text-warning' : 'text-subtle'}`} onClick={() => faqToggle(c)}><Star size={15} className={c.isFaq ? 'fill-warning' : ''} /></button>
+                  {canModerate && <button aria-label="FAQ" className={`w-7 h-7 grid place-items-center rounded-md hover:bg-surface-2 ${c.isFaq ? 'text-warning' : 'text-subtle'}`} onClick={() => faqToggle(c)}><Star size={15} className={c.isFaq ? 'fill-warning' : ''} /></button>}
                   <button aria-label="Histórico" className="w-7 h-7 grid place-items-center rounded-md text-subtle hover:bg-surface-2 hover:text-text" onClick={() => setHistoryTarget(c)}><History size={15} /></button>
-                  <button aria-label="Editar" className="text-xs text-subtle hover:text-text px-1" onClick={() => editText({ commentId: c.id, text: c.text })}>Editar</button>
-                  <button aria-label="Excluir" className="w-7 h-7 grid place-items-center rounded-md text-subtle hover:text-danger" onClick={() => setDel({ commentId: c.id })}><Trash2 size={15} /></button>
+                  {canModerate && <button aria-label="Editar" className="text-xs text-subtle hover:text-text px-1" onClick={() => editText({ commentId: c.id, text: c.text })}>Editar</button>}
+                  {canModerate && <button aria-label="Excluir" className="w-7 h-7 grid place-items-center rounded-md text-subtle hover:text-danger" onClick={() => setDel({ commentId: c.id })}><Trash2 size={15} /></button>}
                 </div>
               </div>
               <p className="text-sm text-text">{c.text}</p>
@@ -276,27 +282,27 @@ export default function ForumPage() {
                         <p className="text-xs text-text"><span className="font-medium">{r.authorName || r.authorRole}</span> <span className="text-subtle">- {relTime(r.timestamp)}</span></p>
                         <p className="text-sm text-muted mt-0.5">{r.text}</p>
                       </div>
-                      <button className="text-xs text-subtle hover:text-text" onClick={() => editText({ commentId: c.id, replyId: r.id, text: r.text })}>Editar</button>
-                      <button className="text-subtle hover:text-danger" onClick={() => setDel({ commentId: c.id, replyId: r.id })}><Trash2 size={14} /></button>
+                      {canModerate && <button className="text-xs text-subtle hover:text-text" onClick={() => editText({ commentId: c.id, replyId: r.id, text: r.text })}>Editar</button>}
+                      {canModerate && <button className="text-subtle hover:text-danger" aria-label="Excluir resposta" onClick={() => setDel({ commentId: c.id, replyId: r.id })}><Trash2 size={14} /></button>}
                     </div>
                   ))}
                 </div>
               )}
 
-              {templates.length > 0 && (
+              {canModerate && templates.length > 0 && (
                 <div className="mt-3 flex flex-wrap gap-1.5">
                   {templates.map((t) => (
                     <button key={t.id} onClick={() => applyTemplate(c.id, t.text)} className="text-xs px-2.5 py-1 rounded-full border border-border text-muted hover:bg-surface-2 hover:text-text">{t.title}</button>
                   ))}
                 </div>
               )}
-              <div className="mt-3 flex gap-2">
+              {canModerate && <div className="mt-3 flex gap-2">
                 <Textarea id={`reply-${c.id}`} value={reply[c.id] || ''} onChange={(e) => setReply((r) => ({ ...r, [c.id]: e.target.value }))} maxLength={FORUM_TEXT_MAX_CHARS} counterFrom={SHORT_TEXT_COUNTER_FROM} placeholder="Responder como instrutor..." className="min-h-[70px]" />
                 <div className="flex flex-col gap-2">
                   <Button icon={Send} onClick={() => sendReply(c.id)}>Enviar</Button>
                   <Button variant="secondary" icon={status === 'resolvida' ? RotateCcw : CircleCheck} onClick={() => resolveToggle(c)}>{status === 'resolvida' ? 'Reabrir' : 'Resolver'}</Button>
                 </div>
-              </div>
+              </div>}
             </Card>
           )
         })}
@@ -317,7 +323,7 @@ export default function ForumPage() {
                     <p className="text-sm text-text"><span className="font-medium">{c.studentName || 'Aluno'}</span> <span className="text-subtle">- dúvida excluída {relTime(c.deletedAt)}</span></p>
                     <p className="text-xs text-muted line-clamp-2">{c.text}</p>
                   </div>
-                  <Button size="sm" variant="secondary" icon={RotateCcw} onClick={() => restoreItem({ commentId: c.id })}>Restaurar</Button>
+                  {canModerate && <Button size="sm" variant="secondary" icon={RotateCcw} onClick={() => restoreItem({ commentId: c.id })}>Restaurar</Button>}
                   {isAdmin && <button className="text-subtle hover:text-danger" aria-label="Apagar de vez" onClick={() => setPurgeTarget({ commentId: c.id })}><Trash2 size={15} /></button>}
                 </div>
               ))}
@@ -327,7 +333,7 @@ export default function ForumPage() {
                     <p className="text-sm text-text"><span className="font-medium">{reply.authorName || reply.authorRole}</span> <span className="text-subtle">- resposta excluída {relTime(reply.deletedAt)}</span></p>
                     <p className="text-xs text-muted line-clamp-2">{reply.text}</p>
                   </div>
-                  <Button size="sm" variant="secondary" icon={RotateCcw} onClick={() => restoreItem({ commentId: comment.id, replyId: reply.id })}>Restaurar</Button>
+                  {canModerate && <Button size="sm" variant="secondary" icon={RotateCcw} onClick={() => restoreItem({ commentId: comment.id, replyId: reply.id })}>Restaurar</Button>}
                   {isAdmin && <button className="text-subtle hover:text-danger" aria-label="Apagar de vez" onClick={() => setPurgeTarget({ commentId: comment.id, replyId: reply.id })}><Trash2 size={15} /></button>}
                 </div>
               ))}

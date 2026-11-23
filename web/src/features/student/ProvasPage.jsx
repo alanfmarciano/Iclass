@@ -10,8 +10,8 @@ import { MiniLineChart } from '../../components/ui/MiniLineChart'
 import { useApi } from '../../hooks/useApi'
 import { api } from '../../lib/api'
 import { useStudent } from './useStudent'
-import { CRITERIO_PADRAO, consolidatedAverage, countByBand, fmtGradeValue, gradeBand as faixaDaNota, gradeBandRanges, gradeRangeLabel, gradeTone as tomDaNota } from '../../lib/grades'
-import { useState, useEffect, useMemo, useRef } from 'react'
+import { countByBand, criterioOf, fmtGradeValue, fmtMencao, gradeBand as faixaDaNota, gradeBandRanges, gradeRangeLabel, gradeTone as tomDaNota, situacaoTone } from '../../lib/grades'
+import { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react'
 import { usePolling } from '../../hooks/usePolling'
 import { useNavigate } from 'react-router-dom'
 import { matchesSearch } from '../../lib/textSearch'
@@ -19,18 +19,62 @@ import { ScheduledExams } from './ScheduledExams'
 
 // Nota e armazenada em escala 0-100 e exibida em 0-10.
 const toGrade = (score) => Number(score) / 10
-// Critério de nota do curso. Sem critérios configurados (hoje), o padrão: média
-// mínima 6,0. A faixa vem de web/src/lib/grades.js, a mesma regra do servidor.
-const criterio = CRITERIO_PADRAO
+// Critério de nota do curso, do resumo de notas do servidor (GET /api/student/grades-
+// summary, C1 do P2); sem critérios configurados, o padrão (média mínima 6,0). A faixa vem
+// de web/src/lib/grades.js, a mesma regra do servidor. Os cartões leem pelo contexto.
+const CriterioCtx = createContext(criterioOf(null))
+const useCriterio = () => useContext(CriterioCtx)
 const TONE_TEXT = { success: 'text-success', warning: 'text-warning', danger: 'text-danger' }
-const gradeText = (g) => TONE_TEXT[tomDaNota(g, criterio, 'aluno', 'danger')]
+const gradeText = (g, criterio) => TONE_TEXT[tomDaNota(g, criterio, 'aluno', 'danger')]
 const isPublished = (s) => s.gradePublished === true && !Number.isNaN(Number(s.score))
 const isConsidered = (s) => s.countsTowardResult && s.resultStatus !== 'archived'
+// Nota de avaliação manual que o professor arquivou: fica na lista e sai da média (o
+// servidor manda assessmentArchived, sem nota consolidada), como no Início e no boletim.
+const isOutOfResult = (s) => s.resultStatus === 'archived' || s.assessmentArchived === true
+// Avaliação manual da turma (trabalho, seminário...; id 'man_*'): o rótulo é o título
+// (examTitle), nunca o id técnico.
+const isManualKey = (key = '') => String(key).startsWith('man_')
 const shortLabel = (key = '') => key.replace(/^Avaliacao_?/i, '').replace(/_/g, ' ').slice(0, 8)
+const clip = (text, max) => (text.length > max ? `${text.slice(0, max - 1)}…` : text)
+const labelOf = (s) => (isManualKey(s.examKey) ? clip(String(s.examTitle || 'Avaliação'), 12) : shortLabel(s.examKey))
 
-// ----- Agrupamento por materia e por tentativa -----
-// Materia = prefixo alfabetico do examKey (FUTEC, FECOP, IRCOM...).
-const materiaOf = (key = '') => (String(key).replace(/^Avaliacao_?/i, '').match(/^[A-Za-z]+/) || ['—'])[0].toUpperCase()
+// ----- Agrupamento por disciplina ou módulo e por tentativa -----
+// A seção de cada avaliação é a disciplina (quando o curso calcula a situação por
+// disciplina) ou o módulo da estrutura, como o servidor diz no resumo de notas; antes era
+// o prefixo do examKey (FUTEC, FECOP...), que não diz nada em prova com outro nome. Nota
+// ainda não publicada não está no resumo: fica em "Notas em revisão" até publicar. Nota
+// publicada fora do resumo (avaliação da turma que o professor arquivou, fora da média)
+// fica em "Outras avaliações". Sem o resumo (ainda carregando ou com erro), tudo fica numa
+// seção só, "Avaliações", sem dizer que está em revisão.
+const REVIEW_SECTION = { key: 'revisao', name: 'Notas em revisão', media: null }
+const OTHER_SECTION_KEY = 'm:__outras__'
+const ALL_SECTION = { key: 'todas', name: 'Avaliações', media: null }
+// entry: a entrega (com gradePublished) ou só o examKey.
+export function sectionsFromSummary(summary) {
+  const porDisciplina = new Map((summary?.situacaoPorDisciplina || []).map((item) => [String(item.id), item]))
+  const modulos = new Map((summary?.modulos || []).map((item) => [String(item.id), item]))
+  const byKey = new Map()
+  ;(summary?.itens || []).forEach((item) => {
+    if (!item || !item.id || byKey.has(item.id)) return
+    const disciplina = item.disciplinaId ? porDisciplina.get(String(item.disciplinaId)) : null
+    if (disciplina) {
+      byKey.set(item.id, { key: `d:${disciplina.id}`, name: disciplina.nome || item.disciplina || 'Disciplina', media: disciplina.mediaFinal ?? null })
+      return
+    }
+    const moduleId = item.moduloId ? String(item.moduloId) : '__outras__'
+    const modulo = modulos.get(moduleId)
+    byKey.set(item.id, { key: `m:${moduleId}`, name: item.modulo || modulo?.nome || 'Outras avaliações', media: modulo ? modulo.media ?? null : null })
+  })
+  const other = { key: OTHER_SECTION_KEY, name: modulos.get('__outras__')?.nome || 'Outras avaliações', media: modulos.get('__outras__')?.media ?? null }
+  return (entry) => {
+    const examKey = entry && typeof entry === 'object' ? entry.examKey : entry
+    const found = byKey.get(String(examKey || ''))
+    if (found) return found
+    if (!summary) return ALL_SECTION
+    if (entry && typeof entry === 'object' && entry.gradePublished === true) return other
+    return REVIEW_SECTION
+  }
+}
 // Chave do grupo de tentativas: mesma aplicacao = mesmo grupo (espelha attemptGroupKey do backend).
 const groupKeyOf = (s) => String(s.applicationId || s.examKey || '')
 const POLICY_LABEL = { highest: 'Maior nota', latest: 'Última tentativa', average: 'Média das tentativas', selected: 'Selecionada pelo professor' }
@@ -38,14 +82,14 @@ const MOD_ACCENTS = ['var(--info)', 'var(--success)', 'var(--warning)', 'var(--p
 // Mesmo arredondamento do boletim e de Resultados (7,35 -> 7,4).
 const fmtGrade = (n) => fmtGradeValue(n)
 const BAND_CLASS = { excelente: 'g-success', bom: 'g-info', suficiente: 'g-warning', abaixo: 'g-danger', muito_abaixo: 'g-danger' }
-const gradeBand = (g) => (g == null ? '' : BAND_CLASS[faixaDaNota(g, criterio)] || '')
+const gradeBand = (g, criterio) => (g == null ? '' : BAND_CLASS[faixaDaNota(g, criterio)] || '')
 const fmtDate = (t) => (t ? new Date(t).toLocaleDateString('pt-BR') : '')
 
 // Gráfico "Distribuição": uma barra por faixa de gradeBand (a mesma cor do cartão da
 // prova), da mais alta para a mais baixa, com as duas faixas abaixo da mínima juntas.
 // Rótulos com vírgula decimal (pt-BR) e limites da nota como aparece (5,96 é 6,0).
 const BUCKET_CLASS = { excelente: 'bg-success', bom: 'bg-info', suficiente: 'bg-warning', abaixo: 'bg-danger' }
-function distributionBuckets(grades) {
+function distributionBuckets(grades, criterio) {
   const counts = countByBand(grades, criterio)
   const ranges = gradeBandRanges(criterio)
   const below = ranges.filter((r) => r.band === 'abaixo' || r.band === 'muito_abaixo')
@@ -59,6 +103,7 @@ function distributionBuckets(grades) {
 
 // Card de uma prova avulsa (uma tentativa unica).
 function ExamCard({ s, onOpen }) {
+  const criterio = useCriterio()
   const published = isPublished(s)
   const g = published ? toGrade(s.score) : null
   const archived = s.resultStatus === 'archived'
@@ -69,10 +114,12 @@ function ExamCard({ s, onOpen }) {
         <div className="pvb-ename">{s.examTitle || s.examKey}{s.attemptNumber ? ` · Tentativa ${s.attemptNumber}` : ''}</div>
         <div className="pvb-ecode">{(s.type || 'online')}{s.timestamp ? ` · ${fmtDate(s.timestamp)}` : ''}</div>
       </div>
-      <div className={`pvb-egrade ${gradeBand(g)}`}>{fmtGrade(g)}</div>
+      <div className={`pvb-egrade ${gradeBand(g, criterio)}`}>{fmtGrade(g)}</div>
       <div className="pvb-etail">
         {archived
           ? <span className="pvb-st neutral"><span className="pvb-sdot" />Não considerada</span>
+          : s.assessmentArchived === true
+            ? <span className="pvb-st neutral"><span className="pvb-sdot" />Avaliação arquivada · fora da média</span>
           : counts
             ? <span className="pvb-st info"><span className="pvb-sdot" />Compõe o resultado</span>
             : !published ? <span className="pvb-st warning"><span className="pvb-sdot" />Em revisão</span> : null}
@@ -94,12 +141,12 @@ function AttemptFormula({ policy, considered, consolidated }) {
 
 // Bloco de multiplas tentativas da mesma prova, mostrando a composicao da nota.
 function AttemptGroup({ attempts, onOpen }) {
+  const criterio = useCriterio()
   const policy = attempts.map((a) => a.aggregationPolicy).find((p) => POLICY_LABEL[p]) || 'highest'
   const considered = attempts.filter(isConsidered)
   const backendScore = attempts.find((a) => a.consolidatedScore != null)?.consolidatedScore
-  const consolidated = backendScore != null
-    ? toGrade(backendScore)
-    : (considered.length ? considered.reduce((sum, a) => sum + toGrade(a.score), 0) / considered.length : null)
+  // A nota do grupo é a consolidada do servidor; o navegador não recalcula (D3 do P2).
+  const consolidated = backendScore != null ? toGrade(backendScore) : null
   const last = attempts[attempts.length - 1]
   return (
     <div className="pvb-attgroup">
@@ -119,7 +166,7 @@ function AttemptGroup({ attempts, onOpen }) {
             return (
               <button type="button" key={a.id} onClick={() => onOpen(a)} className={`ag-att ${counts ? 'counts' : 'discard'}`}>
                 <span className="an"><b>Tentativa {a.attemptNumber || '—'}</b>{a.timestamp ? ` — ${fmtDate(a.timestamp)}` : ''}</span>
-                <span className={`as ${gradeBand(g)}`}>{fmtGrade(g)}</span>
+                <span className={`as ${gradeBand(g, criterio)}`}>{fmtGrade(g)}</span>
                 <span className="flag">{counts ? 'Conta' : 'Descartada'}</span>
               </button>
             )
@@ -127,7 +174,7 @@ function AttemptGroup({ attempts, onOpen }) {
         </div>
         <span className="ag-arrow"><ArrowRight size={22} /></span>
         <div className="ag-result">
-          <span className={`rn ${gradeBand(consolidated)}`}>{fmtGrade(consolidated)}</span>
+          <span className={`rn ${gradeBand(consolidated, criterio)}`}>{fmtGrade(consolidated)}</span>
           <span className="rl">{policy === 'average' ? `Média das ${attempts.length} tentativas` : POLICY_LABEL[policy]}</span>
         </div>
       </div>
@@ -160,9 +207,10 @@ function useCountUp(target, { duration = 900, decimals = 0 } = {}) {
 }
 
 function MetricRing({ value }) {
+  const criterio = useCriterio()
   const safe = Math.max(0, Math.min(100, (Number(value) || 0) * 10))
   const shown = useCountUp(value ?? 0, { duration: 1100, decimals: 1 })
-  const tone = value != null ? gradeText(value) : 'text-muted'
+  const tone = value != null ? gradeText(value, criterio) : 'text-muted'
   return (
     <div className="relative grid h-[68px] w-[68px] shrink-0 place-items-center rounded-full" style={{ background: `conic-gradient(var(--primary) ${safe * 3.6}deg, var(--surface-2) 0deg)` }} aria-hidden>
       <div className="grid h-[54px] w-[54px] place-items-center rounded-full bg-surface">
@@ -381,6 +429,164 @@ function FullExamView({ detail, questions, answers }) {
   )
 }
 
+// "Minhas notas" (B9 / P2-S4): o resultado do aluno na turma como o servidor calculou
+// (GET /api/student/grades-summary, só o publicado): média final, situação ("Cursando"
+// enquanto falta nota de etapa), menção, notas por etapa com as avaliações publicadas de
+// cada uma (em acordeão: toque na etapa para ver) e a média mínima do curso. Nenhum texto
+// abaixo de 14 px (text-sm), para ler no celular.
+const fmtWeight = (value) => String(value ?? '').replace('.', ',')
+// Selo da situação no cartão, em 14 px (o Badge comum é text-xs).
+const SELO_TOM = { neutral: 'bg-surface-2 text-muted', success: 'bg-success-soft text-success', danger: 'bg-danger-soft text-danger', warning: 'bg-warning-soft text-warning', info: 'bg-info-soft text-info' }
+function Selo({ tone = 'neutral', children }) {
+  return <span className={`inline-flex items-center rounded-full px-2.5 py-0.5 text-sm font-medium ${SELO_TOM[tone] || SELO_TOM.neutral}`}>{children}</span>
+}
+
+// Avaliações publicadas de cada etapa (a recuperação da etapa entra nela), da recuperação
+// final e as que não entram na média (sem etapa ou "Não conta"). Só agrupa o que o servidor
+// mandou; nenhuma conta.
+export function gradesByStage(summary) {
+  const itens = (Array.isArray(summary?.itens) ? summary.itens : []).filter((item) => item && item.publicada && item.nota !== null && item.nota !== undefined)
+  const etapas = Array.isArray(summary?.etapas) ? summary.etapas : []
+  const ordens = new Set(etapas.map((etapa) => etapa.ordem))
+  const porEtapa = new Map(etapas.map((etapa) => [etapa.ordem, []]))
+  const final = []
+  const fora = []
+  itens.forEach((item) => {
+    const rec = /^etapa:(\d+)$/.exec(String(item.recuperacaoDe || ''))
+    if (item.foraDaMedia) fora.push(item)
+    else if (item.recuperacaoDe === 'final') final.push(item)
+    else if (rec && ordens.has(Number(rec[1]))) porEtapa.get(Number(rec[1])).push(item)
+    else if (!item.recuperacaoDe && ordens.has(item.etapa)) porEtapa.get(item.etapa).push(item)
+    else fora.push(item)
+  })
+  return { porEtapa, final, fora }
+}
+
+function StageRow({ id, title, value, valueTone, note, itens, criterio }) {
+  const [open, setOpen] = useState(false)
+  const panelId = `etapa-${id}`
+  return (
+    <li className="rounded-lg border border-border">
+      <button type="button" aria-expanded={open} aria-controls={panelId} onClick={() => setOpen((v) => !v)}
+        className="flex w-full min-w-0 items-center gap-2 px-3 py-2.5 text-left">
+        <ChevronRight size={16} className={`shrink-0 text-subtle transition-transform ${open ? 'rotate-90' : ''}`} aria-hidden />
+        <span className="min-w-0 flex-1">
+          <span className="block break-words text-sm font-medium text-text">{title}</span>
+          {note && <span className="block text-sm text-muted">{note}</span>}
+        </span>
+        <span className={`shrink-0 text-lg font-semibold tabular-nums ${valueTone}`}>{value}</span>
+      </button>
+      {open && (
+        <div id={panelId} className="border-t border-border px-3 py-2">
+          {itens.length === 0
+            ? <p className="text-sm text-muted">Nenhuma avaliação com nota publicada nesta etapa ainda.</p>
+            : (
+              <ul className="divide-y divide-border">
+                {itens.map((item) => (
+                  <li key={item.id} className="flex items-start justify-between gap-3 py-1.5 text-sm">
+                    <span className="min-w-0 break-words text-text">
+                      {item.titulo}
+                      {item.tipo ? <span className="text-muted"> · {item.tipo}</span> : null}
+                      {item.recuperacaoDe ? <span className="text-muted"> · recuperação</span> : null}
+                      {item.peso !== null && item.peso !== undefined && !item.recuperacaoDe && !item.foraDaMedia ? <span className="text-muted"> · peso {fmtWeight(item.peso)}</span> : null}
+                    </span>
+                    <span className={`shrink-0 font-semibold tabular-nums ${gradeText(item.nota, criterio) || 'text-text'}`}>{fmtGrade(item.nota)}</span>
+                  </li>
+                ))}
+              </ul>
+            )}
+        </div>
+      )}
+    </li>
+  )
+}
+
+export function MyGradesCard({ summary }) {
+  const criterio = useCriterio()
+  const comCriterios = summary.regraAntiga === false
+  const etapas = Array.isArray(summary.etapas) ? summary.etapas : []
+  const disciplinas = Array.isArray(summary.situacaoPorDisciplina) ? summary.situacaoPorDisciplina : []
+  const mencao = fmtMencao(summary.mencao)
+  const semNotas = !summary.notasPublicadas
+  const grupos = useMemo(() => gradesByStage(summary), [summary])
+  const tone = (value) => (value != null ? gradeText(value, criterio) || 'text-text' : 'text-subtle')
+  return (
+    <Card as="section" className="p-5" aria-labelledby="minhas-notas-titulo">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <h2 id="minhas-notas-titulo" className="flex items-center gap-2 font-semibold text-text"><Award size={17} className="text-primary" /> Minhas notas</h2>
+        {summary.situacaoRotulo && <Selo tone={situacaoTone(summary.situacao)}>{summary.situacaoRotulo}</Selo>}
+      </div>
+      {semNotas ? (
+        <p className="mt-2 text-sm text-muted">Nenhuma nota publicada ainda. Quando o professor publicar, sua média aparece aqui.</p>
+      ) : (
+        <dl className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+          <div className="rounded-xl bg-surface-2 p-3">
+            <dt className="text-sm font-medium text-muted">{comCriterios ? 'Média final' : 'Média geral'}</dt>
+            <dd className={`mt-1 text-2xl font-semibold tabular-nums ${summary.mediaFinal != null ? gradeText(summary.mediaFinal, criterio) || 'text-text' : 'text-text'}`}>{fmtGrade(summary.mediaFinal)}</dd>
+          </div>
+          {mencao && (
+            <div className="rounded-xl bg-surface-2 p-3">
+              <dt className="text-sm font-medium text-muted">Menção</dt>
+              <dd className="mt-1 text-base font-semibold text-text">{mencao}{summary.mencao?.nome ? <span className="ml-1 text-sm font-normal text-muted">{summary.mencao.nome}</span> : null}</dd>
+            </div>
+          )}
+          {summary.frequencia !== null && summary.frequencia !== undefined && (
+            <div className="rounded-xl bg-surface-2 p-3">
+              <dt className="text-sm font-medium text-muted">Frequência</dt>
+              <dd className="mt-1 text-base font-semibold tabular-nums text-text">{summary.frequencia}%</dd>
+            </div>
+          )}
+        </dl>
+      )}
+      {comCriterios && etapas.length > 0 && (
+        <div className="mt-4">
+          <h3 className="text-sm font-semibold text-text">Notas por etapa</h3>
+          <p className="text-sm text-muted">Toque na etapa para ver as avaliações dela.</p>
+          <ul className="mt-2 space-y-2">
+            {etapas.map((etapa) => (
+              <StageRow key={etapa.ordem} id={etapa.ordem} criterio={criterio}
+                title={`${etapa.nome}${etapas.length > 1 ? ` · peso ${fmtWeight(etapa.peso)}` : ''}`}
+                value={etapa.semNota ? 'Sem nota' : fmtGrade(etapa.final)}
+                valueTone={etapa.semNota ? 'text-subtle' : tone(etapa.final)}
+                note={etapa.recuperacao != null ? `Média ${fmtGrade(etapa.media)} · recuperação ${fmtGrade(etapa.recuperacao)}` : ''}
+                itens={grupos.porEtapa.get(etapa.ordem) || []} />
+            ))}
+            {(summary.recuperacaoFinal != null || grupos.final.length > 0) && (
+              <StageRow id="final" title="Recuperação final" criterio={criterio}
+                value={fmtGrade(summary.recuperacaoFinal)} valueTone={tone(summary.recuperacaoFinal)} itens={grupos.final} />
+            )}
+            {grupos.fora.length > 0 && (
+              <StageRow id="fora" title="Fora da média" criterio={criterio}
+                value={String(grupos.fora.length)} valueTone="text-subtle" note="Sem etapa ou marcadas para não contar" itens={grupos.fora} />
+            )}
+          </ul>
+        </div>
+      )}
+      {comCriterios && disciplinas.length > 1 && (
+        <div className="mt-4">
+          <h3 className="text-sm font-semibold text-text">Por disciplina</h3>
+          <ul className="mt-2 divide-y divide-border">
+            {disciplinas.map((item) => (
+              <li key={item.id} className="flex items-center justify-between gap-2 py-1.5 text-sm">
+                <span className="min-w-0 truncate text-text">{item.nome}</span>
+                <span className="flex shrink-0 items-center gap-2">
+                  <span className="tabular-nums text-muted">{fmtGrade(item.mediaFinal)}</span>
+                  {item.situacaoRotulo && <Selo tone={situacaoTone(item.situacao)}>{item.situacaoRotulo}</Selo>}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <p className="mt-3 text-sm text-muted">
+        Média mínima para aprovação: {summary.mediaMinimaTexto || fmtGrade(criterio.mediaMinima)}.
+        {summary.faltasPermitidasRestantes !== null && summary.faltasPermitidasRestantes !== undefined ? ` Você ainda pode ter ${summary.faltasPermitidasRestantes} ${summary.faltasPermitidasRestantes === 1 ? 'falta' : 'faltas'} no período.` : ''}
+        {' '}Só notas publicadas entram na média.
+      </p>
+    </Card>
+  )
+}
+
 export default function ProvasPage() {
   const { email, studentClass, courseId } = useStudent()
   const nav = useNavigate()
@@ -388,6 +594,15 @@ export default function ProvasPage() {
   const applications = useApi(email && studentClass
     ? `/api/student/exam-applications?studentClass=${encodeURIComponent(studentClass)}&courseId=${encodeURIComponent(courseId)}`
     : null, [email, studentClass, courseId], { pollMs: 5000 })
+  // Resumo de notas do servidor (só o publicado): média final, situação, menção, notas por
+  // etapa, o critério do curso e a disciplina ou o módulo de cada avaliação. A tela não
+  // recalcula a média (D3 do P2).
+  const summaryApi = useApi(email && studentClass
+    ? `/api/student/grades-summary?courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(studentClass)}`
+    : null, [email, studentClass, courseId], { pollMs: 15000 })
+  const summary = summaryApi.data && typeof summaryApi.data === 'object' && !Array.isArray(summaryApi.data) ? summaryApi.data : null
+  const criterio = useMemo(() => criterioOf(summary), [summary])
+  const sectionOf = useMemo(() => sectionsFromSummary(summary), [summary])
   const [mine, setMine] = useState([])
   const [detail, setDetail] = useState(null)
   const [filter, setFilter] = useState('all')
@@ -402,11 +617,19 @@ export default function ProvasPage() {
   const mineKey = `${email}|${courseId}|${studentClass}`
   const mineKeyRef = useRef(mineKey)
   mineKeyRef.current = mineKey
+  // Nota publicada nova (muda o que conta no resultado): o resumo de notas recarrega já.
+  const publishedKeyRef = useRef('')
   const minePolling = usePolling(async (requestOptions) => {
     const key = mineKey
     try {
       const r = await api.post('/api/student/my-submissions', { email, courseId, studentClass }, requestOptions)
-      if (mineKeyRef.current === key) setMine(r.submissions || [])
+      if (mineKeyRef.current === key) {
+        const list = r.submissions || []
+        setMine(list)
+        const publishedKey = list.filter((item) => item.gradePublished === true).map((item) => `${item.id}:${item.consolidatedScore}:${item.assessmentArchived === true}`).join('|')
+        if (publishedKeyRef.current && publishedKeyRef.current !== publishedKey) summaryApi.pollNow?.()
+        publishedKeyRef.current = publishedKey
+      }
       return true
     } catch { return false }
   }, { intervalMs: 5000 })
@@ -422,68 +645,70 @@ export default function ProvasPage() {
 
   // Metricas derivadas das submissoes concluidas.
   const metrics = useMemo(() => {
-    const published = mine.filter(isPublished)
+    // A nota de avaliação arquivada fica na lista, mas fora do gráfico, da melhor nota e da
+    // distribuição, como no gráfico do Início.
+    const published = mine.filter((s) => isPublished(s) && s.assessmentArchived !== true)
     const grades = published.map((s) => toGrade(s.score))
-    // Uma nota por prova (a consolidada pela regra do professor), como no painel e no
-    // boletim: com a regra "média", duas tentativas contam como uma prova só.
-    const avgScore = consolidatedAverage(mine)
-    const avg = avgScore == null ? null : avgScore / 10
+    // Média do servidor (resumo de notas): a mesma do boletim e do Início. Com os critérios
+    // do curso, a média final pelas etapas; sem eles, uma nota por prova (a consolidada).
+    const avg = summary && summary.mediaFinal !== null && summary.mediaFinal !== undefined && Number.isFinite(Number(summary.mediaFinal)) ? Number(summary.mediaFinal) : null
     const best = grades.length ? Math.max(...grades) : null
     const bestSub = best != null ? published.find((s) => toGrade(s.score) === best) : null
     const compoem = mine.filter(isConsidered).length
     const chartPoints = published
       .slice()
       .sort((a, b) => (a.timestamp || 0) - (b.timestamp || 0))
-      .map((s) => ({ value: Number(toGrade(s.score).toFixed(1)), label: shortLabel(s.examKey) }))
-    const buckets = distributionBuckets(grades)
+      .map((s) => ({ value: Number(toGrade(s.score).toFixed(1)), label: labelOf(s) }))
+    const buckets = distributionBuckets(grades, criterio)
     const maxBucket = Math.max(1, ...buckets.map((b) => b.n))
     return { avg, best, bestSub, compoem, total: mine.length, chartPoints, buckets, maxBucket, hasData: mine.length > 0 }
-  }, [mine])
+  }, [mine, summary, criterio])
 
-  // Materias distintas (ordem estavel) para cores e chips.
+  // Seções distintas (disciplina ou módulo, ordem estável) para cores e chips; "Notas em
+  // revisão" por último.
   const materias = useMemo(() => {
-    const seen = []
-    mine.forEach((s) => { const m = materiaOf(s.examKey); if (!seen.includes(m)) seen.push(m) })
-    return seen
-  }, [mine])
-  const accentOf = (m) => MOD_ACCENTS[Math.max(0, materias.indexOf(m)) % MOD_ACCENTS.length]
+    const seen = new Map()
+    mine.forEach((s) => { const sec = sectionOf(s); if (!seen.has(sec.key)) seen.set(sec.key, sec) })
+    const list = [...seen.values()]
+    return [...list.filter((sec) => sec.key !== REVIEW_SECTION.key), ...list.filter((sec) => sec.key === REVIEW_SECTION.key)]
+  }, [mine, sectionOf])
+  const accentOf = (key) => MOD_ACCENTS[Math.max(0, materias.findIndex((sec) => sec.key === key)) % MOD_ACCENTS.length]
 
   // Filtro de status (existente) -> busca -> filtro de materia.
   const statusFiltered = useMemo(() => mine.filter((s) => {
     if (filter === 'compoe') return isConsidered(s)
-    if (filter === 'nao') return s.resultStatus === 'archived'
+    if (filter === 'nao') return isOutOfResult(s)
     return true
   }), [mine, filter])
 
   const matCounts = useMemo(() => {
     const map = {}
-    statusFiltered.forEach((s) => { const m = materiaOf(s.examKey); map[m] = (map[m] || 0) + 1 })
+    statusFiltered.forEach((s) => { const m = sectionOf(s).key; map[m] = (map[m] || 0) + 1 })
     return map
-  }, [statusFiltered])
+  }, [statusFiltered, sectionOf])
 
   const visible = useMemo(() => {
     return statusFiltered.filter((s) => {
-      if (mat !== 'all' && materiaOf(s.examKey) !== mat) return false
+      if (mat !== 'all' && sectionOf(s).key !== mat) return false
       if (!matchesSearch([s.examTitle, s.examKey], query)) return false
       return true
     })
-  }, [statusFiltered, mat, query])
+  }, [statusFiltered, mat, query, sectionOf])
 
-  // Monta as secoes: por materia -> por grupo de tentativas.
-  const board = useMemo(() => materias.map((m) => {
-    const subs = visible.filter((s) => materiaOf(s.examKey) === m)
+  // Monta as seções: por disciplina ou módulo -> por grupo de tentativas.
+  const board = useMemo(() => materias.map((sec) => {
+    const m = sec.key
+    const subs = visible.filter((s) => sectionOf(s).key === m)
     if (!subs.length) return null
     const groupsMap = new Map()
     subs.forEach((s) => { const k = groupKeyOf(s); if (!groupsMap.has(k)) groupsMap.set(k, []); groupsMap.get(k).push(s) })
     const groups = [...groupsMap.values()].map((atts) => atts.slice().sort((a, b) => (Number(a.attemptNumber || 0) - Number(b.attemptNumber || 0)) || ((a.timestamp || 0) - (b.timestamp || 0))))
-    // Media da materia = uma nota por prova (a consolidada), mesma regra da metrica
-    // geral — tentativas descartadas ou refeitas nao contam em dobro.
-    const modScore = consolidatedAverage(subs)
-    const modAvg = modScore == null ? null : modScore / 10
-    return { m, accent: accentOf(m), groups, modAvg, contam: subs.filter(isConsidered).length, tentativas: subs.length }
-  }).filter(Boolean), [materias, visible])
+    // Média da disciplina ou do módulo: a do servidor (resumo de notas).
+    return { m, name: sec.name, accent: accentOf(m), groups, modAvg: sec.media, contam: subs.filter(isConsidered).length, tentativas: subs.length }
+  }).filter(Boolean), [materias, visible, sectionOf])
 
   return (
+    <CriterioCtx.Provider value={criterio}>
     <div className="app-enter mx-auto max-w-5xl space-y-6">
       <div>
         <h1 className="text-2xl font-bold text-text">Provas</h1>
@@ -491,6 +716,14 @@ export default function ProvasPage() {
       </div>
 
       <PageState loading={status.loading || applications.loading} error={status.error || applications.error} onRetry={() => { status.refetch(); applications.refetch() }}>
+
+        {summary && <MyGradesCard summary={summary} />}
+        {!summary && summaryApi.error && (
+          <p role="alert" className="flex flex-wrap items-center gap-2 rounded-xl border border-border bg-warning-soft px-4 py-3 text-sm text-warning">
+            <span className="min-w-0 flex-1">Não deu para carregar o resumo das suas notas agora. As provas aparecem abaixo, sem a média.</span>
+            <Button size="sm" variant="secondary" onClick={() => summaryApi.refetch?.()}>Tentar de novo</Button>
+          </p>
+        )}
 
         {metrics.hasData && (
           <div className="space-y-4">
@@ -500,8 +733,8 @@ export default function ProvasPage() {
                 <div className="flex items-center gap-4">
                   <MetricRing value={metrics.avg} />
                   <div>
-                    <StatValue target={metrics.avg} decimals={1} className={metrics.avg != null ? gradeText(metrics.avg) : ''} />
-                    <p className="mt-2 text-xs text-subtle">Média das consideradas</p>
+                    <StatValue target={metrics.avg} decimals={1} className={metrics.avg != null ? gradeText(metrics.avg, criterio) : ''} />
+                    <p className="mt-2 text-xs text-subtle">{summary && summary.regraAntiga === false ? 'Média final' : 'Média geral'}</p>
                   </div>
                 </div>
               </Card>
@@ -510,8 +743,8 @@ export default function ProvasPage() {
                 <StatValue target={metrics.total} />
               </MetricCard>
 
-              <MetricCard label="Melhor nota" icon={Award} tone="text-success" badge={metrics.bestSub ? <Badge tone="success" dot>{shortLabel(metrics.bestSub.examKey)}</Badge> : null}>
-                <StatValue target={metrics.best} decimals={1} className={metrics.best != null ? gradeText(metrics.best) : ''} />
+              <MetricCard label="Melhor nota" icon={Award} tone="text-success" badge={metrics.bestSub ? <Badge tone="success" dot>{labelOf(metrics.bestSub)}</Badge> : null}>
+                <StatValue target={metrics.best} decimals={1} className={metrics.best != null ? gradeText(metrics.best, criterio) : ''} />
               </MetricCard>
 
               <MetricCard label="Compõem o resultado" icon={Target} tone="text-info" badge={<Badge tone="info">de {metrics.total}</Badge>}>
@@ -604,11 +837,11 @@ export default function ProvasPage() {
                   <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Buscar avaliação..." aria-label="Buscar avaliação" />
                 </label>
                 <div className="pvb-filter">
-                  <span className="pvb-flabel">Matéria</span>
+                  <span className="pvb-flabel">{summary?.situacaoPorDisciplina?.length ? 'Disciplina' : 'Módulo'}</span>
                   <button type="button" className={`pvb-chip ${mat === 'all' ? 'active' : ''}`} onClick={() => setMat('all')}>Todas <span className="pvb-count">{statusFiltered.length}</span></button>
-                  {materias.map((m) => (
-                    <button type="button" key={m} className={`pvb-chip ${mat === m ? 'active' : ''}`} style={{ '--sc': accentOf(m) }} onClick={() => setMat(m)}>
-                      <span className="pvb-cdot" />{m} <span className="pvb-count">{matCounts[m] || 0}</span>
+                  {materias.map((sec) => (
+                    <button type="button" key={sec.key} className={`pvb-chip ${mat === sec.key ? 'active' : ''}`} style={{ '--sc': accentOf(sec.key) }} onClick={() => setMat(sec.key)}>
+                      <span className="pvb-cdot" />{sec.name} <span className="pvb-count">{matCounts[sec.key] || 0}</span>
                     </button>
                   ))}
                 </div>
@@ -618,7 +851,7 @@ export default function ProvasPage() {
                 </div>
               </div>
 
-              <div className="pvb-resultmeta">Mostrando <b>{visible.length}</b> tentativa{visible.length !== 1 ? 's' : ''} em <b>{board.length}</b> matéria{board.length !== 1 ? 's' : ''}</div>
+              <div className="pvb-resultmeta">Mostrando <b>{visible.length}</b> tentativa{visible.length !== 1 ? 's' : ''} em <b>{board.length}</b> {board.length !== 1 ? 'grupos' : 'grupo'}</div>
 
               {board.length === 0 ? (
                 <Card><EmptyState icon={ClipboardList} title="Nenhuma prova nesta categoria" description="Ajuste os filtros para ver outras avaliações." /></Card>
@@ -627,9 +860,9 @@ export default function ProvasPage() {
                   {board.map((sec) => (
                     <section key={sec.m} className={`pvb-mod ${collapsed[sec.m] ? 'collapsed' : ''}`} style={{ '--mc': sec.accent }}>
                       <button type="button" className="pvb-mod-head" onClick={() => toggleMod(sec.m)} aria-expanded={!collapsed[sec.m]}>
-                        <span className="pvb-mbadge">{sec.m.slice(0, 2)}</span>
+                        <span className="pvb-mbadge">{sec.name.slice(0, 2).toUpperCase()}</span>
                         <span className="pvb-mtitle">
-                          <span className="pvb-mname">{sec.m}</span>
+                          <span className="pvb-mname">{sec.name}</span>
                           <span className="pvb-msub">{sec.tentativas} tentativa{sec.tentativas !== 1 ? 's' : ''}</span>
                         </span>
                         <span className="pvb-msummary">
@@ -652,7 +885,7 @@ export default function ProvasPage() {
         )}
       </PageState>
 
-      <Modal open={!!detail} onClose={() => setDetail(null)} title={detail?.examTitle || detail?.examKey || 'Resultado'} description={detail?.resultStatus === 'archived' ? 'Tentativa arquivada e fora do resultado' : detail?.answerKeyReleased ? 'Gabarito liberado pelo instrutor' : 'Resumo da tentativa'}>
+      <Modal open={!!detail} onClose={() => setDetail(null)} title={detail?.examTitle || detail?.examKey || 'Resultado'} description={detail?.resultStatus === 'archived' ? 'Tentativa arquivada e fora do resultado' : detail?.assessmentArchived === true ? 'Avaliação arquivada pelo professor: a nota fica guardada e não entra na média' : detail?.answerKeyReleased ? 'Gabarito liberado pelo instrutor' : 'Resumo da tentativa'}>
         {detail && (
           <div className="space-y-4">
             <dl className="grid grid-cols-2 gap-x-6 gap-y-3 border-y border-border py-3 sm:grid-cols-4">
@@ -697,5 +930,6 @@ export default function ProvasPage() {
         )}
       </Modal>
     </div>
+    </CriterioCtx.Provider>
   )
 }
