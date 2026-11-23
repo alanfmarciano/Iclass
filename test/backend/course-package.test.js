@@ -31,6 +31,7 @@ process.env.TEST_MODE = '1';
 const db = require('../../backend/database.js');
 const runtimePaths = require('../../backend/runtimePaths.js');
 const coursePackage = require('../../backend/utils/coursePackage.js');
+const gradingRules = require('../../backend/utils/gradingRules.js');
 const { normalizeEvaluationQuestions } = require('../../backend/utils/questionModel.js');
 const { createApp } = require('../../backend/server.js');
 
@@ -608,7 +609,7 @@ test('remapCourseKeys: o "Duplicar curso" e o pacote usam o mesmo remapeamento',
     // A variante da turma também é copiada (como no clone antigo), na ordem em que aparece.
     assert.deepEqual([...result.materialKeys.keys()], ['Apostila_REDES_1', 'Apostila_REDES_2', 'Apostila_REDES_1__turma_x', 'Apostila_EXTRA']);
     assert.equal(result.mapItemKey('Gabarito_Avaliacao_REDES_2'), 'Gabarito_Avaliacao_REDES_2_B');
-    assert.deepEqual(coursePackage.COURSE_PACKAGE_FIELDS, ['name', 'description', 'structure', 'disciplinas', 'gradeTemplates', 'branding']);
+    assert.deepEqual(coursePackage.COURSE_PACKAGE_FIELDS, ['name', 'description', 'structure', 'disciplinas', 'gradeTemplates', 'branding', 'avaliacao', 'permitirImpressao']);
 });
 
 test('remapCourseKeys: "Duplicar curso" copia arquivos, avaliações e turmas como antes da extração', async () => {
@@ -978,4 +979,52 @@ test('[UC-PACOTE-002] curso excluído guardado em Cursos excluídos: o código e
     } finally {
         fs.rmSync(runtimePaths.ARCHIVE_DIR, { recursive: true, force: true });
     }
+});
+
+test('[UC-PACOTE-001] critérios de avaliação do curso (avaliacao, B6) e "Permitir imprimir a apostila" (permitirImpressao, C17) vão e voltam no pacote (J2)', async () => {
+    freshInstall();
+    const course = db.memory.courses.find(item => item.id === COURSE);
+    course.avaliacao = {
+        versao: 1, ativo: true, mediaMinima: 7, frequenciaMinima: 80,
+        etapas: [{ ordem: 1, nome: '1º bimestre', peso: 1 }, { ordem: 2, nome: '2º bimestre', peso: 2 }],
+        recuperacao: { etapa: 'substitui_se_maior', final: 'media' },
+        mencoes: [{ sigla: 'MB', nome: 'Muito bom', min: 9 }, { sigla: 'I', nome: 'Insuficiente', min: 0 }],
+        unidadeSituacao: 'disciplina', atualizadoEm: 1700000000000, atualizadoPor: 'admin@pacote.local',
+    };
+    course.permitirImpressao = false;
+    const built = await coursePackage.exportCoursePackage(db.memory, COURSE, { contentDir: runtimePaths.CONTENT_DIR, uploadsDir: runtimePaths.UPLOADS_DIR });
+    const manifest = JSON.parse(new AdmZip(built.buffer).readAsText('manifest.json'));
+    assert.equal(manifest.curso.permitirImpressao, false);
+    assert.equal(manifest.curso.avaliacao.atualizadoPor, undefined, 'sem o e-mail de quem mudou');
+    assert.equal(manifest.curso.avaliacao.atualizadoEm, undefined);
+    assert.equal(JSON.stringify(manifest).includes('admin@pacote.local'), false);
+
+    const memory = emptyMemory();
+    const dirs = otherInstallDirs('instalacao-criterios');
+    const preview = await coursePackage.previewCoursePackage(built.buffer, { memory, ...dirs });
+    const done = await coursePackage.importCoursePackage(built.buffer, { memory, ...dirs, newId: preview.sugestao.newId, newName: 'Redes', actorEmail: 'outra@escola.local', expectedSha256: preview.sha256, now: 1800000000000 });
+    const imported = done.course;
+    assert.equal(imported.permitirImpressao, false);
+    const { atualizadoEm, atualizadoPor, ...criterios } = imported.avaliacao;
+    assert.deepEqual([atualizadoEm, atualizadoPor], [1800000000000, 'outra@escola.local'], 'quem importou, nesta instalação');
+    const { atualizadoEm: a, atualizadoPor: b, ...original } = gradingRules.normalizeCriteria(course.avaliacao);
+    assert.deepEqual(criterios, original, 'os mesmos critérios');
+    assert.deepEqual(gradingRules.criterioForScreen(imported.avaliacao), gradingRules.criterioForScreen(course.avaliacao));
+
+    // Critérios desligados viajam desligados (a regra antiga continua no importado), e o
+    // curso sem o campo de impressão continua sem (padrão: pode imprimir).
+    course.avaliacao = { ...course.avaliacao, ativo: false };
+    delete course.permitirImpressao;
+    const off = await coursePackage.exportCoursePackage(db.memory, COURSE, { contentDir: runtimePaths.CONTENT_DIR, uploadsDir: runtimePaths.UPLOADS_DIR });
+    const offManifest = JSON.parse(new AdmZip(off.buffer).readAsText('manifest.json'));
+    assert.equal(offManifest.curso.avaliacao.ativo, false);
+    assert.equal(offManifest.curso.permitirImpressao, undefined);
+    const memory2 = emptyMemory();
+    const dirs2 = otherInstallDirs('instalacao-criterios-2');
+    const preview2 = await coursePackage.previewCoursePackage(off.buffer, { memory: memory2, ...dirs2 });
+    const done2 = await coursePackage.importCoursePackage(off.buffer, { memory: memory2, ...dirs2, newId: preview2.sugestao.newId, newName: 'Redes', expectedSha256: preview2.sha256 });
+    assert.equal(done2.course.avaliacao.ativo, false);
+    assert.equal(gradingRules.normalizeCriteria(done2.course.avaliacao), null);
+    assert.equal(done2.course.permitirImpressao, undefined);
+    delete course.avaliacao;
 });

@@ -36,6 +36,7 @@ const { referencedUploads, safeImageSegments } = require('./contentMedia.js');
 const { isInheritedKey } = require('./ownEntry.js');
 const { headSignatureMatches, isBlockedUploadName } = require('./uploadSecurity.js');
 const attendanceUtil = require('./attendance.js');
+const gradingRules = require('./gradingRules.js');
 const { extractBranding } = require('./branding.js');
 const { schoolDateOf } = require('./schoolTime.js');
 const { normalizeEvaluationQuestions } = require('./questionModel.js');
@@ -48,7 +49,7 @@ const COURSE_PACKAGE_EXTENSION = '.iclass-curso.zip';
 // Campos do curso que viajam no pacote (lista permitida, contrato C9). Ficam de fora o
 // código (a importação escolhe), a escola (é desta instalação), a situação e a lixeira,
 // e a origem do "Duplicar".
-const COURSE_PACKAGE_FIELDS = Object.freeze(['name', 'description', 'structure', 'disciplinas', 'gradeTemplates', 'branding']);
+const COURSE_PACKAGE_FIELDS = Object.freeze(['name', 'description', 'structure', 'disciplinas', 'gradeTemplates', 'branding', 'avaliacao', 'permitirImpressao']);
 
 const PACKAGE_LIMITS = Object.freeze({
     maxBytes: 200 * 1024 * 1024, // o arquivo .zip (envio e exportação)
@@ -464,6 +465,21 @@ function packageFileName(course, now) {
     return `curso_${String(course.id).replace(/[^A-Za-z0-9_-]/g, '_')}_${date}${COURSE_PACKAGE_EXTENSION}`;
 }
 
+// Critérios de avaliação do curso (course.avaliacao, B6) como viajam no pacote: pela
+// normalização da conta (gradingRules.normalizeCriteria), com o "ligado/desligado" do
+// curso e sem quem mudou nem quando (são desta instalação). Outra coisa: null. Os
+// critérios não guardam chave de apostila, avaliação ou módulo (o plano por item fica na
+// turma, que não viaja), então não entram em remapCourseKeys (J2).
+function packageCriteria(raw) {
+    if (!isPlainObject(raw)) return null;
+    const normalized = gradingRules.normalizeCriteria({ ...raw, ativo: true });
+    if (!normalized) return null;
+    delete normalized.atualizadoEm;
+    delete normalized.atualizadoPor;
+    normalized.ativo = raw.ativo !== false;
+    return normalized;
+}
+
 // Monta o pacote de um curso. Devolve { buffer, fileName, manifest, contagens, bytes,
 // arquivos, foraDoPacote }. Recusa: curso inexistente (404) e pacote acima do limite (413).
 async function exportCoursePackage(memory, courseId, options = {}) {
@@ -477,6 +493,12 @@ async function exportCoursePackage(memory, courseId, options = {}) {
         if (course[field] !== undefined) curso[field] = cleanValue(deepCopy(course[field]));
     });
     if (!Array.isArray(curso.structure)) curso.structure = [];
+    if (curso.avaliacao !== undefined) {
+        const criterios = packageCriteria(course.avaliacao);
+        if (criterios) curso.avaliacao = criterios;
+        else delete curso.avaliacao;
+    }
+    if (curso.permitirImpressao !== undefined && typeof curso.permitirImpressao !== 'boolean') delete curso.permitirImpressao;
 
     const { materials, evaluations } = courseUnitKeys(course);
     const evaluationSet = new Set(evaluations);
@@ -960,6 +982,13 @@ function packageData(manifest) {
         }
         if (!branding) avisos.push('A identidade visual do curso no pacote está num formato que o IClass não reconhece e ficou de fora.');
     }
+    // Critérios de avaliação (B6) e "Permitir imprimir a apostila" (C17), desde a J2.
+    let avaliacao;
+    if (curso.avaliacao !== undefined) {
+        avaliacao = packageCriteria(curso.avaliacao) || undefined;
+        if (!avaliacao) avisos.push('Os critérios de avaliação do curso no pacote estão num formato que o IClass não reconhece e ficaram de fora (o curso importado usa a regra antiga).');
+    }
+    const permitirImpressao = typeof curso.permitirImpressao === 'boolean' ? curso.permitirImpressao : undefined;
     // Campos de curso que esta versão não conhece (de versão mais nova do mesmo formato)
     // ficam de fora; só os de COURSE_PACKAGE_FIELDS entram.
     const rawEvaluations = isPlainObject(manifest.avaliacoes) ? cleanEvaluations(manifest.avaliacoes) : {};
@@ -998,7 +1027,7 @@ function packageData(manifest) {
         turmas.push({ name, period: typeof cls.period === 'string' ? cls.period.slice(0, 20) : '', attendanceConfig: cls.attendanceConfig });
     });
     return {
-        codigo, nome, descricao, structure, disciplinas, gradeTemplates, branding,
+        codigo, nome, descricao, structure, disciplinas, gradeTemplates, branding, avaliacao, permitirImpressao,
         avaliacoes, biblioteca, questoes, turmasModelo: turmas, avisos,
         exportadoEm: Number.isFinite(manifest.exportadoEm) ? manifest.exportadoEm : null,
         versaoApp: typeof manifest.versaoApp === 'string' ? manifest.versaoApp.slice(0, 40) : '',
@@ -1450,6 +1479,8 @@ async function importCoursePackage(input, options = {}) {
         if (data.disciplinas) course.disciplinas = data.disciplinas;
         if (data.gradeTemplates) course.gradeTemplates = data.gradeTemplates;
         if (data.branding) course.branding = rewriteValue(data.branding, maps);
+        if (data.avaliacao) course.avaliacao = { ...data.avaliacao, atualizadoEm: now, atualizadoPor: options.actorEmail || 'Administrador' };
+        if (typeof data.permitirImpressao === 'boolean') course.permitirImpressao = data.permitirImpressao;
 
         // Questões do banco: chave nova; a da avaliação que veio do banco (bankKey com a
         // referência do pacote) passa a apontar para ela.
