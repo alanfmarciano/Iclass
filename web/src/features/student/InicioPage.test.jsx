@@ -4,11 +4,19 @@ import { fireEvent, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import InicioPage from './InicioPage'
 
-const mocks = vi.hoisted(() => ({ dashboard: null, assignments: null }))
+const mocks = vi.hoisted(() => ({ dashboard: null, assignments: null, groups: null, urls: [] }))
 
 vi.mock('./useStudent', () => ({ useStudent: () => ({ email: 'ana@x.local', name: 'Ana', studentClass: '1DES', courseId: 'DES' }) }))
 vi.mock('../../hooks/useApi', () => ({
-  useApi: (url) => ({ data: String(url || '').includes('/dashboard') ? mocks.dashboard : String(url || '').startsWith('/api/student/assignments') ? mocks.assignments : null, loading: false, error: null, refetch: vi.fn() }),
+  useApi: (url) => {
+    mocks.urls.push(url)
+    const text = String(url || '')
+    const data = text.includes('/dashboard') ? mocks.dashboard
+      : text.startsWith('/api/student/assignments') ? mocks.assignments
+        : text.startsWith('/api/student/groups') ? mocks.groups
+          : null
+    return { data, loading: false, error: null, refetch: vi.fn() }
+  },
 }))
 
 afterEach(() => {
@@ -80,5 +88,31 @@ describe('Início do aluno · Pendências', () => {
     const button = screen.getByRole('button', { name: /Pendências\s*6\s*Conteúdos liberados para estudar/ })
     fireEvent.click(button)
     expect(navigate).toHaveBeenCalledWith('/aluno/modulos')
+  })
+})
+
+// Fase 3, C12 (P5-S4, CRIT-11): "Meus grupos" na Início, com o nome dos colegas (sem
+// e-mail); sem grupo, o cartão não aparece.
+describe('Início do aluno · Meus grupos', () => {
+  it('[UC-GRUPO-001] mostra os grupos da turma com o nome dos colegas; sem grupo, nada', () => {
+    mocks.dashboard = { modules: [], announcements: [], calendar: [] }
+    mocks.assignments = { serverNow: Date.now(), timezone: 'America/Sao_Paulo', assignments: [] }
+    mocks.groups = [
+      { id: 'grp_1', nome: 'Laboratório A', conjunto: 'Laboratório', tipo: 'subturma', tipoTexto: 'Subturma', colegas: ['Bia', 'Caio Prado'] },
+      { id: 'grp_2', nome: 'Equipe 3', conjunto: 'Projeto integrador', tipo: 'equipe', tipoTexto: 'Equipe', colegas: [] },
+    ]
+    mocks.urls = []
+    render(<MemoryRouter><InicioPage /></MemoryRouter>)
+    expect(mocks.urls).toContain('/api/student/groups?courseId=DES&studentClass=1DES')
+    const card = screen.getByRole('heading', { name: 'Meus grupos' }).closest('.premium-card')
+    expect(within(card).getByText('2 grupos')).toBeInTheDocument()
+    expect(within(card).getByText('Laboratório A')).toBeInTheDocument()
+    expect(within(card).getByText('Subturma')).toBeInTheDocument()
+    expect(within(card).getByText('Com Bia, Caio Prado')).toBeInTheDocument()
+    expect(within(card).getByText('Só você neste grupo por enquanto.')).toBeInTheDocument()
+    cleanup()
+    mocks.groups = []
+    render(<MemoryRouter><InicioPage /></MemoryRouter>)
+    expect(screen.queryByRole('heading', { name: 'Meus grupos' })).not.toBeInTheDocument()
   })
 })

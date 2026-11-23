@@ -34,8 +34,10 @@ describe('[UC-AJUDA-001] tela Ajuda do painel', () => {
     })
     expect(within(nav).getByRole('link', { name: 'Para o professor' })).toHaveAttribute('aria-current', 'page')
     expect(screen.getByRole('heading', { level: 3, name: 'Sistema' })).toBeInTheDocument()
-    // Tema ainda sem texto (P5 escreve depois) não aparece. Tarefas ganhou texto no C7.
-    expect(screen.queryByRole('heading', { level: 3, name: 'Grupos' })).not.toBeInTheDocument()
+    // Tema ainda sem texto (P5 escreve depois) não aparece. Tarefas ganhou texto no C7 e
+    // Grupos no C12; o exemplo de tema vazio passou a ser "Ver como aluno" (C15).
+    expect(screen.queryByRole('heading', { level: 3, name: 'Ver como aluno' })).not.toBeInTheDocument()
+    expect(screen.getByRole('heading', { level: 3, name: 'Grupos' })).toBeInTheDocument()
     expect(screen.getByRole('heading', { level: 3, name: 'Tarefas' })).toBeInTheDocument()
     // Recado de comentário não vai para a tela.
     expect(screen.queryByText(/Regras para escrever aqui/)).not.toBeInTheDocument()
@@ -49,7 +51,7 @@ describe('[UC-AJUDA-001] tela Ajuda do painel', () => {
   })
 
   it('âncora de tema ainda sem texto avisa e mostra o resto', async () => {
-    renderAt('/ajuda#grupos')
+    renderAt('/ajuda#ver-como-aluno')
     expect(await screen.findByText('O texto sobre esta tela ainda está sendo escrito. Veja os outros temas abaixo.')).toBeInTheDocument()
   })
 
@@ -79,8 +81,8 @@ describe('[UC-AJUDA-001] tela Ajuda do painel', () => {
     expect(within(results).getByRole('link', { name: 'A prova travou ou a conexão caiu' })).toHaveAttribute('href', '/ajuda?doc=aluno#prova-e-conexao')
     // Tema sem texto não aparece na busca.
     await user.clear(screen.getByRole('searchbox', { name: 'Buscar na ajuda' }))
-    await user.type(screen.getByRole('searchbox', { name: 'Buscar na ajuda' }), 'grupos')
-    expect(await within(screen.getByRole('region', { name: 'Resultado da busca' })).findByText('Nenhum tema com “grupos” no título.')).toBeInTheDocument()
+    await user.type(screen.getByRole('searchbox', { name: 'Buscar na ajuda' }), 'ver como aluno')
+    expect(await within(screen.getByRole('region', { name: 'Resultado da busca' })).findByText('Nenhum tema com “ver como aluno” no título.')).toBeInTheDocument()
   })
 
   it('link para outra tela do IClass dentro do texto abre pelo roteador, sem recarregar', async () => {

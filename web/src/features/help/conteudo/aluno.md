@@ -38,6 +38,8 @@ Quando a escola usa a conexão segura (o endereço começa com `https`), o naveg
 
 ## Início {#inicio}
 
+**Meus grupos.** Se o professor dividiu a turma em equipes ou subturmas, a Início mostra o cartão **Meus grupos**: o nome de cada grupo seu, a que atividade ele pertence (por exemplo, "Projeto integrador") e o nome dos colegas do grupo. Sem grupo, o cartão não aparece. Grupo errado? Fale com o professor: só ele muda os grupos.
+
 ## Módulos {#modulos}
 
 ## Busca {#busca}

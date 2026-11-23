@@ -34,6 +34,7 @@ const BibliotecaPage = lazyPage(() => import('./features/admin/BibliotecaPage'))
 const EditorPage = lazyPage(() => import('./features/admin/EditorPage'))
 const TurmasPage = lazyPage(() => import('./features/admin/TurmasPage'))
 const AssistenteHorariosPage = lazyPage(() => import('./features/admin/AssistenteHorariosPage'))
+const GruposPage = lazyPage(() => import('./features/admin/GruposPage'))
 const AlunosPage = lazyPage(() => import('./features/admin/AlunosPage'))
 const MatriculasPage = lazyPage(() => import('./features/admin/MatriculasPage'))
 const AlunosGlobalPage = lazyPage(() => import('./features/admin/AlunosGlobalPage'))
@@ -151,6 +152,8 @@ export default function App() {
         <Route path="biblioteca" element={<RequireAdminPath path="/biblioteca"><BibliotecaPage /></RequireAdminPath>} />
         <Route path="turmas" element={<RequireAdminPath path="/turmas"><TurmasPage /></RequireAdminPath>} />
         <Route path="turmas/:courseId/:className/assistente" element={<RequireAdminPath path="/turmas"><AssistenteHorariosPage /></RequireAdminPath>} />
+        {/* Grupos da turma (fase 3, P5-S4): a permissão é a da tela Alunos (page.students). */}
+        <Route path="turmas/:courseId/:className/grupos" element={<RequireAdminPath path="/alunos"><GruposPage /></RequireAdminPath>} />
         <Route path="alunos" element={<RequireAdminPath path="/alunos"><AlunosPage /></RequireAdminPath>} />
         {/* Aprovar matrícula: enrollments.approve (administrador e Secretaria). */}
         <Route path="matriculas" element={<RequireAdminPath path="/matriculas"><MatriculasPage /></RequireAdminPath>} />

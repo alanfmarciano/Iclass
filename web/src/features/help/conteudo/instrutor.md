@@ -147,7 +147,21 @@ Mostra as entregas das provas da turma, aluno por aluno, com as notas. Daqui voc
 
 ## Grupos {#grupos}
 
-<!-- P5 (C12 e C19) escreve aqui: grupos da turma, sorteio e grupos em avisos, liberação e provas. -->
+Grupo é uma parte da turma: uma equipe de trabalho ou uma subturma (a metade que vai ao laboratório, por exemplo). Abra em **Turmas** (botão **Grupos** na turma) ou em **Alunos** (botão **Grupos** no topo).
+
+**Conjuntos.** Cada grupo pertence a um conjunto, que junta as divisões de uma mesma atividade: "Projeto integrador" com as equipes 1, 2 e 3; "Laboratório" com as subturmas A e B. O aluno fica em **no máximo um grupo de cada conjunto**, mas pode estar ao mesmo tempo numa equipe do projeto e numa subturma do laboratório. Abaixo do nome do conjunto aparece quem ainda está **sem grupo** nele.
+
+**Criar.** Toque em **Novo grupo**, escreva o nome, o conjunto (escolha um que já existe ou escreva um novo) e o tipo (**Equipe** ou **Subturma**), e marque os alunos. Quem já está em outro grupo do mesmo conjunto aparece com "Em Equipe 1" e não pode ser marcado aqui.
+
+**Editar.** Em **Editar**, mude o nome, o conjunto, o tipo e quem está no grupo. Marcar um aluno que está em outro grupo do conjunto mostra "Sai de Equipe 2": ao salvar, ele sai de lá e entra neste. Aluno que saiu da turma (transferido, desligado) continua no grupo com a etiqueta **Saiu da turma**, sem contar no total; desmarque para tirar. Se outra pessoa mudou o mesmo grupo enquanto você editava, o IClass avisa, atualiza a lista e você salva de novo.
+
+**Sortear.** **Sortear grupos** divide a turma (só os alunos ativos) pela **quantidade de grupos** ou pelo **número de alunos por grupo**; os tamanhos diferem no máximo em um aluno. Escolha o conjunto e, se quiser, o começo do nome ("Grupo" vira Grupo 1, Grupo 2...). Nada é gravado até você conferir a proposta e tocar em **Criar estes grupos**; **Sortear de novo** faz outra divisão. Num conjunto que já tem grupos, o sorteio pega só quem está sem grupo nele (para sortear a turma toda de novo, use outro conjunto ou arquive os grupos antes). Se a turma mudou entre o sorteio e a confirmação, o IClass pede outro sorteio.
+
+**Arquivar e reativar.** **Arquivar** tira o grupo da lista (o motivo é opcional e fica na Auditoria) e deixa os alunos livres para outro grupo do conjunto. **Mostrar arquivados** traz os arquivados de volta à tela, com **Reativar**; se algum aluno entrou em outro grupo do conjunto nesse meio-tempo, o IClass avisa e não reativa.
+
+**O que o aluno vê.** Na **Início** do portal, o aluno vê o cartão **Meus grupos** com o nome dos grupos dele e dos colegas (só o nome; e-mail e telefone não aparecem). Criar, mudar, arquivar e sortear grupos ficam na **Auditoria**. A Coordenação vê os grupos sem poder mudar.
+
+<!-- P5 (C19) escreve aqui: grupos em avisos, liberação e provas. -->
 
 ## Ver como aluno {#ver-como-aluno}
 

@@ -31,6 +31,7 @@ const {
     resolvePreviewSession,
     sendPreviewEnded,
 } = require('./utils/previewAccess.js');
+const { findGroup } = require('./utils/classGroups.js');
 const {
     findStudentSession,
     studentSessionByEmail,
@@ -912,6 +913,15 @@ function validateProfessorRequestScope(req, account) {
         const application = (db.memory.examApplications || []).find(item => item.id === safeDecode(applicationPath[1]));
         if (application && !adminCanAccessClass(account, application.studentClass, application.courseId)) {
             return outOfScopeMessage(account, 'A aplicação solicitada');
+        }
+    }
+    // Grupo de alunos pelo caminho (fase 3, P5-S4): a turma do registro do grupo, como a
+    // da aplicação acima. Grupo que não existe segue para a rota (404).
+    const groupPath = rawPath.match(/^\/class-groups\/([^/]+)\/[^/]+$/i);
+    if (groupPath) {
+        const group = findGroup(db.memory, safeDecode(groupPath[1]));
+        if (group && !adminCanAccessClass(account, group.studentClass, group.courseId)) {
+            return outOfScopeMessage(account, 'O grupo solicitado');
         }
     }
     const requestedCourseId = body.courseId || query.courseId || null;

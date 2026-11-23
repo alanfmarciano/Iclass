@@ -104,4 +104,16 @@ describe('TurmasPage · cursos', () => {
     expect(screen.getByText('0 professor(es)')).toBeInTheDocument()
     expect(screen.getAllByText('Sem professor')).toHaveLength(1)
   })
+
+  // Fase 3, C12 (P5-S4, CRIT-11): "Grupos" na turma para quem tem a tela Alunos, também o
+  // professor (que não vê as ações de administração da turma).
+  it('[UC-GRUPO-001] o professor vê "Grupos" na turma e abre a tela da turma', async () => {
+    const { Routes, Route, useLocation } = await import('react-router-dom')
+    function Where() { return <p data-testid="where">{useLocation().pathname}</p> }
+    mocks.auth = { role: 'professor', accountRole: 'professor' }
+    render(<MemoryRouter initialEntries={['/turmas']}><Routes><Route path="/turmas" element={<TurmasPage />} /><Route path="*" element={<Where />} /></Routes></MemoryRouter>)
+    expect(screen.queryByRole('button', { name: /Editar turma 1DES/ })).toBeNull()
+    await userEvent.click(screen.getByRole('button', { name: 'Grupos da turma 1DES' }))
+    expect(screen.getByTestId('where')).toHaveTextContent('/turmas/DES/1DES/grupos')
+  })
 })

@@ -531,6 +531,8 @@ function decisions(virtualEmail) {
         'GET /api/student/assignments/:id': read(`/api/student/assignments/${ASSIGNMENT_ID}?${Q}`),
         'POST /api/student/assignments/:id/submit': 'recusada',
         'GET /api/student/assignments/:id/files/:fileId': 'recusada',
+        // Grupos do aluno (fase 3, C12 / P5-S4): só lê.
+        'GET /api/student/groups': read(`/api/student/groups?${Q}`),
     };
 }
 
@@ -916,5 +918,34 @@ test('[UC-PREVIA-001] contrato classGroups: fora de utils/classGroups.js, nenhum
         }
     };
     walk(backendRoot);
-    assert.deepEqual(offenders, [], 'grupos só por findGroup/activeGroupsForClass (e os leitores que o P5-S4 acrescentar)');
+    assert.deepEqual(offenders, [], 'grupos só pelos leitores e regras de utils/classGroups.js');
+});
+
+// ---------------------------------------------------------------------------
+// Grupos do aluno na prévia (fase 3, C12 / P5-S4)
+// ---------------------------------------------------------------------------
+
+test('[UC-PREVIA-002] Meus grupos: sem grupo a prévia não está em nenhum; com o grupo, vê o grupo como um membro (os colegas pelo nome)', async () => {
+    const { previewToken: plain } = await previewToken(tokens.prof);
+    const none = await request(app).get(`/api/student/groups?${Q}`).set('x-preview-session', plain);
+    assert.equal(none.status, 200);
+    assert.deepEqual(none.body, []);
+
+    const { previewToken: withGroup } = await previewToken(tokens.prof, { courseId: COURSE, studentClass: CLASS, groupId: 'grp_1' });
+    const before = memoryHash();
+    const member = await request(app).get(`/api/student/groups?${Q}`).set('x-preview-session', withGroup);
+    assert.equal(member.status, 200);
+    assert.deepEqual(member.body, [{ id: 'grp_1', nome: 'Laboratório A', conjunto: 'Laboratório', tipo: 'subturma', tipoTexto: 'Subturma', colegas: ['Bia'] }]);
+    assert.equal(memoryHash(), before, 'ler não muda nada');
+
+    // A aluna real do grupo vê o mesmo grupo (sem ela mesma entre os colegas); a de fora, nada.
+    const bia = await request(app).get(`/api/student/groups?${Q}`).set('x-session-token', tokens.bia);
+    assert.deepEqual(bia.body.map(group => [group.id, group.colegas]), [['grp_1', []]]);
+    const ana = await request(app).get(`/api/student/groups?${Q}`).set('x-session-token', tokens.ana);
+    assert.deepEqual(ana.body, []);
+    // Grupo arquivado depois de abrir a prévia não aparece mais.
+    db.memory.classGroups[0].arquivadoEm = Date.now();
+    const archived = await request(app).get(`/api/student/groups?${Q}`).set('x-preview-session', withGroup);
+    assert.equal(archived.status, 200);
+    assert.deepEqual(archived.body, []);
 });

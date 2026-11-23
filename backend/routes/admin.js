@@ -209,6 +209,7 @@ const { createAdminCoursesRouter, courseIdError, parseCourseName, schoolExists }
 const { createAdminAcademicRouter } = require('./adminAcademic.js');
 const { nonSchoolDayCalendarItems } = require('../utils/calendarFeed.js');
 const { createAdminQuestionBankRouter } = require('./adminQuestionBank.js');
+const { createAdminGroupsRouter } = require('./adminGroups.js');
 const { createAdminPreviewRouter } = require('./adminPreview.js');
 const { createAdminAssignmentsRouter } = require('./adminAssignments.js');
 const { body, either, list, num, shape, str } = require('../utils/inputSchema.js');
@@ -3751,10 +3752,11 @@ router.use(createAdminStudentRecordsRouter());
 router.use(createAdminCoursesRouter());
 // Rotas novas da fase 3 (ordem_no_createApp do plano), depois do router de cursos:
 // calendário acadêmico (P2), banco de questões (P3-S9a), tarefas com envio de arquivo
-// (P1-b e P1-d) e pré-visualização como aluno (P5-S6a).
+// (P1-b e P1-d), grupos de alunos (P5-S4) e pré-visualização como aluno (P5-S6a).
 router.use(createAdminAcademicRouter());
 router.use(createAdminQuestionBankRouter());
 router.use(createAdminAssignmentsRouter());
+router.use(createAdminGroupsRouter());
 router.use(createAdminPreviewRouter());
 
 

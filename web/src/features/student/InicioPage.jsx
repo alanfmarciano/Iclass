@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, BookOpen, CalendarDays, CheckCircle2, Clock, FileUp, Megaphone, Sparkles, TrendingUp, UserCheck } from 'lucide-react'
+import { AlertTriangle, ArrowRight, BookOpen, CalendarDays, CheckCircle2, Clock, FileUp, Megaphone, Sparkles, TrendingUp, UserCheck, Users } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { Card } from '../../components/ui/Card'
 import { Badge } from '../../components/ui/Badge'
@@ -110,12 +110,34 @@ function MiniCalendar({ events = [], onOpen }) {
   )
 }
 
+// Meus grupos (fase 3, P5-S4, CRIT-11): os grupos ativos do aluno na turma, com o nome
+// dos colegas (só o nome, P-C3). Sem grupo, o cartão não aparece.
+export function MeusGrupos({ groups }) {
+  const list = Array.isArray(groups) ? groups : []
+  if (list.length === 0) return null
+  return (
+    <Card>
+      <div className="flex items-center justify-between border-b border-border px-4 py-3"><h2 className="flex items-center gap-2 font-semibold text-text"><Users size={17} /> Meus grupos</h2><span className="text-xs text-muted">{list.length === 1 ? '1 grupo' : `${list.length} grupos`}</span></div>
+      <ul>
+        {list.map((group) => (
+          <li key={group.id} className="border-b border-border px-4 py-3 last:border-0">
+            <div className="flex flex-wrap items-center gap-2"><strong className="min-w-0 break-words text-sm text-text">{group.nome}</strong><Badge tone="info">{group.tipoTexto}</Badge></div>
+            <p className="mt-0.5 text-xs text-muted">{group.conjunto}</p>
+            <p className="mt-1.5 break-words text-xs text-muted">{group.colegas?.length ? `Com ${group.colegas.join(', ')}` : 'Só você neste grupo por enquanto.'}</p>
+          </li>
+        ))}
+      </ul>
+    </Card>
+  )
+}
+
 export default function InicioPage() {
   const { email, name, displayName, studentClass, courseId } = useStudent()
   const nav = useNavigate()
   const dashboard = useApi(email ? `/api/student/dashboard?email=${encodeURIComponent(email)}&studentClass=${encodeURIComponent(studentClass)}&courseId=${encodeURIComponent(courseId)}` : null, [email, studentClass, courseId], { pollMs: 10000 })
   const calendar = useApi(email ? `/api/student/calendar-events?courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(studentClass)}` : null, [email, courseId, studentClass], { pollMs: 10000 })
   const assignments = useApi(email ? assignmentsPath(courseId, studentClass) : null, [email, courseId, studentClass], { pollMs: ASSIGNMENTS_POLL_MS })
+  const groups = useApi(email && courseId && studentClass ? `/api/student/groups?courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(studentClass)}` : null, [email, courseId, studentClass])
   const data = dashboard.data || {}
   const modules = data.modules || []
   const firstName = (displayName || name || 'aluno').split(' ')[0]
@@ -177,6 +199,8 @@ export default function InicioPage() {
           </div>
 
           <div className="space-y-4">
+            <MeusGrupos groups={groups.data} />
+
             <MiniCalendar events={calendar.data || []} onOpen={() => nav('/aluno/calendario')} />
 
             <Card>
