@@ -79,4 +79,64 @@ describe('[UC-MENSAGEM-006] rolagem da conversa com o campo preso ao pé', () =>
     act(() => { rerender([message('m1', 'instrutor', 1)]) })
     expect(metrics.scrollTop).toBe(2000)
   })
+
+  // Revisão do C14, rodada 2: o erro de envio (limite de 20 em 10 minutos, 409, sem rede)
+  // e o contador a partir de 1.800 caracteres crescem o campo preso ao pé; sem rolar, ele
+  // cobria a última mensagem.
+  function setupComposer() {
+    const scrollTo = vi.fn()
+    const metrics = { scrollHeight: 2000, clientHeight: 600, scrollTop: 1400, formHeight: 150 }
+    function Screen({ error, value = '' }) {
+      return (
+        <main data-testid="rolador" style={{ overflowY: 'auto' }}>
+          <MessageList mensagens={[message('m1', 'instrutor', 1)]} side="aluno" scrollKey="c1" />
+          <MessageComposer value={value} onChange={() => {}} onSend={() => {}} error={error} />
+        </main>
+      )
+    }
+    // O <form> mede a altura pelo offsetHeight (o jsdom não desenha): o protótipo devolve a
+    // altura combinada para o formulário e 0 para o resto.
+    const original = Object.getOwnPropertyDescriptor(HTMLElement.prototype, 'offsetHeight')
+    Object.defineProperty(HTMLElement.prototype, 'offsetHeight', {
+      configurable: true,
+      get() { return this.classList?.contains('mensagens-composer') ? metrics.formHeight : 0 },
+    })
+    const view = render(<Screen />)
+    const scroller = view.getByTestId('rolador')
+    Object.defineProperty(scroller, 'scrollHeight', { configurable: true, get: () => metrics.scrollHeight })
+    Object.defineProperty(scroller, 'clientHeight', { configurable: true, get: () => metrics.clientHeight })
+    Object.defineProperty(scroller, 'scrollTop', { configurable: true, get: () => metrics.scrollTop, set: (value) => { metrics.scrollTop = value } })
+    scroller.scrollTo = scrollTo
+    const restore = () => { if (original) Object.defineProperty(HTMLElement.prototype, 'offsetHeight', original) }
+    return { view, scrollTo, metrics, restore, rerender: (props) => view.rerender(<Screen {...props} />) }
+  }
+
+  it('no fim da conversa, o erro de envio que cresce o campo rola até o fim (a última mensagem não fica atrás dele)', () => {
+    const { scrollTo, metrics, restore, rerender } = setupComposer()
+    try {
+      scrollTo.mockClear()
+      metrics.formHeight = 188
+      metrics.scrollHeight = 2038
+      rerender({ error: 'Você mandou muitas mensagens em pouco tempo. Tente de novo em 10 minutos.' })
+      expect(scrollTo).toHaveBeenCalledTimes(1)
+      expect(scrollTo).toHaveBeenLastCalledWith({ top: 2038, behavior: 'auto' })
+      // O erro some (o campo diminui): nada a fazer.
+      metrics.formHeight = 150
+      metrics.scrollHeight = 2000
+      rerender({ error: '' })
+      expect(scrollTo).toHaveBeenCalledTimes(1)
+    } finally { restore() }
+  })
+
+  it('quem subiu para ler as antigas não é puxado quando o campo cresce', () => {
+    const { scrollTo, metrics, restore, rerender } = setupComposer()
+    try {
+      scrollTo.mockClear()
+      metrics.scrollTop = 200
+      metrics.formHeight = 170
+      metrics.scrollHeight = 2020
+      rerender({ value: 'x'.repeat(1800) })
+      expect(scrollTo).not.toHaveBeenCalled()
+    } finally { restore() }
+  })
 })

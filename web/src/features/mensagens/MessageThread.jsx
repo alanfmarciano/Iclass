@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useLayoutEffect, useRef } from 'react'
 import { Send } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
 import { Textarea } from '../../components/ui/Textarea'
@@ -108,7 +108,41 @@ function scrollToEnd(scroller, behavior) {
 // de 1 a 2.000 caracteres, contador a partir de 1.800, Enviar (botão de 44 px no celular)
 // e Ctrl+Enter (ou Cmd+Enter) para enviar. O aviso de que as mensagens ficam guardadas
 // fica embaixo do campo (D9).
+// Quando o campo cresce (erro de envio embaixo dele, contador a partir de 1.800 caracteres,
+// a pessoa puxando o canto da caixa) com a conversa no fim, a rolagem acompanha: o campo é
+// preso ao pé da tela, e sem isso ele subia por cima da última mensagem (revisão do C14,
+// rodada 2: o erro do limite de mensagens cobria a última). Quem subiu para ler as antigas
+// não é puxado. Confere a cada desenho do campo e, onde houver, também pelo ResizeObserver.
+function useKeepEndVisibleOnGrow(formRef) {
+  const lastHeight = useRef(null)
+  const check = useRef(() => {})
+  check.current = () => {
+    const form = formRef.current
+    if (!form) return
+    const height = Number(form.offsetHeight) || 0
+    const previous = lastHeight.current
+    lastHeight.current = height
+    if (previous === null) return
+    const grew = height - previous
+    if (grew <= 0) return
+    const scroller = scrollParent(form)
+    if (!scroller) return
+    // A distância até o fim já inclui o que o campo cresceu.
+    if (distanceToEnd(scroller) - grew <= NEAR_END_PX) scrollToEnd(scroller, 'auto')
+  }
+  useLayoutEffect(() => { check.current() })
+  useEffect(() => {
+    const form = formRef.current
+    if (!form || typeof ResizeObserver !== 'function') return undefined
+    const observer = new ResizeObserver(() => check.current())
+    observer.observe(form)
+    return () => observer.disconnect()
+  }, [formRef])
+}
+
 export function MessageComposer({ value, onChange, onSend, sending, error, disabled, maxLength = TEXT_MAX, label = 'Escreva uma mensagem', placeholder = 'Escreva a sua mensagem', id }) {
+  const formRef = useRef(null)
+  useKeepEndVisibleOnGrow(formRef)
   const trimmed = String(value || '').trim()
   function submit(event) {
     event?.preventDefault?.()
@@ -119,7 +153,7 @@ export function MessageComposer({ value, onChange, onSend, sending, error, disab
     if (event.key === 'Enter' && (event.ctrlKey || event.metaKey)) submit(event)
   }
   return (
-    <form onSubmit={submit} className="mensagens-composer space-y-2 rounded-xl border border-border bg-surface p-3 shadow-[var(--shadow-float,0_8px_24px_rgba(0,0,0,.12))]" noValidate>
+    <form ref={formRef} onSubmit={submit} className="mensagens-composer space-y-2 rounded-xl border border-border bg-surface p-3 shadow-[var(--shadow-float,0_8px_24px_rgba(0,0,0,.12))]" noValidate>
       <Textarea
         id={id}
         label={label}

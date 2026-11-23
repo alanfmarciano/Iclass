@@ -258,6 +258,8 @@
 [data-interface='lumen'] .lumen-nav-link:hover { color: var(--text); transform: translateY(-1px); }
 [data-interface='lumen'] .lumen-nav-link.is-active { background: var(--surface); color: var(--text); box-shadow: var(--shadow-card); }
 [data-interface='lumen'] .lumen-nav-link.is-active svg { color: var(--lumen-cobalt); }
+/* Número de um item da barra de cima (Mensagens do professor no modo instituição). */
+[data-interface='lumen'] .lumen-nav-link .lumen-nav-count { min-width: 18px; height: 18px; padding: 0 5px; border-radius: 999px; font-size: 10px; font-weight: 760; line-height: 18px; text-align: center; }
 
 [data-interface='lumen'] .lumen-top-actions {
   display: flex;
@@ -534,6 +536,8 @@
   [data-interface='lumen'] .lumen-bottom-nav button span { width: 100%; overflow: hidden; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
   [data-interface='lumen'] .lumen-bottom-nav .is-active { background: var(--lumen-ink); color: var(--surface); }
   /* Ponto no "Mais" quando um item do menu completo tem número (Mensagens, Matrículas). */
+  /* Número de um item da barra de baixo, sobre o canto do ícone. */
+  [data-interface='lumen'] .lumen-bottom-nav .lumen-bottom-count { position: absolute; top: 3px; left: calc(50% + 4px); min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px; font-size: 9px; font-weight: 800; line-height: 16px; text-align: center; box-shadow: 0 0 0 2px var(--surface); }
   [data-interface='lumen'] .lumen-bottom-nav .lumen-more-dot { position: absolute; top: 8px; right: calc(50% - 16px); width: 9px; height: 9px; border-radius: 999px; background: var(--primary); box-shadow: 0 0 0 2px var(--surface); }
   /* Campo de escrita das Mensagens: o .lumen-main já reserva a barra de baixo no padding
      (102 px) e o sticky conta a partir do padding; somar mais 84 px deixava o campo flutuando

@@ -16,6 +16,21 @@ function initials(value = '') {
     .join('') || 'IC'
 }
 
+// Número de um item que está na barra de cima ou na de baixo (Mensagens do professor no
+// modo instituição, que fica entre os 4 primeiros). Antes só o menu completo desenhava o
+// número, e o "Mais" só soma os itens escondidos: o aviso não aparecia em lugar nenhum
+// (revisão do C14, rodada 2).
+function NavCount({ item, className }) {
+  const count = Number(item.badge) || 0
+  if (count <= 0) return null
+  return (
+    <>
+      <b aria-hidden="true" className={cn(className, item.badgeTone === 'primary' ? 'bg-primary text-primary-fg' : 'bg-warning text-white')}>{count > 99 ? '99+' : count}</b>
+      <span className="sr-only">{`, ${navBadgeLabel(item)}`}</span>
+    </>
+  )
+}
+
 export function LumenShell({
   navGroups,
   brandName = 'IClass',
@@ -107,6 +122,7 @@ export function LumenShell({
             >
               <item.icon size={17} aria-hidden="true" />
               <span>{item.text}</span>
+              <NavCount item={item} className="lumen-nav-count" />
             </NavLink>
           ))}
         </nav>
@@ -203,10 +219,11 @@ export function LumenShell({
             key={item.to}
             to={item.to}
             end={item.end}
-            className={({ isActive }) => cn(isActive && 'is-active')}
+            className={({ isActive }) => cn('relative', isActive && 'is-active')}
           >
             <item.icon size={19} aria-hidden="true" />
             <span>{item.text}</span>
+            <NavCount item={item} className="lumen-bottom-count" />
           </NavLink>
         ))}
         <button
