@@ -242,7 +242,8 @@ function handleControlStatus(req, res) {
         return res.json(controlStatusBody(req));
     } catch (err) {
         // A leitura das provas falhou: o servidor está no ar, mas o launcher não sabe das
-        // provas (ele trata null como "não deu para saber").
+        // provas. provasEmAndamento null é "não deu para saber" (launcherCore.examsUnknown):
+        // desligar e reiniciar avisam e perguntam; backup, restaurar e senha avisam.
         return res.json({ ...controlStatusBody(req, { ready: false }), fase: 'ready', pronto: true, comProblemas: true });
     }
 }

@@ -133,7 +133,7 @@ function describeExit(code, signal) {
     return signal ? `sinal ${signal}` : `código ${code}`;
 }
 
-function createSupervisor({ serverScript = SERVER_SCRIPT, env = process.env, execArgv = [] } = {}) {
+function createSupervisor({ serverScript = SERVER_SCRIPT, env = process.env, execArgv = [], platform = process.platform } = {}) {
     const state = {
         child: null,
         stopping: false,
@@ -269,9 +269,11 @@ function createSupervisor({ serverScript = SERVER_SCRIPT, env = process.env, exe
 
     function run() {
         // Título da janela própria que o launcher abre (A16): "Servidor do IClass", para o
-        // professor reconhecer a janela que não deve fechar.
+        // professor reconhecer a janela que não deve fechar. Só no Windows, onde o título é
+        // o da janela do console: no Linux o process.title reescreve a linha de comando do
+        // processo (o ps e o /proc/<pid>/cmdline deixam de mostrar o node).
         const title = String(env.ICLASS_JANELA_TITULO || '').trim();
-        if (title) {
+        if (title && platform === 'win32') {
             try { process.title = title.slice(0, 80); } catch (e) { /* plataforma sem título */ }
         }
         writePid();

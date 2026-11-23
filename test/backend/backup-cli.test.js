@@ -113,7 +113,8 @@ test('[UC-BACKUP-002] restaurar --ultimo com o servidor parado: banco e content 
     assert.equal(restored.code, 0, restored.output);
     assert.equal(fs.existsSync(path.join(dataDir, '.restauracao', 'desfazer')), false);
     assert.match(restored.stdout, /Backup restaurado/);
-    assert.match(restored.stdout, /opção \[S\] do launcher/);
+    // A opção de redefinir a senha no menu novo ([7]) e no ligarIclassV3.bat ([S]).
+    assert.match(restored.stdout, /menu do IClass \(opção \[7\]; no ligarIclassV3\.bat, opção \[S\]\)/);
 
     const after = withDatabase(dataDir, `return { emails: db.memory.students.map(s => s.email), network: db.memory.config.settings.network, sessions: db.memory.authSessions ? Object.keys(db.memory.authSessions).length : 0 };`);
     assert.ok(after.emails.includes('ana@cli.local'));

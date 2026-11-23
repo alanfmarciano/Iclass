@@ -533,7 +533,7 @@ async function commandRestore(target, options) {
             if (hooks.kept && hooks.kept.length) say(`Ficaram como estavam (o backup é de antes desta função): ${hooks.kept.map(item => `${item.rotulo} (${item.atual})`).join(', ')}.`);
             if (hooks.migrated && hooks.migrated.length) say(`Os dados do backup foram atualizados para esta versão (${plural(hooks.migrated.length, 'etapa', 'etapas')}).`);
             if (hooks.adminEmails.length) say(`Contas de administrador deste backup: ${hooks.adminEmails.join(', ')}`);
-            say('Todos precisarão entrar de novo. Se não souber a senha, use a opção [S] do launcher (redefinir a senha do administrador).');
+            say('Todos precisarão entrar de novo. Se não souber a senha, use "Redefinir a senha do administrador" no menu do IClass (opção [7]; no ligarIclassV3.bat, opção [S]).');
             say('Agora abra o IClass de novo.');
             return EXIT.OK;
         } catch (err) {

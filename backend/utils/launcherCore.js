@@ -70,6 +70,8 @@ const LOG_TAIL_LINES = 25;
 const DEMO_MARKER = '.iclass-demonstracao';
 const WINDOW_TITLE = 'Servidor do IClass (não feche esta janela)';
 const DEMO_WINDOW_TITLE = 'Demonstração do IClass (porta 3100)';
+// Começo dos títulos acima (o sistema pode cortar o título de um processo).
+const KNOWN_TITLE_PATTERN = /^(?:Servidor|Demonstração) do IClass/;
 // Variáveis que só o supervisor passa ao servidor: herdadas do ambiente de quem chamou o
 // launcher, confundiriam o servidor novo (contagem de reinícios, "reinício pedido").
 const SUPERVISOR_ONLY_ENV = ['ICLASS_SUPERVISED', 'ICLASS_SUPERVISOR_RESTARTS', 'ICLASS_SUPERVISOR_LAST_EXIT', 'ICLASS_SUPERVISOR_RECENT_FATALS', 'ICLASS_RESTARTED'];
@@ -111,7 +113,11 @@ function processAlive(pid) {
 // O pid ainda é de um Node? Depois de uma falta de energia, o supervisor.pid ou o
 // servidor.json podem sobrar com um número que o Windows já deu a outro programa: o
 // taskkill /T nesse número fecharia o programa errado. No Windows pelo tasklist (nome da
-// imagem); no Linux pelo /proc; sem como saber, sim (o processAlive já conferiu que existe).
+// imagem); no Linux pelo executável do processo (/proc/<pid>/exe), porque o cmdline muda
+// quando o processo troca o process.title (o supervisor de uma versão anterior desta fase
+// fazia isso também no Linux); sem acesso ao exe (processo de outro usuário), pelo cmdline,
+// aceitando também os títulos que o launcher dá à janela do supervisor; sem como saber,
+// sim (o processAlive já conferiu que existe).
 function processIsNode(pid, { platform = process.platform } = {}) {
     if (!(Number(pid) > 0)) return false;
     try {
@@ -120,10 +126,22 @@ function processIsNode(pid, { platform = process.platform } = {}) {
             if (result.status !== 0 || typeof result.stdout !== 'string') return true;
             return /^"node(?:\.exe)?"/im.test(result.stdout);
         }
-        const procFile = `/proc/${Number(pid)}/cmdline`;
-        if (!fs.existsSync(`/proc/${Number(pid)}`)) return platform === 'linux' ? false : true;
-        const argv0 = String(fs.readFileSync(procFile, 'utf8')).split('\0')[0];
-        return /node(?:js)?(?:\.exe)?$/i.test(path.basename(argv0)) || path.resolve(argv0) === path.resolve(process.execPath);
+        const procDir = `/proc/${Number(pid)}`;
+        if (!fs.existsSync(procDir)) return platform === 'linux' ? false : true;
+        const looksLikeNode = file => {
+            const clean = String(file || '').replace(/ \(deleted\)$/, '');
+            if (!clean) return false;
+            if (/^node(?:js)?(?:\.exe)?$/i.test(path.basename(clean))) return true;
+            try { return fs.realpathSync(process.execPath) === clean || path.resolve(process.execPath) === clean; } catch (e) { return false; }
+        };
+        let exe = null;
+        try { exe = fs.readlinkSync(`${procDir}/exe`); } catch (e) { exe = null; }
+        if (exe) return looksLikeNode(exe);
+        const cmdline = String(fs.readFileSync(`${procDir}/cmdline`, 'utf8'));
+        const argv0 = cmdline.split('\0')[0];
+        if (looksLikeNode(argv0) || path.resolve(argv0) === path.resolve(process.execPath)) return true;
+        const title = cmdline.replace(/\0+$/, '').trim();
+        return KNOWN_TITLE_PATTERN.test(title);
     } catch (e) {
         return true;
     }
@@ -218,6 +236,21 @@ function nextStepFor(code, tail = []) {
 function exitCodeFor(code) {
     if (code === EXIT.CONFIG || code === EXIT.DB_CORRUPT) return code;
     return EXIT.ERROR;
+}
+
+// O servidor está no ar, mas o launcher não sabe se há prova em andamento: servidor de uma
+// versão anterior (sem a rota de situação), sem resposta, sem o arquivo de controle, ou a
+// rota respondeu sem a contagem (a leitura das provas falhou: provasEmAndamento null).
+// Ligando (o boot ainda não atende os alunos), não conta.
+function examsUnknown(found) {
+    if (!found || !['ligado', 'sem-resposta', 'sem-controle'].includes(found.state)) return false;
+    return !(found.status && Number.isInteger(found.status.provasEmAndamento));
+}
+
+function unknownExamsSentence(found) {
+    if (found.legacy) return 'Não deu para conferir se há prova em andamento: o servidor é de uma versão anterior do IClass.';
+    if (found.state === 'ligado' && found.status) return 'Não deu para conferir se há prova em andamento: o servidor não conseguiu ler as provas agora.';
+    return 'Não deu para conferir se há prova em andamento: o servidor não responde ao launcher.';
 }
 
 // --- padrões injetáveis ---------------------------------------------------------------
@@ -545,6 +578,12 @@ function createLauncher(options = {}) {
                 else if (supervisorPid && !isAlive(supervisorPid)) {
                     const saida = readSupervisorExit(instance.dataDir);
                     exited = { code: saida && saida.pid === supervisorPid ? saida.codigo : null };
+                } else if (spawned && !supervisorPid) {
+                    // O supervisor saiu (porta ocupada, banco danificado) antes de a espera
+                    // ver o supervisor.pid dele: o clearStaleRuntime apagou a saída velha antes
+                    // de ligar, então um supervisor-saida.json aqui é desta vez.
+                    const saida = readSupervisorExit(instance.dataDir);
+                    if (saida && saida.pid !== ignoreSupervisorPid) exited = { code: saida.codigo };
                 }
             }
             if (exited) return bootFailure(instance, exited, logOffset);
@@ -681,10 +720,19 @@ function createLauncher(options = {}) {
 
     async function confirmWithExams(found, verbo, { sim }) {
         const provas = found.status && Array.isArray(found.status.provas) ? found.status.provas : [];
-        if (!provas.length || sim) return true;
-        out(examsSentence(provas));
-        out(`Se ${verbo} agora, os alunos ficam sem o servidor até ele voltar (as respostas ficam guardadas e o tempo parado é devolvido quando o IClass voltar).`);
-        return confirm(`${verbo.charAt(0).toUpperCase()}${verbo.slice(1)} mesmo assim?`);
+        const question = `${verbo.charAt(0).toUpperCase()}${verbo.slice(1)} mesmo assim?`;
+        if (provas.length) {
+            if (sim) return true;
+            out(examsSentence(provas));
+            out(`Se ${verbo} agora, os alunos ficam sem o servidor até ele voltar (as respostas ficam guardadas e o tempo parado é devolvido quando o IClass voltar).`);
+            return confirm(question);
+        }
+        if (!examsUnknown(found)) return true;
+        // Sem como saber das provas: avisa sempre (também com --sim) e pergunta.
+        out(unknownExamsSentence(found));
+        out(`Se houver prova e você ${verbo} agora, os alunos ficam sem o servidor até ele voltar.`);
+        if (sim) return true;
+        return confirm(question);
     }
 
     async function parar({ instance = realInstance, sim = false, silencioso = false, jaConfirmado = false } = {}) {
@@ -774,7 +822,15 @@ function createLauncher(options = {}) {
 
     function refuseWithExams(found, what) {
         const provas = found.status && Array.isArray(found.status.provas) ? found.status.provas : [];
-        if (!provas.length) return false;
+        if (!provas.length) {
+            // Sem como saber das provas: não recusa (o servidor pode ser de uma versão
+            // anterior), mas avisa antes da pergunta de desligar.
+            if (examsUnknown(found)) {
+                out(unknownExamsSentence(found));
+                out(`${what} desliga o IClass por alguns instantes: se houver prova em andamento, espere ela terminar.`);
+            }
+            return false;
+        }
         out(examsSentence(provas));
         out(`${what} desliga o IClass por alguns instantes: espere a prova terminar.`);
         return true;
@@ -885,9 +941,10 @@ function createLauncher(options = {}) {
             const lines = [`${name} ligad${suffix} em ${localUrl(found.port)}${status.versao ? ` (versão ${status.versao})` : ''}.`];
             if (status.enderecoAlunos) lines.push(`Endereço para os alunos: ${status.enderecoAlunos}`);
             if (Number.isInteger(status.provasEmAndamento)) lines.push(status.provasEmAndamento ? examsSentence(status.provas) : 'Nenhuma prova em andamento.');
+            else if (found.status) lines.push('Não deu para conferir as provas em andamento agora.');
             if (Number.isInteger(status.alunosConectados)) lines.push(`Alunos conectados agora: ${status.alunosConectados}.`);
             if (found.status && found.status.supervisionado === false) lines.push('Reinício automático desligado (o servidor foi ligado sem o supervisor).');
-            if (found.legacy) lines.push('Servidor de uma versão anterior: o launcher só consegue desligá-lo e ligá-lo.');
+            if (found.legacy) lines.push('Servidor de uma versão anterior: o launcher só consegue desligá-lo e ligá-lo, sem conferir as provas em andamento.');
             return lines;
         }
         if (found.state === 'iniciando') {
@@ -1011,6 +1068,7 @@ module.exports = {
     demoFolders,
     describeExams,
     examsSentence,
+    examsUnknown,
     httpRequest,
     killProcessTree,
     nextStepFor,

@@ -299,6 +299,26 @@ test('[UC-LAUNCHER-001] no Windows (janela aberta pelo start do cmd): acompanha 
     assert.match(world.text(), /já está em uso/);
 });
 
+test('[UC-LAUNCHER-001] no Windows: supervisor que sai antes de a espera ver o supervisor.pid dele também dá o código e a mensagem (sem esperar os 90 s)', async () => {
+    // Antes: a espera só lia o supervisor-saida.json depois de ter visto o supervisor.pid
+    // vivo; o supervisor que saía logo (porta ocupada) fazia o launcher esperar 90 s, sair
+    // com 1 e dizer que a janela do servidor continuava aberta.
+    const world = createWorld({ prefix: 'windows-cedo-' });
+    world.tracksExit = false;
+    world.handlers.spawn = () => {
+        // O supervisor gravou, saiu e apagou o supervisor.pid antes da primeira leitura.
+        writeRuntime(world.dataDir, 'supervisor-saida.json', { pid: 6100, codigo: 2 });
+        appendLog(world.dataDir, '⛔ A porta 4321 já está em uso por outro programa.');
+    };
+    world.handlers['GET /api/health'] = () => refused();
+    const result = await world.launcher.iniciar();
+    assert.equal(result.code, 2, world.text());
+    assert.equal(result.timeout, undefined);
+    assert.ok(world.clock < 5000, `desistiu logo (${world.clock} ms)`);
+    assert.match(world.text(), /já está em uso/);
+    assert.doesNotMatch(world.text(), /continua aberta/);
+});
+
 test('[UC-LAUNCHER-001] outro IClass responde 200 na mesma porta enquanto o nosso sai com 2: não conta como ligado', async () => {
     const world = createWorld({ prefix: 'outro-iclass-' });
     let calls = 0;
@@ -418,6 +438,21 @@ test('[UC-LAUNCHER-002] processIsNode no Linux: o próprio Node sim, outro progr
     assert.equal(launcherCore.processIsNode(0), false);
 });
 
+test('[UC-LAUNCHER-002] processIsNode no Linux: Node que trocou o process.title (título da janela do supervisor) continua sendo Node', { skip: process.platform !== 'linux' }, async () => {
+    // Antes: o supervisor trocava o process.title também no Linux, o /proc/<pid>/cmdline
+    // virava "Servidor do IClass (não feche esta janela)" e o launcher achava que o
+    // supervisor vivo era outro programa: "desligado" na janela de religar depois de uma
+    // queda, e o iniciar subia um segundo supervisor na mesma pasta de dados.
+    const titled = childProcess.spawn(process.execPath, ['-e', 'process.title = "Servidor do IClass (não feche esta janela)"; setInterval(() => {}, 1000);'], { stdio: 'ignore' });
+    try {
+        await new Promise(resolve => titled.once('spawn', resolve));
+        await proc.waitFor(() => fs.readFileSync(`/proc/${titled.pid}/cmdline`, 'utf8').startsWith('Servidor do IClass'), { what: 'o título trocar' });
+        assert.equal(launcherCore.processIsNode(titled.pid, { platform: 'linux' }), true);
+    } finally {
+        titled.kill();
+    }
+});
+
 test('[UC-LAUNCHER-002] token e servidor.json de um processo que já terminou são ignorados: "já está desligado" e o iniciar sobe um novo', async () => {
     const world = createWorld({ prefix: 'token-velho-' });
     writeRuntime(world.dataDir, 'servidor.json', { formato: 1, pid: 31337, porta: world.port, instanceId: 'velho' });
@@ -466,6 +501,45 @@ test('[UC-LAUNCHER-002] prova em andamento: desligar e reiniciar perguntam dizen
     assert.deepEqual(world.runs, [], 'nenhum script rodou');
     assert.deepEqual(world.kills, []);
     assert.match(world.text(), /Fazer backup agora/);
+});
+
+test('[UC-LAUNCHER-002] sem como conferir as provas (servidor de versão anterior ou leitura das provas falhou): avisa antes de desligar, reiniciar, fazer backup, restaurar e redefinir a senha', async () => {
+    // Antes: com servidor de uma versão anterior (sem a rota de situação) ou com a rota
+    // respondendo provasEmAndamento null, o launcher desligava sem dizer nada das provas.
+    const legacy = createWorld({ prefix: 'sem-provas-antigo-', answers: ['n', 'n'] });
+    runningServer(legacy);
+    legacy.handlers['GET /api/system/control/status'] = () => ({ status: 404, body: { error: 'Não encontrado.' } });
+    legacy.handlers['POST /api/system/control'] = () => { throw new Error('não devia desligar'); };
+    const stop = await legacy.launcher.parar();
+    assert.equal(stop.cancelled, true, legacy.text());
+    assert.match(legacy.text(), /Não deu para conferir se há prova em andamento: o servidor é de uma versão anterior do IClass\./);
+    assert.match(legacy.asks[0], /Desligar mesmo assim\?/);
+    const restart = await legacy.launcher.reiniciar();
+    assert.equal(restart.cancelled, true);
+    assert.match(legacy.asks[1], /Reiniciar mesmo assim\?/);
+    const described = await legacy.launcher.status();
+    assert.equal(described.state, 'ligado');
+    assert.match(legacy.text(), /sem conferir as provas em andamento/);
+
+    // A rota respondeu, mas sem conseguir ler as provas (catch do handleControlStatus).
+    const failing = createWorld({ prefix: 'sem-provas-falha-' });
+    const { pid, supervisorPid } = runningServer(failing, { status: serverStatus({ provasEmAndamento: null, provas: [], alunosConectados: null, comProblemas: true }) });
+    assert.equal(launcherCore.examsUnknown(await failing.launcher.locate()), true);
+    failing.handlers['POST /api/system/control'] = () => {
+        failing.alive.delete(pid);
+        failing.alive.delete(supervisorPid);
+        return { status: 202, body: { success: true } };
+    };
+    const backup = await failing.launcher.backup({ sim: true });
+    assert.equal(backup.code, 0, failing.text());
+    assert.match(failing.text(), /Não deu para conferir se há prova em andamento: o servidor não conseguiu ler as provas agora\./);
+    assert.match(failing.text(), /O backup pela linha de comando desliga o IClass por alguns instantes: se houver prova em andamento, espere ela terminar\./);
+    assert.deepEqual(failing.runs.map(item => item.args), [['criar']]);
+
+    // Com as provas conhecidas e nenhuma em andamento, nada de aviso.
+    const known = createWorld({ prefix: 'sem-provas-ok-' });
+    runningServer(known);
+    assert.equal(launcherCore.examsUnknown(await known.launcher.locate()), false);
 });
 
 test('[UC-LAUNCHER-002] backup com o IClass ligado: desliga pela rota de controle, roda a backup-cli com a porta certa e liga de novo', async () => {
@@ -718,6 +792,22 @@ test('[UC-LAUNCHER-003] servidor de verdade no Linux: iniciar → status → rei
     assert.equal((await launcher.locate()).state, 'ligado', 'ligou de novo depois do backup');
 
     const supervisorPid = Number(fs.readFileSync(path.join(dataDir, 'runtime', 'supervisor.pid'), 'utf8'));
+    // O supervisor de verdade é reconhecido como Node (no Linux o título da janela não
+    // troca o cmdline): status --json mostra o pid dele.
+    assert.equal((await launcher.locate()).supervisorPid, supervisorPid);
+    // Queda do servidor: na espera para religar, o launcher vê o supervisor vivo
+    // ("ligando", nunca "desligado"), e o iniciar espera em vez de subir um segundo supervisor.
+    const crashedPid = launcherCore.readServerInfo(dataDir).pid;
+    process.kill(crashedPid, 'SIGKILL');
+    await proc.waitFor(() => !proc.processAlive(crashedPid), { what: 'o servidor cair' });
+    const duringBackoff = await launcher.locate();
+    assert.notEqual(duringBackoff.state, 'desligado', 'o supervisor vivo vai religar');
+    assert.equal(duringBackoff.supervisorPid, supervisorPid);
+    const again = await launcher.iniciar({ abrirNavegador: false });
+    assert.equal(again.code, 0, lines.join('\n'));
+    assert.equal(Number(fs.readFileSync(path.join(dataDir, 'runtime', 'supervisor.pid'), 'utf8')), supervisorPid, 'o mesmo supervisor, nenhum segundo');
+    assert.ok(proc.processAlive(supervisorPid));
+    assert.notEqual(launcherCore.readServerInfo(dataDir).pid, crashedPid, 'o supervisor religou o servidor');
     const stopped = await launcher.parar({ sim: true });
     assert.equal(stopped.code, 0, lines.join('\n'));
     await proc.waitFor(() => !proc.processAlive(supervisorPid), { what: 'o supervisor sair' });
