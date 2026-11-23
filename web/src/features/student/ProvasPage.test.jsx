@@ -73,6 +73,28 @@ describe('Provas do aluno · avaliação manual da turma', () => {
   })
 })
 
+describe('Provas do aluno · avaliação manual arquivada', () => {
+  it('[UC-NOTAS-006] nota de avaliação arquivada aparece fora da média, igual ao Início e ao boletim', async () => {
+    // my-submissions marca a entrega da avaliação arquivada (assessmentArchived, sem nota
+    // consolidada e fora do resultado). Antes a tela mostrava 7,3 (6,0 e 10,0 do seminário
+    // arquivado) enquanto o Início e o boletim davam 6,0.
+    mocks.submissions = [
+      sub('a1', { score: 60 }),
+      {
+        ...sub('m1', { examKey: 'man_1795397447192_410b1b', score: 100, counts: false }),
+        consolidatedScore: null, assessmentArchived: true, examTitle: 'Seminário de redes', type: 'manual',
+      },
+    ]
+    render(<MemoryRouter><ProvasPage /></MemoryRouter>)
+    const label = await screen.findByText('Média das consideradas')
+    expect(await within(label.parentElement).findByText('6,0')).toBeInTheDocument()
+    expect(screen.getByText('Avaliação arquivada · fora da média')).toBeInTheDocument()
+    expect(screen.queryByText('7,3')).not.toBeInTheDocument()
+    // Fora também da melhor nota (6,0, e não o 10,0 arquivado).
+    expect(screen.getByText('Melhor nota').parentElement).toHaveTextContent('6,0')
+  })
+})
+
 describe('Provas do aluno · distribuição por faixa', () => {
   it('[UC-NOTAS-003] faixas de nota com vírgula decimal, sem ponto', async () => {
     // Antes os rótulos eram '7-8.9', '6-6.9' e '0-5.9'.

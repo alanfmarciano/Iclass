@@ -491,6 +491,54 @@ describe('Resultados · Coordenação (só consulta)', () => {
   })
 })
 
+describe('Resultados · avaliação manual da turma', () => {
+  it('[UC-NOTAS-006] o filtro e a página do aluno mostram o título da avaliação manual, nunca o id man_*', async () => {
+    // Antes o filtro "Todas as provas" e o detalhe do aluno mostravam "man_1795400571237_2ae278".
+    const manual = { id: 'm1', student: { name: 'Ana', email: 'ana@x.local', courseId: 'DES', studentClass: '1DES' }, courseId: 'DES', examKey: 'man_1795400571237_2ae278', examTitle: 'Seminário de redes', score: 95, consolidatedScore: 95, gradePublished: true, timestamp: '2026-03-02T10:00:00Z' }
+    mocks.stable.submissions.push(manual)
+    try {
+      render(
+        <MemoryRouter initialEntries={['/resultados/aluno/ana%40x.local']}>
+          <Routes>
+            <Route path="/resultados" element={<ResultadosPage />} />
+            <Route path="/resultados/aluno/:studentId" element={<ResultadosPage />} />
+          </Routes>
+        </MemoryRouter>,
+      )
+      await userEvent.click(await screen.findByRole('button', { name: 'Expandir tudo' }))
+      expect((await screen.findAllByText('Seminário de redes')).length).toBeGreaterThan(0)
+      expect(document.body.textContent).not.toMatch(/man_1795/)
+      cleanup()
+      renderPage()
+      expect(await screen.findByRole('option', { name: 'Seminário de redes' })).toHaveValue('man_1795400571237_2ae278')
+      expect(screen.queryByRole('option', { name: /man_1795/ })).not.toBeInTheDocument()
+    } finally {
+      mocks.stable.submissions.pop()
+    }
+  })
+
+  it('[UC-NOTAS-006] nota de avaliação manual arquivada fica na página do aluno, marcada, e sai da média geral', async () => {
+    const base = mocks.stable.submissions[0]
+    Object.assign(base, { scoreInvalid: false, score: 60, consolidatedScore: 60 })
+    mocks.stable.submissions.push({ id: 'm1', student: { name: 'Ana', email: 'ana@x.local', courseId: 'DES', studentClass: '1DES' }, courseId: 'DES', examKey: 'man_1795400571237_2ae278', examTitle: 'Seminário de redes', assessmentArchived: true, score: 100, consolidatedScore: 100, gradePublished: true, timestamp: '2026-03-02T10:00:00Z' })
+    try {
+      render(
+        <MemoryRouter initialEntries={['/resultados/aluno/ana%40x.local']}>
+          <Routes><Route path="/resultados/aluno/:studentId" element={<ResultadosPage />} /></Routes>
+        </MemoryRouter>,
+      )
+      const media = (await screen.findByText('Média geral')).parentElement
+      // Antes: (6,0 + 10,0) / 2 = 8,0, contando o seminário arquivado.
+      expect(within(media).getByText('6,0')).toBeInTheDocument()
+      await userEvent.click(await screen.findByRole('button', { name: 'Expandir tudo' }))
+      expect((await screen.findAllByText('Seminário de redes (arquivada, fora da média)')).length).toBeGreaterThan(0)
+    } finally {
+      mocks.stable.submissions.pop()
+      Object.assign(base, { scoreInvalid: true, score: 150, consolidatedScore: null })
+    }
+  })
+})
+
 describe('Resultados · endereço do aluno pelo id', () => {
   function LocationProbe() {
     const location = useLocation()

@@ -2071,14 +2071,24 @@ router.post('/api/student/my-submissions', validateStudentSession, STUDENT_SCHEM
         enrichSubmissionsWithAttemptResult(ownSubmissions.filter(item => item.gradePublished === true))
             .map(item => [String(item.id), item])
     );
+    // Nota de avaliação manual arquivada (classes[].avaliacao.manuais com arquivadoEm, B6 /
+    // P2-S3) fica guardada e aparece na lista, mas sai da média, como no Início, no boletim
+    // e no resumo de notas (conta única do gradebook.js): sem nota consolidada e fora do
+    // resultado, com assessmentArchived para a tela dizer "Fora da média".
+    const isArchivedManual = examKey => !!(manualItemOfClass(cls, examKey) || {}).arquivadoEm;
     const mySubmissions = ownSubmissions
-        .map(s => ({
-            ...s,
-            resultStatus: s.resultStatus === 'archived' ? 'archived' : 'considered',
-            aggregationPolicy: publishedResultById.get(String(s.id))?.aggregationPolicy || s.aggregationPolicy || 'highest',
-            consolidatedScore: publishedResultById.get(String(s.id))?.consolidatedScore ?? null,
-            countsTowardResult: publishedResultById.get(String(s.id))?.countsTowardResult === true,
-        }))
+        .map(s => {
+            const archivedAssessment = isArchivedManual(s.examKey);
+            const published = publishedResultById.get(String(s.id));
+            return {
+                ...s,
+                resultStatus: s.resultStatus === 'archived' ? 'archived' : 'considered',
+                aggregationPolicy: published?.aggregationPolicy || s.aggregationPolicy || 'highest',
+                consolidatedScore: archivedAssessment ? null : (published?.consolidatedScore ?? null),
+                countsTowardResult: !archivedAssessment && published?.countsTowardResult === true,
+                ...(archivedAssessment ? { assessmentArchived: true } : {}),
+            };
+        })
         .map(s => {
             const canViewAnswerKey = canStudentViewAnswerKey(s, normalizedEmail);
             const sanitized = {

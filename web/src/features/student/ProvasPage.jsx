@@ -25,6 +25,9 @@ const TONE_TEXT = { success: 'text-success', warning: 'text-warning', danger: 't
 const gradeText = (g) => TONE_TEXT[tomDaNota(g, criterio, 'aluno', 'danger')]
 const isPublished = (s) => s.gradePublished === true && !Number.isNaN(Number(s.score))
 const isConsidered = (s) => s.countsTowardResult && s.resultStatus !== 'archived'
+// Nota de avaliação manual que o professor arquivou: fica na lista e sai da média (o
+// servidor manda assessmentArchived, sem nota consolidada), como no Início e no boletim.
+const isOutOfResult = (s) => s.resultStatus === 'archived' || s.assessmentArchived === true
 // Avaliação manual da turma (trabalho, seminário...; id 'man_*'): o rótulo é o título
 // (examTitle), nunca o id técnico.
 const isManualKey = (key = '') => String(key).startsWith('man_')
@@ -78,6 +81,8 @@ function ExamCard({ s, onOpen }) {
       <div className="pvb-etail">
         {archived
           ? <span className="pvb-st neutral"><span className="pvb-sdot" />Não considerada</span>
+          : s.assessmentArchived === true
+            ? <span className="pvb-st neutral"><span className="pvb-sdot" />Avaliação arquivada · fora da média</span>
           : counts
             ? <span className="pvb-st info"><span className="pvb-sdot" />Compõe o resultado</span>
             : !published ? <span className="pvb-st warning"><span className="pvb-sdot" />Em revisão</span> : null}
@@ -427,7 +432,9 @@ export default function ProvasPage() {
 
   // Metricas derivadas das submissoes concluidas.
   const metrics = useMemo(() => {
-    const published = mine.filter(isPublished)
+    // A nota de avaliação arquivada fica na lista, mas fora do gráfico, da melhor nota e da
+    // distribuição, como no gráfico do Início.
+    const published = mine.filter((s) => isPublished(s) && s.assessmentArchived !== true)
     const grades = published.map((s) => toGrade(s.score))
     // Uma nota por prova (a consolidada pela regra do professor), como no painel e no
     // boletim: com a regra "média", duas tentativas contam como uma prova só.
@@ -456,7 +463,7 @@ export default function ProvasPage() {
   // Filtro de status (existente) -> busca -> filtro de materia.
   const statusFiltered = useMemo(() => mine.filter((s) => {
     if (filter === 'compoe') return isConsidered(s)
-    if (filter === 'nao') return s.resultStatus === 'archived'
+    if (filter === 'nao') return isOutOfResult(s)
     return true
   }), [mine, filter])
 
@@ -656,7 +663,7 @@ export default function ProvasPage() {
         )}
       </PageState>
 
-      <Modal open={!!detail} onClose={() => setDetail(null)} title={detail?.examTitle || detail?.examKey || 'Resultado'} description={detail?.resultStatus === 'archived' ? 'Tentativa arquivada e fora do resultado' : detail?.answerKeyReleased ? 'Gabarito liberado pelo instrutor' : 'Resumo da tentativa'}>
+      <Modal open={!!detail} onClose={() => setDetail(null)} title={detail?.examTitle || detail?.examKey || 'Resultado'} description={detail?.resultStatus === 'archived' ? 'Tentativa arquivada e fora do resultado' : detail?.assessmentArchived === true ? 'Avaliação arquivada pelo professor: a nota fica guardada e não entra na média' : detail?.answerKeyReleased ? 'Gabarito liberado pelo instrutor' : 'Resumo da tentativa'}>
         {detail && (
           <div className="space-y-4">
             <dl className="grid grid-cols-2 gap-x-6 gap-y-3 border-y border-border py-3 sm:grid-cols-4">

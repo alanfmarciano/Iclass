@@ -190,6 +190,14 @@ test('[UC-NOTAS-006] critérios: o professor lê, só quem tem course.manage gra
     assert.match(gap.body.error, /sequência/);
     assert.equal((await saveCriteria({ recuperacao: { final: 'dobro' } })).status, 400);
     assert.equal((await saveCriteria({ mencoes: [{ sigla: 'MB', min: 9 }, { sigla: 'mb', min: 8 }] })).body.field, 'mencoes[1].sigla');
+    // Sem a faixa que começa em 0,0, a nota abaixo da menor ficava sem menção.
+    const noFloor = await saveCriteria({ mencoes: [{ sigla: 'MB', nome: 'Muito bom', min: 9 }, { sigla: 'B', nome: 'Bom', min: 7 }] });
+    assert.equal(noFloor.status, 400);
+    assert.equal(noFloor.body.field, 'mencoes');
+    assert.match(noFloor.body.error, /0,0/);
+    const previewNoFloor = await as('admin', 'post', '/api/admin/grading/preview').send({ courseId: COURSE, studentClass: '1DES', criterios: { mencoes: [{ sigla: 'MB', min: 9 }] } });
+    assert.equal(previewNoFloor.status, 400);
+    assert.equal(previewNoFloor.body.field, 'criterios.mencoes');
     assert.equal(db.memory.courses[0].avaliacao, undefined, 'recusa não grava');
 
     let res;
@@ -627,6 +635,19 @@ test('[UC-NOTAS-006] avaliação manual: a tela Provas do aluno, Meus dados, o I
     assert.equal(home.body.performance.find(entry => entry.examKey === id).title, 'Seminário de Redes');
     assert.equal(home.body.performance.find(entry => entry.examKey === 'Av_P1').title, undefined, 'a prova continua sem o campo novo');
 
+    // Painel: a lista de Resultados e a ficha do aluno levam o título (antes só o examKey,
+    // e as telas mostravam "man_<ms>_<hex>"); as provas continuam sem o campo.
+    const adminList = await as('prof', 'get', `/api/admin/submissions?courseId=${COURSE}&studentClass=1DES`);
+    assert.equal(adminList.status, 200);
+    assert.equal(adminList.body.find(entry => entry.examKey === id).examTitle, 'Seminário de Redes');
+    assert.equal('examTitle' in adminList.body.find(entry => entry.examKey === 'Av_P1'), false);
+    const academic = await as('prof', 'get', '/api/admin/student/academic?email=ana@grading.local');
+    assert.equal(academic.status, 200);
+    const academicManual = academic.body.submissions.find(entry => entry.examKey === id);
+    assert.equal(academicManual.examTitle, 'Seminário de Redes');
+    assert.equal(academicManual.manual, true);
+    assert.equal('examTitle' in academic.body.submissions.find(entry => entry.examKey === 'Av_P1'), false);
+
     const deleted = await as('admin', 'post', '/api/admin/submissions/delete').send({ id: stored.id, reason: 'Lançada errada' });
     assert.equal(deleted.status, 200, JSON.stringify(deleted.body));
     assert.match(audits('grade_delete').pop().oldValue, /^Seminário de Redes/);
@@ -662,6 +683,35 @@ test('[UC-NOTAS-006] Início do portal: média geral e média do módulo iguais 
     const archived = await check(6.3, 6);
     assert.equal(archived.performance.some(entry => entry.examKey === id), false);
     assert.equal('situacao' in archived, false, 'sem critérios, o Início não ganha situação');
+    // Tela Provas do aluno (my-submissions): a nota arquivada continua na lista, fora da
+    // média. Antes vinha com countsTowardResult true e consolidatedScore 100, e a média da
+    // tela (uma nota consolidada por prova publicada) dava 7,25 contra 6,3 do Início.
+    const mine = await request(app).post('/api/student/my-submissions').set('x-session-token', token).send({ courseId: COURSE, studentClass: '1DES' });
+    assert.equal(mine.status, 200, JSON.stringify(mine.body));
+    const archivedEntry = mine.body.submissions.find(entry => entry.examKey === id);
+    assert.equal(archivedEntry.score, 100, 'a nota fica guardada e visível');
+    assert.equal(archivedEntry.gradePublished, true);
+    assert.equal(archivedEntry.countsTowardResult, false);
+    assert.equal(archivedEntry.consolidatedScore, null);
+    assert.equal(archivedEntry.assessmentArchived, true);
+    assert.equal(archivedEntry.examTitle, 'Seminário de Redes');
+    // Resultados (lista do painel): a entrega da avaliação arquivada vem marcada.
+    const adminArchived = await as('prof', 'get', `/api/admin/submissions?courseId=${COURSE}&studentClass=1DES`);
+    assert.equal(adminArchived.body.find(entry => entry.examKey === id).assessmentArchived, true);
+    assert.ok(adminArchived.body.filter(entry => entry.examKey !== id).every(entry => !('assessmentArchived' in entry)));
+    const others = mine.body.submissions.filter(entry => entry.examKey !== id);
+    assert.ok(others.every(entry => entry.countsTowardResult === true && entry.assessmentArchived === undefined));
+    const screenScores = mine.body.submissions.filter(entry => entry.gradePublished === true && entry.consolidatedScore != null).map(entry => entry.consolidatedScore);
+    assert.equal(Math.round(screenScores.reduce((sum, value) => sum + value, 0) / screenScores.length) / 10, 6.3);
+    // Reativada, volta a contar na tela também.
+    assert.equal((await as('prof', 'post', '/api/admin/grading/manual-items/restore').send({ courseId: COURSE, studentClass: '1DES', id, reason: 'Seminário remarcado' })).status, 200);
+    const again = await request(app).post('/api/student/my-submissions').set('x-session-token', token).send({ courseId: COURSE, studentClass: '1DES' });
+    const restoredEntry = again.body.submissions.find(entry => entry.examKey === id);
+    assert.equal(restoredEntry.countsTowardResult, true);
+    assert.equal(restoredEntry.consolidatedScore, 100);
+    assert.equal(restoredEntry.assessmentArchived, undefined);
+    const adminRestored = await as('prof', 'get', `/api/admin/submissions?courseId=${COURSE}&studentClass=1DES`);
+    assert.equal('assessmentArchived' in adminRestored.body.find(entry => entry.examKey === id), false);
 });
 
 // ------------------------------------------------------------------ resumo do aluno

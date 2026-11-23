@@ -27,7 +27,14 @@ import { displayEmail, isStudentIdParam, studentRouteKey } from '../../lib/stude
 const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning', [ANONYMIZED_STATUS]: 'neutral' }
 const dn = (s) => (s?.nomeSocial && s.nomeSocial.trim()) || s?.name || ''
 const initials = (n) => (n || '?').split(' ').map((x) => x[0]).slice(0, 2).join('')
-const moduleOf = (examKey) => String(examKey || '').split('_')[1] || '—'
+// Avaliação manual da turma (id 'man_<ms>_<hex>', B6): sem módulo no id (o '<ms>' não é
+// módulo) e o rótulo é o título que o servidor manda (examTitle), nunca o id técnico.
+const isManualKey = (examKey) => String(examKey || '').startsWith('man_')
+const moduleOf = (examKey) => (isManualKey(examKey) ? '—' : String(examKey || '').split('_')[1] || '—')
+const examLabelOf = (s) => (isManualKey(s?.examKey) ? (s.examTitle || 'Avaliação da turma') : s?.examKey)
+const chartLabelOf = (s) => (isManualKey(s?.examKey)
+  ? String(s.examTitle || 'Avaliação').slice(0, 12)
+  : moduleOf(s.examKey) + (s.examKey?.split('_')[2] ? ' ' + s.examKey.split('_')[2] : ''))
 const semesterOf = (t) => { const d = new Date(t || 0); return `${d.getFullYear()}.${d.getMonth() < 6 ? 1 : 2}` }
 const fmtDate = (t) => t ? new Date(t).toLocaleDateString('pt-BR') : '—'
 const fmtDateTime = (t) => t ? new Date(t).toLocaleString('pt-BR') : '—'
@@ -176,13 +183,13 @@ export default function AlunoDetailPage() {
   const modules = useMemo(() => [...new Set(subs.map((s) => moduleOf(s.examKey)))].filter((m) => m !== '—'), [subs])
   const semesters = useMemo(() => [...new Set(subs.map((s) => semesterOf(s.timestamp)))].sort(), [subs])
   const filteredSubs = useMemo(() => validSubs.filter((s) => (filterModule === 'all' || moduleOf(s.examKey) === filterModule) && (filterSemester === 'all' || semesterOf(s.timestamp) === filterSemester)), [validSubs, filterModule, filterSemester])
-  const notas = useMemo(() => [...filteredSubs].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0)).map((s) => ({ label: moduleOf(s.examKey) + (s.examKey?.split('_')[2] ? ' ' + s.examKey.split('_')[2] : ''), value: gradeOf(s.score) })), [filteredSubs])
+  const notas = useMemo(() => [...filteredSubs].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0)).map((s) => ({ label: chartLabelOf(s), value: gradeOf(s.score) })), [filteredSubs])
   // Média por módulo do servidor: mesma consolidação e mesmo curso/turma da "Média geral"
   // (antes era a média simples de todas as tentativas, feita aqui no navegador).
   const modulos = Array.isArray(dash?.modulos) ? dash.modulos : []
   const timeline = useMemo(() => {
     const ev = []
-    subs.forEach((s) => ev.push({ id: 'g' + s.id, t: new Date(s.timestamp || 0).getTime(), tone: 'bg-success', title: `Prova ${s.examKey} · nota ${fmtGrade(s.score)}`, time: fmtDate(s.timestamp) }))
+    subs.forEach((s) => ev.push({ id: 'g' + s.id, t: new Date(s.timestamp || 0).getTime(), tone: 'bg-success', title: `${isManualKey(s.examKey) ? examLabelOf(s) : `Prova ${s.examKey}`} · nota ${fmtGrade(s.score)}`, time: fmtDate(s.timestamp) }))
     ;(academic?.moduleAccess || []).forEach((m) => ev.push({ id: 'a' + m.id, t: m.timestamp, tone: 'bg-primary', title: `Abriu ${String(m.key).replace(/_/g, ' ')}`, time: fmtDateTime(m.timestamp) }))
     ;(academic?.attendance?.recent || []).forEach((a) => ev.push({ id: 'p' + a.id, t: a.timestamp, tone: 'bg-surface-2', title: `Presença (${a.origin === 'login' ? (a.naoLetivoId ? 'automática, dia não letivo: não conta' : 'automática') : a.origin === 'chamada' ? 'chamada' : 'manual'})`, time: a.date }))
     return ev.sort((x, y) => y.t - x.t).slice(0, 8)
@@ -323,7 +330,7 @@ export default function AlunoDetailPage() {
                   <div className="divide-y divide-border">
                     {[...subs].sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0)).map((s) => (
                       <div key={s.id} className="flex items-center justify-between py-2.5 text-sm">
-                        <div><p className="text-text">{s.examKey}</p><p className="text-xs text-subtle">{Number.isInteger(s.correctCount) && Number.isInteger(s.totalCount) ? `${s.correctCount}/${s.totalCount} acertos · ` : ''}{fmtDate(s.timestamp)}</p></div>
+                        <div><p className="text-text">{examLabelOf(s)}</p><p className="text-xs text-subtle">{Number.isInteger(s.correctCount) && Number.isInteger(s.totalCount) ? `${s.correctCount}/${s.totalCount} acertos · ` : ''}{fmtDate(s.timestamp)}</p></div>
                         {gradeOf(s.score) === null
                           ? <Badge tone="neutral" title="Registro antigo com nota vazia ou fora de 0 a 10">nota inválida</Badge>
                           : <Badge tone={gradeTone(gradeOf(s.score), criterio, 'simples', 'warning')}>{fmtGrade(s.score)}</Badge>}

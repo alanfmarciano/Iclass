@@ -117,6 +117,8 @@ const {
     classGradingContext,
     consolidatedStudentAverage,
     isManualItemId,
+    newManualItemId,
+    manualAssessmentTitleForSubmission,
     manualItemOfClass,
     createResolvedGroupKey,
     describeSubmissionGrade,
@@ -656,7 +658,22 @@ router.get('/api/admin/submissions', (req, res) => {
         // grosso da resposta (13,2 MB por turma num ano de dados, 1,96 MB sem ele).
         const enriched = enrichSubmissionsWithAttemptResult(scoped)
             .filter(item => !applicationId || String(item.applicationId || '') === applicationId);
-        res.json(enriched.map(({ examSnapshot, ...rest }) => rest));
+        // Avaliação manual da turma (man_*, B6 / P2-S3): o título vai junto (examTitle), para
+        // Resultados não mostrar o id técnico, e a avaliação arquivada vem marcada
+        // (assessmentArchived: a nota fica na lista e sai da média do aluno, como no quadro e
+        // no boletim); as provas continuam como sempre.
+        const archivedManual = (item) => {
+            const cls = (db.memory.classes || []).find(entry => entry && String(entry.name || '') === String(item.studentClass || item.student?.studentClass || '')
+                && String(entry.courseId || '') === String(item.courseId || item.student?.courseId || ''));
+            return !!(manualItemOfClass(cls, item.examKey) || {}).arquivadoEm;
+        };
+        res.json(enriched.map(({ examSnapshot, ...rest }) => (isManualItemId(rest.examKey)
+            ? {
+                ...rest,
+                examTitle: manualAssessmentTitleForSubmission(db.memory.classes || [], rest) || 'Avaliação da turma',
+                ...(archivedManual(rest) ? { assessmentArchived: true } : {}),
+            }
+            : rest)));
     });
 });
 
@@ -2195,7 +2212,11 @@ router.get('/api/admin/student/academic', (req, res) => {
         const submissions = !withGrades ? [] : (db.memory.submissions || [])
             .filter(s => s.student && s.student.email && s.student.email.toLowerCase() === email)
             // Nota inválida de registro antigo (vazia ou fora de 0 a 10) vai como null + aviso.
-            .map(s => ({ id: s.id, examKey: s.examKey, score: normalizeScore(s.score), scoreInvalid: normalizeScore(s.score) === null, correctCount: s.correctCount, totalCount: s.totalCount, assignedVersion: s.assignedVersion, gradePublished: s.gradePublished === true, timestamp: s.timestamp }))
+            .map(s => ({
+                id: s.id, examKey: s.examKey, score: normalizeScore(s.score), scoreInvalid: normalizeScore(s.score) === null, correctCount: s.correctCount, totalCount: s.totalCount, assignedVersion: s.assignedVersion, gradePublished: s.gradePublished === true, timestamp: s.timestamp,
+                // Avaliação manual da turma (man_*, B6): o título, para a ficha não mostrar o id.
+                ...(isManualItemId(s.examKey) ? { manual: true, examTitle: manualAssessmentTitleForSubmission(db.memory.classes || [], s) || 'Avaliação da turma' } : {}),
+            }))
             .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
         const progressMap = (db.memory.progress && db.memory.progress[email]) || {};
         const completedUnits = Object.keys(progressMap).filter(k => progressMap[k]);
@@ -5914,12 +5935,23 @@ router.post('/api/admin/courses/:id/clone', (req, res) => {
             // Encerramento da turma (B10) não passa para a cópia: ela nasce aberta.
             delete cloned.encerramento;
             // Plano de avaliação da turma (contrato C6 do P2): as provas mudam de chave na
-            // cópia (<chave>_<código novo>), e o plano acompanha; avaliação manual (man_*)
-            // e tarefa (asg_*) ficam com o mesmo id. Os módulos não mudam de id na cópia, então
+            // cópia (<chave>_<código novo>), e o plano acompanha. A avaliação manual (man_*)
+            // ganha id novo na cópia: o título dela é achado pelo id em qualquer turma
+            // (gradebook.manualAssessmentTitle, na auditoria, no sino e em Meus dados), então
+            // o id não pode se repetir entre turmas; as notas não vêm para a cópia. Tarefa
+            // (asg_*) fica com o mesmo id. Os módulos não mudam de id na cópia, então
             // course.disciplinas[].modulos continua valendo sem remapear.
+            const manualIdMap = new Map();
+            if (cloned.avaliacao && Array.isArray(cloned.avaliacao.manuais)) {
+                cloned.avaliacao.manuais = cloned.avaliacao.manuais.map(item => {
+                    if (!item || typeof item !== 'object' || !isManualItemId(item.id)) return item;
+                    if (!manualIdMap.has(item.id)) manualIdMap.set(item.id, newManualItemId());
+                    return { ...item, id: manualIdMap.get(item.id) };
+                });
+            }
             if (cloned.avaliacao && cloned.avaliacao.itens && typeof cloned.avaliacao.itens === 'object' && !Array.isArray(cloned.avaliacao.itens)) {
                 cloned.avaliacao.itens = Object.fromEntries(Object.entries(cloned.avaliacao.itens)
-                    .map(([key, value]) => [evaluationKeyMap.get(key) || key, value]));
+                    .map(([key, value]) => [evaluationKeyMap.get(key) || manualIdMap.get(key) || key, value]));
             }
             return cloned;
         });

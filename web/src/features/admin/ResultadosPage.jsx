@@ -162,6 +162,9 @@ function groupScore(attempts) {
 function consolidatedScores(submissions) {
   const groups = new Map()
   submissions.forEach((item) => {
+    // Nota de avaliação manual arquivada (assessmentArchived, B6): fica na lista e sai da
+    // média do aluno, como no quadro e no boletim.
+    if (item.assessmentArchived === true) return
     const key = attemptGroupKey(item)
     if (!groups.has(key)) groups.set(key, [])
     groups.get(key).push(item)
@@ -298,6 +301,13 @@ export default function ResultadosPage() {
     studentClass: s.studentClass || s.student?.studentClass || '',
   })).filter((s) => !activeCourseId || s.courseId === activeCourseId || courseClassNames.has(s.studentClass))
   const examOptions = useMemo(() => [...new Set(rows.map((r) => r.examKey).filter(Boolean))], [data, activeCourseId, courseClassNames])
+  // Avaliação manual da turma (man_*, B6): o filtro e o detalhe mostram o título que vem na
+  // lista (examTitle), nunca o id técnico; as provas continuam pela chave.
+  const examLabels = useMemo(() => {
+    const map = new Map()
+    rows.forEach((r) => { if (r.examTitle && String(r.examKey || '').startsWith('man_') && !map.has(r.examKey)) map.set(r.examKey, r.examTitle) })
+    return map
+  }, [data, activeCourseId, courseClassNames])
   const applicationById = useMemo(() => new Map((applicationsData?.applications || []).map((application) => [application.id, application])), [applicationsData])
   const applicationOptions = useMemo(() => (applicationsData?.applications || []).filter((application) =>
     (!activeCourseId || application.courseId === activeCourseId)
@@ -393,7 +403,7 @@ export default function ResultadosPage() {
     if (!selectedStudent) return []
     const grouped = new Map()
     selectedStudent.submissions.forEach((submission) => {
-      const meta = examMeta.get(submission.examKey) || { moduleId: 'outros', moduleName: 'Outras avaliações', moduleIndex: 999, examName: submission.examKey }
+      const meta = examMeta.get(submission.examKey) || { moduleId: 'outros', moduleName: 'Outras avaliações', moduleIndex: 999, examName: (String(submission.examKey || '').startsWith('man_') && submission.examTitle && `${submission.examTitle}${submission.assessmentArchived === true ? ' (arquivada, fora da média)' : ''}`) || submission.examKey }
       if (!grouped.has(meta.moduleId)) grouped.set(meta.moduleId, { ...meta, submissions: [] })
       grouped.get(meta.moduleId).submissions.push({ ...submission, examName: meta.examName })
     })
@@ -918,7 +928,7 @@ export default function ResultadosPage() {
         <div className="flex h-[38px] items-center rounded-md border border-border bg-surface-2 px-3 text-sm font-semibold text-text">Turma {activeClassName}</div>
         <select value={filterExam} onChange={(e) => { setFilterExam(e.target.value); setFilterApplication('') }} className="text-sm bg-surface border border-border rounded-md px-3 h-[38px] text-text">
           <option value="">Todas as provas</option>
-          {examOptions.map((k) => <option key={k} value={k}>{k}</option>)}
+          {examOptions.map((k) => <option key={k} value={k}>{examLabels.get(k) || k}</option>)}
         </select>
         <select value={filterApplication} onChange={(e) => setFilterApplication(e.target.value)} className="text-sm bg-surface border border-border rounded-md px-3 h-[38px] text-text">
           <option value="">Todas as aplicações</option>

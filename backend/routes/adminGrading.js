@@ -38,7 +38,6 @@
 // O plano e as avaliações manuais passam pelo portão da turma encerrada (assertClassOpen,
 // 409 class_closed, sem efeito até o B10). Gravação parcial: courses ou classes, e
 // auditLogs. Nada é apagado: id do plano que saiu da estrutura fica guardado.
-const crypto = require('crypto');
 const db = require('../database.js');
 const {
     validateAdmin,
@@ -66,6 +65,7 @@ const {
     planWarnings,
     scopeSubmissionsToContext,
     structureModuleId,
+    newManualItemId,
 } = require('../utils/gradebook.js');
 
 const { LIMITES, RECUPERACAO_REGRAS, RECUPERACAO_ROTULOS, UNIDADES_SITUACAO, MANUAL_TIPOS, CRITERIOS_PADRAO } = gradingRules;
@@ -138,8 +138,6 @@ const SCHEMAS = {
     manualArchive: body({ ...CONTEXT_FIELDS, id: str({ ...ID_FIELD, required: true }), reason: REASON_FIELD }),
 };
 
-const randomHex = () => crypto.randomBytes(3).toString('hex');
-const newManualId = () => `man_${Date.now()}_${randomHex()}`;
 const text = value => String(value === undefined || value === null ? '' : value).trim();
 const isPlainObject = value => !!value && typeof value === 'object' && !Array.isArray(value);
 const hasOwn = (target, key) => Object.prototype.hasOwnProperty.call(target, key);
@@ -306,6 +304,12 @@ function readCriteriaInput(input, base) {
             if (mins.has(min)) return { error: 'Duas menções com a mesma nota mínima.', field: `mencoes[${index}].min` };
             siglas.add(sigla);
             mins.add(min);
+        }
+        // A faixa mais baixa começa em 0,0 (modelo do P2: "a última com min 0"): sem ela, a
+        // nota abaixo da menor faixa ficava sem menção no boletim e no resumo do aluno.
+        // Conferido só quando o pedido manda a lista (mudar outro campo não esbarra nela).
+        if (input.mencoes !== undefined && merged.mencoes.length && !mins.has(0)) {
+            return { error: 'A menção mais baixa precisa começar em 0,0, para toda nota ter menção.', field: 'mencoes' };
         }
     }
     const normalized = gradingRules.normalizeCriteria({ ...merged, ativo: true });
@@ -825,7 +829,7 @@ function registerGradingRoutes(router) {
             if (!academicCalendar.assertClassOpen(cls, { res })) return;
             const now = Date.now();
             const record = {
-                id: newManualId(),
+                id: newManualItemId(),
                 titulo: parsed.fields.titulo,
                 tipo: parsed.fields.tipo || 'outro',
                 descricao: parsed.fields.descricao || '',

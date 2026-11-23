@@ -13,6 +13,7 @@ const {
 } = require('./submissionAttempts.js');
 const { recordAudit } = require('./audit.js');
 const { buildXlsx } = require('./tabularFile.js');
+const crypto = require('crypto');
 const gradingRules = require('./gradingRules.js');
 const academicCalendar = require('./academicCalendar.js');
 const attendanceUtil = require('./attendance.js');
@@ -444,6 +445,17 @@ function manualAssessmentTitle(classes, examKey) {
     return '';
 }
 
+// Título da avaliação manual de uma entrega: primeiro na turma da entrega, depois em
+// qualquer turma. '' quando a entrega não é de avaliação manual.
+function manualAssessmentTitleForSubmission(classes, submission) {
+    const key = submission && submission.examKey;
+    if (!isManualItemId(key) || !Array.isArray(classes)) return '';
+    const name = submissionClassName(submission);
+    const courseId = submissionCourseId(submission);
+    const own = classes.filter(cls => cls && String(cls.name || '') === name && (!courseId || String(cls.courseId || '') === courseId));
+    return manualAssessmentTitle(own, key) || manualAssessmentTitle(classes, key);
+}
+
 function groupScopeId(group) {
     const first = group.attempts[0] || {};
     return first.applicationId ? `application:${first.applicationId}` : 'legacy';
@@ -560,6 +572,12 @@ const gradeItemProviders = new Map();
 
 function isManualItemId(id) {
     return typeof id === 'string' && id.startsWith(MANUAL_ITEM_PREFIX);
+}
+
+// Id novo de avaliação manual: 'man_<ms>_<6 hex>', único entre as turmas (o título é
+// achado pelo id em qualquer turma). Usado na criação e na cópia da turma ao duplicar curso.
+function newManualItemId() {
+    return `${MANUAL_ITEM_PREFIX}${Date.now()}_${crypto.randomBytes(3).toString('hex')}`;
 }
 
 // Provedor de itens de avaliação que não são prova (contrato C2 do P2):
@@ -1957,7 +1975,9 @@ module.exports = {
     courseForContext,
     gradeItemProviderList,
     isManualItemId,
+    newManualItemId,
     manualAssessmentTitle,
+    manualAssessmentTitleForSubmission,
     manualItemOfClass,
     planItemView,
     planWarnings,

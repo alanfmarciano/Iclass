@@ -656,8 +656,24 @@ test('[UC-CURSO-002] duplicar curso: disciplinas com carga horária e módulos c
     const des2 = db.memory.classes.find(item => item.courseId === 'TI27' && item.name === '2DES');
     assert.equal(des1.periodoLetivoId, open.id);
     assert.equal('periodoLetivoId' in des2, false, 'período encerrado não passa para a cópia');
-    assert.deepEqual(Object.keys(des1.avaliacao.itens).sort(), ['Avaliacao_TI_1_TI27', 'man_1_abcdef']);
+    // A avaliação manual ganha id novo na cópia (o título é achado pelo id em qualquer
+    // turma: com o mesmo id, renomear numa turma trocava o nome na outra) e o plano
+    // acompanha. Antes a cópia ficava com o mesmo man_1_abcdef.
+    assert.equal(des1.avaliacao.manuais.length, 1);
+    const copiedManual = des1.avaliacao.manuais[0];
+    assert.match(copiedManual.id, /^man_\d+_[0-9a-f]{6}$/);
+    assert.notEqual(copiedManual.id, 'man_1_abcdef');
+    assert.equal(copiedManual.titulo, 'Seminário');
+    assert.deepEqual(Object.keys(des1.avaliacao.itens).sort(), ['Avaliacao_TI_1_TI27', copiedManual.id].sort());
     assert.equal(des1.avaliacao.itens.Avaliacao_TI_1_TI27.peso, 2);
+    assert.deepEqual(des1.avaliacao.itens[copiedManual.id], { etapa: 2, peso: 1 });
+    assert.equal(db.memory.classes.filter(item => (item.avaliacao?.manuais || []).some(manual => manual.id === copiedManual.id)).length, 1, 'o id não se repete entre turmas');
+    assert.equal(db.memory.classes[0].avaliacao.manuais[0].id, 'man_1_abcdef', 'a origem fica com o id dela');
+    // Renomear na cópia não muda o título da origem (auditoria, sino, Meus dados).
+    const { manualAssessmentTitle } = require('../../backend/utils/gradebook.js');
+    copiedManual.titulo = 'Seminário 2027';
+    assert.equal(manualAssessmentTitle(db.memory.classes, 'man_1_abcdef'), 'Seminário');
+    assert.equal(manualAssessmentTitle(db.memory.classes, copiedManual.id), 'Seminário 2027');
     assert.equal('encerramento' in des1, false, 'a cópia nasce aberta');
     // A origem continua como estava.
     assert.equal(db.memory.classes[0].periodoLetivoId, open.id);
