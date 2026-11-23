@@ -29,7 +29,11 @@
 //   outros (403 not_participant).
 // - Começar: o aluno precisa estar ativo e matriculado na turma; até 60 conversas novas por
 //   hora por conta (429). Mensagem do instrutor não tem limite e vale também na conversa
-//   encerrada (o aluno lê, mas não responde).
+//   encerrada (o aluno lê, mas não responde). Com o cadastro do aluno encerrado ou
+//   anonimizado, a conversa fica só para consulta: escrever e reabrir dão 409
+//   student_inactive (a anonimização também encerra as abertas).
+// - Lista todas=1: a conversa de outro professor ainda não aberta hoje pelo admin-open vem
+//   sem assunto e sem motivo do encerramento (textoOculto: true).
 // - Auditoria na mesma gravação: conversation_closed (motivo), conversation_reopened e
 //   conversation_read_by_admin, na categoria do registro (student e privacy). Mensagem
 //   enviada não entra (ela mesma é o registro). Gravação parcial:
@@ -161,6 +165,36 @@ function adminOpenedToday(account, conv, today) {
     return false;
 }
 
+// Conversas que esta conta abriu hoje pelo admin-open (uma passada pela trilha), para a
+// lista "todas da escola".
+function adminOpenedTodaySet(account, today) {
+    const actor = normalizeEmail(account && account.email);
+    const opened = new Set();
+    adminOpenCache.forEach((day, key) => {
+        if (day === today && key.startsWith(`${actor}\n`)) opened.add(key.slice(actor.length + 1));
+    });
+    const logs = Array.isArray(db.memory.auditLogs) ? db.memory.auditLogs : [];
+    logs.forEach(entry => {
+        if (!entry || entry.action !== 'conversation_read_by_admin' || normalizeEmail(entry.actor) !== actor) return;
+        const id = String((entry.details && entry.details.conversationId) || '');
+        if (!id || opened.has(id) || schoolDate(Number(entry.timestamp)) !== today) return;
+        opened.add(id);
+    });
+    return opened;
+}
+
+// Na lista "todas da escola", a conversa de outro professor que o administrador ainda não
+// abriu hoje (admin-open, que fica na Auditoria) aparece sem o assunto e sem o motivo do
+// encerramento: são texto livre e podem ser sensíveis. Ficam o aluno, o professor, a turma
+// e as datas, para ele escolher qual abrir.
+function hideUnopenedText(rows, account) {
+    const opened = adminOpenedTodaySet(account, settingsUtil.today());
+    return rows.map(row => {
+        if (row.participante || opened.has(row.id)) return row;
+        return { ...row, assunto: '', motivoEncerramento: '', textoOculto: true };
+    });
+}
+
 function audit(req, account, action, conv, details, category = 'student') {
     const read = conversations.readConversation(conv);
     recordAudit(db.memory, {
@@ -202,13 +236,14 @@ function createAdminMessagesRouter() {
         if (studentClass && !scopedClass(res, account, courseId, studentClass)) return undefined;
         const statusText = String(query.status || '').trim().toLowerCase();
         const status = STATUS_FILTERS.has(statusText) ? statusText : '';
-        const rows = conversations.adminConversations(db.memory, account, {
+        const listed = conversations.adminConversations(db.memory, account, {
             courseId,
             studentClass,
             status,
             all,
             canSeeClass: cls => all || adminCanAccessClass(account, cls.name, cls.courseId),
         });
+        const rows = all ? hideUnopenedText(listed, account) : listed;
         res.set('Cache-Control', 'no-store');
         return res.json({
             success: true,

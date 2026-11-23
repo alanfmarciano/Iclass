@@ -49,7 +49,7 @@
 // ---------------------------------------------------------------------------
 const crypto = require('crypto');
 const { normalizeEmail, displayName, studentInClass, isClosedStudentStatus, isAnonymizedStudent } = require('./students.js');
-const { publicStudentEmail } = require('./studentIdentity.js');
+const { publicStudentEmail, findStudentById } = require('./studentIdentity.js');
 const { canAccessAdminPermission } = require('./adminPermissions.js');
 const { isReadOnlyAccount, accountRoleLabel } = require('./adminRoles.js');
 const { isCourseDeleted } = require('./contentAccess.js');
@@ -77,6 +77,8 @@ const READ_NOTICE = 'O administrador da escola pode ler estas mensagens.';
 const KEEP_NOTICE = 'As mensagens ficam guardadas e não podem ser apagadas.';
 const EXAM_IN_PROGRESS = Object.freeze({ code: 'exam_in_progress', error: 'Durante a prova, fale com o professor pelo botão da prova.' });
 const ANONYMIZED_MESSAGE = '[mensagem removida na anonimização]';
+const ANONYMIZED_CLOSE_REASON = 'Cadastro do aluno anonimizado';
+const STUDENT_INACTIVE = Object.freeze({ code: 'student_inactive', error: 'O cadastro deste aluno está encerrado. A conversa fica só para consulta.' });
 const CONVERSATION_ID_PATTERN = /^[A-Za-z0-9_-]{1,100}$/;
 
 // Chave dos identificadores opacos dos professores (destinatário do aluno). Só do processo:
@@ -317,10 +319,31 @@ function studentsByEmail(memory) {
     return map;
 }
 
+// Cadastro ativo: existe, não foi anonimizado nem desligado (Inativo, Concluído,
+// Transferido, Evadido).
+function isActiveStudentRecord(student) {
+    return !!student && !isAnonymizedStudent(student) && !isClosedStudentStatus(student.status);
+}
+
+// O cadastro do aluno da conversa (pelo e-mail da conversa, que a troca de e-mail
+// acompanha; sem ele, pelo studentId), ou null. students: mapa e-mail -> aluno já montado.
+function conversationStudent(memory, conv, students = null) {
+    const read = readConversation(conv);
+    const byEmail = students ? students.get(read.aluno.email) : studentsByEmail(memory).get(read.aluno.email);
+    if (byEmail) return byEmail;
+    return read.aluno.studentId ? (findStudentById(memory, read.aluno.studentId) || null) : null;
+}
+
+// O aluno da conversa ainda pode receber mensagem do instrutor? Cadastro encerrado ou
+// anonimizado: a conversa fica só para consulta (o aluno não entra mais no portal, e o
+// texto novo poria de volta o que a anonimização tirou).
+function conversationStudentActive(memory, conv, students = null) {
+    return isActiveStudentRecord(conversationStudent(memory, conv, students));
+}
+
 // Aluno que pode receber conversa nova na turma: matriculado e com o cadastro ativo.
 function studentCanTalkInClass(student, cls) {
-    return !!student && !!cls && !isAnonymizedStudent(student) && !isClosedStudentStatus(student.status)
-        && studentInClass(student, cls.name, cls.courseId);
+    return !!cls && isActiveStudentRecord(student) && studentInClass(student, cls.name, cls.courseId);
 }
 
 // ------------------------------------------------------------ escrita
@@ -427,11 +450,15 @@ function startConversation(memory, cls, { by, student, account, assunto, texto, 
 }
 
 // Mensagem numa conversa existente. A conversa encerrada recusa o aluno (409
-// conversation_closed) e aceita o instrutor.
+// conversation_closed) e aceita o instrutor; o instrutor é recusado (409
+// student_inactive) quando o cadastro do aluno está encerrado ou anonimizado.
 function postMessage(memory, conv, { by, email, texto, now = Date.now() }) {
     const read = readConversation(conv);
     if (by === 'aluno' && read.status !== 'aberta') {
         return failure(409, 'O professor encerrou esta conversa. Você pode começar outra.', { code: 'conversation_closed' });
+    }
+    if (by === 'instrutor' && !conversationStudentActive(memory, conv)) {
+        return failure(409, STUDENT_INACTIVE.error, { code: STUDENT_INACTIVE.code });
     }
     const checked = checkText(texto);
     if (!checked.ok) return checked;
@@ -468,10 +495,12 @@ function closeConversation(conv, { actorEmail, motivo, now = Date.now() }) {
 }
 
 // Reabrir: recusada (409 conversation_open_exists) se o mesmo par já tem outra aberta na
-// turma (uma aberta por aluno x instrutor x turma).
+// turma (uma aberta por aluno x instrutor x turma) e (409 student_inactive) se o cadastro
+// do aluno está encerrado ou anonimizado.
 function reopenConversation(memory, conv, { actorEmail, now = Date.now() }) {
     const read = readConversation(conv);
     if (read.status === 'aberta') return { ok: true, changed: false };
+    if (!conversationStudentActive(memory, conv)) return failure(409, STUDENT_INACTIVE.error, { code: STUDENT_INACTIVE.code });
     const other = conversationList(memory).find(item => item !== conv && (() => {
         const r = readConversation(item);
         return r.status === 'aberta' && r.courseId === read.courseId && r.studentClass === read.studentClass
@@ -571,7 +600,7 @@ function studentMessagesView(memory, conv, options = {}) {
 // tem não lidas e escreve).
 function adminConversationView(memory, conv, viewerEmail, { naoLidas = 0, students = studentsByEmail(memory) } = {}) {
     const read = readConversation(conv);
-    const student = students.get(read.aluno.email) || null;
+    const student = conversationStudent(memory, conv, students);
     const participante = read.instrutor.email === normalizeEmail(viewerEmail);
     return {
         id: read.id,
@@ -583,6 +612,9 @@ function adminConversationView(memory, conv, viewerEmail, { naoLidas = 0, studen
             email: publicStudentEmail(read.aluno.email),
             matricula: student && student.matricula ? String(student.matricula) : '',
             studentId: read.aluno.studentId || (student && typeof student.id === 'string' ? student.id : null),
+            // false: cadastro encerrado ou anonimizado; o instrutor só consulta (sem
+            // responder nem reabrir).
+            ativo: isActiveStudentRecord(student),
         },
         instrutor: { nome: instructorLabel(memory, read), email: read.instrutor.email },
         assunto: read.assunto,
@@ -729,15 +761,41 @@ function idsOf(conversations) {
     return new Set(conversations.map(conv => String(conv.id)));
 }
 
-// O texto do instrutor sem o nome, o e-mail e a matrícula do aluno (scrubReason da
-// anonimização; carga na hora porque studentLifecycle.js depende dos handlers).
+// Partículas do nome que não identificam ninguém e são palavras comuns ("dos alunos").
+const NAME_PARTICLES = new Set(['de', 'da', 'do', 'das', 'dos', 'del', 'della', 'der', 'di', 'du', 'e', 'la', 'le', 'van', 'von', 'y']);
+
+function foldWord(value) {
+    return String(value || '').normalize('NFD').replace(/\p{M}/gu, '').toLowerCase();
+}
+
+// O nome completo, o nome social e cada parte deles com 3 letras ou mais (menos as
+// partículas): na conversa o professor chama o aluno pelo primeiro nome ("Oi Ana") ou só
+// pelo sobrenome. Palavra comum igual a uma parte do nome também sai (preferimos tirar a
+// mais do que deixar o nome).
+function nameTerms(values) {
+    const out = new Set();
+    values.forEach(value => {
+        const full = cleanLine(value);
+        if (!full) return;
+        out.add(full);
+        full.split(/[\s-]+/).forEach(part => {
+            const word = part.replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
+            if (Array.from(word).length >= 3 && !NAME_PARTICLES.has(foldWord(word))) out.add(word);
+        });
+    });
+    return [...out];
+}
+
+// O texto do instrutor sem o nome (inteiro e por partes, com ou sem acento), o e-mail e a
+// matrícula do aluno (scrubReason da anonimização; carga na hora porque studentLifecycle.js
+// depende dos handlers).
 function scrubberFor(aluno) {
     const { scrubReason } = require('./studentLifecycle.js');
     const student = isObject(aluno && aluno.student) ? aluno.student : {};
-    const names = [student.name, student.nomeSocial].filter(Boolean);
+    const names = nameTerms([student.name, student.nomeSocial]);
     const matriculas = [student.matricula].filter(Boolean);
     const emails = [...new Set([...(aluno.emails || []), aluno.email].filter(Boolean))];
-    return text => scrubReason(text, { emails, names, matriculas, replacement: 'aluno' });
+    return text => scrubReason(text, { emails, names, matriculas, replacement: 'aluno', foldAccents: true });
 }
 
 // Motivos e textos das conversas na trilha (conversation_*): saem com o aluno.
@@ -802,19 +860,28 @@ registerStudentDataHandler({
         });
     },
     // Anonimizar: a conversa fica (o professor não perde o histórico), com o pseudônimo no
-    // lugar do aluno; o texto do aluno sai, e o do professor e o assunto ficam sem o nome,
-    // o e-mail e a matrícula dele. O assunto escrito pelo aluno sai inteiro.
+    // lugar do aluno; o texto do aluno sai, e o do professor e o assunto ficam sem o nome
+    // (inteiro e por partes), o e-mail e a matrícula dele. O assunto escrito pelo aluno sai
+    // inteiro. A aberta é encerrada pelo sistema: ninguém escreve mais nela (postMessage
+    // e reopenConversation recusam o cadastro anonimizado).
     anonymize(memory, aluno, pseudonimo) {
         const email = normalizeEmail(pseudonimo && pseudonimo.email);
         const mine = conversationList(memory).filter(ownedBy(aluno));
         if (!mine.length) return;
         const scrub = scrubberFor(aluno);
         const ids = idsOf(mine);
+        const at = Date.now();
         mine.forEach(conv => {
             const read = readConversation(conv);
             conv.aluno = { ...conv.aluno, email: email || read.aluno.email, studentId: null };
             conv.assunto = read.iniciadaPor === 'aluno' ? '' : scrub(read.assunto);
             if (typeof conv.motivoEncerramento === 'string' && conv.motivoEncerramento) conv.motivoEncerramento = scrub(conv.motivoEncerramento);
+            if (conv.status === 'aberta') {
+                conv.status = 'encerrada';
+                conv.encerradaEm = at;
+                conv.encerradaPor = 'sistema';
+                conv.motivoEncerramento = ANONYMIZED_CLOSE_REASON;
+            }
         });
         memory.conversationMessages = messageList(memory).map(msg => {
             if (!ids.has(String(msg.conversationId || ''))) return msg;
@@ -901,6 +968,8 @@ module.exports = {
     KEEP_NOTICE,
     EXAM_IN_PROGRESS,
     ANONYMIZED_MESSAGE,
+    ANONYMIZED_CLOSE_REASON,
+    STUDENT_INACTIVE,
     CONVERSATION_ID_PATTERN,
     FEED_ID,
     cleanMessageText,
@@ -919,6 +988,9 @@ module.exports = {
     classRecipients,
     findRecipient,
     studentCanTalkInClass,
+    isActiveStudentRecord,
+    conversationStudent,
+    conversationStudentActive,
     startConversation,
     postMessage,
     markRead,

@@ -636,6 +636,103 @@ test('[UC-MENSAGEM-005] anonimizar: o texto do aluno sai, o do professor fica se
     assert.equal(JSON.stringify([db.memory.conversations, db.memory.conversationMessages]).includes(BIA), false);
 });
 
+test('[UC-MENSAGEM-005] anonimizar tira do texto do professor o primeiro nome, o sobrenome solto e o nome sem acento; partícula do nome fica', async () => {
+    const ana = db.memory.students.find(item => item.email === ANA);
+    ana.name = 'Ana Júlia dos Santos Souza';
+    ana.matricula = '2024001';
+    const conv = await startOk({ texto: 'Oi, professor' });
+    const textos = [
+        'Oi Ana, tudo bem? Souza, matrícula 2024001.',
+        'ANA, a Julia (sem acento) e a JÚLIA falaram com os Santos.',
+        'Recado dos professores para a turma.',
+        'Anabela não é ela; Souzana também não.',
+    ];
+    for (const texto of textos) {
+        const res = await as('prof', request(app).post(`/api/admin/conversations/${conv.id}/messages`)).send({ texto });
+        assert.equal(res.status, 201, JSON.stringify(res.body));
+    }
+    ana.status = 'Transferido';
+    const anonymized = await as('admin', request(app).post('/api/admin/students/anonymize')).send({ email: ANA, confirm: 'ANONIMIZAR', reason: 'Pedido da família' });
+    assert.equal(anonymized.status, 200, JSON.stringify(anonymized.body));
+    const texts = db.memory.conversationMessages.filter(msg => msg.conversationId === conv.id).map(msg => msg.texto);
+    assert.deepEqual(texts, [
+        '[mensagem removida na anonimização]',
+        'Oi aluno, tudo bem? aluno, matrícula.',
+        'aluno, a aluno (sem acento) e a aluno falaram com os aluno.',
+        'Recado dos professores para a turma.',
+        'Anabela não é ela; Souzana também não.',
+    ]);
+    for (const leak of [/\bAna\b/i, /J[uú]lia/i, /Souza\b/, /Santos/, /2024001/]) {
+        assert.equal(texts.slice(1, 3).some(texto => leak.test(texto)), false, String(leak));
+    }
+});
+
+test('[UC-MENSAGEM-005] anonimizar encerra a conversa aberta; cadastro encerrado ou anonimizado não recebe mensagem nem reabre (409 student_inactive)', async () => {
+    const conv = await startOk({ texto: 'Oi, professor' });
+    const bia = await startOk({ texto: 'Sou a Bia' }, BIA);
+
+    // Desligado (sem anonimizar): o professor só consulta; reativado, volta a escrever.
+    const beatriz = db.memory.students.find(item => item.email === BIA);
+    beatriz.status = 'Inativo';
+    const inactive = await as('prof', request(app).post(`/api/admin/conversations/${bia.id}/messages`)).send({ texto: 'Bia, volte!' });
+    assert.equal(inactive.status, 409, JSON.stringify(inactive.body));
+    assert.deepEqual([inactive.body.code, inactive.body.error], ['student_inactive', 'O cadastro deste aluno está encerrado. A conversa fica só para consulta.']);
+    const listed = await as('prof', request(app).get('/api/admin/conversations'));
+    assert.equal(listed.body.conversas.find(row => row.id === bia.id).aluno.ativo, false);
+    assert.equal(listed.body.conversas.find(row => row.id === conv.id).aluno.ativo, true);
+    await as('prof', request(app).post(`/api/admin/conversations/${bia.id}/close`)).send({});
+    assert.equal((await as('prof', request(app).post(`/api/admin/conversations/${bia.id}/reopen`)).send({})).body.code, 'student_inactive');
+    beatriz.status = 'Ativo';
+    assert.equal((await as('prof', request(app).post(`/api/admin/conversations/${bia.id}/reopen`)).send({})).status, 200);
+    assert.equal((await as('prof', request(app).post(`/api/admin/conversations/${bia.id}/messages`)).send({ texto: 'Que bom que voltou.' })).status, 201);
+
+    // Anonimizado: a aberta fica encerrada pelo sistema; escrever e reabrir dão 409 e nada
+    // volta para a conversa.
+    db.memory.students.find(item => item.email === ANA).status = 'Transferido';
+    const anonymized = await as('admin', request(app).post('/api/admin/students/anonymize')).send({ email: ANA, confirm: 'ANONIMIZAR', reason: 'Pedido da família' });
+    assert.equal(anonymized.status, 200, JSON.stringify(anonymized.body));
+    const row = db.memory.conversations.find(item => item.id === conv.id);
+    assert.deepEqual([row.status, row.encerradaPor, row.motivoEncerramento], ['encerrada', 'sistema', 'Cadastro do aluno anonimizado']);
+    assert.equal(typeof row.encerradaEm, 'number');
+    const before = db.memory.conversationMessages.length;
+    const post = await as('prof', request(app).post(`/api/admin/conversations/${conv.id}/messages`)).send({ texto: 'Ana Souza, volte!' });
+    assert.equal(post.status, 409, JSON.stringify(post.body));
+    assert.equal(post.body.code, 'student_inactive');
+    const reopen = await as('prof', request(app).post(`/api/admin/conversations/${conv.id}/reopen`)).send({});
+    assert.equal(reopen.status, 409);
+    assert.equal(reopen.body.code, 'student_inactive');
+    assert.equal(db.memory.conversationMessages.length, before);
+    assert.equal(db.memory.conversations.find(item => item.id === conv.id).status, 'encerrada');
+    assert.equal(JSON.stringify(db.memory.conversationMessages).includes('Ana Souza'), false);
+    assert.equal(audits('conversation_reopened').filter(entry => entry.details.conversationId === conv.id).length, 0);
+    // O histórico continua para consulta.
+    const read = await as('prof', request(app).get(`/api/admin/conversations/${conv.id}/messages`));
+    assert.equal(read.status, 200);
+    assert.equal(read.body.conversa.aluno.ativo, false);
+});
+
+test('[UC-MENSAGEM-002] lista "todas da escola": a conversa dos outros vem sem assunto e sem motivo até o admin-open do dia', async () => {
+    const conv = await startOk({ assunto: 'Problema em casa', texto: 'Preciso falar com o senhor' });
+    await as('prof', request(app).post(`/api/admin/conversations/${conv.id}/close`)).send({ motivo: 'Conversamos na sala' });
+    const hidden = (await as('admin', request(app).get('/api/admin/conversations?todas=1'))).body.conversas.find(row => row.id === conv.id);
+    assert.deepEqual([hidden.assunto, hidden.motivoEncerramento, hidden.textoOculto], ['', '', true]);
+    assert.equal(hidden.aluno.nome, 'Ana Souza', 'o aluno e o professor ficam, para escolher qual abrir');
+    assert.equal(hidden.instrutor.nome, 'Prof. Alan');
+    // O professor da conversa vê tudo na lista dele.
+    const own = (await as('prof', request(app).get('/api/admin/conversations'))).body.conversas.find(row => row.id === conv.id);
+    assert.deepEqual([own.assunto, own.motivoEncerramento, own.textoOculto], ['Problema em casa', 'Conversamos na sala', undefined]);
+
+    assert.equal((await as('admin', request(app).post(`/api/admin/conversations/${conv.id}/admin-open`)).send({})).body.registrado, true);
+    const shown = (await as('admin', request(app).get('/api/admin/conversations?todas=1'))).body.conversas.find(row => row.id === conv.id);
+    assert.deepEqual([shown.assunto, shown.motivoEncerramento, shown.textoOculto], ['Problema em casa', 'Conversamos na sala', undefined]);
+    // Outro processo (sem o cache): vale a trilha do dia; a de ontem não.
+    resetAdminOpenCacheForTests();
+    assert.equal((await as('admin', request(app).get('/api/admin/conversations?todas=1'))).body.conversas.find(row => row.id === conv.id).assunto, 'Problema em casa');
+    audits('conversation_read_by_admin')[0].timestamp -= 2 * 24 * 60 * 60 * 1000;
+    resetAdminOpenCacheForTests();
+    assert.equal((await as('admin', request(app).get('/api/admin/conversations?todas=1'))).body.conversas.find(row => row.id === conv.id).textoOculto, true);
+});
+
 test('[UC-MENSAGEM-005] mesclar: as conversas do que sai passam ao que fica; duas abertas com o mesmo professor, a do que sai fica encerrada; religar o id', () => {
     const memory = {
         classes: [{ name: CLASS, courseId: COURSE }],

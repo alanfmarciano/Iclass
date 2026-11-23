@@ -4,6 +4,11 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 
 ## Não publicado
 
+### Mensagens entre aluno e professor (servidor; as telas vêm na próxima etapa)
+- O computador do professor já guarda as conversas de um aluno com um professor da turma: só texto (até 2.000 caracteres), sem editar nem apagar, com encerrar e reabrir pelo professor e arquivar pelo aluno. Durante a prova o aluno não envia mensagem. O administrador da escola pode ler as conversas dos outros, e cada leitura fica na Auditoria; antes de abrir, a lista dele mostra só o aluno, o professor e a turma, sem o assunto.
+- "Cadastros encerrados", "Anonimizar" e "Apagar de vez" mostram a contagem "Conversas com professores", e "Meus dados" e a exportação da LGPD têm a seção das conversas. Anonimizar troca o texto do aluno por "[mensagem removida na anonimização]", tira o nome dele (também só o primeiro nome ou o sobrenome), o e-mail e a matrícula do texto do professor e encerra a conversa aberta. Com o cadastro do aluno encerrado ou anonimizado, o professor só consulta a conversa.
+- A prévia da restauração mostra "Conversas" e "Mensagens das conversas"; backup de antes desta versão restaurado não apaga as conversas de agora.
+
 ### Grupos de alunos (equipes e subturmas)
 - Tela nova "Grupos" da turma, aberta pelo botão "Grupos" em Turmas (na turma) e em Alunos (no topo). Os grupos ficam por conjunto ("Projeto integrador", "Laboratório"), cada um com o tipo (Equipe ou Subturma), os alunos por nome e matrícula e, abaixo do conjunto, quem ainda está sem grupo nele. O professor usa nas turmas dele; a Coordenação vê sem poder mudar.
 - "Novo grupo" e "Editar": nome, conjunto, tipo e os alunos marcados numa lista com busca. O aluno fica em no máximo um grupo de cada conjunto: na criação, quem já está em outro aparece com "Em Equipe 1"; na edição, marcá-lo mostra "Sai de Equipe 2" e ele muda de grupo ao salvar. Quem saiu da turma continua no grupo com a etiqueta "Saiu da turma", sem contar no total. Se outra pessoa mudou o mesmo grupo ao mesmo tempo, a tela avisa e atualiza, sem apagar a mudança dela.

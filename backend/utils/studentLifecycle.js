@@ -133,17 +133,32 @@ function escapeRegExp(text) {
     return String(text).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+// Letras que o nome pode ter com ou sem acento (foldAccents do scrubReason).
+const ACCENT_CLASSES = Object.freeze({ a: 'aàáâãäå', e: 'eèéêë', i: 'iìíîï', o: 'oòóôõö', u: 'uùúûü', c: 'cç', n: 'nñ', y: 'yýÿ' });
+
+// Padrão do nome que casa com e sem acento ("Jose" acha "José" e o contrário), com espaço
+// variável entre as partes e acento decomposto (NFD) no texto.
+function accentInsensitivePattern(value) {
+    const base = String(value).normalize('NFD').replace(/\p{M}/gu, '').replace(/\s+/g, ' ').toLowerCase();
+    return Array.from(base).map(ch => {
+        if (ch === ' ') return '\\s+';
+        if (ACCENT_CLASSES[ch]) return `[${ACCENT_CLASSES[ch]}]\\p{M}*`;
+        return /\p{L}/u.test(ch) ? `${escapeRegExp(ch)}\\p{M}*` : escapeRegExp(ch);
+    }).join('');
+}
+
 // Tira do texto livre o e-mail, o nome e a matrícula do aluno (palavra inteira, sem
-// diferenciar maiúscula), no lugar do nome fica `replacement`.
-function scrubReason(text, { emails = [], names = [], matriculas = [], replacement = 'aluno' } = {}) {
+// diferenciar maiúscula), no lugar do nome fica `replacement`. foldAccents: o nome casa
+// também escrito com outro acento ou sem acento (mensagens digitadas à mão).
+function scrubReason(text, { emails = [], names = [], matriculas = [], replacement = 'aluno', foldAccents = false } = {}) {
     let out = String(text || '');
-    const edge = (value, to) => {
-        out = out.replace(new RegExp(`(^|[^\\p{L}\\p{N}@._-])${escapeRegExp(value)}(?=$|[^\\p{L}\\p{N}@_-]|\\.(?![\\p{L}\\p{N}]))`, 'giu'), `$1${to}`);
+    const edge = (value, to, pattern = escapeRegExp(value)) => {
+        out = out.replace(new RegExp(`(^|[^\\p{L}\\p{N}@._-])${pattern}(?=$|[^\\p{L}\\p{N}@_-]|\\.(?![\\p{L}\\p{N}]))`, 'giu'), `$1${to}`);
     };
     emails.filter(Boolean).forEach(email => edge(email, replacement));
     names.map(name => String(name || '').trim()).filter(name => name.length >= 3)
         .sort((a, b) => b.length - a.length)
-        .forEach(name => edge(name, replacement));
+        .forEach(name => edge(name, replacement, foldAccents ? accentInsensitivePattern(name) : undefined));
     matriculas.map(value => String(value || '').trim()).filter(value => value.length >= 3).forEach(value => edge(value, ''));
     return tidyScrubbedText(out, [replacement]);
 }
