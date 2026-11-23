@@ -107,13 +107,18 @@ export function bankExcerpt(text, max = 180) {
 }
 
 // ---------------------------------------------------------------- importar e exportar
-// (fase 3, P3-S9b: AVA-15; D22). GIFT (Moodle e outro IClass) e planilha (CSV ou XLSX),
-// sempre com prévia no servidor antes de gravar.
+// (fase 3, P3-S9b: AVA-15; D22). GIFT (Moodle e outro IClass) e planilha CSV (o .xlsx no
+// banco de questões ficou fora da fase 3), sempre com prévia no servidor antes de gravar.
 export const BANK_IMPORT_MAX_BYTES = 2 * 1024 * 1024
 export const BANK_IMPORT_FORMATS = Object.freeze([
   Object.freeze({ value: 'gift', label: 'GIFT (Moodle ou outro IClass)', accept: '.txt,.gift', exportLabel: 'Baixar em GIFT' }),
-  Object.freeze({ value: 'csv', label: 'Planilha (CSV ou XLSX)', accept: '.csv,.txt,.xlsx', exportLabel: 'Baixar planilha (CSV)' }),
+  Object.freeze({ value: 'csv', label: 'Planilha (CSV)', accept: '.csv,.txt', exportLabel: 'Baixar planilha (CSV)' }),
 ])
+// Planilha do Excel (.xlsx, .xls): o banco lê só CSV; a tela avisa antes de mandar.
+export const BANK_IMPORT_EXCEL_MESSAGE = 'O banco de questões lê a planilha em CSV. No Excel, use "Salvar como" e escolha "CSV UTF-8 (separado por vírgulas)"; depois importe esse arquivo.'
+export function isExcelWorkbookName(name) {
+  return /\.xls[xmb]?$/i.test(String(name || '').trim())
+}
 export const BANK_IMPORT_PREVIEW_MAX = 50
 
 // '/api/admin/question-bank/export?formato=gift&categoria=...': os mesmos filtros da lista.

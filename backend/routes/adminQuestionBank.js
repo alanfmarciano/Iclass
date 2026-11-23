@@ -16,7 +16,8 @@
 // - POST import-evaluation: leva as questões de uma avaliação do sistema, de todos os
 //   tipos; a que o modelo recusa fica de fora em skipped, com o motivo.
 // - POST delete: continua, com a cópia da questão na auditoria (question_deleted).
-// - POST import/preview e import (P3-S9b, D22): GIFT ou planilha (CSV ou XLSX), colado
+// - POST import/preview e import (P3-S9b, D22): GIFT ou planilha CSV (o .xlsx é recusado:
+//   ficou fora da fase 3, scope_cuts do plano), colado
 //   ({ conteudo }) ou escolhido ({ arquivo: base64, nomeArquivo }), até 2 MB e 2.000
 //   questões. A prévia lê tudo (utils/questionFormats.js), não grava e devolve as questões
 //   que entrariam, os erros por linha, os avisos e as repetidas (já no banco, inclusive
@@ -528,9 +529,12 @@ function createAdminQuestionBankRouter() {
             const today = schoolDateOf(Date.now()) || new Date().toISOString().slice(0, 10);
             // Contrato C8: as imagens citadas não vão no arquivo (só o endereço no Markdown);
             // o GIFT lista os nomes num comentário, a auditoria guarda quantas e quais, e o
-            // cabeçalho X-IClass-Imagens diz quantas.
-            const imagens = [...new Set(items.flatMap(item => referencedExamUploads(item)))].sort();
-            const built = formato === 'gift' ? toGift(items, { exportedAt: today, imagens }) : toCsv(items);
+            // cabeçalho X-IClass-Imagens diz quantas. Só as das questões que entram no
+            // arquivo (o item incompleto que fica fora não conta).
+            const built = formato === 'gift'
+                ? toGift(items, { exportedAt: today, imagesOf: referencedExamUploads })
+                : toCsv(items, { imagesOf: referencedExamUploads });
+            const imagens = built.imagens;
             if (!built.quantidade) {
                 return res.status(404).json({ success: false, error: 'As questões desta lista estão incompletas e não podem ser exportadas. Abra e salve cada uma no banco.', code: 'nothing_to_export' });
             }

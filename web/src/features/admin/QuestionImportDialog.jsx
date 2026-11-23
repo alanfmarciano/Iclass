@@ -12,6 +12,7 @@ import { api, downloadFile } from '../../lib/api'
 import { answerSummary, formatPointsLabel, questionTypeLabel } from './questionEditorModel'
 import {
   BANK_CATEGORY_MAX,
+  BANK_IMPORT_EXCEL_MESSAGE,
   BANK_IMPORT_FORMATS,
   BANK_IMPORT_MAX_BYTES,
   BANK_IMPORT_PREVIEW_MAX,
@@ -21,13 +22,15 @@ import {
   importCount,
   importDuplicateText,
   importSummaryText,
+  isExcelWorkbookName,
   questionsWithImages,
 } from './questionBankModel'
 
 // Importar e exportar o banco de questões (fase 3, P3-S9b: AVA-15; D22 do desenho P3,
 // telas.professor "Provas > Banco de questões"):
 // - Importar: GIFT (o formato de texto do Moodle, e o que outro IClass exporta) ou
-//   planilha (CSV do Excel ou XLSX), escolhendo o arquivo ou colando o texto. "Ver
+//   planilha CSV (do Excel, com "Salvar como" > CSV; o .xlsx é recusado com essa dica),
+//   escolhendo o arquivo ou colando o texto. "Ver
 //   prévia" manda ao servidor, que lê tudo sem gravar e devolve as questões que entram,
 //   os erros por linha e as repetidas; "Importar N questões" confirma com o sha256 da
 //   prévia (o servidor recusa se o arquivo mudou). Trocar o arquivo, o texto, o formato
@@ -89,15 +92,24 @@ export default function QuestionImportDialog({ open, onClose, onImported }) {
   async function chooseFile(chosen) {
     reset()
     if (!chosen) { setFile(null); return }
-    if (chosen.size > BANK_IMPORT_MAX_BYTES) {
+    // Arquivo recusado aqui: o campo volta a "nenhum arquivo", para não parecer escolhido.
+    const refuse = (message) => {
       setFile(null)
-      setError('O arquivo passa de 2 MB. Divida em arquivos menores.')
+      setError(message)
+      if (fileRef.current) fileRef.current.value = ''
+    }
+    if (chosen.size > BANK_IMPORT_MAX_BYTES) {
+      refuse('O arquivo passa de 2 MB. Divida em arquivos menores.')
+      return
+    }
+    if (isExcelWorkbookName(chosen.name)) {
+      refuse(BANK_IMPORT_EXCEL_MESSAGE)
       return
     }
     try {
       const base64 = await readAsBase64(chosen)
       setFile({ name: chosen.name, size: chosen.size, base64 })
-      if (/\.xlsx$/i.test(chosen.name) || /\.csv$/i.test(chosen.name)) setFormato('csv')
+      if (/\.csv$/i.test(chosen.name)) setFormato('csv')
     } catch (readError) {
       setFile(null)
       setError(readError.message)
@@ -207,7 +219,7 @@ export default function QuestionImportDialog({ open, onClose, onImported }) {
             </div>
             {source === 'arquivo' ? (
               <div className="flex flex-col gap-1.5">
-                <label htmlFor="banco-importar-arquivo" className="text-sm font-medium text-text">Arquivo ({format.value === 'gift' ? '.txt ou .gift' : '.csv ou .xlsx'}, até 2 MB)</label>
+                <label htmlFor="banco-importar-arquivo" className="text-sm font-medium text-text">Arquivo ({format.value === 'gift' ? '.txt ou .gift' : '.csv'}, até 2 MB)</label>
                 <input
                   id="banco-importar-arquivo"
                   ref={fileRef}

@@ -735,7 +735,7 @@ test('[UC-BANCO-002] questão com erro vem com a linha e não impede as outras; 
     assert.deepEqual(bankItems().map(item => item.category), ['Geral', 'Geral']);
 });
 
-test('[UC-BANCO-002] planilha: ";" com aspas e quebra de linha, Windows-1252 e XLSX dão as mesmas questões; o apóstrofo do csvSafe sai', async () => {
+test('[UC-BANCO-002] planilha: ";" com aspas e quebra de linha e Windows-1252 dão as mesmas questões; o apóstrofo do csvSafe sai; XLSX é recusado', async () => {
     seed();
     const csv = fixture('banco.csv');
     const res = await preview(asFile('csv', csv, 'banco.csv'));
@@ -763,14 +763,20 @@ test('[UC-BANCO-002] planilha: ";" com aspas e quebra de linha, Windows-1252 e X
     assert.equal(ansiRes.status, 200, JSON.stringify(ansiRes.body));
     assert.deepEqual(ansiRes.body.itens.map(item => item.questionText), res.body.itens.map(item => item.questionText));
 
-    // XLSX com a mesma planilha (parseTabularFile lê os dois).
-    const table = csv.subarray(3).toString('utf8');
-    const { _internals } = require('../../backend/utils/tabularFile.js');
-    const rows = _internals.splitCsvRecords(table, ';').records.map(record => record.valores.map(value => (value.startsWith("'") ? value.slice(1) : value)));
-    const xlsx = buildXlsx(rows.slice(1), { cabecalho: rows[0] });
-    const xlsxRes = await preview(asFile('csv', xlsx, 'banco.xlsx'));
-    assert.equal(xlsxRes.status, 200, JSON.stringify(xlsxRes.body));
-    assert.deepEqual(xlsxRes.body.itens.map(item => [item.type, item.questionText]), res.body.itens.map(item => [item.type, item.questionText]));
+    // XLSX no banco de questões ficou fora da fase 3 (scope_cuts do plano): a mesma
+    // planilha em .xlsx é recusada com a dica de salvar em CSV, pelo conteúdo e pelo nome.
+    const xlsx = buildXlsx([['Qual?', 'Sim', 'Não', 'A']], { cabecalho: ['Enunciado', 'Alternativa A', 'Alternativa B', 'Correta'] });
+    for (const [buffer, name] of [[xlsx, 'banco.xlsx'], [xlsx, 'banco.csv'], [csv, 'banco.xlsx']]) {
+        const xlsxRes = await preview(asFile('csv', buffer, name));
+        assert.equal(xlsxRes.status, 400, `${name}: ${JSON.stringify(xlsxRes.body)}`);
+        assert.equal(xlsxRes.body.code, 'unsupported_format');
+        assert.match(xlsxRes.body.error, /lê a planilha em CSV\. No Excel, use "Salvar como" e escolha "CSV UTF-8/);
+    }
+    const before = bankItems().length;
+    const xlsxConfirm = await confirm(asFile('csv', xlsx, 'banco.xlsx'), 'a'.repeat(64));
+    assert.equal(xlsxConfirm.status, 400);
+    assert.equal(xlsxConfirm.body.code, 'unsupported_format');
+    assert.equal(bankItems().length, before, 'nada gravado');
 
     // Sem cabeçalho com "Enunciado": erro do arquivo inteiro.
     const noHeader = await preview({ formato: 'csv', conteudo: 'Qual?;Sim;Não;A\r\n' });
@@ -1123,4 +1129,99 @@ test('[UC-BANCO-002] imagens (contrato C8): o GET traz as de cada questão; a ex
     const res = await preview(asFile('gift', gift.body, 'banco.gift.txt'));
     assert.deepEqual(res.body.erros, []);
     assert.equal(res.body.duplicadas, 3);
+});
+
+test('[UC-BANCO-002] ida e volta: "Várias corretas" com uma certa só, categoria "top", etiqueta com "]" no meio e célula que começa com "\'=" voltam iguais', async () => {
+    seed();
+    await create({ type: 'multiple_answer', text: 'Quais são da camada 4?', alternatives: [{ text: 'TCP', isCorrect: true }, { text: 'IP' }, { text: 'HTTP' }] }, { category: 'top' });
+    await create({ type: 'multiple_answer', text: 'Qual é da camada 3?', alternatives: [{ text: 'TCP' }, { text: 'IP', isCorrect: true }], partialCredit: false }, { category: '$course$' });
+    await create({ type: 'multiple_choice', text: "'=SOMA(A1) é texto?", alternatives: [{ text: "'=x", isCorrect: true }, { text: '=y' }, { text: "''+z" }], tags: ['a', 'lista[1]', 'b'] }, { category: 'Redes' });
+    const original = bankItems().map(item => ({ category: item.category, question: withoutKey(normalizeBankQuestion({}, { previous: item })) }));
+    assert.equal(original[0].question.type, 'multiple_answer');
+    const sortKey = entry => `${entry.category}\u0000${entry.question.questionText}`;
+    original.sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
+    for (const formato of ['gift', 'csv']) {
+        const exported = await exportFile(formato);
+        assert.equal(exported.status, 200);
+        const text = exported.body.toString('utf8');
+        if (formato === 'gift') {
+            assert.match(text, /\/\/ iclass: \{"type":"multiple_answer"\}\r\n\[markdown\]Quais são da camada 4\? \{\r\n\t~%100%TCP/, 'o tipo vai no // iclass: (pelos pesos seria "Uma correta")');
+            assert.match(text, /\$CATEGORY: \$course\$\/top\/top\r\n/, 'a categoria "top" vai com o caminho inteiro');
+            assert.match(text, /\$CATEGORY: \$course\$\/top\/\$course\$\r\n/);
+            assert.match(text, /\/\/ \[tag:a\] \[tag:b\]\r\n\/\/ iclass: \{"tags":\["a","lista\[1\]","b"\]\}/);
+        } else {
+            assert.ok(text.includes(";''=x;"), 'a célula que já começava com "\'=" ganha mais um apóstrofo');
+        }
+        const saved = db.memory.questionBank;
+        db.memory.questionBank = [];
+        const res = await preview(asFile(formato, exported.body, formato === 'gift' ? 'banco.gift.txt' : 'banco.csv'));
+        assert.equal(res.status, 200, JSON.stringify(res.body));
+        assert.deepEqual(res.body.erros, [], formato);
+        const camada4 = res.body.itens.find(item => item.questionText === 'Quais são da camada 4?');
+        assert.equal(camada4.type, 'multiple_answer', formato);
+        assert.deepEqual(camada4.correctAnswers, ['A'], formato);
+        const confirmRes = await confirm(asFile(formato, exported.body, 'x'), res.body.sha256);
+        assert.equal(confirmRes.body.importadas, original.length, formato);
+        const back = bankItems().map(item => ({ category: item.category, question: withoutKey(normalizeBankQuestion({}, { previous: item })) }));
+        back.sort((a, b) => sortKey(a).localeCompare(sortKey(b)));
+        assert.deepEqual(back, original, formato);
+        // E reimportar por cima do banco original: tudo repetido, nada com outro tipo.
+        db.memory.questionBank = saved;
+        const again = await preview(asFile(formato, exported.body, 'x'));
+        assert.equal(again.body.duplicadas, original.length, formato);
+        assert.equal(again.body.validas, 0, formato);
+    }
+});
+
+test('[UC-BANCO-002] GIFT: "$CATEGORY" do Moodle pela última parte, sem o contexto e o "top" do começo', () => {
+    const { giftCategory } = questionFormats._internals;
+    assert.equal(giftCategory('$course$/top'), '');
+    assert.equal(giftCategory('$course$/top/Default for Redes/TCP'), 'TCP');
+    assert.equal(giftCategory('$course$/Redes'), 'Redes');
+    assert.equal(giftCategory('top/Redes'), 'Redes');
+    assert.equal(giftCategory('top'), '');
+    assert.equal(giftCategory('$system$'), '');
+    assert.equal(giftCategory('$course$/top/top'), 'top');
+    assert.equal(giftCategory('Redes//TCP'), 'Redes/TCP');
+});
+
+test('[UC-BANCO-002] GIFT: o "Várias corretas" com uma certa só fica "Uma correta" sem o // iclass: (como o Moodle lê); texto sem chaves é a descrição do Moodle', () => {
+    const parsed = questionFormats.parseGift([
+        'Uma só pelos pesos {~%100%TCP ~%-50%IP ~%-50%HTTP}',
+        '',
+        '// iclass: {"type":"multiple_answer"}',
+        'Com o tipo {~%100%TCP ~%-50%IP ~%-50%HTTP}',
+        '',
+        'Leia o texto a seguir antes das questões.',
+    ].join('\n'));
+    const [byWeight, withType] = parsed.entradas;
+    assert.equal(byWeight.questao.type, 'multiple_choice');
+    assert.equal(withType.questao.type, 'multiple_answer');
+    assert.equal(withType.questao.partialCredit, true);
+    assert.deepEqual(withType.questao.alternatives.map(item => item.isCorrect), [true, false, false]);
+    assert.equal(parsed.erros.length, 1);
+    assert.equal(parsed.erros[0].linha, 6);
+    assert.match(parsed.erros[0].mensagem, /texto informativo \(a "descrição" do Moodle\), ele não existe no IClass e fica de fora; se é uma dissertativa, escreva \{\} no fim\./);
+});
+
+test('[UC-BANCO-002] imagens (contrato C8): a questão incompleta que fica fora do arquivo não conta no cabeçalho, no GIFT nem na auditoria', async () => {
+    seed();
+    await create({ type: 'essay', text: 'Veja ![rede](/uploads/rede.png)' });
+    // Item antigo sem alternativas: o modelo recusa e ele fica fora do arquivo.
+    db.memory.questionBank.push({ key: 'antigo-incompleto', category: 'Geral', type: 'multiple_choice', text: 'Antiga ![fora](/uploads/fora.png)', alternatives: [] });
+    assert.equal(questionFormats.toGift([db.memory.questionBank.at(-1)]).quantidade, 0, 'o item é mesmo incompleto');
+    for (const formato of ['gift', 'csv']) {
+        const exported = await exportFile(formato);
+        assert.equal(exported.status, 200);
+        assert.equal(exported.headers['x-iclass-imagens'], '1', formato);
+        const entry = audits('question_bank_exported').pop();
+        assert.equal(entry.details.foraDoArquivo, 1, formato);
+        assert.equal(entry.details.imagens, 1, formato);
+        assert.deepEqual(entry.details.arquivosDeImagem, ['rede.png'], formato);
+        if (formato === 'gift') {
+            const text = exported.body.toString('utf8');
+            assert.match(text, /A imagem citada nas questões não vai neste arquivo \(no outro computador, envie de novo pelo editor\): rede\.png\./);
+            assert.ok(!text.includes('fora.png'));
+        }
+    }
 });

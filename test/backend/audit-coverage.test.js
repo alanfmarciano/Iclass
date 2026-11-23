@@ -198,6 +198,47 @@ test('[UC-AUDITORIA-002] banco de questões: criar, alterar, arquivar, desarquiv
     assert.equal(entries('question_created').length, 2);
 });
 
+// Importar e exportar o banco (fase 3, P3-S9b): a prévia não grava nem audita; a
+// confirmação grava question_bank_imported e a exportação question_bank_exported, na
+// mesma gravação; a confirmação recusada (arquivo mudou, nada para importar) não audita.
+test('[UC-AUDITORIA-002] banco de questões: importar e exportar (GIFT e planilha) ficam na trilha; a prévia e a recusa não', async () => {
+    const before = (db.memory.auditLogs || []).length;
+    const payload = { formato: 'gift', conteudo: '$CATEGORY: Redes\n\nPorta do HTTP? {=80 ~21}\n\nIPv4 tem 32 bits. {T}\n' };
+    const previewRes = await admin(request(app).post('/api/admin/question-bank/import/preview')).send(payload);
+    assert.equal(previewRes.status, 200, previewRes.body.error);
+    assert.equal((db.memory.auditLogs || []).length, before, 'a prévia não grava na trilha');
+    const changed = await admin(request(app).post('/api/admin/question-bank/import')).send({ ...payload, conteudo: `${payload.conteudo}\nOutra? {=a ~b}\n`, sha256: previewRes.body.sha256 });
+    assert.equal(changed.status, 409);
+    assert.equal(entries('question_bank_imported').length, 0, 'arquivo diferente da prévia: sem entrada');
+
+    const saved = await admin(request(app).post('/api/admin/question-bank/import')).send({ ...payload, sha256: previewRes.body.sha256 });
+    assert.equal(saved.status, 200, saved.body.error);
+    const imported = last('question_bank_imported');
+    assert.equal(imported.actor, 'admin@cobertura.local');
+    assert.equal(imported.category, 'academic');
+    assert.equal(imported.details.formato, 'gift');
+    assert.equal(imported.details.importadas, 2);
+    assert.equal(imported.details.sha256, previewRes.body.sha256);
+    assert.deepEqual(imported.details.categorias, ['Redes']);
+    const again = await admin(request(app).post('/api/admin/question-bank/import')).send({ ...payload, sha256: previewRes.body.sha256 });
+    assert.equal(again.body.code, 'nothing_to_import');
+    assert.equal(entries('question_bank_imported').length, 1, 'tudo repetido: sem entrada nova');
+
+    for (const formato of ['gift', 'csv']) {
+        const exported = await admin(request(app).get(`/api/admin/question-bank/export?formato=${formato}&categoria=Redes`));
+        assert.equal(exported.status, 200);
+        const entry = last('question_bank_exported');
+        assert.equal(entry.category, 'academic');
+        assert.equal(entry.details.formato, formato);
+        assert.equal(entry.details.quantidade, 2);
+        assert.equal(entry.details.filtros.categoria, 'Redes');
+    }
+    assert.equal(entries('question_bank_exported').length, 2);
+    // Nada para exportar (404) não grava.
+    assert.equal((await admin(request(app).get('/api/admin/question-bank/export?formato=gift&categoria=Nenhuma'))).status, 404);
+    assert.equal(entries('question_bank_exported').length, 2);
+});
+
 test('[UC-AUDITORIA-002] curso arquivado, restaurado do arquivo e apagado de vez ficam na trilha', async () => {
     const purge = await admin(request(app).post(`/api/admin/courses/${COURSE}/purge`)).send({});
     assert.equal(purge.status, 200, purge.body.error);

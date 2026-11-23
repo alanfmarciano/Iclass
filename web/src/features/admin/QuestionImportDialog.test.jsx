@@ -176,6 +176,20 @@ describe('[UC-BANCO-002] QuestionImportDialog', () => {
     expect(atob(body.arquivo)).toBe(String.fromCharCode(...new TextEncoder().encode('Enunciado;Alternativa A;Alternativa B;Correta\r\nQual?;Sim;Não;A\r\n')))
   })
 
+  it('planilha do Excel (.xlsx) não vai: a tela pede o CSV (o .xlsx no banco ficou fora da fase 3)', async () => {
+    render(<QuestionImportDialog open onClose={() => {}} />)
+    fireEvent.change(within(importDialog()).getByLabelText('Formato'), { target: { value: 'csv' } })
+    const input = within(importDialog()).getByLabelText(/Arquivo \(\.csv, até 2 MB\)/)
+    expect(input.getAttribute('accept')).toBe('.csv,.txt')
+    const xlsx = new File(['PK'], 'banco.xlsx', { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' })
+    await act(async () => { fireEvent.change(input, { target: { files: [xlsx] } }) })
+    expect(within(importDialog()).getByRole('alert').textContent).toBe('O banco de questões lê a planilha em CSV. No Excel, use "Salvar como" e escolha "CSV UTF-8 (separado por vírgulas)"; depois importe esse arquivo.')
+    expect(within(importDialog()).queryByText('banco.xlsx')).toBeNull()
+    expect(input.value).toBe('')
+    await act(async () => { fireEvent.click(within(importDialog()).getByRole('button', { name: 'Ver prévia' })) })
+    expect(mocks.post).not.toHaveBeenCalled()
+  })
+
   it('sem arquivo nem texto, a prévia não vai ao servidor', async () => {
     render(<QuestionImportDialog open onClose={() => {}} />)
     await act(async () => { fireEvent.click(within(importDialog()).getByRole('button', { name: 'Ver prévia' })) })
