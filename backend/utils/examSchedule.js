@@ -430,17 +430,34 @@ function parseReleaseAt(raw, { now = Date.now(), timezone } = {}) {
     return { ok: true, value: at };
 }
 
+// O que segura o gabarito adiado: 'andamento' (a aplicação está aberta e encerra pelo
+// Monitor ou pela agenda), 'preparada' (preparada que ainda não abriu) ou 'perdida' (a
+// agenda dela não abriu por causa do computador desligado: nunca encerra sozinha). As
+// duas últimas só saem da frente aplicando e encerrando, ou bloqueando a prova em
+// Materiais (a preparação é cancelada). null: nada segura mais (sai na próxima volta).
+function releaseBlockKind(memory, cls, itemKey) {
+    if (!memory || !itemKey.startsWith('Gabarito_')) return null;
+    const blocking = openFamilyApplication(memory, cls, itemKey.slice('Gabarito_'.length));
+    if (!blocking) return null;
+    if (blocking.status !== 'prepared') return 'andamento';
+    return applicationAgenda(blocking)?.perdida === true ? 'perdida' : 'preparada';
+}
+
 // Agenda de liberação da turma para a tela de Materiais: { [itemKey]: { at, atLabel,
-// atLocal, por, adiado } }.
-function releaseScheduleView(cls, { timezone } = {}) {
+// atLocal, por, adiado, espera? } }. Com memory, o gabarito adiado diz o que o segura
+// (releaseBlockKind).
+function releaseScheduleView(cls, { timezone, memory } = {}) {
     const view = {};
     releaseEntries(cls).forEach(([itemKey, entry]) => {
+        const adiado = positive(entry.adiadoEm) ? true : false;
+        const espera = adiado ? releaseBlockKind(memory, cls, itemKey) : null;
         view[itemKey] = {
             at: Number(entry.at),
             atLabel: formatWhen(entry.at, timezone),
             atLocal: localDateTimeOf(entry.at, timezone),
             por: entry.porNome || entry.por || null,
-            adiado: positive(entry.adiadoEm) ? true : false,
+            adiado,
+            ...(espera ? { espera } : {}),
         };
     });
     return view;
@@ -609,11 +626,15 @@ function queueItems(ctx) {
     }
     const postponed = releaseEntries(cls).filter(([, entry]) => positive(entry.adiadoEm));
     if (postponed.length) {
+        // A preparada (ou a perdida) não encerra sozinha: o texto diz como destravar.
+        const preparedOnly = postponed.every(([itemKey]) => ['preparada', 'perdida'].includes(releaseBlockKind(memory, cls, itemKey)));
         items.push({
             id: 'liberacao_adiada',
             tipo: 'liberacao_adiada',
             titulo: postponed.length === 1 ? 'Gabarito agendado esperando a prova encerrar' : 'Gabaritos agendados esperando a prova encerrar',
-            detalhe: 'a aplicação da prova ainda está aberta; o gabarito sai quando ela for encerrada · Materiais',
+            detalhe: preparedOnly
+                ? 'a prova tem uma aplicação preparada que não abriu; o gabarito sai quando ela for aplicada e encerrada, ou quando a prova for bloqueada em Materiais · Materiais'
+                : 'a aplicação da prova ainda está aberta; o gabarito sai quando ela for encerrada · Materiais',
             count: postponed.length,
             tone: 'info',
             href: '/materiais',

@@ -87,6 +87,11 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 - Se o computador do IClass estava desligado na hora de abrir e ligar dentro do horário, a prova abre na hora em que ele ligou e o "Precisa de você" avisa. Se ele ligar só depois da hora de fechar, a prova não abre sozinha: o Monitor e o "Precisa de você" mostram "A prova agendada não abriu", com "Agendar de novo".
 - Em Materiais, a apostila e o gabarito bloqueados têm "Agendar": o item é liberado sozinho para a turma no dia e na hora marcados, e o aluno vê a liberação no Calendário. O gabarito de prova ainda aberta espera o encerramento ("Adiado: sai quando a prova for encerrada"). Ligar o interruptor antes libera na hora e tira o agendamento.
 - Tudo fica na Auditoria: quem agendou, mudou ou cancelou, e a prova aberta, encerrada ou não aberta pelo agendamento.
+- A prova agendada pode passar da meia-noite: marque "Fecha no dia seguinte" no "Quando" (por exemplo, das 22:00 à 01:00).
+- Durante a prova agendada, o aluno vê "Fecha em ..." no topo e nas instruções: no horário de fechar, o que estiver salvo é entregue, mesmo que o cronômetro dele ainda tenha tempo. Na tela final, a prova encerrada pelo horário diz "A prova fechou no horário marcado", e não que foi o professor; o registro da aplicação também diz "Aplicação encerrada no horário marcado".
+- O gabarito agendado que está preso por uma aplicação preparada que não abriu (por exemplo, a agendada que não abriu porque o computador estava desligado) diz como destravar: aplicar e encerrar a prova, ou bloquear a prova em Materiais.
+- No Monitor, quem não prepara provas (Professor auxiliar, Coordenação) vê o aviso do agendamento sem os botões de mudar.
+- Duplicar o curso leva as liberações agendadas para os itens do curso novo.
 
 ### Versão, Novidades e Ajuda
 - O rodapé do menu mostra a versão de verdade do IClass (por exemplo, "v3.0.0") e se a tela está falando com o servidor: "Conectado", "Sem conexão" ou "Servidor reiniciando". Antes ficava "Sistema ativo" e "v3", mesmo com o servidor fora do ar.

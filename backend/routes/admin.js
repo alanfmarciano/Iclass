@@ -5976,6 +5976,19 @@ router.post('/api/admin/courses/:id/clone', (req, res) => {
                 if (key.startsWith('Gabarito_')) return [`Gabarito_${cloneEvaluationKey(key.slice('Gabarito_'.length))}`, value];
                 return [materialKeyMap.get(key) || evaluationKeyMap.get(key) || key, value];
             }));
+            // Liberação agendada (P3-S12, D27): as chaves seguem as do curso clonado, como
+            // releasedItems (antes a turma do clone ficava com a chave antiga e a varredura
+            // ligava um item que não existe no curso novo). O adiamento era da aplicação do
+            // curso de origem e não vem junto.
+            if (sourceClass.releaseSchedule && typeof sourceClass.releaseSchedule === 'object' && !Array.isArray(sourceClass.releaseSchedule)) {
+                cloned.releaseSchedule = Object.fromEntries(Object.entries(sourceClass.releaseSchedule).map(([key, entry]) => {
+                    const { adiadoEm, ...rest } = entry && typeof entry === 'object' ? entry : {};
+                    const clonedKey = key.startsWith('Gabarito_')
+                        ? `Gabarito_${cloneEvaluationKey(key.slice('Gabarito_'.length))}`
+                        : (materialKeyMap.get(key) || evaluationKeyMap.get(key) || key);
+                    return [clonedKey, JSON.parse(JSON.stringify(rest))];
+                }));
+            }
             cloned.onlineExamConfigs = {};
             cloned.activeExamKey = null;
             cloned.activeApplicationId = null;

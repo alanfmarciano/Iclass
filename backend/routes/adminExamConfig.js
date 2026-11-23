@@ -830,6 +830,9 @@ const DESCRIBED_HERE = new Set([
     'exam_application_auto_opened',
     'exam_application_auto_finished',
     'exam_application_schedule_missed',
+    // Só o encerramento feito pela agenda (reason 'agendamento', ator 'sistema'); o do
+    // professor continua com o texto de utils/gradebook.js.
+    'exam_application_finished',
 ]);
 
 function describeMonitorActionAudit(entry, nameByEmail) {
@@ -882,12 +885,25 @@ function describeMonitorActionAudit(entry, nameByEmail) {
         const late = Number(details.atrasoSegundos) || 0;
         return {
             title: 'Prova aberta pelo agendamento',
-            detail: late > 60 ? `${Math.round(late / 60)} min depois de ${when(details.abreEm)} (o computador estava desligado)` : `às ${when(details.abreEm)}`,
+            // formatWhen já diz "20/11 às 08:00" (antes saía "às 20/11 às 08:00").
+            detail: late > 60 ? `${Math.round(late / 60)} min depois de ${when(details.abreEm)} (o computador estava desligado)` : `em ${when(details.abreEm)}, no horário marcado`,
         };
     }
     if (entry.type === 'exam_application_auto_finished') {
         const delivered = Number(details.entregues) || 0;
         return { title: 'Prova encerrada pelo agendamento', detail: `${delivered} ${delivered === 1 ? 'prova em andamento entregue' : 'provas em andamento entregues'} com o que estava salvo` };
+    }
+    // O encerramento da agenda (finishApplication com o ator 'sistema'): antes o registro
+    // dizia "provas em andamento enviadas pelo professor".
+    if (entry.type === 'exam_application_finished') {
+        if (details.reason !== 'agendamento') return null;
+        const submitted = Number(details.submitted) || 0;
+        return {
+            title: 'Aplicação encerrada no horário marcado',
+            detail: submitted > 0
+                ? `${submitted} ${submitted === 1 ? 'prova em andamento enviada' : 'provas em andamento enviadas'} pelo agendamento, com o que estava salvo`
+                : '',
+        };
     }
     if (entry.type === 'exam_application_schedule_missed') {
         return { title: 'Agendamento perdido: a prova não abriu', detail: `o computador estava desligado entre ${when(details.abreEm)} e ${when(details.fechaEm)}` };
@@ -950,7 +966,7 @@ async function scheduleItemRelease(req, res, cls, itemKey, studentEmail) {
     const previous = cls.releaseSchedule && Object.prototype.hasOwnProperty.call(cls.releaseSchedule, itemKey) ? cls.releaseSchedule[itemKey] : null;
     const describe = entry => (entry && Number(entry.at) > 0 ? examSchedule.formatWhen(Number(entry.at)) : '');
     if (req.body.cancelSchedule === true) {
-        if (!previous) return res.json({ success: true, unchanged: true, releaseSchedule: examSchedule.releaseScheduleView(cls) });
+        if (!previous) return res.json({ success: true, unchanged: true, releaseSchedule: examSchedule.releaseScheduleView(cls, { memory: db.memory }) });
         dropItemSchedule(cls, itemKey);
         recordAudit(db.memory, {
             action: 'content_release_scheduled',
@@ -963,7 +979,7 @@ async function scheduleItemRelease(req, res, cls, itemKey, studentEmail) {
             details: { itemKey, at: null, antes: Number(previous.at) || null, cancelado: true },
         });
         await persistClasses(db.memory.classes || []);
-        return res.json({ success: true, releaseSchedule: examSchedule.releaseScheduleView(cls) });
+        return res.json({ success: true, releaseSchedule: examSchedule.releaseScheduleView(cls, { memory: db.memory }) });
     }
     if (req.body.released === false) return res.status(400).json({ error: 'A agenda só libera o item. Para bloquear, use o interruptor.' });
     const parsed = examSchedule.parseReleaseAt(req.body.releaseAtLocal);
@@ -991,7 +1007,7 @@ async function scheduleItemRelease(req, res, cls, itemKey, studentEmail) {
     if (itemKey.startsWith('Gabarito_') && openExamFamilyApplication(cls, itemKey.slice('Gabarito_'.length))) {
         avisos.push({ code: 'gabarito_espera', texto: 'A prova ainda tem uma aplicação preparada ou em andamento: se ela não estiver encerrada no horário, o gabarito sai assim que for encerrada.' });
     }
-    res.json({ success: true, releaseSchedule: examSchedule.releaseScheduleView(cls), ...(avisos.length ? { avisos } : {}) });
+    res.json({ success: true, releaseSchedule: examSchedule.releaseScheduleView(cls, { memory: db.memory }), ...(avisos.length ? { avisos } : {}) });
 }
 
 function createAdminExamConfigRouter() {
@@ -2479,7 +2495,7 @@ function createAdminExamConfigRouter() {
                 scope: normalizedStudentEmail ? 'student' : 'class',
                 releasedItems: getReleasedItemsForClass(cls, normalizedStudentEmail),
                 application: withoutSealedToken(affectedApplication),
-                ...(droppedSchedule ? { releaseSchedule: examSchedule.releaseScheduleView(cls), scheduleDropped: true } : {}),
+                ...(droppedSchedule ? { releaseSchedule: examSchedule.releaseScheduleView(cls, { memory: db.memory }), scheduleDropped: true } : {}),
             });
         });
     });

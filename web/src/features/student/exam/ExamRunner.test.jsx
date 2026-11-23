@@ -1972,6 +1972,33 @@ describe('[UC-PROVA-006] ExamRunner: aplicação só para alguns alunos e prazo 
     expect(screen.getByTestId('start-deadline')).toHaveTextContent('Você pode começar esta prova até 20/11 às 08:00')
   })
 
+  it('[UC-PROVA-008] prova agendada: instruções e topo mostram o horário em que a aplicação fecha sozinha', async () => {
+    apiMock.get.mockResolvedValue({ ...syncResponse({ startedAt: null }), scheduleCloseAt: Date.now() + 300000, scheduleCloseLabel: '23/11 às 23:46' })
+    const first = renderRunner()
+    expect(await screen.findByTestId('schedule-close-notice')).toHaveTextContent('Esta prova fecha sozinha em 23/11 às 23:46')
+    expect(screen.getByTestId('schedule-close-notice')).toHaveTextContent('mesmo que o seu tempo ainda não tenha acabado')
+    first.unmountView()
+    apiMock.get.mockResolvedValue({ ...syncResponse(), scheduleCloseAt: Date.now() + 300000, scheduleCloseLabel: '23/11 às 23:46' })
+    renderRunner()
+    enterFullscreen()
+    expect(await screen.findByText('0/1 respondidas')).toBeVisible()
+    expect(screen.getByTestId('schedule-close')).toHaveTextContent('Fecha em 23/11 às 23:46')
+  })
+
+  it('[UC-PROVA-008] encerrada pelo horário da agenda: a tela final não diz que foi o professor', async () => {
+    apiMock.get.mockResolvedValue({
+      ...syncResponse({ startedAt: null, status: 'finished', finishOutcome: 'submitted', attemptOutcome: { attemptId: 'att-1', source: 'instructor_finish', answeredCount: 1 } }),
+      finishedBySchedule: true,
+    })
+    const first = renderRunner()
+    expect(await screen.findByText('A prova fechou no horário marcado e o que você havia respondido foi salvo e entregue.')).toBeVisible()
+    expect(screen.queryByText(/O professor encerrou/)).not.toBeInTheDocument()
+    first.unmountView()
+    apiMock.get.mockResolvedValue({ ...syncResponse({ startedAt: null, status: 'finished', finishOutcome: null }), finishedBySchedule: true })
+    renderRunner()
+    expect(await screen.findByText('Esta aplicação foi encerrada no horário marcado pelo professor.')).toBeVisible()
+  })
+
   it('instruções sem exceção: o limite da turma e nenhum prazo', async () => {
     apiMock.get.mockResolvedValue(syncResponse({ startedAt: null }))
     renderRunner()

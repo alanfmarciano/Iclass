@@ -540,7 +540,7 @@ router.get('/api/status', validateAnySession, (req, res) => {
         releasedItems: isAdmin ? getReleasedItemsForClass(cls, studentEmail) : getStudentReleasedItems(cls, studentEmail),
         releaseMeta: cls.releaseMeta || {},
         // Liberações agendadas da turma (P3-S12, D27), só para o painel (Materiais).
-        ...(isAdmin ? { releaseSchedule: examSchedule.releaseScheduleView(cls) } : {}),
+        ...(isAdmin ? { releaseSchedule: examSchedule.releaseScheduleView(cls, { memory: db.memory }) } : {}),
     });
 });
 
@@ -679,6 +679,16 @@ router.get('/api/student/exam-applications', validateStudentSession, (req, res) 
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
     res.json({ success: true, applications, agendadas });
 });
+
+// Horário em que a aplicação agendada fecha sozinha, para a prova do aluno (P3-S12):
+// { scheduleCloseAt, scheduleCloseLabel } ou nada (sem agenda, "Não encerrar sozinha",
+// encerrada).
+function scheduleCloseInfo(application, now) {
+    if (!application) return {};
+    const closeAt = examSchedule.effectiveCloseAt(application, now);
+    if (!closeAt) return {};
+    return { scheduleCloseAt: closeAt, scheduleCloseLabel: examSchedule.formatWhen(closeAt) };
+}
 
 // Sincronização unificada durante a prova: estado, mensagens pop-up, configuração da
 // prova e itens liberados em UMA única requisição (reduz a carga de polling na rede
@@ -941,8 +951,15 @@ router.get('/api/student/sync', validateStudentSession, (req, res) => {
             tokenAccepted,
             questionReports,
             finishOutcome,
+            // Encerrada pela agenda no horário marcado (P3-S12): a tela final não diz que
+            // foi o professor.
+            ...(finishOutcome && application?.finishResolution?.reason === 'agendamento' ? { finishedBySchedule: true } : {}),
             attemptOutcome,
             timeOver,
+            // Fechamento automático da aplicação agendada (P3-S12): o cronômetro do aluno
+            // conta a duração dele, mas a prova é recolhida neste horário, então a tela
+            // mostra "Fecha às 09:30" (com o "+N min" e as pausas já contados).
+            ...scheduleCloseInfo(application, Date.now()),
             // Prazo do aluno para começar já passou (exceção por aluno): a tela mostra o aviso.
             startDeadlinePassed: !!startDeadlinePassedAt,
             startDeadlineMessage: startDeadlinePassedAt ? startDeadlineResponse(startDeadlinePassedAt).error : null,

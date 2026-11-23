@@ -428,6 +428,9 @@ export default function MonitorPage() {
   // nota (page.results; trocar também lê o banco de questões, page.exams). O Professor
   // auxiliar acompanha a prova sem esses botões (o servidor responderia 403).
   const canResults = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_RESULTS)
+  // A agenda da aplicação (POST .../schedule) é de page.exams e não vale para conta só de
+  // leitura: sem isso, o aviso do Monitor aparece sem os botões (P3-S12).
+  const canSchedule = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_EXAMS) && auth.readOnly !== true
   const canReplaceQuestion = canResults && canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_EXAMS)
   // A marca do gabarito em "Ver questão" (contestações) só para quem corrige a questão ou
   // prepara a prova; o servidor manda a questão sem a correta para o Professor auxiliar.
@@ -1322,6 +1325,7 @@ export default function MonitorPage() {
                     <ApplicationScheduleBanner
                       application={scheduleApplication}
                       toast={toast}
+                      canEdit={canSchedule}
                       onChanged={(application) => {
                         if (application) {
                           setApplications((items) => items.map((item) => (item.id === application.id

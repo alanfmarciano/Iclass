@@ -234,6 +234,9 @@ export default function ExamRunner() {
   // prazo), já formatado no relógio da escola.
   const [studentAttempts, setStudentAttempts] = useState({ limit: null, used: 0 })
   const [startDeadlineLabel, setStartDeadlineLabel] = useState(null)
+  // Aplicação agendada que fecha sozinha (P3-S12): "Fecha em 20/11 às 09:30". O cronômetro
+  // conta a duração do aluno; no horário de fechar, o que estiver salvo é entregue.
+  const [scheduleCloseLabel, setScheduleCloseLabel] = useState(null)
   const [attemptId, setAttemptId] = useState(null)
   const [extraMinutes, setExtraMinutes] = useState(0) // tempo adicional de acessibilidade
   const [instructionsAccepted, setInstructionsAccepted] = useState(false)
@@ -936,6 +939,7 @@ export default function ExamRunner() {
         setStudentAttempts({ limit: Number.isInteger(limit) && limit >= 1 ? limit : null, used: Number(r.attemptsUsed) || 0 })
       }
       setStartDeadlineLabel(r.startDeadlineLabel || null)
+      setScheduleCloseLabel(r.scheduleCloseLabel || null)
       if (r.examTitle) setExamTitle(r.examTitle)
       if (r.tokenAccepted === true) setTokenOk(true)
 
@@ -1037,13 +1041,16 @@ export default function ExamRunner() {
             answeredCount: delivered?.answeredCount ?? null,
             lateBySeconds: delivered?.lateBySeconds || 0,
             awaitingCorrection: delivered?.awaitingCorrection === true,
+            closedBySchedule: r.finishedBySchedule === true,
           })
         } else {
           clearExamDraftsForApplication(applicationId)
           timeOverScreenRef.current = false
           setFatal(r.finishOutcome === 'discarded'
             ? 'A aplicação foi encerrada e o professor desconsiderou as tentativas que estavam em andamento.'
-            : 'Esta aplicação foi encerrada pelo professor.')
+            : r.finishedBySchedule === true
+              ? 'Esta aplicação foi encerrada no horário marcado pelo professor.'
+              : 'Esta aplicação foi encerrada pelo professor.')
           setPhase('error')
         }
         return
@@ -1484,7 +1491,9 @@ export default function ExamRunner() {
   const doneNotice = (result?.collectedByInstructor
     ? ['O professor recolheu a sua prova e entregou as respostas que já estavam salvas.', doneGradeLater]
     : result?.submittedByInstructor
-      ? ['O professor encerrou a aplicação e salvou o que você havia respondido.']
+      ? [result?.closedBySchedule
+        ? 'A prova fechou no horário marcado e o que você havia respondido foi salvo e entregue.'
+        : 'O professor encerrou a aplicação e salvou o que você havia respondido.']
       : result?.finalizedByServer
         ? ['O tempo acabou e as respostas salvas no servidor foram entregues automaticamente.', doneGradeLater]
         : [result?.auto ? 'O tempo acabou e suas respostas foram enviadas automaticamente.' : '', doneGradeLater]
@@ -1563,6 +1572,11 @@ export default function ExamRunner() {
               : <><p className="text-xs text-subtle">Tentativas</p><p className="font-semibold text-text">Sem limite</p></>}
           </div>
         </div>
+        {scheduleCloseLabel && (
+          <p className="mt-3 rounded-lg border border-warning/40 bg-warning-soft p-3 text-sm text-text" data-testid="schedule-close-notice">
+            Esta prova fecha sozinha em <strong>{scheduleCloseLabel}</strong>. Nesse horário, o que estiver salvo é entregue, mesmo que o seu tempo ainda não tenha acabado.
+          </p>
+        )}
         {startDeadlineLabel && (
           <p className="mt-3 rounded-lg border border-warning/40 bg-warning-soft p-3 text-sm text-text" data-testid="start-deadline">
             Você pode começar esta prova até <strong>{startDeadlineLabel}</strong>. Depois disso, só com o professor.
@@ -1719,6 +1733,7 @@ export default function ExamRunner() {
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1 sm:contents">
             <div className="min-w-0 flex-1 basis-24 sm:col-start-1 sm:row-start-2 flex flex-wrap items-baseline gap-x-2">
               <p className="text-xs text-subtle">{answeredCount}/{questions.length} respondidas</p>
+              {scheduleCloseLabel && <p className="text-[11px] font-medium text-warning" data-testid="schedule-close">Fecha em {scheduleCloseLabel}</p>}
               <p className={`text-[11px] ${saveState.status === 'error' ? 'text-danger' : saveState.status === 'offline' || saveState.status === 'retrying' ? 'text-warning' : 'text-subtle'}`} aria-live="polite">
                 {saveState.status === 'saving' && 'Salvando respostas...'}
                 {saveState.status === 'saved' && `Salvo às ${saveState.at?.toLocaleTimeString('pt-BR')}`}

@@ -14,6 +14,11 @@ import { api } from '../../lib/api'
 // Texto da linha do item com liberação agendada (ou null).
 export function releaseScheduleText(entry) {
   if (!entry) return null
+  // A preparada (ou a agendada que não abriu) nunca encerra sozinha: o texto diz como
+  // destravar, em vez de "sai quando a prova for encerrada" para sempre.
+  if (entry.adiado && (entry.espera === 'preparada' || entry.espera === 'perdida')) {
+    return 'Adiado: a prova tem uma aplicação preparada que não abriu. O gabarito sai quando ela for aplicada e encerrada, ou quando você bloquear a prova aqui (a preparação é cancelada).'
+  }
   if (entry.adiado) return 'Adiado: sai quando a prova for encerrada.'
   return `Libera sozinho em ${entry.atLabel || 'horário agendado'}.`
 }

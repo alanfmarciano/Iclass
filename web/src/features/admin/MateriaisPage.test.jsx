@@ -2,6 +2,7 @@ import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-li
 import userEvent from '@testing-library/user-event'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import MateriaisPage, { batchReleaseKeys, examApplicationState } from './MateriaisPage'
+import { releaseScheduleText } from './ReleaseSchedule'
 
 const mocks = vi.hoisted(() => ({
   get: vi.fn(),
@@ -183,5 +184,16 @@ describe('MateriaisPage', () => {
     expect(screen.queryByTestId('release-schedule-Apostila_U2')).toBeNull()
     expect(confirmSpy).not.toHaveBeenCalled()
     confirmSpy.mockRestore()
+  })
+  it('[UC-PROVA-008] gabarito preso por aplicação preparada que não abriu diz como destravar', async () => {
+    expect(releaseScheduleText({ adiado: true, espera: 'andamento' })).toBe('Adiado: sai quando a prova for encerrada.')
+    expect(releaseScheduleText({ adiado: true, espera: 'perdida' })).toMatch(/aplicação preparada que não abriu.*bloquear a prova aqui/)
+    expect(releaseScheduleText({ adiado: true, espera: 'preparada' })).toMatch(/aplicação preparada que não abriu/)
+    mockServer({
+      applications: [{ id: 'app1', examKey: 'Avaliacao_U1', status: 'prepared', createdAt: '2026-11-20T10:00:00Z' }],
+      releaseSchedule: { Gabarito_Avaliacao_U1: { at: 1, atLabel: '20/11 às 10:00', atLocal: '2026-11-20T10:00', adiado: true, espera: 'perdida' } },
+    })
+    render(<MateriaisPage />)
+    expect(await screen.findByTestId('release-schedule-Gabarito_Avaliacao_U1')).toHaveTextContent('aplicação preparada que não abriu')
   })
 })

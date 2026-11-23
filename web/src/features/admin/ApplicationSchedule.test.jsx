@@ -6,6 +6,7 @@ import {
   ApplicationScheduleBanner,
   ApplicationScheduleFields,
   initialSchedule,
+  nextDay,
   scheduleFromView,
   schedulePayload,
   scheduleProblem,
@@ -138,5 +139,43 @@ describe('ApplicationSchedule (P3-S12)', () => {
     expect(screen.queryByTestId('schedule-banner')).toBeNull()
     rerender(<ApplicationScheduleBanner application={{ id: 'app1' }} toast={mocks.toast} />)
     expect(screen.queryByTestId('schedule-banner')).toBeNull()
+  })
+  it('[UC-PROVA-008] "Fecha no dia seguinte": a prova passa da meia-noite (antes a tela recusava) e fica em até 12 h', async () => {
+    expect(nextDay('2026-11-20')).toBe('2026-11-21')
+    expect(nextDay('2026-12-31')).toBe('2027-01-01')
+    expect(nextDay('2028-02-28')).toBe('2028-02-29')
+    const late = { mode: 'agendar', date: '2026-11-20', opensAt: '22:00', closesAt: '01:00' }
+    expect(scheduleProblem(late)).toMatch(/Fecha no dia seguinte/)
+    expect(scheduleProblem({ ...late, closesNextDay: true })).toBeNull()
+    expect(schedulePayload({ ...late, closesNextDay: true })).toEqual({ agenda: { abreEmLocal: '2026-11-20T22:00', fechaEmLocal: '2026-11-21T01:00' } })
+    expect(scheduleProblem({ ...late, opensAt: '08:00', closesNextDay: true })).toMatch(/12 horas/)
+    expect(scheduleProblem({ ...late, opensAt: '13:00', closesNextDay: true })).toBeNull()
+
+    mocks.get.mockResolvedValue({ avisos: [], janela: 'abre em 20/11 às 22:00 e fecha em 21/11 às 01:00' })
+    const user = userEvent.setup()
+    render(<Fields initial={{ ...initialSchedule(), mode: 'agendar' }} />)
+    fireEvent.change(screen.getByLabelText('Dia'), { target: { value: '2026-11-20' } })
+    fireEvent.change(screen.getByLabelText('Abre às'), { target: { value: '22:00' } })
+    fireEvent.change(screen.getByLabelText('Fecha às'), { target: { value: '01:00' } })
+    expect(screen.getByText(/Se a prova passa da meia-noite/)).toBeInTheDocument()
+    await user.click(screen.getByLabelText('Fecha no dia seguinte (depois da meia-noite)'))
+    expect(screen.getByText('no dia 21/11/2026')).toBeInTheDocument()
+    expect(JSON.parse(screen.getByTestId('payload').textContent)).toEqual({ agenda: { abreEmLocal: '2026-11-20T22:00', fechaEmLocal: '2026-11-21T01:00' } })
+    // Trocar o dia leva o fechamento junto.
+    fireEvent.change(screen.getByLabelText('Dia'), { target: { value: '2026-11-27' } })
+    expect(JSON.parse(screen.getByTestId('payload').textContent).agenda.fechaEmLocal).toBe('2026-11-28T01:00')
+    expect(await screen.findByTestId('schedule-summary')).toHaveTextContent('fecha em 21/11 às 01:00')
+  })
+
+  it('[UC-PROVA-008] Monitor: conta que não muda a agenda (Professor auxiliar, Coordenação) vê o aviso sem os botões', () => {
+    const { rerender } = render(<ApplicationScheduleBanner application={{ id: 'app1', agendaView: AGENDADA }} toast={mocks.toast} canEdit={false} />)
+    expect(screen.getByTestId('schedule-banner')).toHaveTextContent('Abre sozinha em 20/11 às 08:00')
+    expect(screen.queryByRole('button')).toBeNull()
+    rerender(<ApplicationScheduleBanner application={{ id: 'app1', agendaView: { ...AGENDADA, estado: 'perdida' } }} toast={mocks.toast} canEdit={false} />)
+    expect(screen.getByTestId('schedule-banner')).toHaveTextContent('quem prepara as provas pode agendar de novo')
+    expect(screen.queryByRole('button')).toBeNull()
+    rerender(<ApplicationScheduleBanner application={{ id: 'app1', agendaView: { ...AGENDADA, estado: 'aberta', fechaEfetivaLabel: '20/11 às 09:30' } }} toast={mocks.toast} canEdit={false} />)
+    expect(screen.getByTestId('schedule-banner')).toHaveTextContent('Fecha sozinha em 20/11 às 09:30')
+    expect(screen.queryByRole('button')).toBeNull()
   })
 })

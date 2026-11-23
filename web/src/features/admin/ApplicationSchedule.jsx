@@ -17,7 +17,24 @@ import { api } from '../../lib/api'
 // prova que não abriu porque o computador estava desligado) e o diálogo de mudar o horário.
 
 export function initialSchedule() {
-  return { mode: 'agora', date: '', opensAt: '', closesAt: '' }
+  return { mode: 'agora', date: '', opensAt: '', closesAt: '', closeDate: '', closesNextDay: false }
+}
+
+// O dia seguinte a 'AAAA-MM-DD' (conta de calendário, sem fuso: meio-dia em UTC).
+export function nextDay(date) {
+  const ms = Date.parse(`${date}T12:00:00Z`)
+  return Number.isFinite(ms) ? new Date(ms + 24 * 60 * 60 * 1000).toISOString().slice(0, 10) : ''
+}
+
+const minutesOf = (time) => {
+  const [h, m] = String(time || '').split(':').map(Number)
+  return Number.isFinite(h) && Number.isFinite(m) ? h * 60 + m : null
+}
+
+// Fecha depois da meia-noite: a caixa "Fecha no dia seguinte" ou o dia de fechar que veio
+// do agendamento gravado.
+function closesOnNextDay(schedule) {
+  return schedule.closesNextDay === true || (!!schedule.closeDate && schedule.closeDate !== schedule.date)
 }
 
 // Estado do formulário a partir do agendamento que a aplicação já tem (agendaView).
@@ -25,11 +42,13 @@ export function scheduleFromView(view) {
   if (!view?.abreEmLocal) return { ...initialSchedule(), mode: 'agendar' }
   const [date, opensAt] = view.abreEmLocal.split('T')
   const [closeDate, closesAt] = String(view.fechaEmLocal || '').split('T')
-  return { mode: 'agendar', date, opensAt, closesAt, closeDate: closeDate !== date ? closeDate : '' }
+  const otherDay = !!closeDate && closeDate !== date
+  return { mode: 'agendar', date, opensAt, closesAt, closeDate: otherDay ? closeDate : '', closesNextDay: otherDay }
 }
 
 function closeLocal(schedule) {
-  return `${schedule.closeDate || schedule.date}T${schedule.closesAt}`
+  const day = schedule.closeDate || (schedule.closesNextDay === true && schedule.date ? nextDay(schedule.date) : schedule.date)
+  return `${day}T${schedule.closesAt}`
 }
 
 // Problema do "Quando" antes de mandar (o servidor confere de novo), ou null.
@@ -38,7 +57,14 @@ export function scheduleProblem(schedule) {
   if (!schedule.date) return 'Escolha o dia da prova agendada.'
   if (!schedule.opensAt) return 'Escolha a hora de abrir a prova.'
   if (!schedule.closesAt) return 'Escolha a hora de fechar a prova.'
-  if (!schedule.closeDate && schedule.closesAt <= schedule.opensAt) return 'O horário de fechar precisa ser depois do de abrir.'
+  if (!closesOnNextDay(schedule)) {
+    if (schedule.closesAt <= schedule.opensAt) return 'O horário de fechar precisa ser depois do de abrir. Se a prova passa da meia-noite, marque “Fecha no dia seguinte”.'
+    return null
+  }
+  // Fecha no dia seguinte: no máximo 12 horas aberta, como o servidor confere.
+  const open = minutesOf(schedule.opensAt)
+  const close = minutesOf(schedule.closesAt)
+  if (open !== null && close !== null && 24 * 60 - open + close > 12 * 60) return 'A prova pode ficar aberta no máximo 12 horas.'
   return null
 }
 
@@ -90,19 +116,34 @@ function ScheduleWarnings({ avisos }) {
 }
 
 // Campos de data e hora (usados no formulário de preparar e no diálogo de mudar).
+// "Fecha no dia seguinte" deixa a prova passar da meia-noite (22:00 às 01:00); trocar o dia
+// leva o fechamento junto.
 function ScheduleTimeFields({ value, onChange }) {
   const set = (patch) => onChange({ ...value, ...patch })
+  const nextDayClose = closesOnNextDay(value)
+  const closeDay = nextDayClose ? (value.closeDate || (value.date ? nextDay(value.date) : '')) : ''
   return (
-    <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-      <Input label="Dia" type="date" value={value.date} onChange={(e) => set({ date: e.target.value })} />
-      <Input label="Abre às" type="time" value={value.opensAt} onChange={(e) => set({ opensAt: e.target.value })} />
-      <Input
-        label="Fecha às"
-        type="time"
-        value={value.closesAt}
-        helper={value.closeDate ? `no dia ${value.closeDate.split('-').reverse().join('/')}` : undefined}
-        onChange={(e) => set({ closesAt: e.target.value })}
-      />
+    <div className="space-y-2">
+      <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
+        <Input label="Dia" type="date" value={value.date} onChange={(e) => set({ date: e.target.value, closeDate: '' })} />
+        <Input label="Abre às" type="time" value={value.opensAt} onChange={(e) => set({ opensAt: e.target.value })} />
+        <Input
+          label="Fecha às"
+          type="time"
+          value={value.closesAt}
+          helper={closeDay ? `no dia ${closeDay.split('-').reverse().join('/')}` : undefined}
+          onChange={(e) => set({ closesAt: e.target.value })}
+        />
+      </div>
+      <label className="flex min-h-[44px] items-center gap-2 text-sm text-text">
+        <input
+          type="checkbox"
+          className="h-4 w-4"
+          checked={nextDayClose}
+          onChange={(e) => set({ closesNextDay: e.target.checked, closeDate: '' })}
+        />
+        Fecha no dia seguinte (depois da meia-noite)
+      </label>
     </div>
   )
 }
@@ -214,7 +255,9 @@ function lateText(view) {
 // Aviso do agendamento no Monitor. application: a da lista do Monitor (com agendaView).
 // onChanged: recarregar depois de mudar. A abertura na hora ("Abrir agora") é o botão de
 // iniciar que o Monitor já tem.
-export function ApplicationScheduleBanner({ application, onChanged, toast }) {
+// canEdit: a conta muda a agenda (page.exams e não só leitura). Sem isso, o aviso aparece
+// sem os botões (o Professor auxiliar e a Coordenação recebiam 403 ao clicar).
+export function ApplicationScheduleBanner({ application, onChanged, toast, canEdit = true }) {
   const [dialog, setDialog] = useState(false)
   const [confirm, setConfirm] = useState(null) // 'cancelar' | 'fechamento'
   const view = application?.agendaView
@@ -235,18 +278,20 @@ export function ApplicationScheduleBanner({ application, onChanged, toast }) {
   if (estado === 'agendada') {
     title = `Abre sozinha em ${view.abreEmLabel}`
     detail = `E fecha sozinha ${view.janela.replace(/^abre em .* e fecha /, '')}, entregando o que cada aluno salvou. Para começar antes, use “Iniciar prova e avisar alunos”.`
-    actions.push(<Button key="mudar" size="sm" variant="secondary" icon={CalendarClock} onClick={() => setDialog(true)}>Mudar horário</Button>)
-    actions.push(<Button key="cancelar" size="sm" variant="ghost" icon={X} onClick={() => setConfirm('cancelar')}>Cancelar agendamento</Button>)
+    if (canEdit) {
+      actions.push(<Button key="mudar" size="sm" variant="secondary" icon={CalendarClock} onClick={() => setDialog(true)}>Mudar horário</Button>)
+      actions.push(<Button key="cancelar" size="sm" variant="ghost" icon={X} onClick={() => setConfirm('cancelar')}>Cancelar agendamento</Button>)
+    }
   } else if (estado === 'perdida') {
     tone = 'danger'
     title = 'A prova agendada não abriu'
-    detail = `O computador estava desligado entre ${view.abreEmLabel} e ${view.fechaEmLabel}. A prova não abre mais sozinha: agende de novo ou inicie agora.`
-    actions.push(<Button key="mudar" size="sm" variant="secondary" icon={CalendarClock} onClick={() => setDialog(true)}>Agendar de novo</Button>)
+    detail = `O computador estava desligado entre ${view.abreEmLabel} e ${view.fechaEmLabel}. A prova não abre mais sozinha: ${canEdit ? 'agende de novo ou inicie agora.' : 'quem prepara as provas pode agendar de novo.'}`
+    if (canEdit) actions.push(<Button key="mudar" size="sm" variant="secondary" icon={CalendarClock} onClick={() => setDialog(true)}>Agendar de novo</Button>)
   } else if (estado === 'aberta') {
     tone = view.abertaAtrasada ? 'warning' : 'info'
     title = `Fecha sozinha em ${view.fechaEfetivaLabel || view.fechaEmLabel}`
     detail = `${view.abertaAtrasada ? `${lateText(view)} ` : ''}No fechamento, quem ainda estiver fazendo a prova tem a prova entregue com o que salvou.${view.fechaEfetivaEm && view.fechaEfetivaEm !== view.fechaEm ? ' O horário foi empurrado pelo tempo de pausa ou pelos minutos dados à turma.' : ''}`
-    actions.push(<Button key="fechamento" size="sm" variant="ghost" icon={X} onClick={() => setConfirm('fechamento')}>Não encerrar sozinha</Button>)
+    if (canEdit) actions.push(<Button key="fechamento" size="sm" variant="ghost" icon={X} onClick={() => setConfirm('fechamento')}>Não encerrar sozinha</Button>)
   } else if (estado === 'fechamento_cancelado' || estado === 'sem_fechamento') {
     tone = 'neutral'
     title = 'Sem fechamento automático'
@@ -270,9 +315,9 @@ export function ApplicationScheduleBanner({ application, onChanged, toast }) {
         <p className="mt-0.5 text-xs text-muted">{detail}</p>
       </div>
       {actions.length > 0 && <div className="flex flex-wrap gap-2">{actions}</div>}
-      <ScheduleDialog open={dialog} application={application} onClose={() => setDialog(false)} onSaved={onChanged} toast={toast} />
+      {canEdit && <ScheduleDialog open={dialog} application={application} onClose={() => setDialog(false)} onSaved={onChanged} toast={toast} />}
       <ConfirmDialog
-        open={!!confirm}
+        open={canEdit && !!confirm}
         onClose={() => setConfirm(null)}
         onConfirm={cancel}
         tone="primary"

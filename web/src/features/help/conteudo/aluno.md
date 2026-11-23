@@ -52,7 +52,7 @@ Quando a escola usa a conexão segura (o endereço começa com `https`), o naveg
 
 <!-- P3 (A5, A19) e P2 (B9) escrevem aqui: prova com os tipos novos, Minhas notas e pedido de revisão. -->
 
-**Prova agendada.** Quando o professor agenda uma prova, ela aparece em **Provas** com a etiqueta **Agendada** e o horário ("A prova abre em 20/11 às 08:00 e fecha às 09:30"), e também no **Calendário**. Antes da hora ela não abre: volte em **Provas** no horário para começar. No horário de fechar, a prova é entregue com o que você salvou.
+**Prova agendada.** Quando o professor agenda uma prova, ela aparece em **Provas** com a etiqueta **Agendada** e o horário ("A prova abre em 20/11 às 08:00 e fecha às 09:30"), e também no **Calendário**. Antes da hora ela não abre: volte em **Provas** no horário para começar. No horário de fechar, a prova é entregue com o que você salvou: durante a prova, o topo mostra **Fecha em ...**, mesmo que o cronômetro ainda tenha tempo.
 
 ### Como responder cada tipo de questão
 

@@ -570,3 +570,118 @@ test('[UC-PROVA-008] aplicações e turmas de antes desta versão (sem agenda) n
     assert.equal(examSchedule.sweepSchedules(db.memory, { now }).changed, false);
     await admin(request(app).post(`/api/admin/exam-applications/${application.id}/control`)).send({ action: 'finish', inProgressPolicy: 'submit' }).expect(200);
 });
+
+// Rodada de ajuste 1 do A11: o registro da aplicação, a prova do aluno com o horário de
+// fechar, o gabarito preso por uma preparada que não abre e o curso clonado.
+test('[UC-PROVA-008] registro e prova do aluno: o encerramento da agenda não diz "pelo professor" e a prova mostra o horário de fechar', async () => {
+    const historyId = await createHistory(120);
+    const abreEm = Math.ceil((Date.now() + 3 * MINUTE) / MINUTE) * MINUTE;
+    const fechaEm = abreEm + 30 * MINUTE;
+    const prepared = await prepare(historyId, { agenda: { abreEmLocal: local(abreEm), fechaEmLocal: local(fechaEm) } });
+    const application = db.memory.examApplications.find(item => item.id === prepared.body.application.id);
+    examSchedule.sweepSchedules(db.memory, { now: abreEm });
+    assert.equal(application.status, 'running');
+
+    // A prova do aluno traz o horário em que a aplicação fecha (o cronômetro dele conta 120 min).
+    const running = await sync(ALICE, application.id);
+    assert.equal(running.body.scheduleCloseAt, fechaEm);
+    assert.equal(running.body.scheduleCloseLabel, examSchedule.formatWhen(fechaEm));
+    assert.equal(running.body.finishedBySchedule, undefined);
+    await asStudent(request(app).post(`/api/student/exam-applications/${application.id}/start-attempt`), ALICE).send({}).expect(200);
+
+    // "Não encerrar sozinha" tira o horário da prova do aluno; sem agenda, nunca vem.
+    application.agenda.fechamentoCanceladoEm = Date.now();
+    const noClose = await sync(ALICE, application.id);
+    assert.equal(noClose.body.scheduleCloseAt, undefined);
+    delete application.agenda.fechamentoCanceladoEm;
+
+    examSchedule.sweepSchedules(db.memory, { now: fechaEm });
+    assert.equal(application.status, 'finished');
+    const finished = await sync(ALICE, application.id);
+    assert.equal(finished.body.finishOutcome, 'submitted');
+    assert.equal(finished.body.finishedBySchedule, true);
+    assert.equal(finished.body.scheduleCloseAt, undefined);
+
+    const trail = await admin(request(app).get(`/api/admin/exam-applications/${application.id}/audit`)).expect(200);
+    const opened = trail.body.entries.find(entry => entry.title === 'Prova aberta pelo agendamento');
+    assert.ok(opened);
+    assert.doesNotMatch(opened.detail, /às .* às /, opened.detail);
+    assert.match(opened.detail, /no horário marcado/);
+    const closedRow = trail.body.entries.find(entry => entry.title === 'Aplicação encerrada no horário marcado');
+    assert.ok(closedRow, trail.body.entries.map(entry => entry.title).join(' | '));
+    assert.match(closedRow.detail, /1 prova em andamento enviada pelo agendamento/);
+    for (const entry of trail.body.entries) assert.doesNotMatch(`${entry.title} ${entry.detail}`, /pelo professor/);
+});
+
+test('[UC-PROVA-008] encerramento pelo professor continua com o texto de sempre no registro', async () => {
+    const historyId = await createHistory(120);
+    const prepared = await prepare(historyId);
+    const application = db.memory.examApplications.find(item => item.id === prepared.body.application.id);
+    await admin(request(app).post(`/api/admin/exam-applications/${application.id}/control`)).send({ action: 'start' }).expect(200);
+    await sync(ALICE, application.id);
+    await asStudent(request(app).post(`/api/student/exam-applications/${application.id}/start-attempt`), ALICE).send({}).expect(200);
+    await admin(request(app).post(`/api/admin/exam-applications/${application.id}/control`)).send({ action: 'finish', inProgressPolicy: 'submit' }).expect(200);
+    assert.equal(application.status, 'finished');
+    const trail = await admin(request(app).get(`/api/admin/exam-applications/${application.id}/audit`)).expect(200);
+    const row = trail.body.entries.find(entry => entry.title === 'Aplicação encerrada');
+    assert.ok(row, trail.body.entries.map(entry => entry.title).join(' | '));
+    assert.match(row.detail, /pelo professor/);
+    const finished = await sync(ALICE, application.id);
+    assert.equal(finished.body.finishedBySchedule, undefined);
+});
+
+test('[UC-PROVA-008] gabarito agendado preso por preparada que não abriu: Materiais e o Precisa de você dizem como destravar', async () => {
+    const now = Date.now();
+    const application = await preparedWithAgenda(now - 90 * MINUTE, now - 30 * MINUTE);
+    examSchedule.sweepSchedules(db.memory, { now });
+    assert.equal(application.agenda.perdida, true);
+    const at = Math.ceil((now + 10 * MINUTE) / MINUTE) * MINUTE;
+    await admin(request(app).post('/api/admin/release-item')).send({ studentClass, courseId, itemKey: answerKey, releaseAtLocal: local(at) }).expect(200);
+    const cls = classOf(studentClass);
+    examSchedule.sweepSchedules(db.memory, { now: at });
+    assert.ok(cls.releaseSchedule[answerKey].adiadoEm > 0);
+    const status = await admin(request(app).get('/api/status')).query({ studentClass, courseId }).expect(200);
+    assert.equal(status.body.releaseSchedule[answerKey].adiado, true);
+    assert.equal(status.body.releaseSchedule[answerKey].espera, 'perdida');
+    const queue = examSchedule.queueItems({ memory: db.memory, cls, now: at });
+    const item = queue.find(entry => entry.id === 'liberacao_adiada');
+    assert.match(item.detalhe, /preparada que não abriu/);
+    assert.match(item.detalhe, /bloqueada em Materiais/);
+
+    // Bloquear a prova em Materiais cancela a preparação, e a próxima volta libera o gabarito.
+    await admin(request(app).post('/api/admin/release-item')).send({ studentClass, courseId, itemKey: examKey, released: false }).expect(200);
+    assert.equal(application.status, 'cancelled');
+    const released = examSchedule.sweepSchedules(db.memory, { now: at + 10000 });
+    assert.equal(released.released.length, 1);
+    assert.equal(cls.releasedItems[answerKey], true);
+
+    // Aplicação em andamento: espera 'andamento' e o texto de sempre.
+    seed();
+    const historyId = await createHistory();
+    const running = await prepare(historyId);
+    await admin(request(app).post(`/api/admin/exam-applications/${running.body.application.id}/control`)).send({ action: 'start' }).expect(200);
+    await admin(request(app).post('/api/admin/release-item')).send({ studentClass, courseId, itemKey: answerKey, releaseAtLocal: local(at) }).expect(200);
+    examSchedule.sweepSchedules(db.memory, { now: at });
+    const view = examSchedule.releaseScheduleView(classOf(studentClass), { memory: db.memory });
+    assert.equal(view[answerKey].espera, 'andamento');
+    assert.match(examSchedule.queueItems({ memory: db.memory, cls: classOf(studentClass), now: at }).find(entry => entry.id === 'liberacao_adiada').detalhe, /ainda está aberta/);
+});
+
+test('[UC-PROVA-008] clonar o curso leva a liberação agendada com as chaves do curso novo', async () => {
+    const at = Math.ceil((Date.now() + 30 * MINUTE) / MINUTE) * MINUTE;
+    await admin(request(app).post('/api/admin/release-item')).send({ studentClass, courseId, itemKey: apostilaKey, releaseAtLocal: local(at) }).expect(200);
+    await admin(request(app).post('/api/admin/release-item')).send({ studentClass, courseId, itemKey: answerKey, releaseAtLocal: local(at) }).expect(200);
+    classOf(studentClass).releaseSchedule[answerKey].adiadoEm = Date.now();
+    const cloned = await admin(request(app).post(`/api/admin/courses/${courseId}/clone`)).send({ newId: 'CLONE1', newName: 'Curso clonado' }).expect(200);
+    const clonedCourseId = cloned.body.course.id;
+    const clonedClass = db.memory.classes.find(cls => cls.name === studentClass && cls.courseId === clonedCourseId);
+    assert.ok(clonedClass);
+    assert.deepEqual(Object.keys(clonedClass.releaseSchedule).sort(), [`${apostilaKey}_CLONE1`, `Gabarito_${examKey}_CLONE1`].sort());
+    assert.equal(clonedClass.releaseSchedule[`${apostilaKey}_CLONE1`].at, at);
+    assert.equal(clonedClass.releaseSchedule[`Gabarito_${examKey}_CLONE1`].adiadoEm, undefined, 'o adiamento era da aplicação do curso de origem');
+    // A turma de origem continua com as chaves dela; a varredura liga o item do curso novo.
+    assert.deepEqual(Object.keys(classOf(studentClass).releaseSchedule).sort(), [apostilaKey, answerKey].sort());
+    examSchedule.sweepSchedules(db.memory, { now: at });
+    assert.equal(clonedClass.releasedItems[`${apostilaKey}_CLONE1`], true);
+    assert.equal(clonedClass.releasedItems[apostilaKey], undefined);
+});
