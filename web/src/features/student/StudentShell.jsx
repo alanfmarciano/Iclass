@@ -1,6 +1,6 @@
 import { Suspense, useEffect, useState } from 'react'
 import { NavLink, Outlet, useLocation, useNavigate } from 'react-router-dom'
-import { Home, BookOpen, ClipboardList, NotebookPen, MessagesSquare, Megaphone, FolderOpen, GraduationCap, Menu, LogOut, CalendarDays, Sparkles, UserRound, ShieldCheck, CircleHelp } from 'lucide-react'
+import { Home, BookOpen, ClipboardList, FileUp, NotebookPen, MessagesSquare, Megaphone, FolderOpen, GraduationCap, Menu, LogOut, CalendarDays, Sparkles, UserRound, ShieldCheck, CircleHelp } from 'lucide-react'
 import { ThemeToggle } from '../../components/ui/ThemeToggle'
 import { useAuth } from '../../context/AuthProvider'
 import { cn } from '../../lib/cn'
@@ -20,6 +20,8 @@ const NAV = [
   { to: '/aluno/modulos', icon: BookOpen, text: 'Módulos' },
   { to: '/aluno/biblioteca', icon: FolderOpen, text: 'Biblioteca' },
   { to: '/aluno/provas', icon: ClipboardList, text: 'Provas' },
+  // Atividades com prazo e envio de arquivo (fase 3, C9 / P1-g; FUN-01).
+  { to: '/aluno/atividades', icon: FileUp, text: 'Atividades' },
   { to: '/aluno/caderno', icon: NotebookPen, text: 'Caderno' },
   { to: '/aluno/duvidas', icon: MessagesSquare, text: 'Dúvidas' },
   { to: '/aluno/avisos', icon: Megaphone, text: 'Avisos' },
@@ -57,6 +59,11 @@ export function StudentShell() {
   const { branding, interfacePreset } = useBranding()
   const { pathname } = useLocation()
   const nav = useNavigate()
+  // No celular o menu cobre a página: fecha ao escolher um destino (igual ao painel do
+  // professor); antes a página nova ficava atrás dele até tocar no fundo escurecido.
+  useEffect(() => {
+    if (typeof window !== 'undefined' && !window.matchMedia('(min-width: 768px)').matches) setOpen(false)
+  }, [pathname])
   const s = auth.student || {}
   const classes = s.classes || []
   const activeClass = auth.activeClass || classes[0] || {}
@@ -64,7 +71,9 @@ export function StudentShell() {
   const course = (s.courses || []).find((c) => c.id === activeClass.courseId) || null
   const logo = branding?.logoLightUrl || branding?.logoDarkUrl || ''
   const brandName = branding?.displayName || 'IClass'
-  const pageTitle = NAV.find((item) => item.to === pathname)?.text || 'Portal do Aluno'
+  // Título da página: o item do menu do endereço ou do começo dele (/aluno/atividades/<id>
+  // continua "Atividades").
+  const pageTitle = (NAV.find((item) => item.to === pathname) || NAV.find((item) => !item.end && pathname.startsWith(`${item.to}/`)))?.text || 'Portal do Aluno'
   const notificationsContext = cls && activeClass.courseId ? `courseId=${encodeURIComponent(activeClass.courseId)}&studentClass=${encodeURIComponent(cls)}` : ''
   const notificationsEndpoint = notificationsContext ? `/api/student/notifications?${notificationsContext}` : null
   // "Marcar como lidas" vale só para o sino desta turma/curso (aluno em duas turmas).

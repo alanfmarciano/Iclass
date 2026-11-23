@@ -300,6 +300,89 @@ export async function downloadFile(path, fallbackName = 'arquivo') {
   return name
 }
 
+// Envio de arquivo com progresso (fase 3, C9 / P1-g; D12 do P1): o fetch não diz quanto
+// do corpo já subiu, e o aluno no celular, na Wi-Fi da sala, precisa ver a barra andar.
+// XMLHttpRequest com os mesmos cabeçalhos de sessão, as mesmas mensagens e marcas de erro
+// do request() (status 0 com err.network ou err.timeout, 503 retryable com o texto fixo,
+// a mensagem do servidor nas recusas), o mesmo estado da conexão e a mesma conferência
+// da versão do build. Sem pacote novo.
+// onProgress({ loaded, total, percent }): a cada pedaço enviado (percent de 0 a 100; o
+// 100 sai quando o corpo terminou de subir, antes da resposta). signal: cancela (o erro
+// sai como AbortError, sem mensagem de conexão). timeoutMs: prazo (padrão 0 = sem prazo,
+// porque o tempo depende do tamanho do arquivo e da rede da sala).
+// Devolve o JSON da resposta (ou null sem corpo JSON).
+export function uploadWithProgress(path, formData, { method = 'POST', onProgress, signal, timeoutMs = 0 } = {}) {
+  return new Promise((resolve, reject) => {
+    if (signal && signal.aborted) { reject(abortError(signal)); return }
+    if (typeof XMLHttpRequest !== 'function') { reject(noteFailure(connectionError('network'))); return }
+    const headers = authHeaders()
+    const xhr = new XMLHttpRequest()
+    let settled = false
+    let timedOut = false
+    let timer = null
+    const onCallerAbort = () => { try { xhr.abort() } catch {} }
+    const finish = () => {
+      settled = true
+      if (timer) clearTimeout(timer)
+      if (signal) signal.removeEventListener('abort', onCallerAbort)
+    }
+    const fail = (err) => { if (settled) return; finish(); reject(err) }
+    const report = (loaded, total) => {
+      if (typeof onProgress !== 'function') return
+      const safeTotal = Number(total) > 0 ? Number(total) : 0
+      const percent = safeTotal ? Math.max(0, Math.min(100, Math.round((Number(loaded) / safeTotal) * 100))) : 0
+      try { onProgress({ loaded: Number(loaded) || 0, total: safeTotal, percent }) } catch {}
+    }
+    try {
+      xhr.open(method, path, true)
+      Object.entries(headers).forEach(([name, value]) => xhr.setRequestHeader(name, value))
+    } catch {
+      fail(noteFailure(connectionError('network')))
+      return
+    }
+    if (xhr.upload) {
+      xhr.upload.onprogress = (event) => { if (event && event.lengthComputable) report(event.loaded, event.total) }
+      xhr.upload.onload = () => report(1, 1)
+    }
+    xhr.onload = () => {
+      if (settled) return
+      const status = xhr.status
+      // Status 0 no onload: o navegador não recebeu resposta de verdade (conexão cortada).
+      if (!status) { fail(noteFailure(connectionError(timedOut ? 'timeout' : 'network'))); return }
+      const res = { headers: { get: (name) => xhr.getResponseHeader(name) } }
+      noteBuildFrom(res, path, headers)
+      let data = null
+      const ct = xhr.getResponseHeader('content-type') || ''
+      if (ct.includes('application/json')) {
+        try { data = JSON.parse(xhr.responseText) } catch { data = null }
+      }
+      finish()
+      reportResponse(status, data)
+      if (status < 200 || status >= 300) {
+        noteAdminAccessDenied(status, data)
+        notePasswordChangeRequired(status, data)
+        reject(responseError(status, data))
+        return
+      }
+      resolve(data)
+    }
+    xhr.onerror = () => fail(noteFailure(connectionError(timedOut ? 'timeout' : 'network')))
+    xhr.ontimeout = () => fail(noteFailure(connectionError('timeout')))
+    xhr.onabort = () => {
+      if (timedOut) fail(noteFailure(connectionError('timeout')))
+      else fail(abortError(signal))
+    }
+    if (signal) signal.addEventListener('abort', onCallerAbort, { once: true })
+    const limit = Math.max(0, Number(timeoutMs) || 0)
+    if (limit > 0) timer = setTimeout(() => { timedOut = true; try { xhr.abort() } catch {} }, limit)
+    try {
+      xhr.send(formData)
+    } catch {
+      fail(noteFailure(connectionError('network')))
+    }
+  })
+}
+
 export const api = {
   get: (p, opts) => request(p, { ...opts }),
   post: (p, body, opts) => request(p, { method: 'POST', body, ...opts }),

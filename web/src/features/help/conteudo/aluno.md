@@ -79,7 +79,26 @@ Se o professor descobrir, depois da prova, que a resposta certa de uma questão 
 
 ## Atividades {#atividades}
 
-<!-- P1 (C9) escreve aqui: enviar trabalho pelo celular, prazos, comprovante e devolução. -->
+Em **Atividades** ficam os trabalhos que o professor pediu, com o prazo. Elas aparecem em **A fazer**, **Enviadas** e **Devolvidas**, e as que estão esperando o seu envio também aparecem na **Início**.
+
+**Para enviar pelo celular:**
+
+1. Toque na atividade. Leia as instruções e o quadro **O que enviar** (os tipos de arquivo aceitos e o tamanho máximo).
+2. Toque em **Escolher arquivo ou tirar foto**. Você pode tirar a foto na hora, escolher da galeria ou pegar um PDF do celular. Para mandar mais de um arquivo, escolha de novo.
+3. Se a atividade pede texto ou link, escreva nos campos. O link precisa começar com http:// ou https://.
+4. Toque em **Enviar** e espere a barra chegar a 100% e aparecer **Envio recebido**. Não feche a página enquanto envia.
+
+Foto grande (mais de 3 MB) é reduzida no próprio celular para chegar mais rápido, e aparece o aviso **Foto reduzida para enviar mais rápido**. Se precisar da foto do jeito que saiu da câmera, toque em **Enviar original** (quando ela cabe no limite da atividade).
+
+Se a internet da sala cair no meio, aparece **Tentar de novo**: os arquivos que você escolheu continuam lá. Se o envio tinha chegado, a tela mostra o comprovante em vez de pedir de novo.
+
+**Prazo:** vale a hora do computador do professor, mostrada na tela da atividade, e a hora em que o envio **chegou**, não a hora em que terminou de subir. Depois do prazo, a tela avisa **Você está enviando com atraso** e diz a regra da atividade (aceita e marca atrasada, aceita com desconto ou não aceita mais).
+
+**Comprovante:** depois de enviar, aparece "Recebido às 14:32 de 20/11 — versão 2 — 3 arquivos (5,2 MB) — código A1B2C3D4". **Imprimir comprovante** abre o comprovante da escola para imprimir ou salvar em PDF. O professor vê o mesmo código.
+
+**Nova versão:** enquanto a atividade aceita envio e não foi devolvida, você pode mandar outra versão. Todas ficam guardadas em **Versões enviadas**, com os seus arquivos para baixar; o professor corrige a mais recente.
+
+**Devolução:** quando o professor devolve, a atividade vai para **Devolvidas** com a nota final, o desconto de atraso (se houver) e o comentário dele. Se ele pedir para refazer, aparece **Refazer até ...** e o envio abre de novo só para você.
 
 ## Caderno {#caderno}
 

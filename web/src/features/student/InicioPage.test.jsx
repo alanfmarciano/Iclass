@@ -1,13 +1,14 @@
 import { cleanup, render, screen } from '@testing-library/react'
 import { MemoryRouter } from 'react-router-dom'
+import { fireEvent, within } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 import InicioPage from './InicioPage'
 
-const mocks = vi.hoisted(() => ({ dashboard: null }))
+const mocks = vi.hoisted(() => ({ dashboard: null, assignments: null }))
 
 vi.mock('./useStudent', () => ({ useStudent: () => ({ email: 'ana@x.local', name: 'Ana', studentClass: '1DES', courseId: 'DES' }) }))
 vi.mock('../../hooks/useApi', () => ({
-  useApi: (url) => ({ data: String(url || '').includes('/dashboard') ? mocks.dashboard : null, loading: false, error: null, refetch: vi.fn() }),
+  useApi: (url) => ({ data: String(url || '').includes('/dashboard') ? mocks.dashboard : String(url || '').startsWith('/api/student/assignments') ? mocks.assignments : null, loading: false, error: null, refetch: vi.fn() }),
 }))
 
 afterEach(() => {
@@ -36,5 +37,36 @@ describe('Início do aluno · notas', () => {
     expect(screen.getByText('9,0')).toBeInTheDocument()
     expect(screen.queryByText('7.5')).not.toBeInTheDocument()
     expect(screen.queryByText('9.0')).not.toBeInTheDocument()
+  })
+})
+
+// Fase 3, C9 (P1-g; parte de UXA-25): a Início mostra as atividades esperando o envio do
+// aluno, com o prazo e o link, e "Ver todas" leva à lista.
+const navigate = vi.hoisted(() => vi.fn())
+vi.mock('react-router-dom', async (importOriginal) => ({ ...(await importOriginal()), useNavigate: () => navigate }))
+
+describe('Início do aluno · atividades a fazer', () => {
+  it('lista só as que esperam o envio, por prazo, com o link de cada uma', () => {
+    const now = Date.UTC(2026, 10, 22, 15, 0)
+    mocks.dashboard = { modules: [], announcements: [], calendar: [] }
+    mocks.assignments = {
+      serverNow: now,
+      timezone: 'America/Sao_Paulo',
+      assignments: [
+        { id: 'asg_a', title: 'Relatório de redes', situacao: 'a_fazer', situacaoTexto: 'A fazer', aceitaEnvio: true, dueAt: now + 26 * 60 * 60 * 1000 },
+        { id: 'asg_b', title: 'Já enviada', situacao: 'enviada', situacaoTexto: 'Enviada', aceitaEnvio: true, dueAt: now + 60 * 60 * 1000 },
+        { id: 'asg_c', title: 'Diagrama', situacao: 'atrasada', situacaoTexto: 'Atrasada', aceitaEnvio: true, dueAt: now - 60 * 60 * 1000 },
+      ],
+    }
+    render(<MemoryRouter><InicioPage /></MemoryRouter>)
+    const card = screen.getByRole('heading', { name: 'Atividades a fazer (2)' }).closest('.premium-card')
+    expect(within(card).getByText('Relatório de redes')).toBeInTheDocument()
+    expect(within(card).getByText('Prazo: seg., 23/11 às 14:00 (falta 1 dia)')).toBeInTheDocument()
+    expect(within(card).getByText('Diagrama')).toBeInTheDocument()
+    expect(within(card).queryByText('Já enviada')).not.toBeInTheDocument()
+    fireEvent.click(within(card).getByText('Relatório de redes'))
+    expect(navigate).toHaveBeenCalledWith('/aluno/atividades/asg_a')
+    fireEvent.click(within(card).getByRole('button', { name: 'Ver todas' }))
+    expect(navigate).toHaveBeenCalledWith('/aluno/atividades')
   })
 })

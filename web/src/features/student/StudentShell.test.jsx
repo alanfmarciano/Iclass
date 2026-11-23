@@ -1,5 +1,5 @@
 import { lazy } from 'react'
-import { act, cleanup, render, screen } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -152,5 +152,54 @@ describe('[UC-LGPD-007] portal do aluno · versão dos documentos pelo ping', ()
     expect(statusCalls()).toBe(1)
     await act(async () => { heartbeat.options.onPresence({ success: true, legalVersion: 'termos_v2|privacidade_v1' }) })
     expect(statusCalls()).toBe(2)
+  })
+})
+
+// Fase 3, C9 (P1-g; FUN-01): o menu do aluno tem "Atividades" entre Provas e Caderno, e o
+// título do topo continua "Atividades" dentro de uma atividade (/aluno/atividades/<id>).
+describe('portal do aluno · Atividades no menu', () => {
+  it('"Atividades" leva a /aluno/atividades, depois de Provas e antes de Caderno', () => {
+    renderPortal()
+    const nav = screen.getAllByRole('link').map((link) => link.textContent.trim())
+    const provas = nav.indexOf('Provas')
+    expect(nav[provas + 1]).toBe('Atividades')
+    expect(nav[provas + 2]).toBe('Caderno')
+    expect(screen.getByRole('link', { name: 'Atividades' })).toHaveAttribute('href', '/aluno/atividades')
+  })
+
+  it('o título do topo é "Atividades" também na página de uma atividade', () => {
+    render(
+      <MemoryRouter initialEntries={['/aluno/atividades/asg_1']}>
+        <Routes>
+          <Route path="/aluno" element={<StudentShell />}>
+            <Route path="atividades/:id" element={<p>Uma atividade</p>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    )
+    expect(screen.getByText('Uma atividade')).toBeInTheDocument()
+    expect(screen.getByText('Atividades', { selector: 'strong' })).toBeInTheDocument()
+  })
+
+  it('no celular o menu fecha ao escolher um destino e a página nova fica por cima', () => {
+    window.matchMedia = vi.fn().mockImplementation((query) => ({ matches: false, media: query, addEventListener() {}, removeEventListener() {} }))
+    const { container } = render(
+      <MemoryRouter initialEntries={['/aluno']}>
+        <Routes>
+          <Route path="/aluno" element={<StudentShell />}>
+            <Route index element={<p>Início do aluno</p>} />
+            <Route path="atividades" element={<p>Lista de atividades</p>} />
+          </Route>
+        </Routes>
+      </MemoryRouter>,
+    )
+    const aside = container.querySelector('aside')
+    expect(aside).toHaveAttribute('aria-hidden', 'true')
+    fireEvent.click(screen.getByRole('button', { name: 'Menu' }))
+    expect(aside).not.toHaveAttribute('aria-hidden')
+    fireEvent.click(screen.getByRole('link', { name: 'Atividades' }))
+    expect(screen.getByText('Lista de atividades')).toBeInTheDocument()
+    expect(aside).toHaveAttribute('aria-hidden', 'true')
+    expect(screen.queryByRole('button', { name: 'Fechar menu' })).toBeNull()
   })
 })

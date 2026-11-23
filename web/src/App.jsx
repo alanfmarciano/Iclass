@@ -66,6 +66,9 @@ const AjudaAlunoPage = lazyPage(() => import('./features/help/AjudaAlunoPage'))
 const InicioPage = lazyPage(() => import('./features/student/InicioPage'))
 const ModulosPage = lazyPage(() => import('./features/student/ModulosPage'))
 const ProvasStudentPage = lazyPage(() => import('./features/student/ProvasPage'))
+// Atividades (tarefas com envio) do aluno (fase 3, C9 / P1-g; FUN-01).
+const AtividadesPage = lazyPage(() => import('./features/student/AtividadesPage'))
+const AtividadeDetalhePage = lazyPage(() => import('./features/student/AtividadeDetalhePage'))
 const ExamRunner = lazyPage(() => import('./features/student/exam/ExamRunner'))
 const CadernoPage = lazyPage(() => import('./features/student/CadernoPage'))
 const DuvidasPage = lazyPage(() => import('./features/student/DuvidasPage'))
@@ -181,6 +184,8 @@ export default function App() {
         <Route index element={<InicioPage />} />
         <Route path="modulos" element={<ModulosPage />} />
         <Route path="provas" element={<ProvasStudentPage />} />
+        <Route path="atividades" element={<AtividadesPage />} />
+        <Route path="atividades/:id" element={<AtividadeDetalhePage />} />
         <Route path="caderno" element={<CadernoPage />} />
         <Route path="duvidas" element={<DuvidasPage />} />
         <Route path="avisos" element={<AvisosStudentPage />} />

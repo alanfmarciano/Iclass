@@ -335,8 +335,11 @@ describe('[UC-DESEMPENHO-001] lazyPage: telas sob demanda e recarga depois de um
     // Privacidade (H8a-1), o guia público do certificado (/certificado, H6c), os 3 layouts
     // e as duas telas da Ajuda (/ajuda no painel e /ajuda/aluno pública, fase 3 A1), mais
     // a lista e o formulário de Tarefas do professor (fase 3 C7) e o detalhe com as
-    // entregas e a correção (fase 3 C8).
-    expect(lazyScreens.length).toBe(50)
+    // entregas e a correção (fase 3 C8), e as Atividades do aluno, a lista e a página de
+    // uma atividade (fase 3 C9).
+    expect(lazyScreens.length).toBe(52)
+    expect(lazyScreens).toContain('./features/student/AtividadesPage')
+    expect(lazyScreens).toContain('./features/student/AtividadeDetalhePage')
     expect(lazyScreens).toContain('./features/help/AjudaPage')
     expect(lazyScreens).toContain('./features/admin/TarefasPage')
     expect(lazyScreens).toContain('./features/admin/tarefas/TarefaForm')

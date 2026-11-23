@@ -61,6 +61,9 @@ button { -webkit-tap-highlight-color: transparent; }
 .premium-card-interactive:hover { transform: translateY(-3px); border-color: var(--border-strong); }
 .soft-divider { border-color: var(--border); }
 .app-enter { animation: app-enter .55s cubic-bezier(.2,.8,.2,1) both; }
+/* Botão "Enviar" da atividade do aluno (fase 3, C9): fica preso embaixo da tela enquanto o
+   aluno rola o formulário no celular, acima da faixa "Prova disponível" quando ela aparece. */
+.atividade-envio-barra { position: sticky; bottom: calc(var(--exam-banner-space, 0px) + 8px); z-index: 10; }
 .stagger-grid > * { animation: app-enter .55s cubic-bezier(.2,.8,.2,1) both; }
 .stagger-grid > *:nth-child(2) { animation-delay: .06s; }
 .stagger-grid > *:nth-child(3) { animation-delay: .12s; }

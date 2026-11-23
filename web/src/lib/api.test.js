@@ -443,3 +443,118 @@ describe('[UC-AUTH-001] respostas de estado do servidor no cliente', () => {
     expect(getConnectionState()).toBe('offline')
   })
 })
+
+// Fase 3, C9 (P1-g; D12 do P1): envio de arquivo com progresso pelo XMLHttpRequest, com as
+// mesmas mensagens e marcas de erro do request().
+class FakeXhr {
+  static last = null
+  constructor() {
+    FakeXhr.last = this
+    this.headers = {}
+    this.upload = {}
+    this.status = 0
+    this.responseText = ''
+    this.responseHeaders = {}
+    this.aborted = false
+  }
+  open(method, path, async) { this.method = method; this.path = path; this.async = async }
+  setRequestHeader(name, value) { this.headers[name] = value }
+  getResponseHeader(name) { return this.responseHeaders[String(name).toLowerCase()] ?? null }
+  send(body) { this.body = body }
+  abort() { this.aborted = true; if (this.onabort) this.onabort() }
+  // Ajudantes do teste
+  progress(loaded, total) { this.upload.onprogress?.({ lengthComputable: true, loaded, total }) }
+  respond(status, data, headers = {}) {
+    this.upload.onload?.()
+    this.status = status
+    this.responseText = data === undefined ? '' : JSON.stringify(data)
+    this.responseHeaders = { 'content-type': data === undefined ? 'text/plain' : 'application/json; charset=utf-8', ...headers }
+    this.onload?.()
+  }
+  failNetwork() { this.onerror?.() }
+}
+
+describe('uploadWithProgress (envio da atividade com barra de progresso)', () => {
+  afterEach(() => { vi.unstubAllGlobals() })
+  async function start(options = {}) {
+    vi.stubGlobal('XMLHttpRequest', FakeXhr)
+    const { uploadWithProgress } = await import('./api')
+    const form = new FormData()
+    form.append('files', new File(['%PDF'], 'relatorio.pdf', { type: 'application/pdf' }))
+    const promise = uploadWithProgress('/api/student/assignments/asg_1/submit', form, options)
+    return { promise, xhr: FakeXhr.last, form }
+  }
+
+  it('manda o FormData com a sessão do aluno, avisa o progresso e devolve o JSON', async () => {
+    setAuthProvider(() => ({ role: 'student', sessionToken: 'token-aluno' }))
+    const seen = []
+    const { promise, xhr, form } = await start({ onProgress: (p) => seen.push(p.percent) })
+    expect(xhr.method).toBe('POST')
+    expect(xhr.path).toBe('/api/student/assignments/asg_1/submit')
+    expect(xhr.headers).toEqual({ 'x-session-token': 'token-aluno' })
+    // Sem Content-Type: o navegador põe o multipart com o separador.
+    expect(xhr.headers['Content-Type']).toBeUndefined()
+    expect(xhr.body).toBe(form)
+    xhr.progress(25, 100)
+    xhr.progress(250, 1000)
+    xhr.progress(1000, 1000)
+    xhr.respond(201, { success: true, version: { n: 1 } }, { 'x-iclass-build': 'abc' })
+    await expect(promise).resolves.toEqual({ success: true, version: { n: 1 } })
+    expect(seen).toEqual([25, 25, 100, 100])
+    expect(buildMock.noteServerBuild).toHaveBeenCalledWith('abc')
+    expect(getConnectionState()).toBe('online')
+  })
+
+  it('recusa do servidor sai com a mensagem dele, o status e o corpo', async () => {
+    setAuthProvider(() => ({ role: 'student', sessionToken: 't' }))
+    const { promise, xhr } = await start()
+    xhr.respond(413, { success: false, error: 'O arquivo "a.pdf" passa do limite de 10 MB por arquivo desta tarefa.', code: 'file_too_large' })
+    await expect(promise).rejects.toMatchObject({ status: 413, message: 'O arquivo "a.pdf" passa do limite de 10 MB por arquivo desta tarefa.', data: { code: 'file_too_large' } })
+  })
+
+  it('503 retryable sai com o texto fixo e a marca retryable (pode tentar de novo)', async () => {
+    const { promise, xhr } = await start()
+    xhr.respond(503, { success: false, error: 'Falha', retryable: true })
+    await expect(promise).rejects.toMatchObject({ status: 503, retryable: true, message: RETRYABLE_MESSAGE })
+  })
+
+  it('rede caída no meio do envio: status 0, err.network e a mensagem de conexão', async () => {
+    const { promise, xhr } = await start()
+    xhr.progress(10, 100)
+    xhr.failNetwork()
+    await expect(promise).rejects.toMatchObject({ status: 0, network: true, message: NETWORK_MESSAGE })
+  })
+
+  it('cancelar pelo signal sai como AbortError, sem mensagem de conexão', async () => {
+    const controller = new AbortController()
+    const { promise, xhr } = await start({ signal: controller.signal })
+    controller.abort()
+    expect(xhr.aborted).toBe(true)
+    const err = await promise.catch((e) => e)
+    expect(err.name).toBe('AbortError')
+    expect(err.network).toBeUndefined()
+  })
+
+  it('prazo estourado aborta e sai com err.timeout', async () => {
+    vi.useFakeTimers()
+    try {
+      const { promise, xhr } = await start({ timeoutMs: 1000 })
+      const caught = promise.catch((e) => e)
+      vi.advanceTimersByTime(1001)
+      const err = await caught
+      expect(xhr.aborted).toBe(true)
+      expect(err).toMatchObject({ status: 0, timeout: true, message: TIMEOUT_MESSAGE })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('troca de senha obrigatória (403) avisa o AuthProvider, como o request()', async () => {
+    const handler = vi.fn()
+    setPasswordChangeRequiredHandler(handler)
+    const { promise, xhr } = await start()
+    xhr.respond(403, { error: 'Troque a senha.', passwordChangeRequired: true })
+    await expect(promise).rejects.toMatchObject({ status: 403 })
+    expect(handler).toHaveBeenCalledWith({ error: 'Troque a senha.', passwordChangeRequired: true })
+  })
+})

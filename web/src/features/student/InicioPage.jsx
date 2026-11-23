@@ -1,4 +1,4 @@
-import { AlertTriangle, ArrowRight, BookOpen, CalendarDays, CheckCircle2, Clock, Megaphone, Sparkles, TrendingUp, UserCheck } from 'lucide-react'
+import { AlertTriangle, ArrowRight, BookOpen, CalendarDays, CheckCircle2, Clock, FileUp, Megaphone, Sparkles, TrendingUp, UserCheck } from 'lucide-react'
 import { useNavigate } from 'react-router-dom'
 import { Card } from '../../components/ui/Card'
 import { Badge } from '../../components/ui/Badge'
@@ -6,6 +6,34 @@ import { PageState } from '../../components/ui/PageState'
 import { useApi } from '../../hooks/useApi'
 import { useStudent } from './useStudent'
 import { fmtGradeValue } from '../../lib/grades'
+import { ASSIGNMENTS_POLL_MS, assignmentsPath, atividadeHref } from './AtividadesPage'
+import { deadlineLine, isToDo, situationTone } from './atividades/atividadeText'
+
+// Quantas atividades a fazer a Início mostra (as de prazo mais perto; o resto em "Ver todas").
+export const HOME_TODO_LIMIT = 5
+
+// "Pendências" da Início (fase 3, C9 / P1-g; parte de UXA-25): as atividades esperando o
+// envio do aluno, com o prazo e o link para enviar. A lista vem pronta e por prazo do
+// servidor (GET /api/student/assignments); falha nela não derruba a Início.
+function AtividadesAFazer({ data, onOpenAll, onOpen }) {
+  const rows = (Array.isArray(data?.assignments) ? data.assignments : []).filter(isToDo)
+  const now = typeof data?.serverNow === 'number' ? data.serverNow : Date.now()
+  const timezone = data?.timezone || ''
+  return (
+    <Card>
+      <div className="flex items-center justify-between border-b border-border px-4 py-3">
+        <h2 className="flex items-center gap-2 font-semibold text-text"><FileUp size={17} aria-hidden="true" /> Atividades a fazer{rows.length ? ` (${rows.length})` : ''}</h2>
+        <button type="button" onClick={onOpenAll} className="min-h-[44px] px-1 text-xs text-muted hover:text-text">Ver todas</button>
+      </div>
+      {rows.length ? rows.slice(0, HOME_TODO_LIMIT).map((row) => (
+        <button key={row.id} type="button" onClick={() => onOpen(row.id)} className="flex w-full items-center gap-3 border-b border-border px-4 py-3 text-left transition last:border-0 hover:bg-surface-2/40">
+          <span className="min-w-0 flex-1"><strong className="block truncate text-sm text-text">{row.title}</strong><span className="mt-0.5 block text-xs text-muted">{deadlineLine(row, now, timezone)}</span></span>
+          <Badge tone={situationTone(row)}>{row.situacaoTexto}</Badge>
+        </button>
+      )) : <p className="p-4 text-sm text-muted">Nenhuma atividade esperando o seu envio.</p>}
+    </Card>
+  )
+}
 
 const EVENT_TONES = { aula: 'info', prova: 'danger', entrega: 'warning', aviso: 'neutral', reuniao: 'success' }
 // Rótulo do tipo de evento (o dia não letivo, feriado ou recesso, aparece como "Sem aula").
@@ -83,6 +111,7 @@ export default function InicioPage() {
   const nav = useNavigate()
   const dashboard = useApi(email ? `/api/student/dashboard?email=${encodeURIComponent(email)}&studentClass=${encodeURIComponent(studentClass)}&courseId=${encodeURIComponent(courseId)}` : null, [email, studentClass, courseId], { pollMs: 10000 })
   const calendar = useApi(email ? `/api/student/calendar-events?courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(studentClass)}` : null, [email, courseId, studentClass], { pollMs: 10000 })
+  const assignments = useApi(email ? assignmentsPath(courseId, studentClass) : null, [email, courseId, studentClass], { pollMs: ASSIGNMENTS_POLL_MS })
   const data = dashboard.data || {}
   const modules = data.modules || []
   const firstName = (displayName || name || 'aluno').split(' ')[0]
@@ -107,6 +136,8 @@ export default function InicioPage() {
           <Metric label="Tópicos concluídos" value={`${data.completedCount || 0}/${data.totalUnits || 0}`} helper="Progresso no curso" icon={CheckCircle2} tone="text-success" />
           <Metric label="Pendências" value={data.pendingCount || 0} helper="Conteúdos liberados" icon={AlertTriangle} tone="text-warning" />
         </div>
+
+        <AtividadesAFazer data={assignments.data} onOpenAll={() => nav('/aluno/atividades')} onOpen={(id) => nav(atividadeHref(id))} />
 
         <div className="grid grid-cols-1 gap-4 xl:grid-cols-[minmax(0,1.55fr)_minmax(290px,.75fr)]">
           <div className="space-y-4">
