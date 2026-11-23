@@ -455,6 +455,7 @@ function contentDirs(options = {}) {
         contentDir,
         uploadsDir: options.uploadsDir || runtimePaths.UPLOADS_DIR,
         imagesDir: options.imagesDir || path.join(contentDir, 'imagens'),
+        archiveDir: options.archiveDir === undefined ? runtimePaths.ARCHIVE_DIR : options.archiveDir,
     };
 }
 
@@ -1011,9 +1012,53 @@ function packageData(manifest) {
 // Chaves de conteúdo já usadas nesta instalação (sem diferença de maiúsculas, como a
 // leitura do .md): avaliações gravadas, arquivos .md, estruturas dos cursos e das turmas,
 // questões do banco, entregas e aplicações de prova.
-function usedContentKeys(memory, contentDir) {
+// Chaves e códigos dos cursos excluídos que estão em cursos_arquivados (ICLASS_ARCHIVE_DIR):
+// a apostila guardada no pacote (conteudo/*.md), as chaves da estrutura, das turmas e das
+// provas do curso.json e o código do curso (manifesto, curso.json e nome da pasta).
+// Importar um curso com essas chaves fazia a restauração do arquivo sobrescrever os .md do
+// importado (J2, pendência do A14). Pasta ilegível conta só o que dá para ler.
+function archivedCourseReservations(archiveDir) {
+    const keys = new Set();
+    const ids = new Set();
+    if (!archiveDir) return { keys, ids };
+    const addKey = key => { if (typeof key === 'string' && key) keys.add(key.toLowerCase()); };
+    const addId = id => { if (typeof id === 'string' && id) ids.add(id.toLowerCase()); };
+    let entries = [];
+    try { entries = fs.readdirSync(archiveDir, { withFileTypes: true }).filter(entry => entry.isDirectory()); } catch (error) { return { keys, ids }; }
+    entries.forEach(entry => {
+        const folder = path.join(archiveDir, entry.name);
+        const separator = entry.name.indexOf('__');
+        if (separator > 0) addId(entry.name.slice(0, separator));
+        try {
+            fs.readdirSync(path.join(folder, 'conteudo')).forEach(name => { if (/\.md$/i.test(name)) addKey(name.replace(/\.md$/i, '')); });
+        } catch (error) { /* sem conteúdo */ }
+        try {
+            const manifest = JSON.parse(fs.readFileSync(path.join(folder, 'manifesto.json'), 'utf8'));
+            if (manifest && typeof manifest === 'object') addId(String(manifest.courseId || ''));
+        } catch (error) { /* sem manifesto */ }
+        let bundle = null;
+        try { bundle = JSON.parse(fs.readFileSync(path.join(folder, 'curso.json'), 'utf8')); } catch (error) { bundle = null; }
+        if (!bundle || typeof bundle !== 'object') return;
+        const addStructure = structure => (Array.isArray(structure) ? structure : []).forEach(module => unitsOf(module).forEach(unit => { addKey(unit?.apostilaKey); addKey(unit?.avaliacaoKey); }));
+        if (bundle.course && typeof bundle.course === 'object') {
+            addId(String(bundle.course.id || ''));
+            addStructure(bundle.course.structure);
+        }
+        (Array.isArray(bundle.classes) ? bundle.classes : []).forEach(cls => {
+            const overrides = readOverrides(cls);
+            ['materials', 'evaluations'].forEach(kind => Object.entries(overrides[kind]).forEach(([base, item]) => { addKey(base); addKey(item?.key || item); }));
+            addStructure(overrides.structure);
+            overrides.extraUnits.forEach(extra => { addKey(extra?.unit?.apostilaKey); addKey(extra?.unit?.avaliacaoKey); });
+        });
+        (Array.isArray(bundle.submissions) ? bundle.submissions : []).forEach(item => addKey(item?.examKey));
+    });
+    return { keys, ids };
+}
+
+function usedContentKeys(memory, contentDir, archiveDir = null) {
     const used = new Set();
     const add = key => { if (typeof key === 'string' && key) used.add(key.toLowerCase()); };
+    archivedCourseReservations(archiveDir).keys.forEach(add);
     Object.keys(memory?.evaluations || {}).forEach(add);
     listContentFiles(contentDir).forEach(name => add(name.replace(/\.md$/i, '')));
     const addStructure = structure => (Array.isArray(structure) ? structure : []).forEach(module => unitsOf(module).forEach(unit => { add(unit?.apostilaKey); add(unit?.avaliacaoKey); }));
@@ -1070,8 +1115,8 @@ function citedMedia(data, files, keyFor, evaluationKeys, textOf) {
 // o curso não cita (nem .md, nem avaliação, nem unidade, nem biblioteca) não é gravado:
 // um pacote não deixa arquivo solto e sem dono em content/imagens ou em uploads. Ele vai
 // em naoCitados, com o aviso.
-function planImport(memory, data, files, { newId, contentDir, uploadsDir, imagesDir, textOf = file => (typeof file.text === 'string' ? file.text : null) }) {
-    const used = usedContentKeys(memory, contentDir);
+function planImport(memory, data, files, { newId, contentDir, uploadsDir, imagesDir, archiveDir = null, textOf = file => (typeof file.text === 'string' ? file.text : null) }) {
+    const used = usedContentKeys(memory, contentDir, archiveDir);
     const assigned = new Set();
     const renamedKeys = [];
     const pick = (oldKey) => {
@@ -1169,9 +1214,13 @@ function countsOf(data, allFiles, naoCitados = []) {
 // Código sugerido: o do pacote, ou com 2, 3... no fim quando ele já existe aqui (FUTEC
 // vira FUTEC2). Código que já termina em número ganha um '_' antes (CURSO_01 vira
 // CURSO_01_2, não CURSO_012, que se lê como "12").
-function suggestCourseId(memory, codigo) {
+// O código sugerido não é o de um curso daqui nem o de um curso excluído guardado em
+// cursos_arquivados (sem diferença de maiúsculas): restaurar o arquivo depois daria
+// "Já existe um curso ativo com este ID".
+function suggestCourseId(memory, codigo, archiveDir = null) {
     const base = /^[A-Za-z0-9_-]{1,60}$/.test(codigo) ? codigo.toUpperCase() : 'CURSO_IMPORTADO';
-    const exists = id => (memory?.courses || []).some(course => course && String(course.id).toLowerCase() === id.toLowerCase());
+    const archivedIds = archivedCourseReservations(archiveDir).ids;
+    const exists = id => archivedIds.has(id.toLowerCase()) || (memory?.courses || []).some(course => course && String(course.id).toLowerCase() === id.toLowerCase());
     if (!exists(base)) return base;
     const separator = /[0-9]$/.test(base) ? '_' : '';
     let index = 2;
@@ -1218,7 +1267,7 @@ async function previewCoursePackage(input, options = {}) {
     const dirs = contentDirs(options);
     const pkg = await readCoursePackage(input, { verifyFiles: true, keepContentText: true });
     const data = packageData(pkg.manifest);
-    const suggestedId = suggestCourseId(memory, data.codigo);
+    const suggestedId = suggestCourseId(memory, data.codigo, dirs.archiveDir);
     const plan = planImport(memory, data, pkg.files, { newId: suggestedId, ...dirs });
     const cursoExiste = (memory?.courses || []).some(course => course && String(course.id).toLowerCase() === String(data.codigo).toLowerCase());
     const avisos = [...data.avisos];
@@ -1332,6 +1381,9 @@ async function importCoursePackage(input, options = {}) {
     if (!newName || newName.length > 120) throw refuse('O nome do curso precisa ter de 1 a 120 caracteres.', { field: 'newName' });
     const courseExists = () => (memory.courses || []).some(course => course && String(course.id).toLowerCase() === newId.toLowerCase());
     if (courseExists()) throw refuse('Já existe um curso com esse código.', { field: 'newId', code: 'course_exists' });
+    if (archivedCourseReservations(dirs.archiveDir).ids.has(newId.toLowerCase())) {
+        throw refuse('Já existe um curso excluído com esse código em Cursos excluídos. Escolha outro código (ou restaure o curso excluído).', { field: 'newId', code: 'course_exists' });
+    }
 
     cleanStaleStaging(dirs, now);
     const importId = crypto.randomBytes(8).toString('hex');
@@ -1557,6 +1609,7 @@ module.exports = {
     CoursePackageError,
     PACKAGE_LIMITS,
     STAGING_DIR_NAME,
+    archivedCourseReservations,
     cleanStaleStaging,
     coursePackageQuestions,
     exportCoursePackage,

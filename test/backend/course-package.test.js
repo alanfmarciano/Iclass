@@ -942,3 +942,40 @@ test('[UC-PACOTE-002] prévia: imagensRenomeadas conta só as imagens de content
         fs.writeFileSync(path.join(runtimePaths.UPLOADS_DIR, 'foto-rede.png'), PNG);
     }
 });
+
+test('[UC-PACOTE-002] curso excluído guardado em Cursos excluídos: o código e as chaves dele contam como usados, e restaurar depois não pisa no importado (J2, pendência do A14)', async () => {
+    freshInstall();
+    fs.rmSync(runtimePaths.ARCHIVE_DIR, { recursive: true, force: true });
+    const { body: buffer } = await exportBuffer();
+    const archived = await asAdmin(request(app).post(`/api/admin/courses/${COURSE}/purge`)).send({});
+    assert.equal(archived.status, 200, JSON.stringify(archived.body));
+    assert.equal(db.memory.courses.some(course => course.id === COURSE), false);
+    assert.equal(fs.existsSync(path.join(runtimePaths.CONTENT_DIR, 'Apostila_REDES_1.md')), false, 'a apostila foi para o pacote');
+    try {
+        const preview = await postPackage('/api/admin/course-packages/preview', buffer);
+        assert.equal(preview.status, 200, JSON.stringify(preview.body));
+        assert.equal(preview.body.sugestao.newId, 'REDES2', 'o código do curso excluído não é sugerido');
+        assert.equal(preview.body.conflitos.chavesRenomeadas, 4, 'as chaves do curso excluído contam como usadas');
+        // O código do curso excluído (sem diferença de maiúsculas) é recusado.
+        const taken = await postPackage('/api/admin/course-packages/import', buffer, { sha256: preview.body.sha256, newId: 'redes', newName: 'Redes' });
+        assert.equal(taken.status, 400, JSON.stringify(taken.body));
+        assert.equal(taken.body.field, 'newId');
+        assert.match(taken.body.error, /curso excluído/);
+        const done = await postPackage('/api/admin/course-packages/import', buffer, { sha256: preview.body.sha256, newId: 'REDES2', newName: 'Redes (importado)' });
+        assert.equal(done.status, 200, JSON.stringify(done.body));
+        const apostila = path.join(runtimePaths.CONTENT_DIR, 'Apostila_REDES_1_REDES2.md');
+        const imported = fs.readFileSync(apostila, 'utf8');
+        fs.writeFileSync(apostila, `${imported}\nEditado no curso importado.\n`);
+        // Restaurar o curso excluído traz as apostilas dele com os nomes de antes, sem
+        // sobrescrever as do importado.
+        const restored = await asAdmin(request(app).post('/api/admin/archived-courses/restore')).send({ folder: archived.body.folder });
+        assert.equal(restored.status, 200, JSON.stringify(restored.body));
+        assert.equal(fs.readFileSync(apostila, 'utf8'), `${imported}\nEditado no curso importado.\n`);
+        assert.equal(fs.readFileSync(path.join(runtimePaths.CONTENT_DIR, 'Apostila_REDES_1.md'), 'utf8'), APOSTILA_1);
+        assert.deepEqual(db.memory.courses.map(course => course.id).sort(), [COURSE, OTHER, 'REDES2'].sort());
+        // Unidade: sem pasta de cursos excluídos, nada muda.
+        assert.deepEqual(coursePackage.archivedCourseReservations(path.join(tempRoot, 'nada')), { keys: new Set(), ids: new Set() });
+    } finally {
+        fs.rmSync(runtimePaths.ARCHIVE_DIR, { recursive: true, force: true });
+    }
+});
