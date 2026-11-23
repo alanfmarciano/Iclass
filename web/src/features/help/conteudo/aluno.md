@@ -42,9 +42,11 @@ Quando a escola usa a conexão segura (o endereço começa com `https`), o naveg
 
 ## Módulos {#modulos}
 
+**Imprimir ou salvar em PDF.** Com a apostila aberta, toque em **Imprimir ou salvar em PDF** (no celular, o botão da impressora ao lado de **Concluir unidade**). Abre a caixa de impressão do aparelho: escolha a impressora ou **Salvar como PDF** para levar a apostila no celular ou no pen drive. Sai só o texto da unidade, com o nome da escola e do curso; o menu, o seu caderno, as anotações e o fórum não saem. Se o botão não aparece, a escola desligou a impressão deste curso.
+
 ## Busca {#busca}
 
-Toque na **lupa** no alto da tela (ao lado do sino) para procurar uma palavra nas **apostilas** liberadas para a sua turma, na **Biblioteca** e nos **Avisos**.
+Toque na **lupa** no alto da tela (ao lado do sino) para procurar uma palavra nas **apostilas** liberadas para a sua turma, na **Biblioteca**, nos **Avisos** e no seu **Caderno** (o que você escreveu nas notas e nas anotações de parágrafo).
 
 - Não precisa de acento nem de maiúscula: "acao" acha "Ação" e "joao" acha "João".
 - Com duas palavras ou mais, aparece o que tem todas elas.
@@ -116,7 +118,11 @@ Se a Wi-Fi ficar lenta e a barra parar, a tela avisa **A rede está lenta**. Voc
 
 ## Caderno {#caderno}
 
-<!-- P5 (C17) escreve aqui: imprimir a apostila e levar o caderno. -->
+Em **Minhas anotações** você escreve o que quiser e toca em **Salvar**. As anotações de cada unidade você faz na própria apostila: no quadro **Caderno desta unidade** e tocando num parágrafo.
+
+**Minhas notas por unidade** junta tudo o que você escreveu em cada unidade (a nota e as anotações de parágrafo, com o trecho que você marcou), com o nome da unidade e do módulo, na ordem do curso. Toque no nome da unidade para abrir a apostila.
+
+**Levar o caderno.** **Imprimir caderno** abre o caderno inteiro numa folha da escola, para imprimir ou salvar em PDF (se nada abrir, permita janelas deste endereço no navegador). **Baixar caderno (.txt)** salva um arquivo de texto no aparelho, que abre em qualquer celular ou computador, sem internet. Os dois levam o que está escrito em **Minhas anotações** agora, mesmo antes de salvar.
 
 ## Dúvidas {#duvidas}
 

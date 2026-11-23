@@ -1,6 +1,8 @@
 // Índice e busca do portal do aluno (fase 3, C16 / P5-S2; CRIT-07, D24 do P5). Tudo no
 // aparelho: o índice sai do que o aluno já recebe (data.js com as apostilas liberadas,
-// Biblioteca e avisos da turma); nenhuma rota nova, nada de apostila não liberada.
+// Biblioteca e avisos da turma); nenhuma rota nova, nada de apostila não liberada. O
+// caderno (fase 3, C17 / P5-S3) entra pela rota do caderno para levar
+// (GET /api/student/notebook): só o que o próprio aluno escreveu.
 import { markdownToHtml } from '../../../lib/contentMarkdown'
 import { matchesSearch, normalizeSearch, searchTerms } from '../../../lib/textSearch'
 import { findTermRanges, highlightParts, makeSnippet } from '../../../lib/searchHighlight'
@@ -150,6 +152,30 @@ export function announcementEntries(list) {
   })
 }
 
+// Entradas do caderno: a nota geral e, por unidade, a nota e as anotações de parágrafo do
+// aluno. Só o texto que ele escreveu entra na busca (o trecho destacado é texto da
+// apostila, que já sai nos resultados das apostilas).
+export function notebookEntries(notebook) {
+  const data = notebook && typeof notebook === 'object' ? notebook : {}
+  const entries = []
+  const push = (entry, parts) => {
+    const text = parts.map((part) => String(part ?? '').trim()).filter(Boolean).join('\n')
+    if (!text) return
+    entries.push({ ...entry, kind: 'caderno', text, hay: normalizeSearch([text]) })
+  }
+  push({ id: 'geral', title: 'Anotações gerais', context: '', unitKey: '' }, [data.geral])
+  ;(Array.isArray(data.unidades) ? data.unidades : []).forEach((unit) => {
+    if (!unit || !unit.chave) return
+    push({ id: String(unit.chave), title: String(unit.titulo || unit.chave), context: String(unit.modulo || ''), unitKey: String(unit.chave) },
+      [unit.nota, ...(Array.isArray(unit.destaques) ? unit.destaques.map((item) => item && item.nota) : [])])
+  })
+  if (data.anteriores) {
+    push({ id: 'anteriores', title: 'Anotações anteriores', context: '', unitKey: '' },
+      [data.anteriores.nota, ...(Array.isArray(data.anteriores.destaques) ? data.anteriores.destaques.map((item) => item && item.nota) : [])])
+  }
+  return entries
+}
+
 function snippetSource(entry, term) {
   // Trecho do texto; achado só nas etiquetas, mostra as etiquetas.
   if (entry.kind === 'biblioteca' && !matchesAny(entry.text, term) && entry.tags.length) return entry.tags.join(', ')
@@ -184,6 +210,13 @@ function toResult(entry, term) {
   }
   if (entry.kind === 'biblioteca') {
     return withMarks({ ...entry, href: `/aluno/biblioteca?material=${encodeURIComponent(entry.id)}`, context: entry.materia, snippet: snippet.parts }, term)
+  }
+  if (entry.kind === 'caderno') {
+    // Só o texto do aluno entra na busca: o título e o módulo não são marcados. A nota de
+    // unidade liberada abre a unidade (o caderno dela fica ao lado da apostila); a geral,
+    // a de unidade bloqueada e a anterior abrem o Caderno.
+    const href = entry.unitKey && entry.released ? unitHref(entry.unitKey) : '/aluno/caderno'
+    return { ...entry, href, snippet: snippet.parts, titleParts: null, contextParts: null }
   }
   // O autor do aviso não entra na busca: não marca o nome dele.
   return { ...withMarks({ ...entry, href: `/aluno/avisos?aviso=${encodeURIComponent(entry.id)}`, context: entry.authorName, snippet: snippet.parts }, term), contextParts: null }
@@ -225,12 +258,12 @@ function pickApostilas(entries, words, released) {
   return [...full, ...partial, ...titleOnly]
 }
 
-// Busca no índice: { apostilas, biblioteca, avisos, total, shown }. Todas as palavras do
+// Busca no índice: { apostilas, biblioteca, avisos, caderno, total, shown }. Todas as palavras do
 // termo precisam aparecer (cada uma em qualquer campo da entrada), sem acento. released
 // (opcional): liberação de agora; unidade bloqueada depois do download do data.js some na
 // hora, sem esperar o data.js novo.
 export function runSearch(index, term, { limit = SEARCH_RESULT_LIMIT, released = null } = {}) {
-  const empty = { apostilas: [], biblioteca: [], avisos: [], total: 0, shown: 0 }
+  const empty = { apostilas: [], biblioteca: [], avisos: [], caderno: [], total: 0, shown: 0 }
   const words = searchTerms(term)
   if (!words.length || words.join('').length < SEARCH_MIN_CHARS) return empty
   const pick = (list) => (list || []).filter((entry) => {
@@ -240,16 +273,20 @@ export function runSearch(index, term, { limit = SEARCH_RESULT_LIMIT, released =
   const apostilas = pickApostilas(index.apostilas, words, released)
   const biblioteca = pick(index.biblioteca)
   const avisos = pick(index.avisos)
-  const total = apostilas.length + biblioteca.length + avisos.length
+  const caderno = pick(index.caderno)
+  const total = apostilas.length + biblioteca.length + avisos.length + caderno.length
   const sideLimit = Math.min(SIDE_GROUP_SHARE, Math.floor(limit / 3))
-  const bibliotecaShown = biblioteca.slice(0, Math.max(sideLimit, limit - apostilas.length - Math.min(avisos.length, sideLimit)))
-  const avisosShown = avisos.slice(0, Math.max(sideLimit, limit - apostilas.length - bibliotecaShown.length))
-  const apostilasShown = apostilas.slice(0, Math.max(0, limit - bibliotecaShown.length - avisosShown.length))
+  const cadernoReserve = Math.min(caderno.length, sideLimit)
+  const bibliotecaShown = biblioteca.slice(0, Math.max(sideLimit, limit - apostilas.length - Math.min(avisos.length, sideLimit) - cadernoReserve))
+  const avisosShown = avisos.slice(0, Math.max(sideLimit, limit - apostilas.length - bibliotecaShown.length - cadernoReserve))
+  const cadernoShown = caderno.slice(0, Math.max(sideLimit, limit - apostilas.length - bibliotecaShown.length - avisosShown.length))
+  const apostilasShown = apostilas.slice(0, Math.max(0, limit - bibliotecaShown.length - avisosShown.length - cadernoShown.length))
   return {
     apostilas: apostilasShown.map((entry) => toResult(entry, term)),
     biblioteca: bibliotecaShown.map((entry) => toResult(entry, term)),
     avisos: avisosShown.map((entry) => toResult(entry, term)),
+    caderno: cadernoShown.map((entry) => toResult({ ...entry, released: !released || released[entry.unitKey] === true }, term)),
     total,
-    shown: apostilasShown.length + bibliotecaShown.length + avisosShown.length,
+    shown: apostilasShown.length + bibliotecaShown.length + avisosShown.length + cadernoShown.length,
   }
 }

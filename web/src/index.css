@@ -154,3 +154,36 @@ mark.busca-marca-atual { outline: 2px solid var(--warning); outline-offset: 1px;
 .wysiwyg-editor:empty::before { content: 'Digite o conteúdo da apostila...'; color: var(--text-subtle); }
 .wysiwyg-editor:focus { min-height: 520px; }
 .wysiwyg-editor img { cursor: default; }
+
+/* Folha de impressão da apostila (fase 3, C17 / P5-S3; UXA-14, D25 do P5;
+   features/student/ApostilaImpressao.jsx). Na tela ela não aparece. Na impressão, com o
+   leitor aberto (<html data-impressao>), só ela sai: o resto do <body> (o #root inteiro:
+   menu, faixas, caderno, fórum, anotações, avisos) some. Cores fixas de papel (o tema
+   escuro não vai para a folha), margens de 15 mm, tabela e código quebrando linha,
+   imagem no máximo a largura da página. */
+.folha-impressao { display: none; }
+@media print {
+  @page { margin: 15mm; }
+  html[data-impressao], html[data-impressao] body { background: #fff !important; height: auto; min-height: 0; }
+  html[data-impressao] body > *:not(.folha-impressao) { display: none !important; }
+  html[data-impressao] .folha-impressao {
+    display: block;
+    --text: #111; --text-muted: #444; --text-subtle: #666; --surface-2: #f1f1f1; --border: #b8b8b8; --primary: #1d4ed8;
+    color: #111; background: #fff; font-size: 11pt; line-height: 1.5;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+  }
+  .folha-impressao-cabecalho { display: flex; justify-content: space-between; gap: 12px; border-bottom: 1px solid #999; padding-bottom: 4px; margin-bottom: 10px; font-size: 9pt; color: #444; }
+  .folha-impressao-titulo { font-size: 18pt; font-weight: 700; margin: 0 0 6px; break-after: avoid; page-break-after: avoid; }
+  .folha-impressao-rodape { margin-top: 18px; border-top: 1px solid #999; padding-top: 4px; font-size: 9pt; color: #444; }
+  .folha-impressao-bloqueada { font-size: 14pt; text-align: center; margin: 0; padding-top: 40mm; }
+  .folha-impressao .prose-iclass { line-height: 1.5; overflow-wrap: anywhere; }
+  .folha-impressao .prose-iclass h1, .folha-impressao .prose-iclass h2, .folha-impressao .prose-iclass h3,
+  .folha-impressao .prose-iclass h4 { break-after: avoid; page-break-after: avoid; }
+  .folha-impressao .prose-iclass pre { white-space: pre-wrap; overflow: visible; overflow-wrap: anywhere; border: 1px solid #ccc; border-radius: 6px; break-inside: avoid; }
+  .folha-impressao .prose-iclass code { overflow-wrap: anywhere; }
+  .folha-impressao .prose-iclass table { table-layout: auto; width: 100%; max-width: 100%; }
+  .folha-impressao .prose-iclass th, .folha-impressao .prose-iclass td { overflow-wrap: anywhere; word-break: break-word; }
+  .folha-impressao .prose-iclass tr, .folha-impressao .prose-iclass img, .folha-impressao .prose-iclass blockquote { break-inside: avoid; page-break-inside: avoid; }
+  .folha-impressao .prose-iclass img { max-width: 100% !important; max-height: 240mm; height: auto; border-radius: 0; }
+  .folha-impressao .prose-iclass a { color: #1d4ed8; }
+}

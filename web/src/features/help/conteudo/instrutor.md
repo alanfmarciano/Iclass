@@ -223,6 +223,8 @@ Registra a presença por aula. Escolha a data, marque quem veio e salve. A prese
 
 Lista os cursos da instituição e as turmas de cada um. Daqui você cria turmas e abre ou fecha o autocadastro dos alunos em cada uma.
 
+**Impressão da apostila.** Em **Novo curso** e **Editar**, a chave **Alunos podem imprimir ou salvar a apostila em PDF** vem ligada (também nos cursos que já existiam). Ligada, o aluno tem o botão **Imprimir ou salvar em PDF** na apostila aberta: sai só o texto da unidade, com o nome da escola e "Material de uso dos alunos de <curso>" no rodapé, sem o menu, o caderno nem o fórum. Desligue se o material do curso não pode sair da escola: o botão some e quem tentar imprimir a página pelo navegador recebe só "Impressão desativada pela escola.". A mudança fica na Auditoria. Isso não impede uma foto da tela; é um aviso claro de que o material é da escola. O curso duplicado leva a mesma escolha.
+
 <!-- P2 (B6, B8, B10) escreve aqui: critérios de avaliação, disciplinas, período letivo e encerrar turma. P4 (A14): exportar e importar curso. -->
 
 ## Período letivo {#periodo-letivo}

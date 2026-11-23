@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { AlertTriangle, ArrowLeft, BookOpen, CheckCircle2, Highlighter, Lock, MessageSquare, NotebookPen, Reply, Save, Search, Trash2, X } from 'lucide-react'
+import { AlertTriangle, ArrowLeft, BookOpen, CheckCircle2, Highlighter, Lock, MessageSquare, NotebookPen, Printer, Reply, Save, Search, Trash2, X } from 'lucide-react'
 import { Card, CardBody, CardHeader } from '../../components/ui/Card'
 import { Button } from '../../components/ui/Button'
 import { Badge } from '../../components/ui/Badge'
@@ -20,6 +20,9 @@ import { ANNOTATION_NOTE_MAX_CHARS, FORUM_TEXT_MAX_CHARS, NOTE_COUNTER_FROM, NOT
 import { normalizeUnit, readerModules, unitKey, useCourseContent } from './useCourseContent'
 import { SEARCH_PARAM, SECTION_PARAM, UNIT_PARAM } from './unitLinks'
 import { MARK_CURRENT_CLASS, firstMarkFrom, markTerm, sectionHeading, unmarkTerm } from './busca/contentText'
+import { ApostilaPrintSheet, useApostilaPrint } from './ApostilaImpressao'
+import { useBranding } from '../../context/BrandingProvider'
+import { schoolFromBranding } from '../../lib/printDocument'
 
 // Unidade do endereço (?unidade=): a chave exata ou, se não houver, a mesma sem diferenciar
 // maiúsculas (link digitado ou copiado de outro jeito).
@@ -90,6 +93,13 @@ export default function ModulosPage() {
   const openModuleDone = openModuleUnits.filter((unit) => completed[unit.key]).length
   const openModuleTotal = openModuleUnits.length
   const openModulePct = openModuleTotal ? Math.round((openModuleDone / openModuleTotal) * 100) : 0
+  // Imprimir ou salvar em PDF (fase 3, C17 / P5-S3; D25 do P5): só a apostila sai no papel
+  // (ApostilaImpressao.jsx). O curso que desliga a impressão (permitirImpressao false no
+  // data.js) não tem o botão, e o Ctrl+P sai só com o aviso.
+  const { branding } = useBranding()
+  const course = (courseData && Array.isArray(courseData.courses) && courseData.courses[0]) || null
+  const printAllowed = !course || course.permitirImpressao !== false
+  const printer = useApostilaPrint({ open: !!openUnit, allowed: printAllowed })
 
   async function openReader(unit) {
     openKeyRef.current = unit.key
@@ -279,8 +289,24 @@ export default function ModulosPage() {
         <Button variant="ghost" icon={ArrowLeft} onClick={backToModules}>Voltar aos módulos</Button>
         <Badge tone={completed[openUnit.key] ? 'success' : 'neutral'}>{completed[openUnit.key] ? 'Concluída' : 'Em estudo'}</Badge>
         <Button size="sm" variant="secondary" icon={CheckCircle2} disabled={!!preview} title={preview ? PREVIEW_DISABLED_TEXT : undefined} onClick={() => markDone(!completed[openUnit.key])}>{completed[openUnit.key] ? 'Desmarcar' : 'Concluir unidade'}</Button>
+        {printAllowed && (
+          <Button size="sm" variant="secondary" icon={Printer} className="ml-auto" aria-label="Imprimir ou salvar em PDF" title="Imprimir ou salvar em PDF" onClick={printer.print}>
+            <span className="hidden sm:inline">Imprimir ou salvar em PDF</span>
+          </Button>
+        )}
         <PreviewDisabledNote />
       </div>
+      <ApostilaPrintSheet
+        open={!!openUnit}
+        allowed={printAllowed}
+        printing={printer.printing}
+        sheetRef={printer.sheetRef}
+        html={html}
+        unitTitle={openUnit.title}
+        moduleTitle={openUnit.moduleTitle}
+        courseName={(course && course.name) || ''}
+        schoolName={schoolFromBranding(branding).nome}
+      />
 
       {highlightTerm && html && (
         <div role="status" className="flex flex-wrap items-center gap-2 rounded-lg border border-warning bg-warning-soft px-3 py-2 text-sm text-text">

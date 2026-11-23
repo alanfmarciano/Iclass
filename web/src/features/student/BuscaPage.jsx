@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
-import { BookOpen, FolderOpen, Megaphone, Search } from 'lucide-react'
+import { BookOpen, FolderOpen, Megaphone, NotebookPen, Search } from 'lucide-react'
 import { Card } from '../../components/ui/Card'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { HelpLink } from '../../components/ui/HelpLink'
@@ -8,11 +8,11 @@ import { PageState } from '../../components/ui/PageState'
 import { useApi } from '../../hooks/useApi'
 import { useStudent } from './useStudent'
 import { useCourseContent } from './useCourseContent'
-import { SEARCH_MIN_CHARS, SEARCH_RESULT_LIMIT, announcementEntries, buildApostilaIndex, libraryEntries, peekApostilaIndex, runSearch } from './busca/searchIndex'
+import { SEARCH_MIN_CHARS, SEARCH_RESULT_LIMIT, announcementEntries, buildApostilaIndex, libraryEntries, notebookEntries, peekApostilaIndex, runSearch } from './busca/searchIndex'
 
 // Busca do portal do aluno (fase 3, C16 / P5-S2; CRIT-07, D24 do P5): nas apostilas
-// liberadas para a turma (por seção), na Biblioteca e nos avisos, sem acento e no próprio
-// aparelho. O clique numa apostila abre o leitor na unidade, rolando até o trecho achado
+// liberadas para a turma (por seção), na Biblioteca, nos avisos e no caderno do aluno (C17 /
+// P5-S3: GET /api/student/notebook), sem acento e no próprio aparelho. O clique numa apostila abre o leitor na unidade, rolando até o trecho achado
 // (/aluno/modulos?unidade=&busca=&secao=). O termo fica no endereço (?q=): voltar do
 // leitor devolve a mesma busca.
 
@@ -97,6 +97,7 @@ export default function BuscaPage() {
   const content = useCourseContent({ releasedItems: released })
   const library = useApi(ready ? `/api/student/library?${context}` : null, [email, courseId, studentClass])
   const announcements = useApi(ready ? `/api/student/announcements?${context}` : null, [email, courseId, studentClass])
+  const notebook = useApi(ready ? `/api/student/notebook?${context}` : null, [email, courseId, studentClass])
 
   useEffect(() => { inputRef.current?.focus() }, [])
 
@@ -117,9 +118,10 @@ export default function BuscaPage() {
   const index = useApostilaIndex(content.data, content.loaded)
   const biblioteca = useMemo(() => libraryEntries(library.data), [library.data])
   const avisos = useMemo(() => announcementEntries(announcements.data), [announcements.data])
+  const caderno = useMemo(() => notebookEntries(notebook.data), [notebook.data])
   const results = useMemo(
-    () => runSearch({ apostilas: index.entries, biblioteca, avisos }, term, { released }),
-    [index.entries, biblioteca, avisos, term, released],
+    () => runSearch({ apostilas: index.entries, biblioteca, avisos, caderno }, term, { released }),
+    [index.entries, biblioteca, avisos, caderno, term, released],
   )
   const searching = trimmed.replace(/\s+/g, '').length >= SEARCH_MIN_CHARS
   // Termo pronto, mas o índice ainda montando (data.js acabou de chegar): espera, em vez
@@ -127,14 +129,14 @@ export default function BuscaPage() {
   const preparing = searching && !content.error && (!content.loaded || !index.ready)
 
   const tooShort = trimmed.length > 0 && trimmed.replace(/\s+/g, '').length < SEARCH_MIN_CHARS
-  const sideErrors = [library.error && 'na Biblioteca', announcements.error && 'nos avisos'].filter(Boolean)
+  const sideErrors = [library.error && 'na Biblioteca', announcements.error && 'nos avisos', notebook.error && 'no caderno'].filter(Boolean)
 
   return (
     <div className="mx-auto max-w-3xl space-y-5">
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
           <h1 className="text-2xl font-bold text-text">Busca</h1>
-          <p className="text-sm text-muted">Procure uma palavra nas apostilas liberadas para a sua turma, na Biblioteca e nos avisos.</p>
+          <p className="text-sm text-muted">Procure uma palavra nas apostilas liberadas para a sua turma, na Biblioteca, nos avisos e no seu caderno.</p>
         </div>
         <HelpLink topic="busca" doc="aluno" className="h-11 w-11 shrink-0" />
       </div>
@@ -151,7 +153,7 @@ export default function BuscaPage() {
             value={input}
             onChange={(event) => setInput(event.target.value)}
             maxLength={120}
-            placeholder="Buscar nas apostilas, na biblioteca e nos avisos"
+            placeholder="Buscar nas apostilas, na biblioteca, nos avisos e no caderno"
             className="h-12 w-full rounded-xl border border-border bg-surface pl-10 pr-3 text-base text-text placeholder:text-subtle focus:border-primary focus:outline-none"
           />
         </div>
@@ -172,6 +174,7 @@ export default function BuscaPage() {
             <ResultGroup title="Apostilas" icon={BookOpen} items={results.apostilas} />
             <ResultGroup title="Biblioteca" icon={FolderOpen} items={results.biblioteca} />
             <ResultGroup title="Avisos" icon={Megaphone} items={results.avisos} />
+            <ResultGroup title="Caderno" icon={NotebookPen} items={results.caderno} />
           </div>
         )}
         {trimmed && sideErrors.length > 0 && <p className="px-1 text-xs text-warning">Não foi possível buscar {sideErrors.join(' nem ')} agora. Tente de novo mais tarde.</p>}

@@ -7,6 +7,7 @@ import { Card, CardBody } from '../../components/ui/Card'
 import { ConfirmDialog, Modal } from '../../components/ui/Modal'
 import { Input } from '../../components/ui/Input'
 import { Select } from '../../components/ui/Select'
+import { Switch } from '../../components/ui/Switch'
 import { PageState } from '../../components/ui/PageState'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { useApi } from '../../hooks/useApi'
@@ -125,8 +126,10 @@ export default function TurmasPage() {
     }
   }
 
-  const openNewCourse = () => setCourseForm({ mode: 'create', id: '', name: '', description: '', schoolId: schools[0]?.id || '' })
-  const openEditCourse = () => setCourseForm({ mode: 'edit', id: selectedCourse.id, name: selectedCourse.name || '', description: selectedCourse.description || '', schoolId: selectedCourse.schoolId || '' })
+  // permitirImpressao (fase 3, C17 / P5-S3; D25 do P5): o aluno imprime ou salva em PDF a
+  // apostila no leitor. Ausente no curso (de antes desta versão) vale ligado.
+  const openNewCourse = () => setCourseForm({ mode: 'create', id: '', name: '', description: '', schoolId: schools[0]?.id || '', permitirImpressao: true })
+  const openEditCourse = () => setCourseForm({ mode: 'edit', id: selectedCourse.id, name: selectedCourse.name || '', description: selectedCourse.description || '', schoolId: selectedCourse.schoolId || '', permitirImpressao: selectedCourse.permitirImpressao !== false })
   const openCloneCourse = () => setCourseForm({ mode: 'clone', sourceId: selectedCourse.id, id: `${selectedCourse.id}_COPIA`, name: `${selectedCourse.name} (cópia)`, description: selectedCourse.description || '', schoolId: selectedCourse.schoolId || '' })
 
   async function saveCourse() {
@@ -134,10 +137,10 @@ export default function TurmasPage() {
     if (!form.name?.trim() || !form.schoolId || (form.mode !== 'edit' && !form.id?.trim())) return toast.error('Informe os dados obrigatórios do curso.')
     const ok = await run(async () => {
       if (form.mode === 'create') {
-        const result = await api.post('/api/admin/courses', { id: form.id.trim().toUpperCase(), name: form.name.trim(), description: form.description?.trim(), schoolId: form.schoolId })
+        const result = await api.post('/api/admin/courses', { id: form.id.trim().toUpperCase(), name: form.name.trim(), description: form.description?.trim(), schoolId: form.schoolId, permitirImpressao: form.permitirImpressao !== false })
         setSelectedCourseId(result.course.id)
       } else if (form.mode === 'edit') {
-        await api.put(`/api/admin/courses/${encodeURIComponent(form.id)}`, { name: form.name.trim(), description: form.description?.trim(), schoolId: form.schoolId })
+        await api.put(`/api/admin/courses/${encodeURIComponent(form.id)}`, { name: form.name.trim(), description: form.description?.trim(), schoolId: form.schoolId, permitirImpressao: form.permitirImpressao !== false })
       } else {
         const result = await api.post(`/api/admin/courses/${encodeURIComponent(form.sourceId)}/clone`, { newId: form.id.trim().toUpperCase(), newName: form.name.trim(), schoolId: form.schoolId }, { timeoutMs: 0 })
         setSelectedCourseId(result.course.id)
@@ -285,7 +288,7 @@ export default function TurmasPage() {
       </PageState>
 
       <Modal open={!!courseForm} onClose={() => setCourseForm(null)} title={courseForm?.mode === 'edit' ? 'Editar curso' : courseForm?.mode === 'clone' ? 'Duplicar curso' : 'Novo curso'} description="Defina a escola responsável e os dados do curso." footer={<><Button variant="ghost" onClick={() => setCourseForm(null)}>Cancelar</Button><Button loading={saving} onClick={saveCourse}>Salvar</Button></>}>
-        {courseForm && <div className="space-y-4">{courseForm.mode !== 'edit' && <Input label="Código do curso" value={courseForm.id} onChange={event => setCourseForm({ ...courseForm, id: event.target.value })} placeholder="EX.: DES" />}<Input label="Nome" value={courseForm.name} onChange={event => setCourseForm({ ...courseForm, name: event.target.value })} /><Input label="Descrição" value={courseForm.description} onChange={event => setCourseForm({ ...courseForm, description: event.target.value })} /><Select label="Escola" value={courseForm.schoolId} onChange={event => setCourseForm({ ...courseForm, schoolId: event.target.value })}><option value="">Selecione</option>{schools.map(school => <option key={school.id} value={school.id}>{school.name}</option>)}</Select></div>}
+        {courseForm && <div className="space-y-4">{courseForm.mode !== 'edit' && <Input label="Código do curso" value={courseForm.id} onChange={event => setCourseForm({ ...courseForm, id: event.target.value })} placeholder="EX.: DES" />}<Input label="Nome" value={courseForm.name} onChange={event => setCourseForm({ ...courseForm, name: event.target.value })} /><Input label="Descrição" value={courseForm.description} onChange={event => setCourseForm({ ...courseForm, description: event.target.value })} /><Select label="Escola" value={courseForm.schoolId} onChange={event => setCourseForm({ ...courseForm, schoolId: event.target.value })}><option value="">Selecione</option>{schools.map(school => <option key={school.id} value={school.id}>{school.name}</option>)}</Select>{courseForm.mode !== 'clone' && <div className="space-y-1"><Switch id="curso-permitir-impressao" checked={courseForm.permitirImpressao !== false} onChange={value => setCourseForm({ ...courseForm, permitirImpressao: value })} label="Alunos podem imprimir ou salvar a apostila em PDF" /><p className="text-xs text-muted">Desligado, o botão "Imprimir ou salvar em PDF" some do leitor e a impressão da apostila sai só com "Impressão desativada pela escola.". A folha impressa leva o nome da escola e do curso.</p></div>}</div>}
       </Modal>
 
       <Modal open={!!classForm} onClose={() => setClassForm(null)} size="lg" title={classForm?.mode === 'edit' ? 'Editar turma' : 'Nova turma'} description={selectedCourse?.name} footer={<><Button variant="ghost" onClick={() => setClassForm(null)}>Cancelar</Button><Button loading={saving} onClick={saveClass}>Salvar</Button></>}>

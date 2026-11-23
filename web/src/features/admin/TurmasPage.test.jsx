@@ -55,8 +55,24 @@ describe('TurmasPage · cursos', () => {
     await user.type(within(dialog).getByLabelText('Nome'), 'Curso novo')
     await user.selectOptions(within(dialog).getByLabelText('Escola'), 'escola-b')
     await user.click(within(dialog).getByRole('button', { name: 'Salvar' }))
-    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/courses', { id: 'NOVO', name: 'Curso novo', description: '', schoolId: 'escola-b' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/courses', { id: 'NOVO', name: 'Curso novo', description: '', schoolId: 'escola-b', permitirImpressao: true }))
     expect(mocks.post.mock.calls.some(([path]) => path === '/api/courses')).toBe(false)
+  })
+
+  // Fase 3, C17 / P5-S3 (D25 do P5): o curso sem o campo (de antes desta versão) abre com
+  // a impressão ligada; desligar manda permitirImpressao false no PUT.
+  it('[UC-CONTEUDO-002] "Editar" mostra "Alunos podem imprimir..." ligado no curso antigo e desligar manda false', async () => {
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(await screen.findByRole('button', { name: 'Editar' }))
+    const dialog = screen.getByRole('dialog', { name: 'Editar curso' })
+    const toggle = within(dialog).getByRole('switch')
+    expect(toggle).toHaveAttribute('aria-checked', 'true')
+    expect(dialog).toHaveTextContent('Alunos podem imprimir ou salvar a apostila em PDF')
+    await user.click(toggle)
+    expect(toggle).toHaveAttribute('aria-checked', 'false')
+    await user.click(within(dialog).getByRole('button', { name: 'Salvar' }))
+    await waitFor(() => expect(mocks.put).toHaveBeenCalledWith('/api/admin/courses/DES', expect.objectContaining({ permitirImpressao: false })))
   })
 
   it('[UC-CURSO-001] "Editar" e "Excluir" usam PUT e DELETE em /api/admin/courses/:id', async () => {
@@ -68,7 +84,7 @@ describe('TurmasPage · cursos', () => {
     await user.clear(name)
     await user.type(name, 'Técnico em Informática')
     await user.click(within(dialog).getByRole('button', { name: 'Salvar' }))
-    await waitFor(() => expect(mocks.put).toHaveBeenCalledWith('/api/admin/courses/DES', { name: 'Técnico em Informática', description: 'Desenvolvimento', schoolId: 'escola-a' }))
+    await waitFor(() => expect(mocks.put).toHaveBeenCalledWith('/api/admin/courses/DES', { name: 'Técnico em Informática', description: 'Desenvolvimento', schoolId: 'escola-a', permitirImpressao: true }))
 
     await user.click(screen.getByRole('button', { name: 'Excluir' }))
     const confirm = screen.getByRole('dialog', { name: 'Excluir curso?' })

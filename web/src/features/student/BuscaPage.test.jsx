@@ -7,7 +7,7 @@ import { SEARCH_RESULT_LIMIT, apostilaEntries, buildApostilaIndex, peekApostilaI
 
 // Fase 3, C16 (P5-S2; CRIT-07, D24 do P5): busca do aluno no aparelho, nas apostilas
 // liberadas (por seção), na Biblioteca e nos avisos da turma.
-const mocks = vi.hoisted(() => ({ get: vi.fn(), released: {}, library: [], announcements: [], urls: [], options: {} }))
+const mocks = vi.hoisted(() => ({ get: vi.fn(), released: {}, library: [], announcements: [], notebook: null, urls: [], options: {} }))
 vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: vi.fn() } }))
 vi.mock('./useStudent', () => ({ useStudent: () => ({ email: 'ana@x.local', name: 'Ana', studentClass: '1DES', courseId: 'DES' }) }))
 vi.mock('../../hooks/useApi', () => ({
@@ -18,7 +18,8 @@ vi.mock('../../hooks/useApi', () => ({
     const data = text.startsWith('/api/status') ? { releasedItems: mocks.released }
       : text.startsWith('/api/student/library') ? mocks.library
         : text.startsWith('/api/student/announcements') ? mocks.announcements
-          : null
+          : text.startsWith('/api/student/notebook') ? mocks.notebook
+            : null
     return { data, loading: false, error: null, refetch: vi.fn() }
   },
 }))
@@ -64,6 +65,7 @@ function renderSearch(initial = '/aluno/busca') {
         <Route path="/aluno/modulos" element={<LocationProbe />} />
         <Route path="/aluno/biblioteca" element={<LocationProbe />} />
         <Route path="/aluno/avisos" element={<LocationProbe />} />
+        <Route path="/aluno/caderno" element={<LocationProbe />} />
       </Routes>
     </MemoryRouter>,
   )
@@ -87,6 +89,7 @@ beforeEach(() => {
   mocks.released = { Apostila_DES_1: true, Apostila_DES_2: true, Apostila_DES_3: false }
   mocks.library = [{ id: 'lib1', name: 'Guia do roteador', description: 'Passo a passo da configuração.', tags: ['rede'], materia: 'Módulo 1' }]
   mocks.announcements = [{ id: 'av1', title: 'Prova de redes', message: 'A prova sobre TCP será na sexta.', authorName: 'Prof. Rui' }]
+  mocks.notebook = null
   mocks.get.mockImplementation(async (url) => {
     if (url.startsWith('/api/data.js')) return `const courseData = ${JSON.stringify(courseData())};`
     return {}
@@ -383,5 +386,42 @@ describe('[UC-BUSCA-003] liberação e conteúdo com a Busca aberta', () => {
     await settle()
     expect(mocks.get.mock.calls.filter(([url]) => url.startsWith('/api/data.js'))).toHaveLength(2)
     expect(screen.getByRole('region', { name: 'Apostilas' })).toBeInTheDocument()
+  })
+})
+
+// Fase 3, C17 (P5-S3; D24 do P5): o caderno do aluno entra na busca, pela rota do caderno
+// para levar. Só o que ele escreveu (a nota e as anotações), não o trecho da apostila.
+describe('[UC-BUSCA-003] Busca do aluno · caderno', () => {
+  it('acha a palavra na nota geral e nas notas das unidades; unidade liberada abre a apostila, as outras abrem o Caderno', async () => {
+    mocks.notebook = {
+      geral: 'Revisar a máscara de sub-rede antes da prova',
+      unidades: [
+        { chave: 'Apostila_DES_1', titulo: 'Redes de computadores', modulo: 'Módulo 1', nota: '', destaques: [{ paragrafo: 'p1', trecho: 'Uma rede liga computadores.', nota: 'Mascara cai na prova' }] },
+        { chave: 'Apostila_DES_3', titulo: 'Unidade bloqueada', modulo: 'Módulo 1', nota: 'máscara /24 no laboratório', destaques: [] },
+      ],
+    }
+    renderSearch()
+    await settle()
+    expect(mocks.urls.some((url) => String(url).startsWith('/api/student/notebook?courseId=DES&studentClass=1DES'))).toBe(true)
+    await typeTerm('mascara')
+    const caderno = screen.getByRole('region', { name: 'Caderno' })
+    const links = within(caderno).getAllByRole('link')
+    expect(links.map((link) => link.getAttribute('href'))).toEqual(['/aluno/caderno', '/aluno/modulos?unidade=Apostila_DES_1', '/aluno/caderno'])
+    expect(links[1]).toHaveTextContent('Redes de computadores')
+    expect(within(links[1]).getByText('Mascara', { selector: 'mark' })).toBeInTheDocument()
+
+    // O trecho destacado é texto da apostila: não vira resultado do caderno.
+    await typeTerm('liga computadores')
+    expect(screen.queryByRole('region', { name: 'Caderno' })).not.toBeInTheDocument()
+  })
+
+  it('runSearch: o caderno tem a parte garantida dos 50 resultados, como Biblioteca e avisos', () => {
+    const apostilas = Array.from({ length: 80 }, (_, i) => ({ kind: 'apostila', id: `a${i}#0`, unitKey: 'Apostila_DES_1', unitTitle: 'U', moduleTitle: 'M', secao: 0, sectionTitle: '', text: 'rede', hay: 'rede', titleHay: 'u m' }))
+    const caderno = Array.from({ length: 3 }, (_, i) => ({ kind: 'caderno', id: `c${i}`, title: 'C', context: '', unitKey: '', text: 'rede', hay: 'rede' }))
+    const result = runSearch({ apostilas, biblioteca: [], avisos: [], caderno }, 'rede')
+    expect(result.caderno).toHaveLength(3)
+    expect(result.shown).toBe(SEARCH_RESULT_LIMIT)
+    expect(result.total).toBe(83)
+    expect(runSearch({ apostilas, biblioteca: [], avisos: [] }, 'rede').caderno).toEqual([])
   })
 })

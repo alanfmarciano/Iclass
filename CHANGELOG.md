@@ -4,6 +4,13 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 
 ## Não publicado
 
+### Imprimir a apostila e levar o caderno
+- A apostila aberta tem o botão **Imprimir ou salvar em PDF** (no celular, o ícone da impressora). Abre a caixa de impressão do próprio aparelho, sem janela nova, e sai só a apostila: o nome da escola e do curso, o título da unidade, o texto (imagens, tabelas e código cabendo na folha, com margem de 15 mm, em cores de papel mesmo no tema escuro) e o rodapé "Material de uso dos alunos de <curso>". O menu, as faixas, o caderno, as anotações, o fórum e a marca da busca não saem. O Ctrl+P do navegador com a apostila aberta faz o mesmo.
+- O curso ganhou a chave **Alunos podem imprimir ou salvar a apostila em PDF** em Novo curso e Editar (Turmas), ligada também nos cursos que já existiam. Desligada, o botão some e a impressão da página sai só com "Impressão desativada pela escola."; a mudança fica na Auditoria.
+- O **Caderno** do aluno mostra **Minhas notas por unidade** (a nota de cada unidade e as anotações de parágrafo com o trecho marcado, com o nome da unidade e do módulo, na ordem do curso) e tem **Imprimir caderno** (folha com o cabeçalho da escola) e **Baixar caderno (.txt)** (arquivo gerado no próprio aparelho, que abre no Bloco de Notas). Nota de unidade que saiu do curso não aparece ali, mas continua guardada e sai em Meus dados.
+- A **Busca** do aluno também procura no caderno (no que ele escreveu, não no trecho da apostila).
+- Na pré-visualização como aluno, o caderno aparece vazio.
+
 ### Busca no portal do aluno e link direto da unidade
 - Lupa nova no alto do portal do aluno (ao lado do sino, também no celular e no visual Lumen): a tela **Busca** procura uma palavra nas apostilas liberadas para a turma, na Biblioteca e nos avisos, sem diferenciar acento nem maiúscula ("acao" acha "Ação"). Cada resultado mostra a unidade, a parte da apostila e um pedaço do texto com a palavra marcada; no máximo 50 resultados, primeiro as partes da apostila que têm a palavra no texto; a unidade achada só pelo título (dela ou do módulo) aparece uma vez. Apostila que o professor não liberou nunca aparece, e a que ele bloqueia com a Busca aberta sai dos resultados em poucos segundos, sem recarregar a página. A busca roda no próprio aparelho, sem pesar no computador do professor; ela se prepara assim que a tela abre, aos poucos, sem travar o celular.
 - Tocar num resultado abre a apostila já na parte encontrada, com a palavra marcada e a faixa "Destacando ..." com **Tirar destaque**; o resultado da Biblioteca abre o material e o do aviso abre o aviso (que conta como lido).

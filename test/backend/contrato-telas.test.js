@@ -644,6 +644,53 @@ test('[UC-BUSCA-002] guarda: nenhuma busca com toLowerCase().includes nem locale
     assert.deepEqual(textSearchViolations({ file: 'components/ui/Table.jsx', text: table }), []);
 });
 
+// Folha de impressão da apostila (fase 3, C17 / P5-S3; UXA-14, D25 do P5). Antes
+// web/src/index.css não tinha @media print: a apostila saía com o menu, as faixas, o
+// caderno e o fórum, no tema escuro, e tabela ou código largo cortava na margem.
+function mediaBlocks(css, query) {
+    const blocks = [];
+    let from = 0;
+    while (true) {
+        const start = css.indexOf(`@media ${query}`, from);
+        if (start === -1) break;
+        const open = css.indexOf('{', start);
+        let depth = 0;
+        let end = open;
+        for (; end < css.length; end += 1) {
+            if (css[end] === '{') depth += 1;
+            else if (css[end] === '}') { depth -= 1; if (depth === 0) break; }
+        }
+        blocks.push(css.slice(open + 1, end));
+        from = end + 1;
+    }
+    return blocks;
+}
+
+test('[UC-CONTEUDO-002] index.css tem @media print do leitor: só a folha da apostila sai (sem menu, caderno nem fórum), com margem, código e tabela quebrando e imagem na largura', () => {
+    const css = fs.readFileSync(path.join(WEB_SRC, 'index.css'), 'utf8');
+    const print = mediaBlocks(css, 'print').join('\n').replace(/\s+/g, ' ');
+    assert.ok(print, 'index.css precisa de @media print');
+    // Fora da impressão a folha não aparece; na impressão, com o leitor aberto, o resto do
+    // <body> (o #root com o menu, as faixas, o caderno e o fórum) some.
+    assert.match(css.replace(/\s+/g, ' '), /\.folha-impressao \{ display: none; \}/);
+    assert.match(print, /html\[data-impressao\] body > \*:not\(\.folha-impressao\) \{ display: none !important; \}/);
+    assert.match(print, /html\[data-impressao\] \.folha-impressao \{ display: block;/);
+    assert.match(print, /@page \{ margin: 15mm; \}/);
+    assert.match(print, /\.folha-impressao \.prose-iclass pre \{[^}]*white-space: pre-wrap/);
+    assert.match(print, /\.folha-impressao \.prose-iclass th, \.folha-impressao \.prose-iclass td \{[^}]*overflow-wrap: anywhere/);
+    assert.match(print, /\.folha-impressao \.prose-iclass img \{[^}]*max-width: 100%/);
+    // A folha é filha direta do <body> (portal) e o leitor usa a folha e o window.print.
+    const source = file => fs.readFileSync(path.join(WEB_SRC, file), 'utf8').replace(/\s+/g, ' ');
+    const sheet = source('features/student/ApostilaImpressao.jsx');
+    assert.match(sheet, /createPortal\(/);
+    assert.match(sheet, /document\.body,? \)/);
+    assert.match(sheet, /window\.print\(\)/);
+    assert.match(sheet, /className="folha-impressao"/);
+    const reader = source('features/student/ModulosPage.jsx');
+    assert.match(reader, /<ApostilaPrintSheet/);
+    assert.match(reader, /permitirImpressao !== false/);
+});
+
 // Caixas do navegador (window.confirm, prompt e alert) congelam a página (o polling para)
 // e não dizem o que vai acontecer: tela tocada na fase 3 usa o ConfirmDialog
 // (web/src/components/ui/ConfirmDialog.jsx, contrato C12 do P3). As que ainda existem

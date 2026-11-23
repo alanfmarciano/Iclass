@@ -12,6 +12,7 @@ const { effectiveStructure } = require('../utils/classContent.js');
 const {
     SAFE_CONTENT_KEY,
     classStructure,
+    coursePrintAllowed,
     findContentFile,
     isRestrictedContentKey,
     readApostila,
@@ -268,6 +269,8 @@ async function sendStudentCourseData(req, res) {
         name: course.name || '',
         description: course.description || '',
         structure: classStructure(cls),
+        // O leitor mostra "Imprimir ou salvar em PDF" só com true (C17 / P5-S3, D25 do P5).
+        permitirImpressao: coursePrintAllowed(course),
     }];
     dataObj.branding = db.memory.branding || {};
     res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');

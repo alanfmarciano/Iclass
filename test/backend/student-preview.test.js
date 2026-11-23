@@ -543,6 +543,8 @@ function decisions(virtualEmail) {
         'POST /api/student/conversations/:id/messages': 'recusada',
         'POST /api/student/conversations/:id/read': 'recusada',
         'POST /api/student/conversations/:id/archive': 'recusada',
+        // Caderno para levar (fase 3, C17 / P5-S3): só lê; na prévia, vazio.
+        'GET /api/student/notebook': read(`/api/student/notebook?${Q}`),
     };
 }
 

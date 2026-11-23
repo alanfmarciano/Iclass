@@ -193,9 +193,75 @@ function annotationsForScreen(unit) {
     return out;
 }
 
+// ---------------------------------------------------------------------------
+// Caderno para levar (fase 3, C17 / P5-S3; UXA-14, D25 do P5): GET /api/student/notebook
+// junta a nota geral e, por unidade da estrutura da turma (na ordem do curso), a nota do
+// caderno da unidade e as anotações de parágrafo (trecho destacado e nota), com o título
+// da unidade e do módulo. A tela imprime e baixa em .txt a partir daqui.
+// - Só as unidades da estrutura da turma: nota de unidade que saiu do curso (ou de outro
+//   curso) não aparece aqui; ela continua no banco e em Meus dados.
+// - O que foi guardado num formato antigo (texto ou lista no lugar do mapa, convertido na
+//   leitura como em notes/get) vai em `anteriores`, para nada do aluno sumir do caderno.
+// - Só lê: nada é convertido nem gravado.
+const NOTEBOOK_GENERAL_KEY = 'geral';
+
+function paragraphOrder(id) {
+    const match = /^p(\d+)$/.exec(String(id));
+    return match ? Number(match[1]) : Number.MAX_SAFE_INTEGER;
+}
+
+// Anotações de uma unidade como lista, na ordem dos parágrafos (p1, p2, ... p10), sem as
+// vazias (sem trecho e sem nota).
+function notebookHighlights(unit) {
+    const view = annotationsForScreen(unit);
+    return Object.keys(view)
+        .sort((a, b) => paragraphOrder(a) - paragraphOrder(b) || (a < b ? -1 : a > b ? 1 : 0))
+        .map(id => ({ paragrafo: id, trecho: view[id].highlightedText || '', nota: view[id].note || '' }))
+        .filter(item => item.trecho.trim() || item.nota.trim());
+}
+
+function structureUnits(structure) {
+    const units = [];
+    const seen = new Set();
+    (Array.isArray(structure) ? structure : []).forEach((mod, moduleIndex) => {
+        if (!mod || typeof mod !== 'object') return;
+        const moduleTitle = String(mod.title || mod.name || mod.id || `Módulo ${moduleIndex + 1}`);
+        (Array.isArray(mod.units) ? mod.units : Array.isArray(mod.items) ? mod.items : []).forEach((unit, unitIndex) => {
+            if (!unit || typeof unit !== 'object') return;
+            const key = String(unit.apostilaKey || unit.key || '').trim();
+            if (!key || isInheritedKey(key) || seen.has(key)) return;
+            seen.add(key);
+            units.push({ chave: key, titulo: String(unit.name || unit.title || `Unidade ${unitIndex + 1}`), modulo: moduleTitle });
+        });
+    });
+    return units;
+}
+
+// notesRoot e annotationsRoot: db.memory.notes e db.memory.annotations; email: o do aluno
+// da sessão (as anotações ficam pelo e-mail minúsculo, como na rota de gravação).
+function buildNotebook(notesRoot, annotationsRoot, email, structure) {
+    const notes = studentMap(notesRoot, email).map;
+    const annotations = studentMap(annotationsRoot, String(email || '').toLowerCase(), { kind: 'annotations' }).map;
+    const noteOf = key => (own(notes, key) ? noteForScreen(notes[key]) : '');
+    const unidades = [];
+    for (const unit of structureUnits(structure)) {
+        if (unit.chave === NOTEBOOK_GENERAL_KEY || unit.chave === LEGACY_NOTE_KEY) continue;
+        const nota = noteOf(unit.chave);
+        const destaques = own(annotations, unit.chave) ? notebookHighlights(annotations[unit.chave]) : [];
+        if (!nota.trim() && !destaques.length) continue;
+        unidades.push({ ...unit, nota, destaques });
+    }
+    const anterioresNota = noteOf(LEGACY_NOTE_KEY);
+    const anterioresDestaques = own(annotations, LEGACY_NOTE_KEY) ? notebookHighlights(annotations[LEGACY_NOTE_KEY]) : [];
+    const notebook = { geral: noteOf(NOTEBOOK_GENERAL_KEY), unidades };
+    if (anterioresNota.trim() || anterioresDestaques.length) notebook.anteriores = { nota: anterioresNota, destaques: anterioresDestaques };
+    return notebook;
+}
+
 module.exports = {
     LEGACY_NOTE_KEY,
     LEGACY_PARAGRAPH_ID,
+    NOTEBOOK_GENERAL_KEY,
     ANNOTATION_HIGHLIGHT_MAX_CHARS,
     ANNOTATION_MAX_KEYS,
     ANNOTATION_MAX_PARAGRAPHS,
@@ -206,6 +272,7 @@ module.exports = {
     annotationsForScreen,
     applyAnnotationWrite,
     applyNoteWrite,
+    buildNotebook,
     legacyText,
     noteForScreen,
     notesTotal,

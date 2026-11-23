@@ -80,6 +80,7 @@ const PREVIEW_READ_ROUTES = Object.freeze([
     { method: 'GET', pattern: /^\/api\/forum$/i, label: 'dúvidas da unidade' },
     { method: 'GET', pattern: /^\/api\/student\/privacy\/status$/i, label: 'situação dos Termos (sem portão)' },
     { method: 'POST', pattern: /^\/api\/student\/notes\/get$/i, label: 'caderno (ler)' },
+    { method: 'GET', pattern: /^\/api\/student\/notebook$/i, label: 'caderno para imprimir e baixar (P5-S3; na prévia, vazio)' },
     { method: 'POST', pattern: /^\/api\/student\/my-submissions$/i, label: 'notas e entregas' },
     { method: 'GET', pattern: /^\/api\/settings\/public$/i, label: 'configuração pública' },
     { method: 'GET', pattern: /^\/api\/session\/status$/i, label: 'identidade do servidor' },

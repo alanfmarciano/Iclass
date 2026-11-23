@@ -3,6 +3,7 @@ import { MemoryRouter, Route, Routes, useLocation } from 'react-router-dom'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import ModulosPage from './ModulosPage'
 import { clearCourseContentCache } from './useCourseContent'
+import { eagerImagesHtml, startsWithTitle } from './ApostilaImpressao'
 
 const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), released: {} }))
 
@@ -134,5 +135,100 @@ describe('[UC-BUSCA-003] Módulos do aluno · abrir a unidade pelo endereço', (
     expect(await screen.findByText('A rede local liga os computadores.')).toBeInTheDocument()
     await act(async () => {})
     expect(mocks.get.mock.calls.filter(([url]) => url.startsWith('/api/data.js'))).toHaveLength(1)
+  })
+})
+
+// Fase 3, C17 (P5-S3; UXA-14, D25 do P5): imprimir ou salvar a apostila em PDF no próprio
+// leitor. Antes não havia botão nem folha de impressão (o papel saía com menu, caderno e
+// fórum, e as imagens que ainda não tinham aparecido na tela saíam em branco).
+describe('[UC-CONTEUDO-002] Módulos do aluno · imprimir ou salvar a apostila em PDF', () => {
+  afterEach(() => {
+    delete courseData.courses[0].permitirImpressao
+    delete courseData.courses[0].name
+    delete document.documentElement.dataset.impressao
+  })
+
+  it('o botão chama window.print com a folha só da apostila (título, curso e texto; sem caderno, fórum nem destaque)', async () => {
+    courseData.courses[0].name = 'Desenvolvimento de Sistemas'
+    const print = vi.spyOn(window, 'print').mockImplementation(() => {})
+    try {
+      renderAt('/aluno/modulos?unidade=Apostila_DES_2&busca=rede')
+      expect(await screen.findByText(/Destacando “rede” nesta unidade/)).toBeInTheDocument()
+      const sheet = screen.getByTestId('folha-impressao')
+      // Fora da impressão a folha fica vazia (nada repetido na tela nem no leitor de tela).
+      expect(sheet).toBeEmptyDOMElement()
+      expect(sheet.parentElement).toBe(document.body)
+      expect(sheet).toHaveAttribute('aria-hidden', 'true')
+      expect(document.documentElement.dataset.impressao).toBeUndefined()
+
+      fireEvent.click(screen.getByRole('button', { name: 'Imprimir ou salvar em PDF' }))
+      await waitFor(() => expect(print).toHaveBeenCalledTimes(1))
+      expect(document.documentElement.dataset.impressao).toBe('apostila')
+      expect(sheet.querySelector('h1.folha-impressao-titulo')).toHaveTextContent('Redes locais')
+      expect(sheet).toHaveTextContent('Desenvolvimento de Sistemas · Módulo 1')
+      expect(sheet).toHaveTextContent('A rede local liga os computadores.')
+      expect(sheet).toHaveTextContent('Material de uso dos alunos de Desenvolvimento de Sistemas')
+      expect(sheet).not.toHaveTextContent('Caderno desta unidade')
+      expect(sheet).not.toHaveTextContent('Fórum da unidade')
+      expect(sheet.querySelectorAll('mark').length).toBe(0)
+      expect(sheet.querySelectorAll('textarea, button').length).toBe(0)
+
+      // Fim da impressão: a folha esvazia e a página volta ao normal.
+      act(() => { window.dispatchEvent(new Event('afterprint')) })
+      expect(sheet).toBeEmptyDOMElement()
+      expect(document.documentElement.dataset.impressao).toBeUndefined()
+    } finally {
+      print.mockRestore()
+    }
+  })
+
+  it('Ctrl+P do navegador (beforeprint) também sai só com a apostila; voltar aos módulos tira a folha', async () => {
+    renderAt('/aluno/modulos?unidade=Apostila_DES_1')
+    expect(await screen.findByText('Texto da apostila.')).toBeInTheDocument()
+    act(() => { window.dispatchEvent(new Event('beforeprint')) })
+    const sheet = screen.getByTestId('folha-impressao')
+    expect(document.documentElement.dataset.impressao).toBe('apostila')
+    expect(sheet).toHaveTextContent('Texto da apostila.')
+    act(() => { window.dispatchEvent(new Event('afterprint')) })
+
+    fireEvent.click(screen.getByRole('button', { name: 'Voltar aos módulos' }))
+    await waitFor(() => expect(screen.queryByTestId('folha-impressao')).not.toBeInTheDocument())
+    expect(document.documentElement.dataset.impressao).toBeUndefined()
+    // Na lista de módulos o Ctrl+P não mexe em nada.
+    act(() => { window.dispatchEvent(new Event('beforeprint')) })
+    expect(document.documentElement.dataset.impressao).toBeUndefined()
+  })
+
+  it('curso com permitirImpressao false: sem botão, e a impressão sai só com "Impressão desativada pela escola."', async () => {
+    courseData.courses[0].permitirImpressao = false
+    const print = vi.spyOn(window, 'print').mockImplementation(() => {})
+    try {
+      renderAt('/aluno/modulos?unidade=Apostila_DES_1')
+      expect(await screen.findByText('Texto da apostila.')).toBeInTheDocument()
+      expect(screen.queryByRole('button', { name: 'Imprimir ou salvar em PDF' })).not.toBeInTheDocument()
+      const sheet = screen.getByTestId('folha-impressao')
+      expect(document.documentElement.dataset.impressao).toBe('bloqueada')
+      expect(sheet).toHaveTextContent('Impressão desativada pela escola.')
+      act(() => { window.dispatchEvent(new Event('beforeprint')) })
+      expect(sheet).not.toHaveTextContent('Texto da apostila.')
+      expect(document.documentElement.dataset.impressao).toBe('bloqueada')
+      expect(print).not.toHaveBeenCalled()
+    } finally {
+      print.mockRestore()
+    }
+  })
+
+  it('a folha carrega as imagens de uma vez (sem loading="lazy"), sem mexer no resto do HTML', () => {
+    expect(eagerImagesHtml('<p>a</p><img src="/imagens/x.png" loading="lazy" decoding="async" alt="">'))
+      .toBe('<p>a</p><img src="/imagens/x.png" decoding="async" alt="">')
+    expect(eagerImagesHtml('<p>loading="lazy" no texto</p>')).toBe('<p>loading="lazy" no texto</p>')
+    expect(eagerImagesHtml(null)).toBe('')
+  })
+
+  it('a apostila que já começa com o título da unidade não ganha o título repetido na folha', () => {
+    expect(startsWithTitle('<h1>Redes  locais</h1><p>x</p>', 'redes locais')).toBe(true)
+    expect(startsWithTitle('<p>x</p><h1>Redes locais</h1>', 'Redes locais')).toBe(false)
+    expect(startsWithTitle('<h1>Começo</h1>', 'Redes locais')).toBe(false)
+    expect(startsWithTitle('', 'Redes locais')).toBe(false)
   })
 })

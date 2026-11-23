@@ -1,7 +1,13 @@
 // Portal do aluno: comunicação e turma da fase 3 (grupo P5). Rotas novas do aluno não
 // entram em student.js (order_notes do plano); este router entra no createApp depois de
-// studentAcademic e antes de studentRoutes (ordem_no_createApp). O caderno (P5-S3) entra
-// aqui depois.
+// studentAcademic e antes de studentRoutes (ordem_no_createApp).
+//
+// - GET /api/student/notebook?courseId=&studentClass= (P5-S3, UXA-14; D25 do P5): o caderno
+//   do aluno para imprimir e baixar: a nota geral e, por unidade da estrutura da turma (na
+//   ordem do curso), a nota da unidade e as anotações de parágrafo, com o título da unidade
+//   e do módulo (utils/studentNotes.js buildNotebook). Exige a sessão e a matrícula na
+//   turma; só lê; manda junto o fuso da escola (timezone). Na pré-visualização
+//   (PREVIEW_READ_ROUTES) volta vazio: o aluno virtual não tem caderno.
 //
 // - GET /api/student/groups?courseId=&studentClass= (P5-S4, CRIT-11): os grupos ativos do
 //   aluno na turma, com o nome dos colegas que ainda estão nela (P-C3: só o nome, sem
@@ -32,7 +38,9 @@ const db = require('../database.js');
 const { validateStudentSession, studentBelongsToClass, findClassByNameAndCourse } = require('../middlewares.js');
 const groupRules = require('../utils/classGroups.js');
 const conversations = require('../utils/conversations.js');
-const { isCourseDeleted } = require('../utils/contentAccess.js');
+const { classStructure, isCourseDeleted } = require('../utils/contentAccess.js');
+const { buildNotebook } = require('../utils/studentNotes.js');
+const settingsUtil = require('../utils/settings.js');
 const { studentHasOpenAttempt } = require('../utils/passwordChange.js');
 const rateLimit = require('../utils/rateLimit.js');
 const { body, bool, int, str } = require('../utils/inputSchema.js');
@@ -77,6 +85,18 @@ router.get('/api/student/groups', validateStudentSession, (req, res) => {
     }
     res.set('Cache-Control', 'no-store');
     return res.json(groupRules.studentGroupsView(db.memory, cls, req.studentEmail, { groups }));
+});
+
+// ------------------------------------------------------------ caderno
+router.get('/api/student/notebook', validateStudentSession, (req, res) => {
+    const cls = studentClassContext(req, res, req.query && req.query.courseId, req.query && req.query.studentClass);
+    if (!cls) return undefined;
+    res.set('Cache-Control', 'no-store');
+    // Fuso da escola: a data do "Baixado em" e do rodapé da impressão no relógio da escola.
+    const timezone = settingsUtil.getSettings().timezone || '';
+    if (req.preview) return res.json({ success: true, geral: '', unidades: [], timezone });
+    const notebook = buildNotebook(db.memory.notes, db.memory.annotations, req.studentEmail, classStructure(cls));
+    return res.json({ success: true, ...notebook, timezone });
 });
 
 // ------------------------------------------------------------ conversas
