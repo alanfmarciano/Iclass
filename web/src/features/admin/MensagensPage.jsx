@@ -5,7 +5,10 @@
 //   matrícula), turma, assunto, "há 2 h", selo "nova"; filtros Abertas, Encerradas e
 //   Todas; "Esta turma" ou "Todas as minhas turmas"; busca pelo nome sem acento
 //   (matchesSearch);
-// - "Nova conversa" com um aluno ativo da turma escolhida no painel;
+// - "Nova conversa": escolhe a turma (as do escopo da conta, pela mesma lista do seletor
+//   de curso; começa na turma do painel) e um aluno ativo dela;
+// - abre também sem turma escolhida (modo instituição, revisão do C14): a lista começa em
+//   "Todas as minhas turmas";
 // - a conversa (?c=<id>) em balões, com o campo preso ao fim da tela (Ctrl+Enter envia);
 //   "Encerrar conversa" com motivo opcional (ConfirmDialog) e "Reabrir". Encerrada, o
 //   aluno lê e não responde; o professor ainda pode escrever. Cadastro do aluno encerrado
@@ -123,7 +126,27 @@ function ConversationRow({ row, active, showClass }) {
   )
 }
 
-function NewConversationDialog({ open, onClose, courseId, className, limits, onCreated }) {
+// Turmas em que a conta pode começar uma conversa: as do escopo dela (GET
+// /api/admin/course-summaries, a lista do seletor de curso), ativas, por curso e nome.
+export function classOptionsFromSummaries(summaries) {
+  return (Array.isArray(summaries) ? summaries : [])
+    .filter((course) => course && course.deleted !== true && course.status !== 'deleted' && course.status !== 'inactive' && !course.deletedAt)
+    .flatMap((course) => (Array.isArray(course.classes) ? course.classes : []).map((cls) => ({
+      key: `${course.id}::${cls.name}`,
+      courseId: String(course.id),
+      className: String(cls.name),
+      label: `${course.name || course.id} · ${cls.name}`,
+    })))
+    .sort((a, b) => compareText(a.label, b.label))
+}
+
+function NewConversationDialog({ open, onClose, defaultCourseId, defaultClassName, limits, onCreated }) {
+  const summaries = useApi(open ? '/api/admin/course-summaries' : null, [open])
+  const classOptions = useMemo(() => classOptionsFromSummaries(summaries.data), [summaries.data])
+  const [classKey, setClassKey] = useState('')
+  const chosenClass = classOptions.find((option) => option.key === classKey) || null
+  const courseId = chosenClass?.courseId || ''
+  const className = chosenClass?.className || ''
   const students = useApi(open && courseId && className ? `/api/admin/students?courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(className)}` : null, [open, courseId, className])
   const [search, setSearch] = useState('')
   const [selected, setSelected] = useState('')
@@ -137,7 +160,15 @@ function NewConversationDialog({ open, onClose, courseId, className, limits, onC
   useEffect(() => {
     if (!open) return
     setSearch(''); setSelected(''); setSubject(''); setText(''); setErrors({})
-  }, [open])
+    setClassKey(defaultCourseId && defaultClassName ? `${defaultCourseId}::${defaultClassName}` : '')
+  }, [open, defaultCourseId, defaultClassName])
+  // Sem a turma do painel na lista (modo instituição ou turma fora do escopo): com uma
+  // turma só, já vem escolhida; com várias, a pessoa escolhe.
+  useEffect(() => {
+    if (!open || !summaries.data) return
+    if (classKey && classOptions.some((option) => option.key === classKey)) return
+    setClassKey(classOptions.length === 1 ? classOptions[0].key : '')
+  }, [open, summaries.data, classOptions, classKey])
 
   const options = useMemo(() => (Array.isArray(students.data) ? students.data : [])
     .filter(canTalkTo)
@@ -150,7 +181,8 @@ function NewConversationDialog({ open, onClose, courseId, className, limits, onC
     const option = options.find((item) => item.key === selected)
     const texto = text.trim()
     const nextErrors = {}
-    if (!option) nextErrors.aluno = 'Escolha o aluno.'
+    if (!chosenClass) nextErrors.turma = 'Escolha a turma.'
+    else if (!option) nextErrors.aluno = 'Escolha o aluno.'
     if (!texto) nextErrors.texto = 'Escreva a mensagem.'
     setErrors(nextErrors)
     if (Object.keys(nextErrors).length) return
@@ -168,25 +200,38 @@ function NewConversationDialog({ open, onClose, courseId, className, limits, onC
   }
 
   return (
-    <Modal open={open} onClose={sending ? undefined : onClose} title="Nova conversa" description={`Com um aluno da turma ${className}.`} fullScreenOnPhone
+    <Modal open={open} onClose={sending ? undefined : onClose} title="Nova conversa" description="Com um aluno de uma das suas turmas." fullScreenOnPhone
       footer={<>
         <Button variant="ghost" onClick={onClose} disabled={sending}>Cancelar</Button>
         <Button type="submit" form="nova-conversa-form" icon={MessageSquarePlus} loading={sending}>Enviar</Button>
       </>}>
       <form id="nova-conversa-form" onSubmit={submit} className="space-y-4" noValidate>
-        <PageState loading={students.loading && !students.data} error={students.data ? null : students.error} onRetry={students.refetch} skeleton={<p className="text-sm text-muted">Carregando os alunos...</p>}>
-          {options.length === 0 ? (
-            <Notice>Nenhum aluno ativo nesta turma.</Notice>
+        <PageState loading={summaries.loading && !summaries.data} error={summaries.data ? null : summaries.error} onRetry={summaries.refetch} skeleton={<p className="text-sm text-muted">Carregando as turmas...</p>}>
+          {classOptions.length === 0 ? (
+            <Notice>Nenhuma turma no seu acesso.</Notice>
           ) : (
-            <>
-              <Input label="Buscar aluno" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Nome ou matrícula" />
-              <Select label="Aluno" value={selected} onChange={(event) => { setSelected(event.target.value); setErrors((current) => ({ ...current, aluno: '' })) }} error={errors.aluno || undefined}>
-                <option value="">{filtered.length ? 'Escolha o aluno' : 'Nenhum aluno com esse nome'}</option>
-                {filtered.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
-              </Select>
-            </>
+            <Select label="Turma" value={classKey} onChange={(event) => { setClassKey(event.target.value); setSelected(''); setSearch(''); setErrors((current) => ({ ...current, turma: '', aluno: '' })) }} error={errors.turma || undefined}>
+              <option value="">Escolha a turma</option>
+              {classOptions.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
+            </Select>
           )}
         </PageState>
+        {chosenClass && (
+          // Trocar a turma recarrega: enquanto isso, nada da turma anterior para escolher.
+          <PageState loading={students.loading} error={students.loading ? null : students.error} onRetry={students.refetch} skeleton={<p className="text-sm text-muted">Carregando os alunos...</p>}>
+            {options.length === 0 ? (
+              <Notice>Nenhum aluno ativo nesta turma.</Notice>
+            ) : (
+              <>
+                <Input label="Buscar aluno" value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Nome ou matrícula" />
+                <Select label="Aluno" value={selected} onChange={(event) => { setSelected(event.target.value); setErrors((current) => ({ ...current, aluno: '' })) }} error={errors.aluno || undefined}>
+                  <option value="">{filtered.length ? 'Escolha o aluno' : 'Nenhum aluno com esse nome'}</option>
+                  {filtered.map((option) => <option key={option.key} value={option.key}>{option.label}</option>)}
+                </Select>
+              </>
+            )}
+          </PageState>
+        )}
         <Input label="Assunto (opcional)" value={subject} maxLength={subjectMax} counterFrom={Math.floor(subjectMax * 0.9)} onChange={(event) => setSubject(event.target.value)} />
         <Textarea label="Mensagem" value={text} maxLength={textMax} counterFrom={Math.min(TEXT_COUNTER_FROM, textMax)} rows={5}
           onChange={(event) => { setText(event.target.value); setErrors((current) => ({ ...current, texto: '' })) }} error={errors.texto || undefined} />
@@ -341,8 +386,11 @@ export default function MensagensPage() {
   const [notice, setNotice] = useState('')
   const canReadAll = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.MESSAGES_READ_ALL)
   const canSeeStudents = canAccessAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_STUDENTS)
-  const canStart = canSeeStudents && auth.readOnly !== true && !!courseId && !!className
-  const effectiveScope = scope === 'escola' && !canReadAll ? 'turma' : scope
+  const inClass = !!courseId && !!className
+  const canStart = canSeeStudents && auth.readOnly !== true
+  // Sem turma escolhida no painel (modo instituição), "Esta turma" não existe: a lista
+  // começa em "Todas as minhas turmas".
+  const effectiveScope = scope === 'escola' && !canReadAll ? (inClass ? 'turma' : 'minhas') : (scope === 'turma' && !inClass ? 'minhas' : scope)
   const listPath = adminConversationsPath({ courseId, className, scope: effectiveScope, status })
   const list = useApi(listPath, [listPath])
   const data = list.data || {}
@@ -376,7 +424,7 @@ export default function MensagensPage() {
   }
 
   const scopes = [
-    { id: 'turma', label: className ? `Esta turma (${className})` : 'Esta turma' },
+    ...(inClass ? [{ id: 'turma', label: `Esta turma (${className})` }] : []),
     { id: 'minhas', label: 'Todas as minhas turmas' },
     ...(canReadAll ? [{ id: 'escola', label: 'Todas da escola' }] : []),
   ]
@@ -422,14 +470,14 @@ export default function MensagensPage() {
 
         <div className={cn('min-w-0', !selected && 'hidden lg:block')}>
           {selected ? (
-            <ConversationView key={selected} conversationId={selected} onBack={back} onChanged={onChanged} canSeeStudents={canSeeStudents} />
+            <ConversationView key={selected} conversationId={selected} onBack={back} onChanged={onChanged} canSeeStudents={canSeeStudents && inClass} />
           ) : (
             <Card><EmptyState icon={MessagesSquare} title="Escolha uma conversa" description="Abra uma conversa da lista para ler e responder." /></Card>
           )}
         </div>
       </div>
 
-      {canStart && <NewConversationDialog open={creating} onClose={() => setCreating(false)} courseId={courseId} className={className} limits={data.limites} onCreated={onCreated} />}
+      {canStart && <NewConversationDialog open={creating} onClose={() => setCreating(false)} defaultCourseId={courseId} defaultClassName={className} limits={data.limites} onCreated={onCreated} />}
     </div>
   )
 }

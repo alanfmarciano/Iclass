@@ -10,7 +10,7 @@ const mocks = vi.hoisted(() => ({ get: vi.fn(), post: vi.fn(), auth: null }))
 vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post } }))
 vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: mocks.auth }) }))
 
-import MensagensPage, { adminConversationsPath } from './MensagensPage'
+import MensagensPage, { adminConversationsPath, classOptionsFromSummaries } from './MensagensPage'
 import { resetMessageCountForTests } from '../../lib/messageCounter'
 
 const NOW = Date.now()
@@ -56,6 +56,14 @@ function resetServer() {
       { id: 'alu_2222222222222222', email: 'eva@escola.local', name: 'Eva Rocha', matricula: '2026005', status: 'Ativo' },
       { email: 'saiu@escola.local', name: 'Fábio Saiu', status: 'Transferido' },
     ],
+    students2: [
+      { id: 'alu_3333333333333333', email: 'gil@escola.local', name: 'Gil Neves', matricula: '2026010', status: 'Ativo' },
+    ],
+    // As turmas do escopo da conta (a mesma lista do seletor de curso).
+    summaries: [
+      { id: 'curso', name: 'Desenvolvimento', classes: [{ name: '1DES' }, { name: '2DES' }] },
+      { id: 'velho', name: 'Curso apagado', deleted: true, classes: [{ name: '9X' }] },
+    ],
   }
   mocks.get.mockImplementation(async (url) => {
     const [path, query = ''] = String(url).split('?')
@@ -65,7 +73,8 @@ function resetServer() {
       const status = params.get('status')
       return { success: true, conversas: all.filter((item) => !status || item.status === status), aviso: READ_NOTICE, limites: { texto: 2000, assunto: 120, motivo: 200 }, podeLerTodas: mocks.auth.role === 'admin' }
     }
-    if (path === '/api/admin/students') return server.students
+    if (path === '/api/admin/students') return params.get('studentClass') === '2DES' ? server.students2 : server.students
+    if (path === '/api/admin/course-summaries') return server.summaries
     const match = /^\/api\/admin\/conversations\/([^/]+)\/messages$/.exec(path)
     if (match) {
       const id = decodeURIComponent(match[1])
@@ -220,7 +229,9 @@ describe('[UC-MENSAGEM-006] Mensagens no painel', () => {
     renderAt()
     await user.click(await screen.findByRole('button', { name: 'Nova conversa' }))
     const dialog = await screen.findByRole('dialog')
-    expect(mocks.get).toHaveBeenCalledWith('/api/admin/students?courseId=curso&studentClass=1DES', undefined)
+    // A turma começa na do painel, e dá para trocar por outra do escopo.
+    expect(await within(dialog).findByLabelText('Turma')).toHaveValue('curso::1DES')
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledWith('/api/admin/students?courseId=curso&studentClass=1DES', undefined))
     const select = await within(dialog).findByLabelText('Aluno')
     expect(within(select).queryByRole('option', { name: /Fábio/ })).toBeNull()
     await user.click(within(dialog).getByRole('button', { name: 'Enviar' }))
@@ -241,5 +252,68 @@ describe('[UC-MENSAGEM-006] Mensagens no painel', () => {
     renderAt()
     await screen.findByText('Álvaro Souza')
     expect(screen.queryByRole('button', { name: 'Nova conversa' })).toBeNull()
+  })
+
+  it('turmas da Nova conversa: as do escopo, sem curso apagado, por nome', () => {
+    expect(classOptionsFromSummaries(server.summaries).map((option) => [option.key, option.label])).toEqual([
+      ['curso::1DES', 'Desenvolvimento · 1DES'], ['curso::2DES', 'Desenvolvimento · 2DES'],
+    ])
+    expect(classOptionsFromSummaries(null)).toEqual([])
+  })
+
+  it('Nova conversa: trocar a turma lista os alunos dela e envia com ela', async () => {
+    const user = userEvent.setup()
+    renderAt()
+    await user.click(await screen.findByRole('button', { name: 'Nova conversa' }))
+    const dialog = await screen.findByRole('dialog')
+    await within(dialog).findByRole('option', { name: /Eva Rocha/ })
+    await user.selectOptions(within(dialog).getByLabelText('Turma'), 'curso::2DES')
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledWith('/api/admin/students?courseId=curso&studentClass=2DES', undefined))
+    await within(dialog).findByRole('option', { name: /Gil Neves/ })
+    expect(within(dialog).queryByRole('option', { name: /Eva Rocha/ })).toBeNull()
+    await user.selectOptions(within(dialog).getByLabelText('Aluno'), 'alu_3333333333333333')
+    await user.type(within(dialog).getByLabelText('Mensagem'), 'Oi, Gil.')
+    await user.click(within(dialog).getByRole('button', { name: 'Enviar' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/conversations', { courseId: 'curso', studentClass: '2DES', studentId: 'alu_3333333333333333', assunto: '', texto: 'Oi, Gil.' }))
+  })
+
+  it('sem turma escolhida no painel (modo instituição): lista de todas as minhas turmas, sem "Esta turma"; Nova conversa pede a turma', async () => {
+    mocks.auth = { ...ADMIN, activeWorkspace: null }
+    const user = userEvent.setup()
+    renderAt()
+    expect(await screen.findByText('Álvaro Souza')).toBeInTheDocument()
+    expect(mocks.get).toHaveBeenCalledWith('/api/admin/conversations?status=aberta', undefined)
+    const scopes = screen.getByLabelText('Turmas')
+    expect(scopes).toHaveValue('minhas')
+    expect(within(scopes).queryByRole('option', { name: /Esta turma/ })).toBeNull()
+    expect(within(scopes).getByRole('option', { name: 'Todas da escola' })).toBeInTheDocument()
+    await user.selectOptions(scopes, 'escola')
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledWith('/api/admin/conversations?todas=1&status=aberta', undefined))
+
+    await user.click(screen.getByRole('button', { name: 'Nova conversa' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(await within(dialog).findByLabelText('Turma')).toHaveValue('')
+    expect(within(dialog).queryByLabelText('Aluno')).toBeNull()
+    await user.type(within(dialog).getByLabelText('Mensagem'), 'Oi.')
+    await user.click(within(dialog).getByRole('button', { name: 'Enviar' }))
+    expect(within(dialog).getByText('Escolha a turma.')).toBeInTheDocument()
+    expect(mocks.post).not.toHaveBeenCalledWith('/api/admin/conversations', expect.anything())
+    await user.selectOptions(within(dialog).getByLabelText('Turma'), 'curso::1DES')
+    expect(await within(dialog).findByLabelText('Aluno')).toBeInTheDocument()
+  })
+
+  it('modo instituição com uma turma só no acesso: ela já vem escolhida; a conversa abre sem "Ver ficha" (a ficha é da tela de uma turma)', async () => {
+    mocks.auth = { ...PROFESSOR, activeWorkspace: null }
+    server.summaries = [{ id: 'curso', name: 'Desenvolvimento', classes: [{ name: '1DES' }] }]
+    const user = userEvent.setup()
+    renderAt()
+    await user.click(await screen.findByRole('button', { name: 'Nova conversa' }))
+    const dialog = await screen.findByRole('dialog')
+    await waitFor(() => expect(within(dialog).getByLabelText('Turma')).toHaveValue('curso::1DES'))
+    await user.click(within(dialog).getByRole('button', { name: 'Cancelar' }))
+    cleanup()
+    renderAt('/mensagens?c=conv_1')
+    expect(await screen.findByText('Posso pedir revisão?')).toBeInTheDocument()
+    expect(screen.queryByRole('link', { name: 'Ver ficha' })).toBeNull()
   })
 })

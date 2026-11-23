@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import { getAdminNavGroups } from './Sidebar'
 import { ADMIN_PERMISSIONS, ADMIN_PATH_PERMISSIONS } from '../../lib/adminPermissions'
+import { INSTITUTION_PATHS } from '../../features/admin/AdminCourseGate'
 import baseline from '../../../../test/backend/fixtures/professor-permissoes-281029f.json'
 
 // Menu do professor (fase 3, B0a; FUN-13): o que o professor via no menu na 281029f
@@ -64,10 +65,16 @@ describe('[UC-MENSAGEM-006] menu Mensagens (fase 3, C14 / P5-S7b)', () => {
     expect(ADMIN_PATH_PERMISSIONS['/mensagens']).toBe('page.messages')
   })
 
-  it('não aparece para Professor auxiliar, Secretaria e Coordenação (sem page.messages) nem fora da turma', () => {
+  it('não aparece para Professor auxiliar, Secretaria e Coordenação (sem page.messages), com ou sem turma', () => {
     expect(item({ accountRole: 'monitor', effectivePermissions: ['page.dashboard', 'page.monitor', 'page.students'], ...inCourse }, 1)).toBeUndefined()
     expect(item({ accountRole: 'secretaria', effectivePermissions: ['page.dashboard', 'page.students'], ...inCourse }, 1)).toBeUndefined()
     expect(item({ accountRole: 'coordenacao', effectivePermissions: ['page.dashboard', 'page.results'], readOnly: true, ...inCourse }, 1)).toBeUndefined()
-    expect(item({ accountRole: 'professor', additionalPermissions: [], activeWorkspace: null }, 1)).toBeUndefined()
+    expect(item({ accountRole: 'secretaria', effectivePermissions: ['page.dashboard', 'page.students'], activeWorkspace: null }, 1)).toBeUndefined()
+  })
+
+  it('aparece também sem turma escolhida (modo instituição), com o número somado das turmas, e a tela abre sem o seletor de curso', () => {
+    expect(item({ accountRole: 'professor', additionalPermissions: [], activeWorkspace: null }, 2)).toMatchObject({ text: 'Mensagens', badge: 2 })
+    expect(item({ accountRole: 'admin', activeWorkspace: null }, 0)).toMatchObject({ text: 'Mensagens' })
+    expect(INSTITUTION_PATHS).toContain('/mensagens')
   })
 })

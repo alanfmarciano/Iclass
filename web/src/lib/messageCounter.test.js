@@ -27,6 +27,16 @@ describe('[UC-MENSAGEM-006] contador de mensagens do menu', () => {
     expect(adminMessageCount({})).toBe(0)
   })
 
+  it('usa mensagensNovas do servidor (contado antes do corte da lista do sino) quando vem', () => {
+    // 30 itens mais novos no sino do portal empurraram a conversa antiga para fora da lista.
+    const items = Array.from({ length: 30 }, (_, index) => ({ id: `aviso:${index}`, type: 'aviso', unread: true }))
+    expect(studentMessageCount({ items, mensagensNovas: 2 })).toBe(2)
+    expect(studentMessageCount({ items: [{ id: 'mensagem:c1', type: 'mensagem' }], mensagensNovas: 0 })).toBe(0)
+    expect(adminMessageCount({ items: [{ id: 'mensagens@c::1A', type: 'mensagens', count: 1 }], mensagensNovas: 5 })).toBe(5)
+    // Valor estranho: volta a contar os itens.
+    expect(studentMessageCount({ items: [{ id: 'mensagem:c1', type: 'mensagem' }], mensagensNovas: 'x' })).toBe(1)
+  })
+
   it('avisa quem ouve só quando o número muda e nunca fica negativo', () => {
     const listener = vi.fn()
     const unsubscribe = subscribeMessageCount(listener)

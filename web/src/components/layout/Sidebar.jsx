@@ -42,7 +42,9 @@ const COURSE_GROUPS = [
     { to: '/calendario', icon: CalendarDays, text: 'Calendário' },
     { to: '/forum', icon: MessagesSquare, text: 'Fórum & Dúvidas' },
     // Mensagens particulares com os alunos (fase 3, C14 / P5-S7b; FUN-14): page.messages.
-    // O número é o de conversas com mensagem nova de aluno, lido do sino.
+    // O número é o de conversas com mensagem nova de aluno, lido do sino. O desenho dizia
+    // "em Comunicação", grupo que não existe neste menu: fica em Gestão, ao lado de Avisos
+    // e Fórum, sem mexer na ordem que o professor já conhece.
     { to: '/mensagens', icon: Mail, text: 'Mensagens' },
   ] },
   HELP_GROUP,
@@ -54,6 +56,9 @@ const INSTITUTION_GROUPS = [
     { to: '/turmas', icon: School, text: 'Cursos e turmas' },
     { to: '/diretorio', icon: Users, text: 'Alunos' },
     { to: '/encerrados', icon: Archive, text: 'Cadastros encerrados', adminOnly: true },
+    // Mensagens também sem turma escolhida (revisão do C14): "Todas as minhas turmas" e,
+    // para o administrador, "Todas da escola" (AdminCourseGate INSTITUTION_PATHS).
+    { to: '/mensagens', icon: Mail, text: 'Mensagens' },
   ] },
   { label: 'Instituição', items: [
     { to: '/escolas', icon: Building2, text: 'Escolas' },

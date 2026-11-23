@@ -15,8 +15,9 @@ import { isFullAdmin } from '../../lib/adminPermissions'
 // Instituição ou Gestão acadêmica da Sidebar entra aqui também (senão o item do menu cai
 // no seletor de curso); o teste AdminCourseGate.test confere as duas listas.
 // A Ajuda (fase 3, A1) e Minha conta (UXI-07, B1) abrem com ou sem curso escolhido: são
-// do painel e da conta, não da turma.
-export const INSTITUTION_PATHS = ['/turmas', '/diretorio', '/escolas', '/identidade', '/admins', '/sistema', '/auditoria', '/lgpd', '/encerrados', '/ajuda', '/minha-conta']
+// do painel e da conta, não da turma. Mensagens (fase 3, C14) abre nos dois modos: sem
+// turma, a lista é a de todas as turmas da conta (ou da escola, para o administrador).
+export const INSTITUTION_PATHS = ['/turmas', '/diretorio', '/escolas', '/identidade', '/admins', '/sistema', '/auditoria', '/lgpd', '/encerrados', '/ajuda', '/minha-conta', '/mensagens']
 
 function isDeleted(course) {
   return course?.deleted === true || course?.status === 'deleted' || course?.status === 'inactive' || !!course?.deletedAt

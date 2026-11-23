@@ -5723,7 +5723,12 @@ router.get('/api/admin/notifications', (req, res) => {
         });
         const limited = items.slice(0, 40);
         res.set('Cache-Control', 'no-store');
-        res.json({ success: true, items: limited, unread: limited.filter(item => item.unread).length });
+        // mensagensNovas: conversas com mensagem nova de aluno somadas em todas as turmas,
+        // antes do corte de 40 itens (no modo instituição, com muitas turmas, o item
+        // 'mensagens' de uma turma podia sair da lista e o menu mostrar menos; revisão do C14).
+        const mensagensNovas = items.filter(item => item.type === 'mensagens')
+            .reduce((sum, item) => sum + Math.max(0, Math.trunc(Number(item.count) || 0)), 0);
+        res.json({ success: true, items: limited, unread: limited.filter(item => item.unread).length, mensagensNovas });
     });
 });
 

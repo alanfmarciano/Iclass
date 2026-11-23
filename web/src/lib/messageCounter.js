@@ -41,14 +41,27 @@ export function subscribeMessageCount(listener) {
   return () => { listeners.delete(listener) }
 }
 
+// O servidor manda mensagensNovas contado antes de cortar a lista do sino (30 itens no
+// portal, 40 no painel): com muitos avisos e notas mais novos, a conversa antiga saía da
+// lista e o número do menu ficava menor que o real. Servidor antigo (sem o campo): conta
+// os itens que vieram, como antes.
+function serverCount(data) {
+  const value = data?.mensagensNovas
+  return typeof value === 'number' && Number.isFinite(value) ? Math.max(0, Math.trunc(value)) : null
+}
+
 // Conversas com mensagem nova na resposta do sino do aluno (GET /api/student/notifications).
 export function studentMessageCount(data) {
+  const fromServer = serverCount(data)
+  if (fromServer !== null) return fromServer
   const items = Array.isArray(data?.items) ? data.items : []
   return items.filter((item) => item && item.type === 'mensagem').length
 }
 
 // Conversas com mensagem nova na resposta do sino do painel (GET /api/admin/notifications).
 export function adminMessageCount(data) {
+  const fromServer = serverCount(data)
+  if (fromServer !== null) return fromServer
   const items = Array.isArray(data?.items) ? data.items : []
   return items
     .filter((item) => item && item.type === 'mensagens')

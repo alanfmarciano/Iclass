@@ -29,6 +29,26 @@ async function expectNoHorizontalScroll(page, context) {
     expect(widths.scroll, `${context}: rolagem para o lado`).toBeLessThanOrEqual(widths.client);
 }
 
+// A última mensagem fica à vista, acima do campo de escrita preso ao pé da tela (revisão do
+// C14: a rolagem automática parava no fim da lista e o campo sticky cobria a mensagem mais
+// nova). toBeVisible não confere sobreposição; aqui se medem as caixas.
+async function lastMessagePlacement(page) {
+    return page.evaluate(() => {
+        const items = document.querySelectorAll('ol[aria-label="Mensagens da conversa"] > li');
+        const last = items[items.length - 1];
+        if (!last) return 'sem mensagens';
+        const box = last.getBoundingClientRect();
+        const form = document.querySelector('form.mensagens-composer');
+        const limit = form ? form.getBoundingClientRect().top : window.innerHeight;
+        if (box.top >= 0 && box.bottom <= limit + 1) return 'ok';
+        return `última mensagem ${Math.round(box.top)}-${Math.round(box.bottom)} px, campo começa em ${Math.round(limit)} px`;
+    });
+}
+
+async function expectLastMessageClear(page, context) {
+    await expect.poll(() => lastMessagePlacement(page), { message: `${context}: a última mensagem fica por baixo do campo`, timeout: 5000 }).toBe('ok');
+}
+
 async function loginStudent(page) {
     // Login pelo formulário: o acesso rápido refaz a semente.
     await page.goto('/login');
@@ -81,6 +101,7 @@ test('[UC-MENSAGEM-006] aluna no celular lê e responde; o professor responde e 
     expect((await read).status()).toBe(200);
     const field = student.getByLabel('Responder');
     await expect(field).toBeVisible();
+    await expectLastMessageClear(student, 'Conversa aberta pelo aluno');
     await expectNoHorizontalScroll(student, 'Conversa do aluno');
     await expectNoWcagViolations(student, 'Conversa do aluno');
     await field.fill('Obrigada, professor! Vou revisar a questão 4.');
@@ -89,6 +110,7 @@ test('[UC-MENSAGEM-006] aluna no celular lê e responde; o professor responde e 
     expect((await sent).status()).toBe(201);
     await expect(student.getByText('Obrigada, professor! Vou revisar a questão 4.')).toBeVisible();
     await expect(field).toHaveValue('');
+    await expectLastMessageClear(student, 'Depois de o aluno enviar');
     // Lida e respondida: o número do menu some (o sino consulta na hora).
     await student.getByRole('button', { name: 'Menu' }).click();
     await expect(student.getByRole('link', { name: /^Mensagens/ })).not.toContainText('conversa', { timeout: 15000 });
@@ -107,10 +129,17 @@ test('[UC-MENSAGEM-006] aluna no celular lê e responde; o professor responde e 
     await expectNoWcagViolations(teacher, 'Lista de conversas do professor');
     await alice.click();
     await expect(teacher.getByText('Obrigada, professor! Vou revisar a questão 4.')).toBeVisible();
+    await expectLastMessageClear(teacher, 'Conversa aberta pelo professor');
     await teacher.getByLabel('Responder').fill('Combinado. Qualquer dúvida, me escreva.');
     await teacher.getByLabel('Responder').press('Control+Enter');
     await expect(teacher.getByText('Combinado. Qualquer dúvida, me escreva.')).toBeVisible();
+    await expectLastMessageClear(teacher, 'Depois de o professor enviar');
     await expectNoWcagViolations(teacher, 'Conversa do professor');
+
+    // A resposta chega à aluna pela consulta de 10 s da conversa aberta e aparece acima do
+    // campo (sem a pessoa precisar rolar).
+    await expect(student.getByText('Combinado. Qualquer dúvida, me escreva.')).toBeVisible({ timeout: 25000 });
+    await expectLastMessageClear(student, 'Resposta do professor chegando pela consulta');
 
     await teacher.getByRole('button', { name: 'Encerrar conversa' }).click();
     const dialog = teacher.getByRole('dialog', { name: 'Encerrar a conversa?' });
@@ -125,17 +154,49 @@ test('[UC-MENSAGEM-006] aluna no celular lê e responde; o professor responde e 
     await teacher.reload();
     await expect(teacher.getByText('Combinado. Qualquer dúvida, me escreva.')).toBeVisible({ timeout: 15000 });
     await expectNoHorizontalScroll(teacher, 'Conversa do professor no celular');
+    await expectLastMessageClear(teacher, 'Conversa do professor no celular');
     await teacher.getByRole('button', { name: 'Voltar para as conversas' }).first().click();
     await expect(teacher).toHaveURL(/\/mensagens$/);
     await expectNoHorizontalScroll(teacher, 'Lista do professor no celular');
 
-    // A aluna vê a resposta e a conversa encerrada (a consulta da conversa aberta é de 10 s).
-    await expect(student.getByText('Combinado. Qualquer dúvida, me escreva.')).toBeVisible({ timeout: 25000 });
-    await expect(student.getByText(/O professor encerrou esta conversa/)).toBeVisible({ timeout: 15000 });
+    // A aluna vê a conversa encerrada (a consulta da conversa aberta é de 10 s).
+    await expect(student.getByText(/O professor encerrou esta conversa/)).toBeVisible({ timeout: 25000 });
     await expect(student.getByLabel('Responder')).toHaveCount(0);
     await expectNoHorizontalScroll(student, 'Conversa encerrada (aluno)');
     await expectNoWcagViolations(student, 'Conversa encerrada (aluno)');
 
     await teacherContext.close();
     await studentContext.close();
+});
+
+test('[UC-MENSAGEM-006] visual Lumen no celular: a última mensagem fica acima do campo, que fica acima da barra de baixo', async ({ browser, request }) => {
+    test.setTimeout(90000);
+    const login = await request.post('/api/session/admin-login', { data: { email: 'admin@teste.local', password: 'teste' } });
+    const token = (await login.json()).sessionToken;
+    const setPreset = interfacePreset => request.post('/api/branding', { headers: { 'x-admin-session': token }, data: { interfacePreset } });
+    expect((await setPreset('lumen')).ok()).toBe(true);
+    const context = await browser.newContext({ viewport: { width: 375, height: 812 }, hasTouch: true, isMobile: true });
+    try {
+        const student = await context.newPage();
+        await loginStudent(student);
+        await student.goto('/aluno/mensagens?c=seed_conv_alice');
+        await expect(student.getByLabel('Responder')).toBeVisible({ timeout: 15000 });
+        await expectLastMessageClear(student, 'Lumen: conversa aberta');
+        for (let index = 1; index <= 4; index++) {
+            await student.getByLabel('Responder').fill(`Mensagem ${index} para encher a conversa no celular e passar da altura da tela.`);
+            await student.getByRole('button', { name: 'Enviar', exact: true }).click();
+            await expect(student.getByText(`Mensagem ${index} para encher`)).toBeVisible();
+        }
+        await expectLastMessageClear(student, 'Lumen: depois de enviar');
+        const placement = await student.evaluate(() => {
+            const form = document.querySelector('form.mensagens-composer').getBoundingClientRect();
+            const nav = document.querySelector('.lumen-bottom-nav');
+            return { formBottom: form.bottom, navTop: nav ? nav.getBoundingClientRect().top : Infinity };
+        });
+        expect(placement.formBottom, 'o campo fica acima da barra de baixo').toBeLessThanOrEqual(placement.navTop);
+        await expectNoHorizontalScroll(student, 'Lumen: conversa');
+    } finally {
+        await context.close();
+        await setPreset('premium');
+    }
 });

@@ -11,23 +11,42 @@ import { KEEP_NOTICE, TEXT_COUNTER_FROM, TEXT_MAX, fullDateTime, isOwnMessage, m
 // balão até 85% da largura. As mensagens de quem vê ficam à direita.
 // side: 'aluno' (portal: autor 'voce') ou 'instrutor' (painel: voce true).
 export function MessageList({ mensagens, side, temAnteriores, loadingOlder, onLoadOlder, scrollKey }) {
-  const endRef = useRef(null)
+  const listRef = useRef(null)
   const lastId = mensagens.length ? mensagens[mensagens.length - 1].id : ''
   const ownLast = mensagens.length ? isOwnMessage(mensagens[mensagens.length - 1], side) : false
   const firstRender = useRef(true)
+  // Se a pessoa estava no fim antes da mensagem nova chegar (lido no rolar, antes de
+  // desenhar a mensagem nova; olhar depois contaria a altura dela como "longe do fim").
+  const wasAtEnd = useRef(true)
 
-  // Ao abrir a conversa e a cada mensagem nova no fim, mostra a última. (Mensagens
-  // anteriores entram no começo e não mexem na rolagem.)
   useEffect(() => { firstRender.current = true }, [scrollKey])
   useEffect(() => {
-    if (!lastId || !endRef.current || typeof endRef.current.scrollIntoView !== 'function') return
-    const behavior = firstRender.current ? 'auto' : 'smooth'
-    if (firstRender.current || ownLast || nearBottom(endRef.current)) endRef.current.scrollIntoView({ block: 'end', behavior })
+    const scroller = scrollParent(listRef.current)
+    if (!scroller) return undefined
+    const target = scroller === document.scrollingElement || scroller === document.documentElement ? window : scroller
+    const onScroll = () => { wasAtEnd.current = distanceToEnd(scroller) <= NEAR_END_PX }
+    target.addEventListener('scroll', onScroll, { passive: true })
+    return () => target.removeEventListener('scroll', onScroll)
+  }, [scrollKey])
+
+  // Ao abrir a conversa e a cada mensagem nova no fim, mostra a última. O campo de
+  // escrita vem logo depois da lista e fica preso ao pé da tela (sticky): rolar só até o
+  // fim da lista deixava a última mensagem por baixo dele (revisão do C14). Por isso a
+  // rolagem vai até o fim do rolador, onde o campo volta ao lugar dele, abaixo da lista.
+  // (Mensagens anteriores entram no começo e não mexem na rolagem.)
+  useEffect(() => {
+    if (!lastId) return
+    const scroller = scrollParent(listRef.current)
+    if (!scroller) return
+    if (firstRender.current || ownLast || wasAtEnd.current) {
+      scrollToEnd(scroller, firstRender.current ? 'auto' : 'smooth')
+      wasAtEnd.current = true
+    }
     firstRender.current = false
   }, [lastId, ownLast])
 
   return (
-    <div className="space-y-3">
+    <div ref={listRef} className="space-y-3">
       {temAnteriores && (
         <div className="flex justify-center">
           <Button variant="secondary" size="sm" loading={loadingOlder} onClick={onLoadOlder} className="min-h-[44px] sm:min-h-0">Mensagens anteriores</Button>
@@ -54,16 +73,35 @@ export function MessageList({ mensagens, side, temAnteriores, loadingOlder, onLo
           )
         })}
       </ol>
-      <div ref={endRef} aria-hidden="true" />
     </div>
   )
 }
 
-function nearBottom(element) {
-  if (typeof window === 'undefined' || !element || typeof element.getBoundingClientRect !== 'function') return true
-  const rect = element.getBoundingClientRect()
-  const height = window.innerHeight || document.documentElement.clientHeight || 0
-  return rect.top <= height + 160
+const NEAR_END_PX = 160
+
+// O rolador da tela: o primeiro ancestral com rolagem vertical (o <main> do painel e do
+// portal) ou, sem nenhum, a própria página.
+export function scrollParent(element) {
+  if (typeof window === 'undefined' || !element) return null
+  let node = element.parentElement
+  while (node && node !== document.body && node !== document.documentElement) {
+    const overflowY = window.getComputedStyle ? window.getComputedStyle(node).overflowY : ''
+    if (/(auto|scroll|overlay)/.test(overflowY || '')) return node
+    node = node.parentElement
+  }
+  return document.scrollingElement || document.documentElement
+}
+
+function distanceToEnd(scroller) {
+  return (Number(scroller.scrollHeight) || 0) - (Number(scroller.scrollTop) || 0) - (Number(scroller.clientHeight) || 0)
+}
+
+function scrollToEnd(scroller, behavior) {
+  const top = Number(scroller.scrollHeight) || 0
+  if (typeof scroller.scrollTo === 'function') {
+    try { scroller.scrollTo({ top, behavior }); return } catch { /* navegador antigo: cai no scrollTop */ }
+  }
+  scroller.scrollTop = top
 }
 
 // Campo de escrita preso ao fim da tela (também com o teclado do celular aberto): texto

@@ -514,6 +514,25 @@ test('[UC-MENSAGEM-004] sino do aluno: item mensagem pela marca lidaAte; "Marcar
     assert.equal(again.body.changed, false, 'sem mudança, sem gravação');
 });
 
+test('[UC-MENSAGEM-004] sino do aluno: mensagensNovas conta as conversas antes do corte de 30 itens (avisos mais novos não somem com o número do menu)', async () => {
+    const conv = await startOk({ assunto: 'Antiga', texto: 'Oi' });
+    await as('prof', request(app).post(`/api/admin/conversations/${conv.id}/messages`)).send({ texto: 'Resposta antiga' });
+    const later = Date.now() + 60000;
+    db.memory.announcements = Array.from({ length: 35 }, (_, index) => ({
+        id: `aviso_${index}`, title: `Aviso ${index}`, message: 'Texto', target: 'turma', targetValue: CLASS, courseId: COURSE,
+        createdAt: later + index, readBy: [],
+    }));
+    try {
+        const res = await asStudent(ANA, request(app).get(`/api/student/notifications?${Q}`));
+        assert.equal(res.status, 200);
+        assert.equal(res.body.items.length, 30);
+        assert.equal(res.body.items.filter(item => item.type === 'mensagem').length, 0, 'a conversa antiga saiu da lista do sino');
+        assert.equal(res.body.mensagensNovas, 1, 'mas o número do menu continua certo');
+    } finally { db.memory.announcements = []; }
+    await asStudent(ANA, request(app).post(`/api/student/conversations/${conv.id}/read`)).send({});
+    assert.equal((await asStudent(ANA, request(app).get(`/api/student/notifications?${Q}`))).body.mensagensNovas, 0);
+});
+
 test('[UC-MENSAGEM-004] fila e sino do instrutor: "N conversas com mensagem nova" só para o professor da conversa; read tira', async () => {
     const conv = await startOk({ texto: 'Oi' });
     await startOk({ texto: 'Oi também' }, BIA);
@@ -525,6 +544,9 @@ test('[UC-MENSAGEM-004] fila e sino do instrutor: "N conversas com mensagem nova
     assert.deepEqual(await queue('admin'), [], 'o administrador não recebe as dos outros');
     const bell = await as('prof', request(app).get(`/api/admin/notifications?${Q}`));
     assert.equal(bell.body.items.filter(item => item.type === 'mensagens').length, 1);
+    // O número do menu vem somado antes do corte da lista do sino (revisão do C14).
+    assert.equal(bell.body.mensagensNovas, 2);
+    assert.equal((await as('profB', request(app).get(`/api/admin/notifications?${Q}`))).body.mensagensNovas, 0);
     // Sem turma escolhida (Dashboard da instituição), a fila conta as do professor.
     assert.equal((await as('prof', request(app).get('/api/admin/dashboard/queue'))).body.filter(item => item.id === 'mensagens')[0].count, 2);
 

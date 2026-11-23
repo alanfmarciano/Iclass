@@ -75,6 +75,12 @@ const DIFERENCAS_ESPERADAS = [
         'memoriaDepoisDeApagar.auditLogs.*.details.removed.conversations',
         'encerradosDepois.*.counts.conversations',
     ].map(caminho => ({ caminho, motivo: 'C13 (P5-S7a): contagem "Conversas com professores" do handler das conversas.' })),
+    // C14 (P5-S7b, revisão): o sino do aluno e o do painel mandam mensagensNovas (conversas
+    // com mensagem nova, contadas antes do corte da lista), para o número do menu
+    // Mensagens. Campo novo; os itens e o unread continuam os de antes (0 aqui: o gerador
+    // não tem conversa).
+    ...['sinoAluno.body.mensagensNovas', 'sinoInstrutor.body.mensagensNovas']
+        .map(caminho => ({ caminho, motivo: 'C14 (P5-S7b): mensagensNovas no sino para o contador do menu Mensagens.' })),
 ];
 
 function run(env = {}) {
