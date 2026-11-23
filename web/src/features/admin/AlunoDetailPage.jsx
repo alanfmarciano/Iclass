@@ -23,6 +23,7 @@ import { ANONYMIZED_STATUS, isAnonymizedStatus } from './studentDeletion'
 import { downloadDataExport, openPrintWindow, printDataExport } from '../../lib/dataExportPrint'
 import { ADMIN_PERMISSIONS, canAccessAdminPermission, canReadStudentGrades, isFullAdmin } from '../../lib/adminPermissions'
 import { displayEmail, isStudentIdParam, studentRouteKey } from '../../lib/studentProfile'
+import { compareOrdinal, compareText } from '../../lib/textSearch'
 
 const STATUS_TONE = { Ativo: 'success', Inativo: 'neutral', Bloqueado: 'danger', 'Concluído': 'success', Transferido: 'warning', Evadido: 'warning', [ANONYMIZED_STATUS]: 'neutral' }
 const dn = (s) => (s?.nomeSocial && s.nomeSocial.trim()) || s?.name || ''
@@ -36,13 +37,24 @@ const chartLabelOf = (s) => (isManualKey(s?.examKey)
   ? String(s.examTitle || 'Avaliação').slice(0, 12)
   : moduleOf(s.examKey) + (s.examKey?.split('_')[2] ? ' ' + s.examKey.split('_')[2] : ''))
 const semesterOf = (t) => { const d = new Date(t || 0); return `${d.getFullYear()}.${d.getMonth() < 6 ? 1 : 2}` }
+// Filtro da evolução das notas (B8 / P2-S8, FUN-05): pelo período letivo da turma da
+// entrega, que o servidor manda (periodoLetivo, só quando a data da entrega cai dentro
+// dele); a entrega sem período fica no semestre do calendário, como antes ("2026.2").
+// key separa os dois tipos, label é o texto do seletor e sort põe na ordem das datas.
+export function notePeriodOf(s) {
+  const term = s?.periodoLetivo
+  if (term && term.id) return { key: `per:${term.id}`, label: term.nome || 'Período letivo', sort: String(term.inicio || ''), term: true }
+  const d = new Date(s?.timestamp || 0)
+  const semester = semesterOf(s?.timestamp)
+  return { key: `sem:${semester}`, label: semester, sort: `${d.getFullYear()}-${d.getMonth() < 6 ? '01' : '07'}-01`, term: false }
+}
 const fmtDate = (t) => t ? new Date(t).toLocaleDateString('pt-BR') : '—'
 const fmtDateTime = (t) => t ? new Date(t).toLocaleString('pt-BR') : '—'
 
 function Card({ title, action, children, className = '' }) {
   return (
     <div className={`bg-surface border border-border rounded-xl p-4 sm:p-5 ${className}`}>
-      {title && <div className="flex items-center justify-between mb-3"><p className="text-sm font-medium text-text">{title}</p>{action}</div>}
+      {title && <div className="flex flex-wrap items-center justify-between gap-2 mb-3"><p className="text-sm font-medium text-text">{title}</p>{action}</div>}
       {children}
     </div>
   )
@@ -181,8 +193,13 @@ export default function AlunoDetailPage() {
   // Nota inválida de registro antigo (vazia ou fora de 0 a 10) não entra em média nem gráfico.
   const validSubs = useMemo(() => subs.filter((s) => gradeOf(s.score) !== null), [subs])
   const modules = useMemo(() => [...new Set(subs.map((s) => moduleOf(s.examKey)))].filter((m) => m !== '—'), [subs])
-  const semesters = useMemo(() => [...new Set(subs.map((s) => semesterOf(s.timestamp)))].sort(), [subs])
-  const filteredSubs = useMemo(() => validSubs.filter((s) => (filterModule === 'all' || moduleOf(s.examKey) === filterModule) && (filterSemester === 'all' || semesterOf(s.timestamp) === filterSemester)), [validSubs, filterModule, filterSemester])
+  const semesters = useMemo(() => {
+    const byKey = new Map()
+    subs.forEach((s) => { const period = notePeriodOf(s); if (!byKey.has(period.key)) byKey.set(period.key, period) })
+    return [...byKey.values()].sort((a, b) => compareOrdinal(a.sort, b.sort) || compareText(a.label, b.label))
+  }, [subs])
+  const byTerm = semesters.some((period) => period.term)
+  const filteredSubs = useMemo(() => validSubs.filter((s) => (filterModule === 'all' || moduleOf(s.examKey) === filterModule) && (filterSemester === 'all' || notePeriodOf(s).key === filterSemester)), [validSubs, filterModule, filterSemester])
   const notas = useMemo(() => [...filteredSubs].sort((a, b) => new Date(a.timestamp || 0) - new Date(b.timestamp || 0)).map((s) => ({ label: chartLabelOf(s), value: gradeOf(s.score) })), [filteredSubs])
   // Média por módulo do servidor: mesma consolidação e mesmo curso/turma da "Média geral"
   // (antes era a média simples de todas as tentativas, feita aqui no navegador).
@@ -248,10 +265,10 @@ export default function AlunoDetailPage() {
               <div className="space-y-4">
                 {!gradesHidden && <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
                   <Card title="Evolução das notas" className="lg:col-span-2" action={
-                    <div className="flex gap-2">
-                      <select value={filterSemester} onChange={(e) => setFilterSemester(e.target.value)} className="text-xs bg-surface border border-border rounded-md px-2 py-1 text-text">
-                        <option value="all">Todos os semestres</option>
-                        {semesters.map((sem) => <option key={sem} value={sem}>{sem}</option>)}
+                    <div className="flex min-w-0 flex-wrap gap-2">
+                      <select aria-label={byTerm ? 'Filtrar por período letivo' : 'Filtrar por semestre'} value={filterSemester} onChange={(e) => setFilterSemester(e.target.value)} className="min-w-0 max-w-[11rem] text-xs bg-surface border border-border rounded-md px-2 py-1 text-text">
+                        <option value="all">{byTerm ? 'Todos os períodos' : 'Todos os semestres'}</option>
+                        {semesters.map((period) => <option key={period.key} value={period.key}>{period.label}</option>)}
                       </select>
                       <select value={filterModule} onChange={(e) => setFilterModule(e.target.value)} className="text-xs bg-surface border border-border rounded-md px-2 py-1 text-text">
                         <option value="all">Todas as matérias</option>

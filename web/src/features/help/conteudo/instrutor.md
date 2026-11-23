@@ -171,9 +171,30 @@ Lista os cursos da instituição e as turmas de cada um. Daqui você cria turmas
 
 <!-- P2 (B6, B8, B10) escreve aqui: critérios de avaliação, disciplinas, período letivo e encerrar turma. P4 (A14): exportar e importar curso. -->
 
+No formulário da turma, **Turno** é Manhã, Tarde ou Noite, e **Período letivo** liga a turma ao semestre ou ano letivo (veja "Período letivo", abaixo). Cada turma mostra o período dela ou o selo "Sem período letivo".
+
+**Disciplinas** (botão do curso) lista as disciplinas usadas na grade horária. Em cada uma você informa:
+
+- a **carga horária** em horas (deixe em branco se não souber; apagar o número apaga o valor);
+- o **professor responsável** (só informativo: não muda quem acessa a turma);
+- os **módulos do curso** que são dela. Cada módulo fica em uma disciplina só: o módulo que já está em outra aparece travado, com o nome dela. Assim o boletim liga a frequência, que é por disciplina, às notas, que são por módulo.
+
 ## Período letivo {#periodo-letivo}
 
 <!-- P2 (B5 e B8) escreve aqui: períodos, etapas e carga horária. -->
+
+Em **Cursos e turmas**, a seção **Períodos letivos** guarda o semestre ou o ano letivo (por exemplo, "2027 · 1º semestre"), com o início, o fim e as etapas (bimestres, trimestres). O período vale para toda a instituição ou para uma escola.
+
+1. Clique em **Novo período letivo**, dê o nome e preencha o início e o fim.
+2. Em **Dividir o período em**, escolha quantas etapas (o IClass já sugere o número de etapas dos critérios de avaliação do curso escolhido) e clique em **Sugerir datas das etapas**. As etapas saem em partes iguais; ajuste as datas se houver recesso. As etapas são opcionais.
+3. Salve. Se uma data estiver errada (etapa fora do período ou cruzada com a anterior), o IClass mostra o aviso no campo.
+4. Ligue cada turma ao período em **Editar** da turma, no campo **Período letivo**.
+
+Com a turma ligada, fora das datas do período a Chamada avisa que não há aula e o Dashboard não cobra a chamada. A turma sem período continua como sempre: todo dia da grade tem aula. Nenhuma turma é ligada sozinha.
+
+**Encerrar** o período não encerra as turmas nem muda nota ou chamada: o período só deixa de receber turma nova e de mudar as datas. **Reabrir** pede o motivo, que fica na Auditoria.
+
+Na ficha do aluno, a "Evolução das notas" passa a filtrar pelo período letivo; as notas de antes do período (ou de turma sem período) continuam pelo semestre ("2026.2").
 
 ## Certificados {#certificados}
 

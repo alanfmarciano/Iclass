@@ -363,6 +363,18 @@ function normalizeTerm(raw) {
     };
 }
 
+// Período letivo de uma entrega (B8 / P2-S8, FUN-05): o da turma da entrega
+// (classOfSubmission), só quando a data civil da entrega (date, 'AAAA-MM-DD' no fuso da
+// escola) cai dentro das datas dele; senão null. A ficha do aluno filtra as notas por
+// período letivo com isto; a entrega de antes do período (turma ligada depois, D17) ou de
+// turma sem período fica com o semestre do calendário, como antes.
+function submissionTerm(memory, submission, date) {
+    if (!isValidDate(date)) return null;
+    const term = termForClass(memory, classOfSubmission(memory, submission));
+    if (!term || date < term.inicio || date > term.fim) return null;
+    return termSummary(term);
+}
+
 // A etapa do período que cobre a data, ou null (data fora das etapas ou período sem elas).
 function termStageForDate(term, date) {
     const normalized = normalizeTerm(term);
@@ -617,6 +629,7 @@ module.exports = {
     MAX_TERM_STAGES,
     normalizeTerm,
     termStageForDate,
+    submissionTerm,
     readTermInput,
     weeklyLessons,
     dayStatus,

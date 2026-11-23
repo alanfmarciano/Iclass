@@ -685,3 +685,33 @@ test('[UC-CURSO-002] duplicar curso: disciplinas com carga horária e módulos c
     assert.equal(other.status, 200, JSON.stringify(other.body));
     assert.equal('periodoLetivoId' in db.memory.classes.find(item => item.courseId === 'TIB' && item.name === '1DES'), false);
 });
+
+// Ficha do aluno (B8 / P2-S8): o filtro da evolução das notas passa a ser por período
+// letivo. Cada entrega vem com o período da turma dela, só quando a data da entrega (no
+// fuso da escola) cai dentro do período; a de antes do período (turma ligada depois, D17),
+// a de turma sem período e a do professor auxiliar (sem notas) ficam sem. Antes, a rota não
+// mandava periodoLetivo e a tela agrupava só pelo semestre do calendário.
+test('[UC-CURSO-002] ficha do aluno: cada entrega traz o período letivo da turma quando a data cai dentro dele', async () => {
+    const term = (await createTerm()).body.periodo;
+    db.memory.classes[0].periodoLetivoId = term.id;
+    const at = (date, hour = '13:00') => new Date(`${date}T${hour}:00Z`).toISOString();
+    db.memory.submissions = [
+        { id: 's_dentro', examKey: 'Avaliacao_TI_1', score: 80, timestamp: at('2027-03-10'), courseId: 'TI', studentClass: '1DES', student: { email: 'ana@periodo.local', studentClass: '1DES', courseId: 'TI' } },
+        // Último dia do período às 23:30 em São Paulo (02:30 UTC do dia seguinte): ainda é dentro.
+        { id: 's_ultimo_dia', examKey: 'Avaliacao_TI_2', score: 70, timestamp: '2027-07-10T02:30:00.000Z', courseId: 'TI', studentClass: '1DES', student: { email: 'ana@periodo.local', studentClass: '1DES', courseId: 'TI' } },
+        { id: 's_antes', examKey: 'Avaliacao_TI_1', score: 60, timestamp: at('2026-11-20'), courseId: 'TI', studentClass: '1DES', student: { email: 'ana@periodo.local', studentClass: '1DES', courseId: 'TI' } },
+        // Registro antigo sem curso: a turma vem da matrícula (classOfSubmission).
+        { id: 's_antigo', examKey: 'Avaliacao_TI_2', score: 90, timestamp: at('2027-05-05'), student: { email: 'ana@periodo.local', studentClass: '1DES' } },
+        { id: 's_outra', examKey: 'Avaliacao_TI_1', score: 50, timestamp: at('2027-03-10'), courseId: 'TI', studentClass: '2DES', student: { email: 'ana@periodo.local', studentClass: '2DES', courseId: 'TI' } },
+    ];
+    const res = await as('admin', 'get', '/api/admin/student/academic?email=ana@periodo.local');
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    const byId = Object.fromEntries(res.body.submissions.map(item => [item.id, item.periodoLetivo]));
+    const summary = { id: term.id, nome: TERM.nome, inicio: TERM.inicio, fim: TERM.fim };
+    assert.deepEqual(byId.s_dentro, summary);
+    assert.deepEqual(byId.s_ultimo_dia, summary, 'a data é a da escola, não a do UTC');
+    assert.deepEqual(byId.s_antigo, summary);
+    assert.equal(byId.s_antes, null, 'entrega de antes do período fica no semestre do calendário');
+    assert.equal(byId.s_outra, null, 'turma sem período');
+    assert.equal(calendar.submissionTerm(db.memory, db.memory.submissions[0], 'data-ruim'), null);
+});

@@ -198,7 +198,8 @@ const fileStore = require('../utils/storage.js');
 const settingsUtil = require('../utils/settings.js');
 const { computeStudentDashboard, studentOverview, buildOverviewIndex } = require('../utils/studentAnalytics.js');
 const { computeNow, computeQueue, computeTrends } = require('../utils/dashboardAggregates.js');
-const { assertClassOpen, classOfSubmission, classesOfSubmissions, dayStatus, weeklyLessons, termForClass, termSummary, normalizeTerm } = require('../utils/academicCalendar.js');
+const { assertClassOpen, classOfSubmission, classesOfSubmissions, dayStatus, weeklyLessons, termForClass, termSummary, normalizeTerm, submissionTerm } = require('../utils/academicCalendar.js');
+const { schoolDateOf } = require('../utils/schoolTime.js');
 const { renameStudentData } = require('../utils/studentDataHandlers.js');
 const studentIdentity = require('../utils/studentIdentity.js');
 const attendanceUtil = require('../utils/attendance.js');
@@ -2216,6 +2217,10 @@ router.get('/api/admin/student/academic', (req, res) => {
                 id: s.id, examKey: s.examKey, score: normalizeScore(s.score), scoreInvalid: normalizeScore(s.score) === null, correctCount: s.correctCount, totalCount: s.totalCount, assignedVersion: s.assignedVersion, gradePublished: s.gradePublished === true, timestamp: s.timestamp,
                 // Avaliação manual da turma (man_*, B6): o título, para a ficha não mostrar o id.
                 ...(isManualItemId(s.examKey) ? { manual: true, examTitle: manualAssessmentTitleForSubmission(db.memory.classes || [], s) || 'Avaliação da turma' } : {}),
+                // Período letivo da turma da entrega, quando a data dela cai dentro dele (B8 /
+                // P2-S8): o filtro da ficha passa a ser por período; sem período, null e a
+                // tela usa o semestre do calendário, como antes.
+                periodoLetivo: submissionTerm(db.memory, s, schoolDateOf(s.timestamp)),
             }))
             .sort((a, b) => new Date(b.timestamp || 0) - new Date(a.timestamp || 0));
         const progressMap = (db.memory.progress && db.memory.progress[email]) || {};

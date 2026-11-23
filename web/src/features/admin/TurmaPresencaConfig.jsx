@@ -24,40 +24,149 @@ const slug = (nome) => String(nome || '').normalize('NFD').replace(/[̀-ͯ]/g, '
 // ---------------------------------------------------------------------------
 // Modal de disciplinas do curso
 // ---------------------------------------------------------------------------
+// Módulos da estrutura do curso como o servidor os identifica (gradebook.structureModuleId:
+// id, key, name ou title, nesta ordem; sem nenhum, 'module_<posição>'), com o nome da tela.
+export function courseModuleOptions(structure) {
+  return (Array.isArray(structure) ? structure : []).map((module, index) => {
+    if (!module || typeof module !== 'object') return null
+    const id = String(module.id || module.key || module.name || module.title || `module_${index}`)
+    return { id, nome: String(module.name || module.title || id) }
+  }).filter(Boolean)
+}
+
+const DISCIPLINA_CARGA_MAX = 2000
+
+// Carga horária digitada: '' (apaga), número inteiro de 0 a 2000 ou null (inválida).
+export function readCargaHoraria(text) {
+  const value = String(text ?? '').trim()
+  if (!value) return ''
+  if (!/^\d{1,4}$/.test(value)) return null
+  const number = Number(value)
+  return number <= DISCIPLINA_CARGA_MAX ? number : null
+}
+
+// Disciplinas do curso (fase 3, B8 / P2-S8, FUN-05): nome, código e, desde o B5, a carga
+// horária (horas), o professor responsável (texto, só informativo) e os módulos do curso
+// que são da disciplina (cada módulo em uma disciplina só; o servidor confere de novo). A
+// lista vai inteira, com os campos novos sempre preenchidos: carga horária em branco ou
+// professor vazio apagam o valor (é o que a pessoa vê na tela). O módulo que a disciplina
+// já tinha e saiu da estrutura do curso continua marcado (o servidor aceita) até alguém
+// desmarcar.
 export function DisciplinasModal({ open, onClose, course, onSave, saving }) {
   const [list, setList] = useState([])
+  const [errors, setErrors] = useState({})
+  const modules = useMemo(() => courseModuleOptions(course?.structure), [course?.structure])
 
   // Reinicia a lista quando o modal abre para um curso.
   const courseId = course?.id
-  useEffect(() => { if (open) setList((course?.disciplinas || []).map(d => ({ ...d }))) }, [open, courseId]) // eslint-disable-line
+  useEffect(() => {
+    if (!open) return
+    setErrors({})
+    setList((course?.disciplinas || []).map(d => ({
+      ...d,
+      cargaHoraria: d.cargaHoraria === null || d.cargaHoraria === undefined ? '' : String(d.cargaHoraria),
+      professor: d.professor || '',
+      modulos: Array.isArray(d.modulos) ? d.modulos.map(String) : [],
+    })))
+  }, [open, courseId]) // eslint-disable-line
 
-  const add = () => setList(l => [...l, { id: '', nome: '', cor: '' }])
-  const remove = (i) => setList(l => l.filter((_, idx) => idx !== i))
+  const add = () => setList(l => [...l, { id: '', nome: '', cor: '', cargaHoraria: '', professor: '', modulos: [] }])
+  const remove = (i) => { setErrors({}); setList(l => l.filter((_, idx) => idx !== i)) }
+  const patch = (i, values) => setList(l => l.map((d, idx) => idx === i ? { ...d, ...values } : d))
   const setNome = (i, nome) => setList(l => l.map((d, idx) => idx === i ? { ...d, nome, id: d.id || slug(nome) } : d))
-  const setId = (i, id) => setList(l => l.map((d, idx) => idx === i ? { ...d, id: String(id).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 16) } : d))
+  const setId = (i, id) => patch(i, { id: String(id).toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 16) })
+  const toggleModule = (i, moduleId, checked) => setList(l => l.map((d, idx) => idx === i
+    ? { ...d, modulos: checked ? [...d.modulos.filter(m => m !== moduleId), moduleId] : d.modulos.filter(m => m !== moduleId) }
+    : d))
+
+  // Dono de cada módulo na lista que está na tela (para travar o módulo nas outras).
+  const owners = useMemo(() => {
+    const map = new Map()
+    list.forEach((d, index) => (d.modulos || []).forEach(m => { if (!map.has(m)) map.set(m, index) }))
+    return map
+  }, [list])
 
   const save = () => {
-    const clean = list.map(d => ({ id: (d.id || slug(d.nome)).toUpperCase(), nome: d.nome.trim(), cor: d.cor || '' })).filter(d => d.nome)
-    const ids = clean.map(d => d.id)
-    if (new Set(ids).size !== ids.length) return
+    const next = {}
+    const seen = new Map()
+    const clean = []
+    list.forEach((d, index) => {
+      const nome = String(d.nome || '').trim()
+      if (!nome) return
+      const id = (d.id || slug(nome)).toUpperCase()
+      if (seen.has(id)) next[`${index}.id`] = `O código ${id} já está na disciplina ${list[seen.get(id)].nome.trim()}. Cada disciplina tem um código.`
+      else seen.set(id, index)
+      const carga = readCargaHoraria(d.cargaHoraria)
+      if (carga === null) next[`${index}.cargaHoraria`] = `Carga horária em horas: um número inteiro de 0 a ${DISCIPLINA_CARGA_MAX}, ou em branco.`
+      clean.push({
+        id,
+        nome,
+        cor: d.cor || '',
+        cargaHoraria: carga === '' || carga === null ? null : carga,
+        professor: String(d.professor || '').trim(),
+        modulos: [...new Set(d.modulos || [])],
+      })
+    })
+    setErrors(next)
+    if (Object.keys(next).length) return
     onSave(clean)
   }
 
   return (
-    <Modal open={open} onClose={onClose} title="Disciplinas do curso" description={course?.name}
+    <Modal open={open} onClose={onClose} size="lg" fullScreenOnPhone title="Disciplinas do curso" description={course?.name}
       footer={<><Button variant="ghost" onClick={onClose}>Cancelar</Button><Button loading={saving} onClick={save}>Salvar disciplinas</Button></>}>
       <div className="space-y-3">
-        <p className="text-xs text-subtle">As disciplinas ficam disponíveis para montar a grade horária de qualquer turma deste curso.</p>
+        <p className="text-xs text-subtle">As disciplinas ficam disponíveis para montar a grade horária de qualquer turma deste curso. A carga horária e os módulos ligam a frequência (por disciplina) às notas (por módulo) no boletim.</p>
         {list.length === 0 && <p className="rounded-lg border border-dashed border-border p-3 text-sm text-muted">Nenhuma disciplina cadastrada.</p>}
-        <div className="space-y-2">
-          {list.map((d, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <input className="h-[38px] flex-1 rounded-md border border-border bg-surface px-3 text-sm text-text" placeholder="Nome (ex.: Matemática)" value={d.nome} onChange={e => setNome(i, e.target.value)} aria-label="Nome da disciplina" />
-              <input className="h-[38px] w-28 rounded-md border border-border bg-surface px-3 text-sm text-text" placeholder="ID" value={d.id} onChange={e => setId(i, e.target.value)} aria-label="Código da disciplina" />
-              <button type="button" onClick={() => remove(i)} className="grid h-[38px] w-9 shrink-0 place-items-center rounded-md border border-border text-muted hover:text-danger" aria-label="Remover disciplina"><Trash2 size={15} /></button>
-            </div>
-          ))}
-        </div>
+        <ul className="space-y-3" aria-label="Disciplinas">
+          {list.map((d, i) => {
+            const label = d.nome?.trim() || `Disciplina ${i + 1}`
+            const stale = (d.modulos || []).filter(m => !modules.some(module => module.id === m))
+            return (
+              <li key={i} className="rounded-lg border border-border p-3">
+                <div className="flex items-start gap-2">
+                  <div className="grid min-w-0 flex-1 gap-2 sm:grid-cols-[minmax(0,1fr)_7rem]">
+                    <input className="h-[38px] min-w-0 rounded-md border border-border bg-surface px-3 text-sm text-text" placeholder="Nome (ex.: Matemática)" value={d.nome} onChange={e => setNome(i, e.target.value)} aria-label="Nome da disciplina" />
+                    <input className={`h-[38px] min-w-0 rounded-md border bg-surface px-3 text-sm text-text ${errors[`${i}.id`] ? 'border-danger' : 'border-border'}`} placeholder="ID" value={d.id} onChange={e => setId(i, e.target.value)} aria-label="Código da disciplina" aria-invalid={!!errors[`${i}.id`]} />
+                  </div>
+                  <button type="button" onClick={() => remove(i)} className="grid h-[38px] w-9 shrink-0 place-items-center rounded-md border border-border text-muted hover:text-danger" aria-label={`Remover disciplina ${label}`}><Trash2 size={15} /></button>
+                </div>
+                {errors[`${i}.id`] && <p role="alert" className="mt-1 text-xs text-danger">{errors[`${i}.id`]}</p>}
+                <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                  <Input label={`Carga horária de ${label} (horas)`} inputMode="numeric" value={d.cargaHoraria} placeholder="Ex.: 80"
+                    error={errors[`${i}.cargaHoraria`]} onChange={e => patch(i, { cargaHoraria: e.target.value })} />
+                  <Input label={`Professor responsável por ${label}`} value={d.professor} maxLength={80} placeholder="Nome (opcional)"
+                    onChange={e => patch(i, { professor: e.target.value })} />
+                </div>
+                <fieldset className="mt-3">
+                  <legend className="text-[13px] font-medium text-muted">{`Módulos de ${label}`}</legend>
+                  {modules.length === 0 && stale.length === 0
+                    ? <p className="mt-1 text-xs text-subtle">Este curso ainda não tem módulos.</p>
+                    : <div className="mt-2 grid gap-1.5 sm:grid-cols-2">
+                      {modules.map(module => {
+                        const owner = owners.get(module.id)
+                        const checked = (d.modulos || []).includes(module.id)
+                        const takenBy = owner !== undefined && owner !== i ? (list[owner]?.nome?.trim() || `disciplina ${owner + 1}`) : ''
+                        return (
+                          <label key={module.id} className={`flex min-w-0 items-start gap-2 rounded-md px-1 py-1 text-sm ${takenBy ? 'text-subtle' : 'text-text'}`}>
+                            <input type="checkbox" className="mt-0.5" checked={checked} disabled={!!takenBy && !checked}
+                              onChange={e => toggleModule(i, module.id, e.target.checked)} />
+                            <span className="min-w-0 break-words">{module.nome}{takenBy && !checked ? ` (em ${takenBy})` : ''}</span>
+                          </label>
+                        )
+                      })}
+                      {stale.map(moduleId => (
+                        <label key={`old-${moduleId}`} className="flex min-w-0 items-start gap-2 rounded-md px-1 py-1 text-sm text-text">
+                          <input type="checkbox" className="mt-0.5" checked onChange={e => toggleModule(i, moduleId, e.target.checked)} />
+                          <span className="min-w-0 break-words">{moduleId} <span className="text-xs text-warning">(não está mais na estrutura do curso)</span></span>
+                        </label>
+                      ))}
+                    </div>}
+                </fieldset>
+              </li>
+            )
+          })}
+        </ul>
         <Button size="sm" variant="secondary" icon={Plus} onClick={add}>Adicionar disciplina</Button>
       </div>
     </Modal>
@@ -267,6 +376,9 @@ export function AssistenteHorariosWizard({ course, turma, allClasses = [], profe
   const [copyTargets, setCopyTargets] = useState(() => new Set())
   const [saveAsTemplate, setSaveAsTemplate] = useState(false)
   const [templateName, setTemplateName] = useState('')
+  // Janela de impressão bloqueada: aviso na própria tela (antes era window.alert, que
+  // congela a página; contrato C12 do P3).
+  const [printBlocked, setPrintBlocked] = useState(false)
 
   const slots = useMemo(() => computeSlots(rhythm), [rhythm])
   const activeDays = useMemo(() => WD.filter(d => days[d.key]), [days])
@@ -374,7 +486,7 @@ export function AssistenteHorariosWizard({ course, turma, allClasses = [], profe
 
   const exportPdf = () => {
     const ok = printGrade({ courseName: course?.name, turmaName: turma?.name, attendanceConfig: buildConfig(), disciplinas: subjects })
-    if (!ok && typeof window !== 'undefined') window.alert('Não foi possível abrir a janela de impressão. Verifique se o bloqueador de pop-ups está desativado.')
+    setPrintBlocked(!ok)
   }
 
   const totalIntervalo = rhythm.gaps.reduce((a, b) => a + b, 0)
@@ -604,6 +716,7 @@ export function AssistenteHorariosWizard({ course, turma, allClasses = [], profe
               </div>
               <Button size="sm" variant="secondary" icon={Download} onClick={exportPdf} disabled={activeDays.length === 0}>Exportar PDF</Button>
             </div>
+            {printBlocked && <p role="alert" className="mb-4 rounded-lg border border-danger/40 bg-danger/10 p-3 text-sm text-danger">O navegador bloqueou a janela de impressão. Libere pop-ups para este site e clique em Exportar PDF de novo.</p>}
 
             {clashes.length > 0 && (
               <div className="mb-4 rounded-lg border border-warning/50 bg-warning/10 p-3">
