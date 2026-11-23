@@ -268,6 +268,7 @@ function createAdminCoursePackageRouter({ uploadErrorMessage, isUploadRequestErr
                         renomeadas: result.renomeadas.length,
                         ...(result.renomeadas.length ? { exemplosRenomeadas: result.renomeadas.slice(0, 20) } : {}),
                         arquivosRenomeados: result.arquivosRenomeados.length,
+                        ...(result.arquivosNaoCitados.length ? { arquivosNaoCitados: result.arquivosNaoCitados.length } : {}),
                         ...(result.turmasPuladas.length ? { turmasPuladas: result.turmasPuladas } : {}),
                     },
                 });
@@ -292,6 +293,7 @@ function createAdminCoursePackageRouter({ uploadErrorMessage, isUploadRequestErr
                     renomeadas: result.renomeadas.length,
                     arquivosRenomeados: result.arquivosRenomeados.length,
                     arquivosReaproveitados: result.arquivosReaproveitados,
+                    arquivosNaoCitados: result.arquivosNaoCitados.length,
                     turmasPuladas: result.turmasPuladas,
                     avisos: result.avisos,
                 });

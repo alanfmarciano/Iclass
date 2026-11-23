@@ -815,3 +815,130 @@ test('[UC-PACOTE-002] importar grava o curso e a auditoria numa gravação só',
     assert.ok(withCourse[0] === 'tudo' || withCourse[0].includes('auditLogs'), JSON.stringify(calls));
     assert.equal(calls.filter(only => only !== 'tudo' && only.length === 1 && only[0] === 'auditLogs').length, 0, 'sem gravação só da auditoria depois');
 });
+
+// Ajuste 2 do A14: a regra "texto que é só um e-mail sai" não vale para o conteúdo da
+// questão. Questão de curso de TI cuja alternativa ou resposta aceita é um e-mail vai e
+// volta como está; o histórico com e-mail de quem mexeu continua saindo.
+test('[UC-PACOTE-001] questão com e-mail na alternativa, no gabarito e na resposta aceita vai e volta igual', async () => {
+    freshInstall();
+    const questions = [
+        { type: 'multiple_choice', points: 1, text: 'Qual destes é um e-mail válido?', correctAnswer: 'A', alternatives: [
+            { letter: 'A', text: 'joao@empresa.com.br' }, { letter: 'B', text: 'joao@@empresa' }, { letter: 'C', text: 'joao.empresa.com' },
+        ] },
+        { type: 'short_answer', points: 1, text: 'Para que endereço vai o pedido de suporte?', acceptedAnswers: ['suporte@escola.edu.br'], review: 'auto', explanation: 'suporte@escola.edu.br' },
+        { type: 'essay', points: 2, text: 'Escreva o e-mail de contato.', expectedAnswer: 'contato@escola.edu.br' },
+    ];
+    db.memory.evaluations.Avaliacao_REDES_2 = { key: 'Avaliacao_REDES_2', title: 'Prova prática', theme: '', rubric: '', questions: normalizeEvaluationQuestions(questions).map((question, index) => (index === 0 ? { ...question, meta: { revisor: 'revisor@escola.local' } } : question)) };
+    db.memory.questionBank.push({ key: 'qb_email', category: 'Redes', type: 'short_answer', questionText: 'E-mail do suporte?', acceptedAnswers: ['suporte@escola.edu.br'], review: 'auto', sourceExamKey: 'Avaliacao_REDES_2', author: PROF, updatedBy: PROF, history: [{ by: PROF, em: '2026-11-01' }] });
+
+    const res = await exportBuffer();
+    const manifest = JSON.parse(new AdmZip(res.body).readAsText('manifest.json'));
+    const exported = manifest.avaliacoes.Avaliacao_REDES_2.questions;
+    assert.equal(exported[0].alternatives[0].text, 'joao@empresa.com.br');
+    assert.deepEqual(exported[1].acceptedAnswers, ['suporte@escola.edu.br']);
+    assert.equal(exported[1].explanation, 'suporte@escola.edu.br');
+    assert.equal(exported[2].expectedAnswer, 'contato@escola.edu.br');
+    assert.deepEqual(exported[0].meta, {}, 'campo fora do conteúdo da questão segue a regra geral: o e-mail sai');
+    const bankItem = manifest.questoes.find(item => item.questionText === 'E-mail do suporte?');
+    assert.deepEqual(bankItem.acceptedAnswers, ['suporte@escola.edu.br']);
+    assert.equal(bankItem.author, undefined);
+    assert.deepEqual(bankItem.history, [{ em: '2026-11-01' }]);
+    const text = JSON.stringify(manifest);
+    [PROF, 'revisor@escola.local', STUDENT].forEach(email => assert.equal(text.includes(email), false, email));
+
+    const preview = await postPackage('/api/admin/course-packages/preview', res.body);
+    assert.equal(preview.status, 200, JSON.stringify(preview.body));
+    const done = await postPackage('/api/admin/course-packages/import', res.body, { sha256: preview.body.sha256, newId: 'REDES_EMAIL', newName: 'Redes e-mail' });
+    assert.equal(done.status, 200, JSON.stringify(done.body));
+    const imported = db.memory.evaluations.Avaliacao_REDES_2_REDES_EMAIL.questions;
+    const original = db.memory.evaluations.Avaliacao_REDES_2.questions;
+    assert.deepEqual(imported.map(({ meta, ...question }) => question), original.map(({ meta, ...question }) => question), 'as questões voltam iguais');
+    const importedBank = db.memory.questionBank.find(item => item.sourceExamKey === 'Avaliacao_REDES_2_REDES_EMAIL');
+    assert.deepEqual(importedBank.acceptedAnswers, ['suporte@escola.edu.br']);
+    assert.equal(importedBank.author, 'admin@pacote.local');
+});
+
+test('[UC-PACOTE-001] avaliação da estrutura que não existe na origem entra em foraDoPacote e a prévia avisa', async () => {
+    freshInstall();
+    delete db.memory.evaluations.Avaliacao_REDES_2; // sem .md e sem questões nesta instalação
+    const res = await exportBuffer();
+    assert.equal(res.headers['x-iclass-fora-do-pacote'], '1');
+    const manifest = JSON.parse(new AdmZip(res.body).readAsText('manifest.json'));
+    assert.deepEqual(manifest.foraDoPacote, [{ arquivo: 'conteudo/Avaliacao_REDES_2.md', chave: 'Avaliacao_REDES_2', tipo: 'avaliacao', motivo: 'avaliação sem as questões nesta instalação' }]);
+    const preview = await coursePackage.previewCoursePackage(res.body, { memory: emptyMemory(), ...otherInstallDirs('instalacao-sem-avaliacao') });
+    assert.ok(preview.avisos.some(aviso => aviso === 'A avaliação Avaliacao_REDES_2 está na estrutura do curso, mas não existia na instalação de origem e não veio no pacote: a unidade chega sem as questões.'), JSON.stringify(preview.avisos));
+    assert.equal(preview.avisos.some(aviso => /arquivo citado no curso/.test(aviso)), false, 'não é contada como arquivo');
+    // A avaliação que existe (feita no editor, sem .md) continua não sendo "falta".
+    freshInstall();
+    const ok = await exportBuffer();
+    assert.equal(ok.headers['x-iclass-fora-do-pacote'], '0');
+});
+
+test('[UC-PACOTE-003] arquivo de mídia que o curso não cita não é gravado; a prévia e a importação avisam', async () => {
+    const svg = Buffer.from('<svg xmlns="http://www.w3.org/2000/svg"><script>alert(1)</script></svg>');
+    const buffer = buildPackage(({ files, manifest }) => {
+        files['conteudo/Apostila_X_1.md'] = Buffer.from('# X\n\n![usada](imagens/x/usada.svg) e [pdf](/uploads/usado.pdf)\n');
+        files['midia/imagens/x/usada.svg'] = SVG;
+        files['midia/imagens/x/evil.svg'] = svg;
+        files['midia/uploads/usado.pdf'] = PDF;
+        files['midia/uploads/solto.pdf'] = PDF;
+        files['midia/uploads/da-biblioteca.pdf'] = PDF;
+        manifest.biblioteca = [{ kind: 'file', name: 'Leitura', filename: 'da-biblioteca.pdf', description: '' }];
+    });
+    const memory = emptyMemory();
+    const dirs = otherInstallDirs('instalacao-nao-citados');
+    const preview = await coursePackage.previewCoursePackage(buffer, { memory, ...dirs });
+    assert.equal(preview.conflitos.arquivosNaoCitados, 2);
+    assert.equal(preview.contagens.imagens, 1);
+    assert.equal(preview.contagens.arquivos, 2);
+    assert.ok(preview.avisos.some(aviso => aviso.startsWith('2 arquivos do pacote não são citados') && aviso.includes('midia/imagens/x/evil.svg') && aviso.includes('midia/uploads/solto.pdf')), JSON.stringify(preview.avisos));
+    const result = await coursePackage.importCoursePackage(buffer, { memory, ...dirs, newId: 'X', newName: 'Curso X', expectedSha256: preview.sha256 });
+    assert.deepEqual(result.arquivosNaoCitados.sort(), ['midia/imagens/x/evil.svg', 'midia/uploads/solto.pdf']);
+    assert.ok(result.avisos.some(aviso => aviso.startsWith('2 arquivos do pacote não são citados')));
+    assert.deepEqual(listTree(dirs.contentDir), ['Apostila_X_1.md', 'imagens/x/usada.svg']);
+    assert.deepEqual(listTree(dirs.uploadsDir), ['da-biblioteca.pdf', 'usado.pdf']);
+    assert.equal(result.contagens.imagens, 1);
+});
+
+test('[UC-PACOTE-003] pasta temporária da importação: o backup não a leva e o boot a apaga', async () => {
+    const backupArchive = require('../../backend/utils/backupArchive.js');
+    const dirs = otherInstallDirs('instalacao-staging');
+    const stale = path.join(dirs.contentDir, '.pacote-0123456789abcdef');
+    const staleUploads = path.join(dirs.uploadsDir, '.pacote-0123456789abcdef');
+    [stale, staleUploads].forEach(dir => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(path.join(dir, '0'), AVALIACAO_MD); });
+    fs.writeFileSync(path.join(dirs.contentDir, 'Apostila_A.md'), APOSTILA_2);
+    fs.mkdirSync(path.join(dirs.contentDir, '.pacote-outra-coisa'));
+    fs.writeFileSync(path.join(dirs.contentDir, '.pacote-outra-coisa', 'fica.md'), APOSTILA_2);
+    assert.ok(backupArchive.TRANSIENT_DIR_NAME.test('.pacote-0123456789abcdef'));
+    assert.equal(String(backupArchive.TRANSIENT_DIR_NAME), String(coursePackage.STAGING_DIR_NAME), 'o mesmo padrão nos dois módulos');
+    const listed = (await backupArchive.listFolderFiles(dirs.contentDir)).map(file => file.rel).sort();
+    assert.deepEqual(listed, ['.pacote-outra-coisa/fica.md', 'Apostila_A.md'], 'a pasta de trabalho fica fora do backup');
+    // Na importação, só a de mais de 1 hora sai; no boot (idade 0), todas.
+    assert.equal(coursePackage.cleanStaleStaging(dirs), 0);
+    assert.ok(fs.existsSync(stale));
+    assert.equal(coursePackage.cleanStaleStaging(dirs, Date.now(), 0), 2);
+    assert.equal(fs.existsSync(stale), false);
+    assert.equal(fs.existsSync(staleUploads), false);
+    assert.ok(fs.existsSync(path.join(dirs.contentDir, '.pacote-outra-coisa', 'fica.md')), 'só o nome exato da pasta de trabalho');
+    assert.ok(fs.existsSync(path.join(dirs.contentDir, 'Apostila_A.md')));
+    // O boot chama a limpeza (server.js, passo 5c).
+    const serverSource = fs.readFileSync(path.join(__dirname, '../../backend/server.js'), 'utf8');
+    assert.match(serverSource, /coursePackage\.js'\)\.cleanStaleStaging\(undefined, Date\.now\(\), 0\)/);
+});
+
+test('[UC-PACOTE-002] prévia: imagensRenomeadas conta só as imagens de content/imagens renomeadas', async () => {
+    freshInstall();
+    const { body: buffer } = await exportBuffer();
+    fs.writeFileSync(path.join(runtimePaths.CONTENT_DIR, 'imagens', 'redes', 'topologia.svg'), SVG_DIFERENTE);
+    fs.writeFileSync(path.join(runtimePaths.UPLOADS_DIR, 'foto-rede.png'), PNG_OUTRA);
+    try {
+        const preview = await postPackage('/api/admin/course-packages/preview', buffer);
+        assert.equal(preview.status, 200, JSON.stringify(preview.body));
+        assert.equal(preview.body.conflitos.arquivosRenomeados, 2);
+        assert.equal(preview.body.conflitos.imagensRenomeadas, 1);
+        assert.equal(preview.body.conflitos.arquivosNaoCitados, 0);
+    } finally {
+        fs.writeFileSync(path.join(runtimePaths.CONTENT_DIR, 'imagens', 'redes', 'topologia.svg'), SVG);
+        fs.writeFileSync(path.join(runtimePaths.UPLOADS_DIR, 'foto-rede.png'), PNG);
+    }
+});

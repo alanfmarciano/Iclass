@@ -660,3 +660,41 @@ test('[UC-CORRECAO-001] correção, conclusão, ajuste, anulação e desfazer a 
     assert.equal(unchanged.body.unchanged, true);
     assert.equal(db.memory.auditLogs.length, before);
 });
+
+// Pacote de curso (fase 3, A14 / P4-S14): exportar e importar ficam na trilha (categoria
+// acadêmica, com o curso); a prévia e a importação recusada não gravam nada.
+test('[UC-PACOTE-001] pacote de curso: exportar e importar ficam na trilha; a prévia e a recusa não', async () => {
+    const res = await admin(request(app).get(`/api/admin/courses/${COURSE}/package`)).buffer(true)
+        .parse((response, callback) => { const chunks = []; response.on('data', chunk => chunks.push(chunk)); response.on('end', () => callback(null, Buffer.concat(chunks))); });
+    assert.equal(res.status, 200, String(res.body));
+    const exported = last('course_package_exported');
+    assert.ok(exported, 'sem course_package_exported');
+    assert.equal(exported.category, 'academic');
+    assert.equal(exported.courseId, COURSE);
+    assert.equal(exported.actor, 'admin@cobertura.local');
+    assert.equal(exported.details.bytes, res.body.length);
+
+    const post = (url, fields = {}) => {
+        let req = admin(request(app).post(url));
+        Object.entries(fields).forEach(([key, value]) => { req = req.field(key, value); });
+        return req.attach('arquivo', res.body, 'curso.iclass-curso.zip');
+    };
+    const before = db.memory.auditLogs.length;
+    const preview = await post('/api/admin/course-packages/preview');
+    assert.equal(preview.status, 200, JSON.stringify(preview.body));
+    const refused = await post('/api/admin/course-packages/import', { sha256: preview.body.sha256, newId: COURSE, newName: 'Repetido' });
+    assert.equal(refused.status, 400);
+    const changed = await post('/api/admin/course-packages/import', { sha256: 'b'.repeat(64), newId: 'COBERTURA_2', newName: 'Outro arquivo' });
+    assert.equal(changed.status, 409);
+    assert.equal(db.memory.auditLogs.length, before, 'a prévia e a recusa não gravam');
+
+    const done = await post('/api/admin/course-packages/import', { sha256: preview.body.sha256, newId: 'COBERTURA_2', newName: 'Cobertura importada' });
+    assert.equal(done.status, 200, JSON.stringify(done.body));
+    const imported = last('course_package_imported');
+    assert.ok(imported, 'sem course_package_imported');
+    assert.equal(imported.category, 'academic');
+    assert.equal(imported.courseId, 'COBERTURA_2');
+    assert.equal(imported.actor, 'admin@cobertura.local');
+    assert.equal(imported.details.origemCodigo, COURSE);
+    assert.equal(imported.details.sha256, preview.body.sha256);
+});

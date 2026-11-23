@@ -125,20 +125,64 @@ function isPlainObject(value) {
 
 // Cópia de um valor que vai para o pacote ou vem dele (JSON de outra instalação): sem
 // chave herdada de Object.prototype ('__proto__', 'constructor', 'prototype'), sem os
-// campos de autoria e sem texto que é só um e-mail.
-function cleanValue(value, depth = 0) {
+// campos de autoria e sem texto que é só um e-mail. Com keepEmailValues (o conteúdo de
+// uma questão, cleanQuestion), o texto que é só um e-mail fica: é o que o professor
+// escreveu na prova, não um dado de pessoa.
+function cleanValue(value, depth = 0, keepEmailValues = false) {
     if (depth > 40) throw INVALID('dados aninhados demais.');
-    if (Array.isArray(value)) return value.filter(item => !isEmailValue(item)).map(item => cleanValue(item, depth + 1));
+    if (Array.isArray(value)) {
+        return (keepEmailValues ? value : value.filter(item => !isEmailValue(item))).map(item => cleanValue(item, depth + 1, keepEmailValues));
+    }
     if (value && typeof value === 'object') {
         const out = {};
         for (const [key, item] of Object.entries(value)) {
-            if (isInheritedKey(key) || key === 'prototype' || PERSONAL_FIELDS.has(key) || isEmailValue(item)) continue;
-            out[key] = cleanValue(item, depth + 1);
+            if (isInheritedKey(key) || key === 'prototype' || PERSONAL_FIELDS.has(key) || (!keepEmailValues && isEmailValue(item))) continue;
+            out[key] = cleanValue(item, depth + 1, keepEmailValues);
         }
         return out;
     }
     if (typeof value === 'number' && !Number.isFinite(value)) return null;
     return value;
+}
+
+// Campos de conteúdo de uma questão (os do modelo único, questionModel/questionBank):
+// enunciado, alternativas, gabarito, respostas aceitas, resposta esperada, rubrica,
+// explicação, habilidades e etiquetas. Uma alternativa 'joao@empresa.com.br' ou uma
+// resposta curta aceita 'suporte@escola.edu.br' (questão de curso de TI) viaja como está;
+// sem isso a avaliação chegaria sem o texto da alternativa (a importação recusa) ou sem o
+// gabarito. O resto da questão (histórico, campo novo de outro grupo) segue a regra geral.
+const QUESTION_CONTENT_FIELDS = new Set([
+    'text', 'questionText', 'alternatives', 'correctAnswer', 'correctAnswers', 'numeric', 'acceptedAnswers',
+    'expectedAnswer', 'rubric', 'explanation', 'skills', 'tags',
+]);
+function cleanQuestion(question, depth = 1) {
+    if (!isPlainObject(question)) return cleanValue(question, depth);
+    const out = {};
+    for (const [key, item] of Object.entries(question)) {
+        if (isInheritedKey(key) || key === 'prototype' || PERSONAL_FIELDS.has(key)) continue;
+        const content = QUESTION_CONTENT_FIELDS.has(key);
+        if (!content && isEmailValue(item)) continue;
+        out[key] = cleanValue(item, depth + 1, content);
+    }
+    return out;
+}
+
+// Avaliação: as questões por cleanQuestion, o resto pela regra geral.
+function cleanEvaluation(evaluation) {
+    if (!isPlainObject(evaluation)) return cleanValue(evaluation, 1);
+    const { questions, ...rest } = evaluation;
+    const out = cleanValue(rest, 1);
+    if (questions !== undefined) out.questions = Array.isArray(questions) ? questions.map(question => cleanQuestion(question, 2)) : cleanValue(questions, 2);
+    return out;
+}
+
+function cleanEvaluations(map) {
+    const out = {};
+    for (const [key, evaluation] of Object.entries(map)) {
+        if (isInheritedKey(key) || key === 'prototype') continue;
+        out[key] = cleanEvaluation(evaluation);
+    }
+    return out;
 }
 
 // ------------------------------------------------------------------ remapCourseKeys
@@ -419,7 +463,7 @@ async function exportCoursePackage(memory, courseId, options = {}) {
     const avaliacoes = {};
     evaluations.forEach(key => {
         const evaluation = memory?.evaluations && Object.prototype.hasOwnProperty.call(memory.evaluations, key) ? memory.evaluations[key] : null;
-        if (isPlainObject(evaluation)) avaliacoes[key] = cleanValue(deepCopy(evaluation));
+        if (isPlainObject(evaluation)) avaliacoes[key] = cleanEvaluation(deepCopy(evaluation));
     });
 
     // Questões do banco: sem a chave (a importação gera outra) e com uma referência
@@ -429,7 +473,7 @@ async function exportCoursePackage(memory, courseId, options = {}) {
     const questoes = coursePackageQuestions(memory, course).map((item, index) => {
         const ref = `q${index + 1}`;
         bankRefs.set(item.key, ref);
-        const { key, ...rest } = cleanValue(deepCopy(item));
+        const { key, ...rest } = cleanQuestion(deepCopy(item));
         return { ...rest, ref };
     });
     Object.values(avaliacoes).forEach(evaluation => {
@@ -456,8 +500,14 @@ async function exportCoursePackage(memory, courseId, options = {}) {
         const filePath = findContentFileSync(files, contentDir, key);
         if (!filePath || !regularFile(filePath)) {
             // A avaliação feita no editor vive só no banco (sem .md); a apostila sem o
-            // arquivo fica de fora e a tela avisa, como uma imagem que falta.
-            if (materialSet.has(key) && !evaluationSet.has(key)) foraDoPacote.push({ arquivo: `conteudo/${key}.md`, motivo: 'apostila sem o arquivo nesta instalação' });
+            // arquivo fica de fora e a tela avisa, como uma imagem que falta. A avaliação
+            // citada na estrutura que não está nem no banco nem num .md também falta: a
+            // prévia de quem importa avisa que a unidade chega sem as questões.
+            if (evaluationSet.has(key)) {
+                if (!Object.prototype.hasOwnProperty.call(avaliacoes, key)) foraDoPacote.push({ arquivo: `conteudo/${key}.md`, chave: key, tipo: 'avaliacao', motivo: 'avaliação sem as questões nesta instalação' });
+            } else if (materialSet.has(key)) {
+                foraDoPacote.push({ arquivo: `conteudo/${key}.md`, motivo: 'apostila sem o arquivo nesta instalação' });
+            }
             return;
         }
         const buffer = fs.readFileSync(filePath);
@@ -657,9 +707,12 @@ async function readManifest(source, directory, entry) {
 
 // Abre e confere o pacote. Com verifyFiles, relê cada arquivo e confere tamanho real,
 // sha256 e assinatura; com stageFile(item, info) => caminho, grava cada um nesse caminho
-// enquanto confere. Devolve { sha256, manifest, files: [{ ...item listado, chave|name|rel,
-// staged }] }.
-async function readCoursePackage(input, { verifyFiles = true, stageFile = null, limits = PACKAGE_LIMITS } = {}) {
+// enquanto confere; com keepContentText (a prévia, que não grava nada), guarda o texto de
+// cada .md em file.text enquanto a soma cabe em MAX_PREVIEW_TEXT_BYTES (o que passar fica
+// com text null). Devolve { sha256, manifest, files: [{ ...item listado, chave|name|rel,
+// staged, text }] }.
+const MAX_PREVIEW_TEXT_BYTES = 64 * 1024 * 1024;
+async function readCoursePackage(input, { verifyFiles = true, stageFile = null, keepContentText = false, limits = PACKAGE_LIMITS } = {}) {
     const opened = await openSource(input);
     try {
         if (opened.size > limits.maxBytes) {
@@ -696,14 +749,18 @@ async function readCoursePackage(input, { verifyFiles = true, stageFile = null, 
         if (extra) throw INVALID(`o arquivo ${extra.slice(0, 200)} está no ZIP e não está no manifesto.`);
         if (total > limits.maxTotalBytes) throw INVALID(`os arquivos descompactados passam de ${formatMb(limits.maxTotalBytes)}.`);
         if (verifyFiles || stageFile) {
+            let textBudget = MAX_PREVIEW_TEXT_BYTES;
             for (const file of files) {
                 const target = stageFile ? stageFile(file) : null;
-                const result = await readEntry(opened.source, directory, file, target);
+                const keepText = keepContentText && file.tipo === 'conteudo' && file.bytes <= textBudget;
+                if (keepText) textBudget -= file.bytes;
+                const result = await readEntry(opened.source, directory, file, target, keepText);
                 if (result.bytes !== file.bytes || result.sha256 !== file.sha256) {
                     throw INVALID(`o conteúdo de ${file.caminho.slice(0, 200)} não confere com o manifesto (arquivo corrompido ou alterado).`);
                 }
                 if (!headOk(file, result.head)) throw INVALID(`o arquivo ${file.caminho.slice(0, 200)} não é do tipo que o nome diz.`);
                 if (target) file.staged = target;
+                if (keepContentText && file.tipo === 'conteudo') file.text = keepText ? result.buffer.toString('utf8') : null;
             }
         }
         return { sha256: packageSha, manifest, files };
@@ -721,9 +778,10 @@ function headOk(file, head) {
 // Lê uma entrada em pedaços (no máximo o tamanho declarado mais um byte: a bomba de
 // descompressão com tamanho falso para ali), com o sha256 e os primeiros bytes; com
 // target, grava no arquivo ao mesmo tempo.
-async function readEntry(source, directory, file, target) {
+async function readEntry(source, directory, file, target, keepBuffer = false) {
     const hash = crypto.createHash('sha256');
     const headParts = [];
+    const parts = [];
     let headLength = 0;
     let bytes = 0;
     let fd = null;
@@ -737,13 +795,14 @@ async function readEntry(source, directory, file, target) {
             hash.update(chunk);
             if (headLength < 32) { headParts.push(chunk); headLength += chunk.length; }
             if (fd !== null) fs.writeSync(fd, chunk);
+            if (keepBuffer) parts.push(chunk);
             return false;
         }, { maxBytes: file.bytes + 1 });
         if (result === null) throw INVALID(`o arquivo ${file.caminho.slice(0, 200)} está corrompido.`);
     } finally {
         if (fd !== null) fs.closeSync(fd);
     }
-    return { bytes, sha256: hash.digest('hex'), head: Buffer.concat(headParts).subarray(0, 32) };
+    return { bytes, sha256: hash.digest('hex'), head: Buffer.concat(headParts).subarray(0, 32), ...(keepBuffer ? { buffer: Buffer.concat(parts) } : {}) };
 }
 
 // ------------------------------------------------------------------ dados do manifesto
@@ -838,6 +897,20 @@ function packageBankQuestion(item, index) {
     return out;
 }
 
+// O que ficou de fora na origem (manifest.foraDoPacote), só para os avisos da prévia: as
+// avaliações citadas na estrutura que não existiam lá (a unidade chega sem as questões) e
+// a conta e os primeiros nomes dos outros arquivos.
+function outsidePackage(list) {
+    const items = (Array.isArray(list) ? list : []).filter(isPlainObject);
+    const isEvaluation = item => item.tipo === 'avaliacao' && isSafeContentKey(item.chave);
+    const others = items.filter(item => !isEvaluation(item));
+    return {
+        foraDoPacote: others.length,
+        foraDoPacoteNomes: others.map(item => (typeof item.arquivo === 'string' ? item.arquivo.slice(0, 200) : '')).filter(Boolean).slice(0, 5),
+        avaliacoesForaDoPacote: [...new Set(items.filter(isEvaluation).map(item => item.chave))].slice(0, PACKAGE_LIMITS.maxUnits),
+    };
+}
+
 // Confere e limpa os dados do manifesto. Devolve o pacote no formato que a importação usa.
 function packageData(manifest) {
     const curso = isPlainObject(manifest.curso) ? cleanValue(manifest.curso) : null;
@@ -869,7 +942,7 @@ function packageData(manifest) {
     }
     // Campos de curso que esta versão não conhece (de versão mais nova do mesmo formato)
     // ficam de fora; só os de COURSE_PACKAGE_FIELDS entram.
-    const rawEvaluations = isPlainObject(manifest.avaliacoes) ? cleanValue(manifest.avaliacoes) : {};
+    const rawEvaluations = isPlainObject(manifest.avaliacoes) ? cleanEvaluations(manifest.avaliacoes) : {};
     const avaliacoes = {};
     Object.entries(rawEvaluations).forEach(([key, evaluation]) => {
         if (!isSafeContentKey(key)) throw INVALID(`avaliação com chave inválida (${key.slice(0, 200)}).`);
@@ -888,7 +961,7 @@ function packageData(manifest) {
         requireString(entry.name, `o nome do item ${index + 1} da biblioteca`, 200);
         requireString(entry.description, `a descrição do item ${index + 1} da biblioteca`, 500);
     });
-    const rawQuestions = Array.isArray(manifest.questoes) ? cleanValue(manifest.questoes) : [];
+    const rawQuestions = Array.isArray(manifest.questoes) ? manifest.questoes.map(item => cleanQuestion(item)) : [];
     if (rawQuestions.length > PACKAGE_LIMITS.maxQuestions) throw INVALID('questões demais no banco.');
     const questoes = rawQuestions.map((item, index) => {
         if (!isPlainObject(item)) throw INVALID(`a questão ${index + 1} do banco está mal formada.`);
@@ -910,12 +983,7 @@ function packageData(manifest) {
         exportadoEm: Number.isFinite(manifest.exportadoEm) ? manifest.exportadoEm : null,
         versaoApp: typeof manifest.versaoApp === 'string' ? manifest.versaoApp.slice(0, 40) : '',
         versao: manifest.versao,
-        foraDoPacote: Array.isArray(manifest.foraDoPacote) ? manifest.foraDoPacote.length : 0,
-        // Nomes do que ficou de fora na origem, só para o aviso da prévia.
-        foraDoPacoteNomes: (Array.isArray(manifest.foraDoPacote) ? manifest.foraDoPacote : [])
-            .map(item => (isPlainObject(item) && typeof item.arquivo === 'string' ? item.arquivo.slice(0, 200) : ''))
-            .filter(Boolean)
-            .slice(0, 5),
+        ...outsidePackage(manifest.foraDoPacote),
     };
 }
 
@@ -953,8 +1021,37 @@ function withSuffix(fileName, suffix) {
     return `${fileName.slice(0, fileName.length - ext.length)}-${suffix}${ext}`;
 }
 
-// Decide o destino de cada chave e de cada arquivo. Nada é gravado.
-function planImport(memory, data, files, { newId, contentDir, uploadsDir, imagesDir }) {
+// Arquivos de mídia que o curso importado cita: os .md das chaves que a estrutura usa,
+// as avaliações que a estrutura usa, a estrutura, a identidade visual, a biblioteca e as
+// questões do banco (a mesma busca da exportação: referencedUploads e
+// referencedContentImages). textOf(file) devolve o texto de um .md, ou null quando não se
+// sabe (prévia de pacote muito grande): aí tudo conta como citado. Devolve { uploads,
+// images } (Sets) ou null.
+function citedMedia(data, files, keyFor, evaluationKeys, textOf) {
+    const texts = [];
+    for (const file of files) {
+        if (file.tipo !== 'conteudo' || !keyFor(file.chave)) continue;
+        const text = textOf(file);
+        if (typeof text !== 'string') return null;
+        texts.push(text);
+    }
+    const usedEvaluations = Object.keys(data.avaliacoes).filter(key => evaluationKeys.has(key)).map(key => data.avaliacoes[key]);
+    texts.push(JSON.stringify([data.structure, data.branding || null, usedEvaluations, data.biblioteca, data.questoes]));
+    const uploads = new Set();
+    const images = new Set();
+    texts.forEach(text => {
+        referencedUploads(text).forEach(name => uploads.add(name));
+        referencedContentImages(text).forEach(rel => images.add(rel));
+    });
+    data.biblioteca.forEach(entry => { if (entry.kind === 'file' && typeof entry.filename === 'string') uploads.add(entry.filename); });
+    return { uploads, images };
+}
+
+// Decide o destino de cada chave e de cada arquivo. Nada é gravado. Arquivo de mídia que
+// o curso não cita (nem .md, nem avaliação, nem unidade, nem biblioteca) não é gravado:
+// um pacote não deixa arquivo solto e sem dono em content/imagens ou em uploads. Ele vai
+// em naoCitados, com o aviso.
+function planImport(memory, data, files, { newId, contentDir, uploadsDir, imagesDir, textOf = file => (typeof file.text === 'string' ? file.text : null) }) {
     const used = usedContentKeys(memory, contentDir);
     const assigned = new Set();
     const renamedKeys = [];
@@ -971,6 +1068,8 @@ function planImport(memory, data, files, { newId, contentDir, uploadsDir, images
     };
     const remapped = remapCourseKeys({ course: { structure: data.structure }, classes: [], mapKey: pick });
     const keyFor = key => remapped.materialKeys.get(key) || remapped.evaluationKeys.get(key) || null;
+    const cited = citedMedia(data, files, keyFor, remapped.evaluationKeys, textOf);
+    const naoCitados = [];
 
     // Arquivos: o mesmo nome com o mesmo conteúdo é reaproveitado; com conteúdo diferente,
     // ganha um nome novo e as referências mudam.
@@ -985,6 +1084,10 @@ function planImport(memory, data, files, { newId, contentDir, uploadsDir, images
             const key = keyFor(file.chave);
             if (!key) return; // .md de uma chave que a estrutura não usa: fica de fora
             writes.push({ file, dest: path.join(contentDir, `${key}.md`), kind: 'conteudo', key, rewrite: true });
+            return;
+        }
+        if (cited && !(file.tipo === 'upload' ? cited.uploads.has(file.name) : cited.images.has(file.rel))) {
+            naoCitados.push(file.caminho);
             return;
         }
         if (file.tipo === 'upload') {
@@ -1020,11 +1123,15 @@ function planImport(memory, data, files, { newId, contentDir, uploadsDir, images
         maps: { uploads, images },
         writes,
         reaproveitados,
+        naoCitados,
         renamedFiles: writes.filter(item => item.renamed).map(item => ({ de: item.kind === 'upload' ? `uploads/${item.file.name}` : `imagens/${item.file.rel}`, para: item.kind === 'upload' ? `uploads/${item.name}` : `imagens/${item.rel}` })),
     };
 }
 
-function countsOf(data, files) {
+// Contagens do que entra (sem os arquivos de mídia que o curso não cita).
+function countsOf(data, allFiles, naoCitados = []) {
+    const skipped = new Set(naoCitados);
+    const files = allFiles.filter(file => !skipped.has(file.caminho));
     return {
         modulos: data.structure.length,
         unidades: data.structure.reduce((sum, module) => sum + unitsOf(module).length, 0),
@@ -1073,6 +1180,13 @@ function classesWithLegacyMembers(memory, turmasModelo, belongs) {
     }).filter(item => item.alunos > 0);
 }
 
+function notCitedWarning(list) {
+    const nomes = list.slice(0, 5).join(', ') + (list.length > 5 ? ', ...' : '');
+    return list.length === 1
+        ? `1 arquivo do pacote não é citado por nenhuma apostila, avaliação, unidade ou item da biblioteca do curso e não será gravado (${nomes}).`
+        : `${list.length} arquivos do pacote não são citados por nenhuma apostila, avaliação, unidade ou item da biblioteca do curso e não serão gravados (${nomes}).`;
+}
+
 function legacyMembersWarning(item) {
     const alunos = item.alunos === 1 ? '1 aluno daqui tem' : `${item.alunos} alunos daqui têm`;
     return `A turma modelo ${item.nome} não será criada: ${alunos} a turma ${item.nome} gravada só pelo nome (cadastro antigo) e ${item.alunos === 1 ? 'entraria' : 'entrariam'} nela. Depois de importar, crie a turma com outro nome em "Nova turma".`;
@@ -1083,7 +1197,7 @@ function legacyMembersWarning(item) {
 async function previewCoursePackage(input, options = {}) {
     const memory = options.memory || require('../database.js').memory;
     const dirs = contentDirs(options);
-    const pkg = await readCoursePackage(input, { verifyFiles: true });
+    const pkg = await readCoursePackage(input, { verifyFiles: true, keepContentText: true });
     const data = packageData(pkg.manifest);
     const suggestedId = suggestCourseId(memory, data.codigo);
     const plan = planImport(memory, data, pkg.files, { newId: suggestedId, ...dirs });
@@ -1095,18 +1209,28 @@ async function previewCoursePackage(input, options = {}) {
             ? `1 arquivo citado no curso não estava na instalação de origem e não veio no pacote${nomes}.`
             : `${data.foraDoPacote} arquivos citados no curso não estavam na instalação de origem e não vieram no pacote${nomes}.`);
     }
+    if (data.avaliacoesForaDoPacote.length) {
+        const nomes = data.avaliacoesForaDoPacote.slice(0, 5).join(', ') + (data.avaliacoesForaDoPacote.length > 5 ? ', ...' : '');
+        avisos.push(data.avaliacoesForaDoPacote.length === 1
+            ? `A avaliação ${nomes} está na estrutura do curso, mas não existia na instalação de origem e não veio no pacote: a unidade chega sem as questões.`
+            : `${data.avaliacoesForaDoPacote.length} avaliações estão na estrutura do curso, mas não existiam na instalação de origem e não vieram no pacote (${nomes}): as unidades chegam sem as questões.`);
+    }
+    if (plan.naoCitados.length) avisos.push(notCitedWarning(plan.naoCitados));
     const turmasComAlunos = classesWithLegacyMembers(memory, data.turmasModelo, belongsToClassFn(options));
     turmasComAlunos.forEach(item => avisos.push(legacyMembersWarning(item)));
     return {
         sha256: pkg.sha256,
         versaoFormato: data.versao,
         resumo: { codigo: data.codigo, nome: data.nome, descricao: data.descricao, exportadoEm: data.exportadoEm, versaoApp: data.versaoApp },
-        contagens: countsOf(data, pkg.files),
+        contagens: countsOf(data, pkg.files, plan.naoCitados),
         conflitos: {
             cursoExiste,
             chavesRenomeadas: plan.renamedKeys.length,
             arquivosRenomeados: plan.renamedFiles.length,
+            // Só as imagens de content/imagens entre os renomeados (o nome do desenho).
+            imagensRenomeadas: plan.renamedFiles.filter(item => item.de.startsWith('imagens/')).length,
             arquivosReaproveitados: plan.reaproveitados,
+            arquivosNaoCitados: plan.naoCitados.length,
             exemplos: plan.renamedKeys.slice(0, 10),
         },
         sugestao: { newId: suggestedId, newName: data.nome || suggestedId },
@@ -1119,22 +1243,33 @@ async function previewCoursePackage(input, options = {}) {
 
 // ------------------------------------------------------------------ importação
 
+// Pasta temporária da importação, dentro de content/ e de uploads/ (o link para o
+// destino precisa do mesmo disco). O backup não leva essas pastas (backupArchive.js,
+// TRANSIENT_DIR_NAME, o mesmo padrão) e o boot apaga as que sobraram de uma queda.
+const STAGING_DIR_NAME = /^\.pacote-[a-f0-9]{16}$/;
 function stagingDir(baseDir, importId) {
     return path.join(baseDir, `.pacote-${importId}`);
 }
 
-// Pastas temporárias de importações interrompidas (queda no meio) com mais de 1 hora.
-function cleanStaleStaging(dirs, now = Date.now()) {
+// Pastas temporárias de importações interrompidas (queda no meio): na importação, as com
+// mais de 1 hora (pode haver outra importação em andamento); no boot (maxAgeMs 0), todas,
+// porque nenhuma importação está rodando. Devolve quantas saíram.
+function cleanStaleStaging(dirs = contentDirs(), now = Date.now(), maxAgeMs = 60 * 60 * 1000) {
+    let removed = 0;
     [dirs.contentDir, dirs.uploadsDir].forEach(base => {
         let names = [];
         try { names = fs.readdirSync(base); } catch (error) { return; }
-        names.filter(name => /^\.pacote-[a-f0-9]{16}$/.test(name)).forEach(name => {
+        names.filter(name => STAGING_DIR_NAME.test(name)).forEach(name => {
             const full = path.join(base, name);
             try {
-                if (now - fs.statSync(full).mtimeMs > 60 * 60 * 1000) fs.rmSync(full, { recursive: true, force: true });
+                if (now - fs.statSync(full).mtimeMs >= maxAgeMs) {
+                    fs.rmSync(full, { recursive: true, force: true });
+                    removed += 1;
+                }
             } catch (error) { /* fica para a próxima */ }
         });
     });
+    return removed;
 }
 
 function linkNoOverwrite(source, dest) {
@@ -1162,7 +1297,8 @@ function newBankKey(index) {
 // turmas modelo, as avaliações, a biblioteca e as questões. Quem chama grava o banco e,
 // se a gravação falhar, chama undo() (tira da memória e apaga os arquivos novos).
 // Devolve { course, classes, contagens, renomeadas, arquivosRenomeados,
-// arquivosReaproveitados, origem, turmasPuladas, avisos, sha256, undo }. Turma modelo em
+// arquivosReaproveitados, arquivosNaoCitados, origem, turmasPuladas, avisos, sha256,
+// undo }. Turma modelo em
 // que alunos antigos entrariam (classesWithLegacyMembers) não é criada e vai em
 // turmasPuladas, com o aviso.
 async function importCoursePackage(input, options = {}) {
@@ -1207,7 +1343,7 @@ async function importCoursePackage(input, options = {}) {
 
         // Daqui até o fim tudo é síncrono: o plano vale para a memória que vai ser alterada.
         if (courseExists()) throw refuse('Já existe um curso com esse código.', { field: 'newId', code: 'course_exists' });
-        const plan = planImport(memory, data, pkg.files, { newId, ...dirs });
+        const plan = planImport(memory, data, pkg.files, { newId, ...dirs, textOf: file => fs.readFileSync(file.staged, 'utf8') });
 
         // Arquivos: o .md com as referências reescritas; o resto como veio.
         for (const write of plan.writes) {
@@ -1313,6 +1449,7 @@ async function importCoursePackage(input, options = {}) {
         const classes = [];
         const turmasPuladas = [];
         const avisos = [...data.avisos];
+        if (plan.naoCitados.length) avisos.push(notCitedWarning(plan.naoCitados));
         if (options.incluirTurmasModelo) {
             const skipped = new Set();
             classesWithLegacyMembers(memory, data.turmasModelo, belongsToClassFn(options)).forEach(item => {
@@ -1369,7 +1506,7 @@ async function importCoursePackage(input, options = {}) {
             createdDirs.push(...createdFolders);
             removeCreated();
         };
-        const contagens = { ...countsOf(data, pkg.files), turmasModelo: classes.length };
+        const contagens = { ...countsOf(data, pkg.files, plan.naoCitados), turmasModelo: classes.length };
         return {
             course,
             classes,
@@ -1377,6 +1514,7 @@ async function importCoursePackage(input, options = {}) {
             renomeadas: plan.renamedKeys,
             arquivosRenomeados: plan.renamedFiles,
             arquivosReaproveitados: plan.reaproveitados,
+            arquivosNaoCitados: plan.naoCitados,
             origem: { codigo: data.codigo, nome: data.nome, versaoFormato: data.versao, versaoApp: data.versaoApp },
             turmasPuladas,
             avisos,
@@ -1399,6 +1537,8 @@ module.exports = {
     COURSE_PACKAGE_VERSION,
     CoursePackageError,
     PACKAGE_LIMITS,
+    STAGING_DIR_NAME,
+    cleanStaleStaging,
     coursePackageQuestions,
     exportCoursePackage,
     importCoursePackage,

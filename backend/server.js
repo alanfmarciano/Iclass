@@ -488,6 +488,14 @@ async function prepareServer() {
         if (removed) console.log(`🧹 Entregas: ${removed} envio(s) interrompido(s) removido(s) de .recebendo.`);
     } catch (e) { logCrash('limpeza de envios interrompidos', e); }
 
+    // 5c) Importação de pacote de curso que caiu no meio (fase 3, A14): a pasta de
+    // trabalho .pacote-<id> dentro de content/ e de uploads/ sai no boot, inteira (nenhuma
+    // importação está rodando agora). Só a pasta de trabalho: nada fora dela é tocado.
+    try {
+        const removed = require('./utils/coursePackage.js').cleanStaleStaging(undefined, Date.now(), 0);
+        if (removed) console.log(`🧹 Pacote de curso: ${removed} pasta(s) de importação interrompida removida(s).`);
+    } catch (e) { logCrash('limpeza de importações de pacote interrompidas', e); }
+
     // 6) e 7) O tempo em que o servidor ficou fora do ar (do último heartbeat até agora)
     // vira pausa das provas em andamento, até 15 min (utils/serverLifecycle.js), e é
     // gravado antes da primeira varredura. Falha de gravação não impede o boot: a memória
