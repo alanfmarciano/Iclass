@@ -14,6 +14,8 @@
 //   calendário do painel (GET /api/admin/announcements/calendar), como itens
 //   { kind: 'nonSchoolDay', readOnly: true, ... } ao lado dos eventos: quem altera um dia
 //   não letivo é a rota dele (/api/admin/calendar/non-school-days/*), nunca a do evento.
+// - upcomingNonSchoolDayEvents(memory, cls, today): os que ainda não acabaram, para o
+//   Início do aluno (B7 / P2-S6).
 const academicCalendar = require('./academicCalendar.js');
 const studentFeeds = require('./studentFeeds.js');
 
@@ -108,8 +110,24 @@ function nonSchoolDayCalendarItems(memory, { courseId, studentClass } = {}) {
     }));
 }
 
+// Os dias não letivos da turma que ainda não acabaram (fim em hoje ou depois), para os
+// "Próximos compromissos" do Início do aluno (GET /api/student/dashboard; B7 / P2-S6):
+// { id: 'nao-letivo:<id>', title, eventDate, endDate?, startTime: '', eventType:
+// 'nao_letivo', hoje: true quando o dia cobre hoje }.
+function upcomingNonSchoolDayEvents(memory, cls, today) {
+    if (!cls) return [];
+    return academicCalendar.nonSchoolDaysFor(memory, cls, { from: today }).map(day => {
+        const event = nonSchoolDayEvent(day);
+        const out = { id: event.id, title: event.title, eventDate: event.eventDate, startTime: '', eventType: event.eventType };
+        if (event.endDate) out.endDate = event.endDate;
+        if (today && day.inicio <= today && day.fim >= today) out.hoje = true;
+        return out;
+    });
+}
+
 module.exports = {
     NON_SCHOOL_EVENT_TYPE,
+    upcomingNonSchoolDayEvents,
     nonSchoolDayDescription,
     nonSchoolDayEvent,
     studentCalendarEvents,

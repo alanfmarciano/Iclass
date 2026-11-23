@@ -95,6 +95,10 @@ Se o professor descobrir, depois da prova, que a resposta certa de uma questão 
 
 ## Calendário {#calendario}
 
+Mostra as aulas, provas, entregas e avisos do seu curso. Feriados, recessos e outros dias sem aula aparecem marcados como **Sem aula** (no celular, o mês vira uma lista por dia). No Início, quando hoje não tem aula, aparece o aviso "Hoje não tem aula".
+
+**Baixar agenda (.ics)** baixa um arquivo com o calendário da sua turma. Abra o arquivo no celular ou no computador para levar os eventos para o Google Agenda ou o Outlook. Se baixar de novo depois, a agenda é atualizada sem repetir os eventos.
+
 ## Frequência {#frequencia}
 
 <!-- P4 (B18) escreve aqui: faltas e frequência. -->

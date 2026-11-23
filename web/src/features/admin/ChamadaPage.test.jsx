@@ -141,6 +141,30 @@ describe('Chamada em dia não letivo', () => {
   })
 })
 
+describe('Chamada em dia sem aula: faixa (B7)', () => {
+  it('[UC-PRESENCA-005] recesso: a faixa diz o tipo e o intervalo, e o botão ocupa a largura toda no celular', async () => {
+    const recesso = { id: 'nl_2', nome: 'Recesso de julho', tipo: 'recesso', tipoRotulo: 'Recesso', inicio: '2027-07-12', fim: '2027-07-23', escopo: 'instituicao' }
+    mocks.get.mockImplementation(async (url) => (url.startsWith('/api/admin/attendance/roster')
+      ? { ...rosterWith([aluno('ana@x.local')]), aulas: [], aulasGrade: aulas, naoLetivo: recesso, foraDoPeriodo: false }
+      : {}))
+    render(<ChamadaPage />)
+    const faixa = (await screen.findByText('Não há aula neste dia: Recesso de julho')).closest('[role="status"]')
+    expect(faixa).toHaveTextContent('Recesso, de 12/07/2027 a 23/07/2027.')
+    expect(screen.getByRole('button', { name: 'Fazer a chamada mesmo assim' }).className).toMatch(/\bw-full\b/)
+  })
+
+  it('[UC-PRESENCA-005] fora do período letivo: a faixa diz o nome e as datas do período', async () => {
+    // Antes dizia só "Fora do período letivo da turma", sem dizer qual.
+    const periodo = { id: 'per_1', nome: '2027 · 1º semestre', inicio: '2027-02-01', fim: '2027-06-30' }
+    mocks.get.mockImplementation(async (url) => (url.startsWith('/api/admin/attendance/roster')
+      ? { ...rosterWith([aluno('ana@x.local')]), aulas: [], aulasGrade: aulas, naoLetivo: null, foraDoPeriodo: true, periodoLetivo: periodo }
+      : {}))
+    render(<ChamadaPage />)
+    const faixa = (await screen.findByText('Fora do período letivo da turma')).closest('[role="status"]')
+    expect(faixa).toHaveTextContent('Fora do período letivo 2027 · 1º semestre (de 01/02/2027 a 30/06/2027).')
+  })
+})
+
 describe('Chamada da Coordenação (só consulta)', () => {
   const coordenacao = {
     role: 'admin', accountRole: 'coordenacao', readOnly: true,

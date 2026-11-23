@@ -44,7 +44,7 @@ const studentFeeds = require('../utils/studentFeeds.js');
 require('../utils/gradeChangeNotices.js');
 const attendanceUtil = require('../utils/attendance.js');
 const { lessonsForDate } = require('../utils/academicCalendar.js');
-const { studentCalendarEvents } = require('../utils/calendarFeed.js');
+const { studentCalendarEvents, upcomingNonSchoolDayEvents } = require('../utils/calendarFeed.js');
 const settingsUtil = require('../utils/settings.js');
 const { CONTENT_DIR } = require('../runtimePaths.js');
 const { parseEvaluationMarkdown } = require('../utils/parser.js');
@@ -2347,11 +2347,15 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         .sort((a, b) => Number(b.createdAt || 0) - Number(a.createdAt || 0))
         .slice(0, 3)
         .map(item => ({ id: item.id, title: item.title, message: item.message, createdAt: item.createdAt, priority: item.priority }));
+    // Próximos compromissos: os eventos do calendário e, desde o B7 (P2-S6, FUN-15), os dias
+    // não letivos da turma que ainda não acabaram (o recesso em andamento também), como
+    // "Sem aula", com o mesmo id do calendário do aluno (nao-letivo:<id>).
     const calendar = (db.memory.announcements || [])
         .filter(item => item.kind === 'calendar' && visibleTarget(item) && item.eventDate >= today)
+        .map(item => ({ id: item.id, title: item.title, eventDate: item.eventDate, startTime: item.startTime || '', eventType: item.eventType || 'outro' }))
+        .concat(upcomingNonSchoolDayEvents(db.memory, gradesCls, today))
         .sort((a, b) => String(a.eventDate).localeCompare(String(b.eventDate)) || String(a.startTime || '').localeCompare(String(b.startTime || '')))
-        .slice(0, 4)
-        .map(item => ({ id: item.id, title: item.title, eventDate: item.eventDate, startTime: item.startTime || '', eventType: item.eventType || 'outro' }));
+        .slice(0, 4);
 
     res.json({
         courseName: course?.name || courseId,

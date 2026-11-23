@@ -7,9 +7,13 @@
 // Rotas (a guarda de /api/admin pede page.forum, a mesma do Calendário; o escopo do dia
 // é decidido aqui):
 // - GET  /api/admin/calendar/non-school-days?from=&to=&courseId=&studentClass=
-//   { dias: [...com podeAlterar], tipos, escopos, podeCriar }. Com curso (e turma), os
-//   dias que valem para aquele contexto (instituição, escola do curso, curso e turma);
-//   sem curso, os do escopo da conta.
+//   { dias: [...com podeAlterar], tipos, escopos, podeAdicionarFeriadosNacionais,
+//   contexto }. Com curso (e turma), os dias que valem para aquele contexto (instituição,
+//   escola do curso, curso e turma) e contexto { courseId, studentClass, schoolId,
+//   escolaNome } (a escola do curso, que o formulário do Calendário manda no dia de
+//   escopo 'escola'; curso sem escola não oferece esse escopo, nem o pedido sem turma o
+//   de turma); sem curso, os do escopo da conta e contexto null. A conta só de consulta
+//   (Coordenação) recebe escopos vazios e podeAlterar false (B7 / P2-S6).
 // - GET  /api/admin/calendar/non-school-days/national-holidays?ano=
 //   os feriados nacionais do ano (academicCalendar.nationalHolidays) com jaCadastrado.
 // - POST /api/admin/calendar/non-school-days/create, /update e /delete.
@@ -292,7 +296,8 @@ function dayView(account, raw) {
         criadoEm: raw.criadoEm || null,
         criadoPor: raw.criadoPor || null,
         atualizadoEm: raw.atualizadoEm || null,
-        podeAlterar: canManageDay(account, day),
+        // A conta só de consulta (Coordenação) nunca altera, mesmo com o dia no escopo dela.
+        podeAlterar: !isReadOnlyAccount(account) && canManageDay(account, day),
     };
 }
 
@@ -663,12 +668,21 @@ function createAdminAcademicRouter() {
             }
             const dias = raws.map(raw => dayView(account, raw)).filter(Boolean)
                 .sort((a, b) => a.inicio.localeCompare(b.inicio) || a.id.localeCompare(b.id));
+            // Escola do curso pedido (B7 / P2-S6): o formulário do Calendário manda esta
+            // escola no dia de escopo 'escola'. Curso sem escola não oferece 'Toda a escola'
+            // (o dia de uma escola só vale para os cursos dela, academicCalendar).
+            const contextSchoolId = course ? text(course.schoolId) : '';
+            const escopos = (isReadOnlyAccount(account) ? [] : scopesFor(account, { courseId, studentClass, schoolId: contextSchoolId }))
+                .filter(escopo => escopo !== 'escola' || !course || !!contextSchoolId)
+                .filter(escopo => escopo !== 'turma' || !course || !!studentClass);
             res.json({
                 dias,
                 tipos: NON_SCHOOL_DAY_TYPES.map(value => ({ value, label: NON_SCHOOL_DAY_TYPE_LABELS[value] })),
-                escopos: scopesFor(account, { courseId, studentClass, schoolId: course && course.schoolId })
-                    .map(value => ({ value, label: NON_SCHOOL_DAY_SCOPE_LABELS[value] })),
-                podeAdicionarFeriadosNacionais: canManageInstitution(account),
+                escopos: escopos.map(value => ({ value, label: NON_SCHOOL_DAY_SCOPE_LABELS[value] })),
+                podeAdicionarFeriadosNacionais: !isReadOnlyAccount(account) && canManageInstitution(account),
+                contexto: course
+                    ? { courseId, studentClass: studentClass || null, schoolId: contextSchoolId || null, escolaNome: contextSchoolId ? schoolName(contextSchoolId) : null }
+                    : null,
             });
         });
     });

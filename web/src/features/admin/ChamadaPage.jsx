@@ -95,6 +95,21 @@ const arrMissing = (u) => u.st === 'a' && !u.arrOrdem && !u.arrHora
 const lvMissing = (u) => u.early && !u.lvOrdem && !u.lvHora
 const jMissing = (u) => u.st === 'j' && (EXIGE_DOC.has(u.just?.tipo) ? !u.just?.arquivo : !(u.just?.arquivo || (u.just?.texto || '').trim()))
 const isInvalid = (u) => arrMissing(u) || lvMissing(u) || jMissing(u)
+// '2027-11-15' → '15/11/2027'.
+const brDate = (v) => { const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(v || ''); return m ? `${m[3]}/${m[2]}/${m[1]}` : (v || '') }
+// A linha embaixo do título da faixa de dia sem aula: o tipo (e o intervalo do recesso)
+// ou o período letivo da turma com as datas dele.
+function semAulaDetalhe(semAula) {
+  const dia = semAula.naoLetivo
+  if (dia) {
+    const intervalo = dia.fim && dia.inicio && dia.fim !== dia.inicio ? `, de ${brDate(dia.inicio)} a ${brDate(dia.fim)}` : ''
+    return `${dia.tipoRotulo || 'Dia sem aula'}${intervalo}.`
+  }
+  const termo = semAula.periodo
+  if (!termo?.nome) return 'A data está fora do período letivo da turma.'
+  const datas = termo.inicio && termo.fim ? ` (de ${brDate(termo.inicio)} a ${brDate(termo.fim)})` : ''
+  return `Fora do período letivo ${termo.nome}${datas}.`
+}
 const freqTone = (f) => (f == null ? 'text-subtle bg-surface-2' : f < 75 ? 'text-danger bg-danger-soft' : f < 85 ? 'text-warning bg-warning-soft' : 'text-success bg-success-soft')
 
 export default function ChamadaPage() {
@@ -136,7 +151,7 @@ export default function ChamadaPage() {
       setGrade(r.aulas || [])
       // O "mesmo assim" segue o servidor: vale o pedido do professor e a chamada já lançada.
       setMesmoAssim(!!r.mesmoAssim)
-      setSemAula(r.naoLetivo || r.foraDoPeriodo ? { naoLetivo: r.naoLetivo || null, foraDoPeriodo: !!r.foraDoPeriodo, temGrade: (r.aulasGrade || []).length > 0 } : null)
+      setSemAula(r.naoLetivo || r.foraDoPeriodo ? { naoLetivo: r.naoLetivo || null, foraDoPeriodo: !!r.foraDoPeriodo, periodo: r.periodoLetivo || null, temGrade: (r.aulasGrade || []).length > 0 } : null)
       setRoster(r.roster || [])
       setTolerancia(r.toleranciaMin ?? 10)
       const next = {}
@@ -345,14 +360,18 @@ export default function ChamadaPage() {
           {roster.length === 0 ? (
             <div className="bg-surface border border-border rounded-xl p-6"><EmptyState icon={Users} title="Turma sem alunos" description="Nenhum aluno matriculado nesta turma." /></div>
           ) : grade.length === 0 && semAula ? (
-            <div className="bg-surface border border-border rounded-xl p-6">
-              <EmptyState
-                icon={CalendarOff}
-                title={semAula.naoLetivo ? `Não há aula neste dia: ${semAula.naoLetivo.nome}` : 'Fora do período letivo da turma'}
-                description={`${semAula.naoLetivo ? `${semAula.naoLetivo.tipoRotulo || 'Dia sem aula'}. ` : ''}A chamada não é cobrada e a presença automática do acesso não conta na frequência.${semAula.temGrade && !readOnly ? ' Se houve aula (reposição), faça a chamada mesmo assim: ela conta normalmente.' : ''}`}
-                action={semAula.temGrade && !readOnly ? 'Fazer a chamada mesmo assim' : undefined}
-                onAction={fazerMesmoAssim}
-              />
+            // Dia sem aula (B3 e B7 / P2-S6, FUN-15): a faixa diz por quê, sem a grade; no
+            // celular o texto quebra e o botão ocupa a largura toda.
+            <div role="status" className="space-y-3 rounded-xl border border-warning/40 bg-warning-soft p-4 sm:p-5">
+              <div className="flex items-start gap-3">
+                <CalendarOff size={20} className="mt-0.5 shrink-0 text-warning" aria-hidden="true" />
+                <div className="min-w-0 space-y-1">
+                  <h3 className="text-[15px] font-semibold text-text">{semAula.naoLetivo ? `Não há aula neste dia: ${semAula.naoLetivo.nome}` : 'Fora do período letivo da turma'}</h3>
+                  <p className="text-sm text-muted">{semAulaDetalhe(semAula)}</p>
+                  <p className="text-sm text-muted">A chamada não é cobrada e a presença automática do acesso não conta na frequência.{semAula.temGrade && !readOnly ? ' Se houve aula (reposição), faça a chamada mesmo assim: ela conta normalmente.' : ''}</p>
+                </div>
+              </div>
+              {semAula.temGrade && !readOnly && <Button className="w-full sm:w-auto" onClick={fazerMesmoAssim}>Fazer a chamada mesmo assim</Button>}
             </div>
           ) : grade.length === 0 ? (
             <div className="bg-surface border border-border rounded-xl p-6"><EmptyState icon={Clock} title="Sem aulas neste dia" description="Esta turma não tem grade horária configurada para este dia da semana. Configure a grade em Cursos e turmas, ou escolha outra data." /></div>
@@ -361,7 +380,7 @@ export default function ChamadaPage() {
               {semAula && (
                 <div role="status" className="flex items-center gap-2 rounded-xl border border-warning/40 bg-warning-soft px-4 py-2 text-sm text-text">
                   <CalendarOff size={16} className="shrink-0 text-warning" />
-                  <span>{semAula.naoLetivo ? `${semAula.naoLetivo.nome} (${String(semAula.naoLetivo.tipoRotulo || 'dia sem aula').toLowerCase()})` : 'Fora do período letivo'}: chamada lançada mesmo assim, que conta na frequência.</span>
+                  <span>{semAula.naoLetivo ? `${semAula.naoLetivo.nome} (${String(semAula.naoLetivo.tipoRotulo || 'dia sem aula').toLowerCase()})` : ['Fora do período letivo', semAula.periodo?.nome].filter(Boolean).join(' ')}: chamada lançada mesmo assim, que conta na frequência.</span>
                 </div>
               )}
               {readOnly && (

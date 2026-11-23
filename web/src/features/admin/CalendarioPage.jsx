@@ -1,10 +1,11 @@
-import { useState } from 'react'
-import { CalendarDays, Plus, Save, Trash2 } from 'lucide-react'
-import { MonthCalendar, firstOfMonth } from '../../components/calendar/MonthCalendar'
+import { useMemo, useState } from 'react'
+import { CalendarDays, CalendarOff, Download, Flag, Plus, Save, Trash2 } from 'lucide-react'
+import { MonthCalendar, firstOfMonth, eventInMonth, parseDateKey } from '../../components/calendar/MonthCalendar'
 import { PageHeader } from '../../components/ui/PageHeader'
 import { PageState } from '../../components/ui/PageState'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { Card } from '../../components/ui/Card'
+import { Badge } from '../../components/ui/Badge'
 import { Modal } from '../../components/ui/Modal'
 import { ConfirmDialog } from '../../components/ui/ConfirmDialog'
 import { Button } from '../../components/ui/Button'
@@ -14,10 +15,18 @@ import { Select } from '../../components/ui/Select'
 import { useApi } from '../../hooks/useApi'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
 import { useToast } from '../../context/ToastProvider'
-import { api } from '../../lib/api'
+import { api, downloadFile } from '../../lib/api'
 import { useAuth } from '../../context/AuthProvider'
 import { ADMIN_PERMISSIONS, canWriteAdminPermission } from '../../lib/adminPermissions'
+import { NonSchoolDayDialog, NationalHolidaysDialog } from './NonSchoolDayDialog'
 
+// Calendário do painel: eventos do curso e da turma e, desde a fase 3 (B7 / P2-S6,
+// FUN-15), os dias não letivos que valem para a turma (feriado, recesso, ponto
+// facultativo, evento escolar), pintados no mês e listados em "Feriados e recessos deste
+// mês". "Dia não letivo" cadastra um dia para a turma, o curso, a escola ou a instituição,
+// conforme o que o servidor diz que a conta pode (escopos); "Feriados nacionais" adiciona
+// os do ano de uma vez; "Baixar agenda (.ics)" leva tudo para o Google Agenda, o Outlook
+// ou o celular. A Coordenação (só consulta) vê e baixa, sem criar nem alterar.
 const TYPE_LABELS = { aula: 'Aula', prova: 'Prova', entrega: 'Entrega', aviso: 'Aviso', reuniao: 'Reunião', outro: 'Outro' }
 const blank = (date = '', courseId = '', className = '') => ({ title: '', description: '', eventDate: date, startTime: '', endTime: '', eventType: 'aula', target: 'turma', targetValue: className, courseId })
 
@@ -28,16 +37,39 @@ export default function CalendarioPage() {
   // A Coordenação (só consulta) vê o calendário e abre cada evento para ler, sem criar,
   // alterar nem excluir (o servidor recusaria com 403; B4).
   const canEdit = canWriteAdminPermission(auth, ADMIN_PERMISSIONS.PAGE_FORUM)
-  const eventsApi = useApi(courseId ? `/api/admin/announcements/calendar?courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(className)}` : null)
+  const query = courseId ? `courseId=${encodeURIComponent(courseId)}&studentClass=${encodeURIComponent(className)}` : ''
+  const eventsApi = useApi(courseId ? `/api/admin/announcements/calendar?${query}` : null)
+  const daysApi = useApi(courseId ? `/api/admin/calendar/non-school-days?${query}` : null)
   const [month, setMonth] = useState(firstOfMonth())
   const [form, setForm] = useState(null)
   const [busy, setBusy] = useState(false)
   const [confirmRemove, setConfirmRemove] = useState(false)
-  // Dia não letivo (feriado, recesso): vem junto dos eventos, só para leitura.
+  // Dia não letivo que a conta não altera (da instituição, para o professor; qualquer um,
+  // para a Coordenação): abre só para leitura.
   const [readOnlyDetail, setReadOnlyDetail] = useState(null)
+  // { day: registro do servidor ou null, date: 'AAAA-MM-DD' } com o diálogo aberto.
+  const [dayDialog, setDayDialog] = useState(null)
+  const [holidaysOpen, setHolidaysOpen] = useState(false)
+  const [downloading, setDownloading] = useState(false)
 
+  const dias = daysApi.data?.dias || []
+  const escopos = daysApi.data?.escopos || []
+  const canCreateDay = canEdit && escopos.length > 0
+  const canAddHolidays = canEdit && !!daysApi.data?.podeAdicionarFeriadosNacionais
+  const context = { courseId, courseName: courseName || courseId, studentClass: className, schoolId: daysApi.data?.contexto?.schoolId || '', escolaNome: daysApi.data?.contexto?.escolaNome || '' }
+  const monthDays = useMemo(() => dias
+    .filter((day) => eventInMonth({ eventDate: day.inicio, endDate: day.fim }, month))
+    .sort((a, b) => a.inicio.localeCompare(b.inicio, 'pt-BR')), [dias, month])
+
+  const refetchAll = () => { eventsApi.refetch(); daysApi.refetch() }
   const openNew = (date = '') => setForm(blank(date || `${month.getFullYear()}-${String(month.getMonth() + 1).padStart(2, '0')}-01`, courseId, className))
+  const openNonSchoolDay = (id, fallback) => {
+    const day = dias.find((item) => item.id === id)
+    if (day && day.podeAlterar && canEdit) return setDayDialog({ day, date: day.inicio })
+    return setReadOnlyDetail(fallback || (day ? dayAsEvent(day) : null))
+  }
   const openEdit = (event) => {
+    if (event.kind === 'nonSchoolDay') return openNonSchoolDay(event.id, event)
     if (event.readOnly || !canEdit) return setReadOnlyDetail(event)
     setForm({ ...event, description: event.message || event.description || '' })
   }
@@ -70,14 +102,45 @@ export default function CalendarioPage() {
     } finally { setBusy(false) }
   }
 
+  async function downloadIcs() {
+    setDownloading(true)
+    try {
+      await downloadFile(`/api/admin/calendar/ics?${query}`, `agenda_${className || courseId}.ics`)
+    } catch (error) { toast.error(error.message) } finally { setDownloading(false) }
+  }
+
   if (!courseId) return <Card className="p-6"><EmptyState icon={CalendarDays} title="Escolha um curso" description="Entre em um curso para organizar o calendário." /></Card>
 
   return (
     <div className="mx-auto max-w-7xl space-y-5">
-      <PageHeader title="Calendário" subtitle={`Aulas, provas, entregas e avisos · ${courseName || courseId} · ${className}`}>
+      <PageHeader title="Calendário" helpTopic="calendario" subtitle={`Aulas, provas, entregas, avisos e dias sem aula · ${courseName || courseId} · ${className}`}>
         {canEdit && <Button icon={Plus} onClick={() => openNew()}>Novo evento</Button>}
+        {canCreateDay && <Button variant="secondary" icon={CalendarOff} onClick={() => setDayDialog({ day: null, date: '' })}>Dia não letivo</Button>}
+        {canAddHolidays && <Button variant="secondary" icon={Flag} onClick={() => setHolidaysOpen(true)}>{`Feriados nacionais de ${month.getFullYear()}`}</Button>}
+        <Button variant="secondary" icon={Download} loading={downloading} onClick={downloadIcs}>Baixar agenda (.ics)</Button>
       </PageHeader>
-      <PageState loading={eventsApi.loading} error={eventsApi.error} onRetry={eventsApi.refetch}>
+
+      {monthDays.length > 0 && (
+        <Card className="p-4">
+          <h2 className="mb-2 flex items-center gap-2 text-sm font-semibold text-text"><CalendarOff size={16} className="text-warning" aria-hidden="true" />Feriados e recessos deste mês</h2>
+          <ul aria-label="Feriados e recessos deste mês" className="divide-y divide-border">
+            {monthDays.map((day) => (
+              <li key={day.id}>
+                <button type="button" onClick={() => openNonSchoolDay(day.id)} className="flex w-full flex-wrap items-center gap-x-3 gap-y-1 rounded-md px-2 py-2.5 text-left transition hover:bg-surface-2">
+                  <span className="min-w-[9rem] text-sm font-semibold text-text">{formatRange(day.inicio, day.fim)}</span>
+                  <span className="min-w-0 flex-1 text-sm text-text">{day.nome}</span>
+                  <span className="flex flex-wrap gap-1.5">
+                    <Badge tone="warning">{day.tipoRotulo || 'Sem aula'}</Badge>
+                    <Badge tone="neutral">{scopeLabel(day, context)}</Badge>
+                  </span>
+                </button>
+              </li>
+            ))}
+          </ul>
+        </Card>
+      )}
+
+      <PageState loading={eventsApi.loading} error={eventsApi.error} onRetry={refetchAll}>
         <MonthCalendar month={month} onMonthChange={setMonth} events={eventsApi.data || []} onDayClick={canEdit ? openNew : undefined} onEventClick={openEdit} />
       </PageState>
 
@@ -110,6 +173,7 @@ export default function CalendarioPage() {
           </div>
           {form.target === 'turma' && <div><p className="mb-1 text-sm font-medium text-text">Turma</p><div className="h-[38px] rounded-md border border-border bg-surface-2 px-3 py-2 text-sm font-semibold text-text">{className}</div></div>}
           <Textarea id="cal-description" label="Descrição ou instruções" value={form.description} onChange={(event) => set({ description: event.target.value })} placeholder="Informações que o aluno precisa saber..." className="min-h-24" />
+          {!form.id && canCreateDay && <p className="text-xs text-muted">Feriado, recesso ou outro dia sem aula? Use <strong>Dia não letivo</strong>: assim a chamada não é cobrada nesse dia.</p>}
         </div>}
       </Modal>
 
@@ -123,6 +187,26 @@ export default function CalendarioPage() {
         tone="danger"
       />
 
+      <NonSchoolDayDialog
+        open={!!dayDialog}
+        onClose={() => setDayDialog(null)}
+        onSaved={refetchAll}
+        day={dayDialog?.day || null}
+        initialDate={dayDialog?.date || ''}
+        context={context}
+        escopos={escopos}
+        tipos={daysApi.data?.tipos || []}
+        toast={toast}
+      />
+
+      <NationalHolidaysDialog
+        open={holidaysOpen}
+        onClose={() => setHolidaysOpen(false)}
+        onSaved={refetchAll}
+        initialYear={month.getFullYear()}
+        toast={toast}
+      />
+
       <Modal
         open={!!readOnlyDetail}
         onClose={() => setReadOnlyDetail(null)}
@@ -131,7 +215,10 @@ export default function CalendarioPage() {
         footer={<Button variant="ghost" onClick={() => setReadOnlyDetail(null)}>Fechar</Button>}
       >
         {readOnlyDetail && (readOnlyDetail.kind === 'nonSchoolDay' || readOnlyDetail.readOnly
-          ? <p className="text-sm text-text">{readOnlyDetail.message || 'Não há aula neste dia.'} A chamada não é cobrada e a presença automática do acesso não conta na frequência.</p>
+          ? <div className="space-y-2 text-sm text-text">
+              <p>{readOnlyDetail.message || 'Não há aula neste dia.'} A chamada não é cobrada e a presença automática do acesso não conta na frequência.</p>
+              {readOnlyDetail.kind === 'nonSchoolDay' && canEdit && <p className="text-xs text-muted">{readOnlyDetail.escopo === 'instituicao' ? 'Este dia vale para toda a instituição: só o administrador ou quem gerencia as turmas altera.' : 'Sua conta não altera este dia: peça a quem o cadastrou.'}</p>}
+            </div>
           : <div className="space-y-2 text-sm text-text">
               <p className="text-xs font-semibold uppercase tracking-wide text-subtle">{TYPE_LABELS[readOnlyDetail.eventType] || 'Evento'}{readOnlyDetail.target === 'curso' ? ' · todas as turmas do curso' : ''}</p>
               <p className="whitespace-pre-wrap">{readOnlyDetail.message || readOnlyDetail.description || 'Sem descrição.'}</p>
@@ -139,6 +226,18 @@ export default function CalendarioPage() {
       </Modal>
     </div>
   )
+}
+
+// O dia da lista do servidor no formato de evento do calendário (para ler).
+function dayAsEvent(day) {
+  return { kind: 'nonSchoolDay', id: day.id, title: day.nome, eventDate: day.inicio, endDate: day.fim, escopo: day.escopo, message: `${day.tipoRotulo || 'Dia sem aula'}: não há aula.`, readOnly: true }
+}
+
+function scopeLabel(day, context) {
+  if (day.escopo === 'turma') return `Turma ${day.studentClass || context.studentClass}`
+  if (day.escopo === 'curso') return 'Todo o curso'
+  if (day.escopo === 'escola') return 'Toda a escola'
+  return 'Toda a instituição'
 }
 
 // Data e horário do evento para ler: '15/11/2027 · 08:00 às 09:40'.
@@ -150,7 +249,7 @@ function eventWhen(event) {
 
 // '2027-11-15' → '15/11/2027'; com fim diferente, 'de 13/07/2027 a 24/07/2027'.
 function formatRange(start, end) {
-  const br = (value) => (value ? new Date(`${value}T12:00:00`).toLocaleDateString('pt-BR') : '')
+  const br = (value) => { const date = parseDateKey(value); return date ? date.toLocaleDateString('pt-BR') : '' }
   if (!end || end === start) return br(start)
   return `de ${br(start)} a ${br(end)}`
 }

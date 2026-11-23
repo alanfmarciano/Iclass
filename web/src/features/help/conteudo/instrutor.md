@@ -135,7 +135,21 @@ Registra a presença por aula. Escolha a data, marque quem veio e salve. A prese
 
 ## Calendário {#calendario}
 
-<!-- P2 (B7) escreve aqui: dias não letivos e feriados. -->
+Mostra as aulas, provas, entregas e avisos do curso e os dias sem aula. Clique num dia para criar um evento; o aluno vê o evento no calendário dele.
+
+**Dia não letivo** cadastra um feriado, recesso, ponto facultativo ou evento da escola. Para vários dias seguidos (o recesso de julho, por exemplo), preencha também "Até". Em "Para quem vale" aparecem só os alcances que a sua conta pode usar: o professor cadastra para a própria turma; o administrador e quem gerencia as turmas cadastram também para o curso, a escola ou a instituição inteira. Nesses dias:
+
+- a Chamada avisa que não há aula e o Dashboard não cobra a chamada (se houve reposição, use "Fazer a chamada mesmo assim": ela conta normalmente);
+- a presença automática de quem entrou no IClass não conta na frequência (o registro fica guardado e volta a contar se você excluir o dia);
+- o aluno vê "Sem aula" no calendário e no Início.
+
+Os dias do mês aparecem pintados e listados em "Feriados e recessos deste mês"; clique num deles para alterar ou excluir. O dia que vale para toda a instituição só o administrador altera.
+
+**Feriados nacionais de 2027** (o ano do mês que está na tela) traz de uma vez os feriados nacionais do ano, calculados pelo próprio IClass, sem internet. Carnaval e Corpus Christi vêm como ponto facultativo: desmarque se a escola tem aula nesses dias. Feriados estaduais e municipais você cadastra em "Dia não letivo". Adicionar de novo não repete nenhum.
+
+**Baixar agenda (.ics)** gera um arquivo com os eventos e os dias sem aula da turma para abrir no Google Agenda, no Outlook ou no celular. Importar de novo atualiza a agenda em vez de repetir os eventos.
+
+No celular, o mês aparece como uma lista dos dias que têm evento.
 
 ## Fórum e dúvidas {#forum}
 

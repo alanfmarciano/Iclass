@@ -78,3 +78,52 @@ test('[UC-PRESENCA-002] chamada por aula salva justificativa abonada e a restaur
     await expect(alice.getByRole('button', { name: 'Abona falta', exact: true })).toBeVisible();
     await expect(alice.getByRole('radio', { name: 'Justificado' })).toHaveAttribute('aria-checked', 'true');
 });
+
+// Dia não letivo pela tela (B7 / P2-S6, FUN-15): o professor cadastra um feriado para
+// hoje no Calendário; o Dashboard deixa de cobrar a chamada e diz que hoje não tem aula, e
+// a Chamada mostra a faixa no lugar da grade. A seed tem grade de segunda a sexta: no fim
+// de semana a cobrança da chamada não existe antes, então só o "antes" muda de assert.
+test('[UC-PRESENCA-005] feriado cadastrado hoje some do "Precisa de você" e a Chamada mostra a faixa', async ({ page, request }) => {
+    test.setTimeout(90000);
+    const { today } = await (await request.get('/api/settings/public')).json();
+    const weekday = new Date(`${today}T12:00:00`).getDay();
+    const diaDeAula = weekday >= 1 && weekday <= 5;
+
+    await loginAdminAndEnterWorkspace(page);
+    const pendente = page.getByText('Chamada de hoje não lançada');
+    if (diaDeAula) await expect(pendente).toBeVisible({ timeout: 15000 });
+
+    await page.getByRole('link', { name: 'Calendário', exact: true }).click();
+    await expect(page.getByRole('heading', { name: 'Calendário', exact: true })).toBeVisible();
+    await page.getByRole('button', { name: 'Dia não letivo', exact: true }).click();
+    const dialog = page.getByRole('dialog', { name: 'Novo dia não letivo' });
+    await dialog.getByLabel('Nome').fill('Feriado municipal de teste');
+    await dialog.getByLabel('Data (ou início)').fill(today);
+    await expect(dialog.getByLabel('Para quem vale')).toHaveValue('turma');
+    const saved = page.waitForResponse(response => response.request().method() === 'POST'
+        && new URL(response.url()).pathname === '/api/admin/calendar/non-school-days/create');
+    await dialog.getByRole('button', { name: 'Salvar', exact: true }).click();
+    expect((await saved).status()).toBe(200);
+    await expect(dialog).toBeHidden();
+    const lista = page.getByRole('list', { name: 'Feriados e recessos deste mês' });
+    await expect(lista.getByText('Feriado municipal de teste')).toBeVisible();
+    await expect(page.locator(`[data-date="${today}"]`)).toHaveAttribute('data-sem-aula', 'true');
+
+    await page.getByRole('link', { name: 'Dashboard', exact: true }).click();
+    await expect(page.getByRole('region', { name: 'Agora' }).getByText(/Hoje não tem aula: Feriado municipal de teste/)).toBeVisible({ timeout: 15000 });
+    await expect(pendente).toHaveCount(0);
+
+    await page.getByRole('link', { name: 'Chamada', exact: true }).click();
+    await expect(page.getByLabel('Data')).toHaveValue(today);
+    await expect(page.getByText('Não há aula neste dia: Feriado municipal de teste')).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Concluir chamada', exact: true })).toHaveCount(0);
+    if (diaDeAula) await expect(page.getByRole('button', { name: 'Fazer a chamada mesmo assim' })).toBeVisible();
+
+    // No celular (375 px) o Calendário vira lista por dia e a página não rola para o lado.
+    await page.setViewportSize({ width: 375, height: 812 });
+    await page.goto('/calendario');
+    await expect(page.getByRole('list', { name: /^Dias de / })).toBeVisible({ timeout: 15000 });
+    await expect(page.getByRole('list', { name: /^Dias de / }).getByText('Sem aula').first()).toBeVisible();
+    const scroll = await page.evaluate(() => document.scrollingElement.scrollWidth);
+    expect(scroll).toBeLessThanOrEqual(375);
+});

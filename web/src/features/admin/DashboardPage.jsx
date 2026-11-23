@@ -52,7 +52,9 @@ function Stepper({ value, onChange, min = 1, max = 50 }) {
   )
 }
 
-const ymd = (d) => d.toISOString().slice(0, 10)
+// Data pelo relógio do computador (não em UTC: às 22 h de Brasília ainda é hoje e a
+// agenda não pode começar amanhã).
+const ymd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
 
 export default function DashboardPage() {
   const { courseId, courseName, className, period } = useAdminWorkspace()
@@ -111,8 +113,9 @@ export default function DashboardPage() {
   const agenda = useMemo(() => {
     const fim = ymd(new Date(Date.now() + 7 * 86400000))
     const inicio = ymd(new Date())
+    // O recesso que já começou e ainda não acabou também entra (endDate, B7 / P2-S6).
     const eventos = (calendar.data || [])
-      .filter((ev) => ev.eventDate >= inicio && ev.eventDate <= fim)
+      .filter((ev) => (ev.endDate && ev.endDate > ev.eventDate ? ev.endDate : ev.eventDate) >= inicio && ev.eventDate <= fim)
       .map((ev) => ({ ...ev, subtitle: ev.message ? ev.message.slice(0, 80) : '' }))
     const prox = now.data?.proximaAplicacao
     if (prox && !now.data?.aplicacao) {

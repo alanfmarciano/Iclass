@@ -6,7 +6,7 @@ import { riskReasons } from './dashboard/RiskList'
 
 // Dashboard por papel (B1): cada seção só aparece para quem abre a tela dela, e quem não lê
 // nota (Professor auxiliar) vê a média como oculta, não como "sem dado".
-const mocks = vi.hoisted(() => ({ auth: {}, paths: [] }))
+const mocks = vi.hoisted(() => ({ auth: {}, paths: [], now: null, calendar: null }))
 
 const MONITOR = { accountRole: 'monitor', roleLabel: 'Professor auxiliar', effectivePermissions: ['page.dashboard', 'page.classes', 'page.students', 'page.monitor'] }
 const SECRETARIA = { accountRole: 'secretaria', roleLabel: 'Secretaria', effectivePermissions: ['page.dashboard', 'page.classes', 'page.students', 'students.edit', 'students.import', 'enrollments.approve', 'students.certificates', 'reports.view'] }
@@ -33,16 +33,16 @@ vi.mock('../../hooks/useApi', () => ({
     if (path.startsWith('/api/admin/dashboard/students-overview')) {
       return ok([{ email: 'ana@x.local', name: 'Ana', className: '1DES', frequencia: 50, presentes: 1, totalAulas: 2, faltas: 1, media: null, riscoLevel: 'alto' }])
     }
-    if (path.startsWith('/api/admin/dashboard/now')) return ok({ aula: null, proximaAula: null, aplicacao: null, proximaAplicacao: null, online: { count: 0 } })
+    if (path.startsWith('/api/admin/dashboard/now')) return ok(mocks.now || { aula: null, proximaAula: null, aplicacao: null, proximaAplicacao: null, online: { count: 0 } })
     if (path.startsWith('/api/admin/dashboard/queue')) return ok([])
     if (path.startsWith('/api/admin/dashboard/trends')) return ok(trends(mocks.auth?.accountRole === 'monitor'))
-    if (path.startsWith('/api/admin/announcements/calendar')) return ok([])
+    if (path.startsWith('/api/admin/announcements/calendar')) return ok(mocks.calendar || [])
     return ok(null)
   },
 }))
 
 beforeEach(() => { mocks.paths = [] })
-afterEach(() => { mocks.auth = {}; cleanup() })
+afterEach(() => { mocks.auth = {}; mocks.now = null; mocks.calendar = null; cleanup() })
 
 const renderDashboard = () => render(<MemoryRouter><DashboardPage /></MemoryRouter>)
 const pulse = () => within(screen.getByRole('region', { name: 'Pulso da turma' }))
@@ -116,5 +116,42 @@ describe('[UC-PAPEIS-001] Dashboard por papel', () => {
     expect(riskReasons({ ...row, media: 4.5 }, 75).map((item) => item.text)).toEqual(['média 4,5 — abaixo de 5,0'])
     // Sem o campo (resposta antiga), o padrão 6,0.
     expect(riskReasons({ ...row, criterio: undefined }, 75).map((item) => item.text)).toEqual(['média 5,5 — abaixo de 6,0'])
+  })
+})
+
+describe('[UC-DASH-005] Dashboard em dia não letivo', () => {
+  const localYmd = (d) => `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`
+
+  it('a faixa "Agora" diz que hoje não tem aula e mostra a próxima aula depois do feriado', () => {
+    mocks.auth = { accountRole: 'professor' }
+    mocks.now = {
+      aula: null, aplicacao: null, proximaAplicacao: null, online: { count: 0 },
+      proximaAula: { data: '2027-11-16', inicio: '08:00', nome: 'Fundamentos de TI' },
+      naoLetivo: { id: 'nl_1', nome: 'Proclamação da República', tipo: 'feriado', tipoRotulo: 'Feriado', inicio: '2027-11-15', fim: '2027-11-15', escopo: 'instituicao' },
+      foraDoPeriodo: false,
+    }
+    renderDashboard()
+    // Antes a faixa só dizia "Próxima aula: ...", como num dia qualquer sem aula.
+    const agora = within(screen.getByRole('region', { name: 'Agora' }))
+    expect(agora.getByRole('status')).toHaveTextContent('Hoje não tem aula: Proclamação da República (feriado)')
+    expect(agora.getByText(/Próxima aula:/)).toBeInTheDocument()
+  })
+
+  it('fora do período letivo a faixa também diz que não tem aula', () => {
+    mocks.auth = { accountRole: 'professor' }
+    mocks.now = { aula: null, proximaAula: null, aplicacao: null, proximaAplicacao: null, online: { count: 0 }, naoLetivo: null, foraDoPeriodo: true }
+    renderDashboard()
+    expect(within(screen.getByRole('region', { name: 'Agora' })).getByRole('status')).toHaveTextContent('Hoje não tem aula: a turma está fora do período letivo')
+  })
+
+  it('o recesso que começou antes de hoje e continua aparece nos próximos 7 dias como "sem aula"', () => {
+    mocks.auth = { accountRole: 'professor' }
+    const ontem = new Date(); ontem.setDate(ontem.getDate() - 2)
+    const depois = new Date(); depois.setDate(depois.getDate() + 3)
+    mocks.calendar = [{ kind: 'nonSchoolDay', id: 'nl_2', title: 'Recesso de fim de ano', eventDate: localYmd(ontem), endDate: localYmd(depois), eventType: 'nao_letivo', readOnly: true }]
+    renderDashboard()
+    // Antes só entrava o evento que começava dentro dos 7 dias (eventDate).
+    expect(screen.getByText('Recesso de fim de ano')).toBeInTheDocument()
+    expect(screen.getByText('sem aula')).toBeInTheDocument()
   })
 })
