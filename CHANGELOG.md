@@ -124,7 +124,7 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 - No login, o link "Problemas para entrar?" abre a ajuda do aluno sem precisar entrar: como achar o endereço da sala, esqueci a senha, troca de senha e o que fazer se a conexão cair durante a prova.
 
 ### Pacote pronto para instalar
-- O IClass agora sai num pacote pronto para o Windows (IClass-<versão>-windows-x64.zip, uns 45 MB): já vem com o Node, com o banco de dados e com a interface compilada. O computador da escola não precisa de internet, de instalar o Node nem de compilar nada. O instalador que usa esse pacote chega numa próxima etapa; quem usa a pasta do git (como hoje) continua igual.
+- O IClass agora sai num pacote pronto para o Windows (IClass-<versão>-windows-x64.zip, uns 45 MB): já vem com o Node, com o banco de dados e com a interface compilada. O computador da escola não precisa de internet, de instalar o Node nem de compilar nada. Quem usa a pasta do git (como hoje) continua igual.
 - O pacote não leva o código-fonte da interface. Ao ligar, o IClass confere os próprios arquivos e, se algum sumiu ou foi mexido, não abre e diz "Os arquivos da interface estão incompletos ou foram alterados. Reinstale esta versão do IClass."
 - Junto vão a licença de uso do IClass (LICENSE.txt, ainda um modelo), os avisos das bibliotecas de código aberto que ele usa (THIRD_PARTY_NOTICES.txt) e o "Guia de instalação.html", que abre no navegador.
 - Os dados (banco, backups, apostilas e cursos arquivados) ficam numa pasta separada do programa, indicada no arquivo iclass-pastas.json do pacote: trocar a versão nunca mexe neles.
@@ -135,6 +135,17 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 - Desligar grava os dados antes de fechar. Com prova em andamento, o menu avisa qual prova e turma e pergunta antes de desligar ou reiniciar; backup, restaurar e redefinir senha esperam a prova acabar. Quando não dá para conferir as provas (servidor de uma versão anterior ou que não responde), o menu avisa e pergunta antes. Se o servidor não desligar, o menu pede para a janela dele fechar e só encerra à força se você confirmar.
 - Fazer backup, restaurar e redefinir a senha pelo menu desligam o IClass, fazem o que foi pedido e ligam de novo.
 - O Modo demonstração liga um IClass separado na porta 3100, com dados de mentira apagados a cada vez, sem tocar no IClass de verdade nem nos dados dele.
+
+### Instalar, atualizar e voltar de versão
+- O pacote tem o "Instalar IClass.cmd": dois cliques instalam o IClass em C:\IClass (ou na pasta que você escolher), com atalho na Área de Trabalho e no menu Iniciar e o "Desinstalar o IClass" em Configurações > Aplicativos. O programa fica em C:\IClass\programa e os dados em C:\IClass\dados, ao lado. (OPS-01)
+- Se o computador tem o IClass antigo (a pasta do `ligarIclassV3.bat`), o instalador oferece trazer os dados dele. A pasta antiga fica como está: os dados são copiados, conferidos (o banco precisa abrir sem problemas, e a mensagem diz quantos alunos vieram) e só então entram na instalação nova. O IClass antigo ligado é desligado antes; com prova em andamento nele, nada é copiado. (OPS-01)
+- O instalador libera no firewall do Windows a porta do IClass e o nome na rede, só nas redes Privadas e de domínio (o Windows pede permissão de administrador uma vez), e avisa quando a rede está como Pública. (OPS-01)
+- Para atualizar, é o mesmo "Instalar IClass.cmd" da versão nova: ele acha a instalação e pergunta. Com prova em andamento, nada é feito. A versão anterior fica guardada (as duas últimas), e os dados não são tocados na troca. (OPS-02)
+- Se o backup de antes de atualizar os dados falhar (sem espaço no disco), o IClass não atualiza e o menu explica; atualizar sem esse backup só com você digitando SIM. (OPS-02)
+- Novo no menu: [V] Voltar para a versão anterior. Ele faz um backup de agora e volta para a versão guardada; se a atualização tinha mudado o formato dos dados, restaura o backup feito antes dela (o que foi feito depois fica só no backup de agora, e o menu avisa antes). Com prova em andamento, nada é feito. (OPS-02)
+- Novo no menu do Windows: [9] Ligar junto com o Windows (Sim/Não). Ligado, o IClass abre minimizado quando você entra no Windows. (OPS-01)
+- Desinstalar desliga o IClass e tira o programa, os atalhos e as regras do firewall. Os dados ficam na pasta, a não ser que você digite APAGAR; instalando de novo na mesma pasta, o IClass continua com eles. (OPS-01)
+- Durante uma prova (sala de espera, em andamento ou pausada), o IClass não deixa o Windows suspender o computador; quando a última prova termina, o computador volta a poder dormir. A tela ainda pode apagar, e as configurações de energia não mudam. O "status" do menu diz quando isso está valendo. (OPS-01)
 
 ### Minha conta e papéis no painel
 - Novo: Minha conta. O avatar no topo do painel mostra as iniciais do seu nome e abre um menu com Minha conta e Sair. Em Minha conta você corrige o seu nome, troca a senha (com a senha atual) e usa "Sair dos outros aparelhos" para fechar a conta esquecida aberta em outro computador. (UXI-07)

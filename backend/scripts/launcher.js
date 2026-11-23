@@ -12,6 +12,12 @@
 //   node backend/scripts/launcher.js status [--json]
 //   node backend/scripts/launcher.js demonstracao [--sem-navegador]
 //   node backend/scripts/launcher.js parar-demonstracao
+//   node backend/scripts/launcher.js instalar [--destino <pasta>] [--trazer-de <pasta antiga>]
+//        [--sem-iniciar] [--sem-navegador] [--sim]           (da pasta do pacote; A17)
+//   node backend/scripts/launcher.js atualizar [--destino <pasta>] [--sim]   (idem)
+//   node backend/scripts/launcher.js voltar-versao [--sim]
+//   node backend/scripts/launcher.js ligar-com-windows liga|desliga
+//   node backend/scripts/launcher.js desinstalar [--sim]
 //
 // No pacote, o IClass.cmd chama este arquivo com o Node do próprio pacote. As ações ficam em
 // backend/utils/launcherCore.js (testadas no Linux); aqui só o menu (readline) e as opções.
@@ -22,6 +28,7 @@
 const readline = require('readline');
 
 const launcherCore = require('../utils/launcherCore.js');
+const launcherInstall = require('../utils/launcherInstall.js');
 
 const { EXIT } = launcherCore;
 
@@ -37,6 +44,25 @@ const MENU = Object.freeze([
     { key: '0', label: 'Sair' },
 ]);
 
+// Só na instalação pelo pacote (A17 / P6-S5): [9] no Windows e [V] com uma versão anterior
+// guardada. Entram antes do [0].
+function menuItems(launcher) {
+    const items = MENU.filter(item => item.key !== '0');
+    let here = null;
+    try { here = launcher.installationContext(); } catch (e) { here = null; }
+    if (here) {
+        const startup = launcher.startupState();
+        if (startup.disponivel) items.push({ key: '9', label: `Ligar junto com o Windows: ${startup.ligado ? 'Sim' : 'Não'}`, ligado: startup.ligado });
+        const previous = here.info && here.info.versaoAnterior;
+        const current = here.versaoAtual || here.versao;
+        let older = false;
+        try { older = !!previous && launcherInstall.compareVersions(previous, current) < 0; } catch (e) { older = false; }
+        if (older) items.push({ key: 'V', label: `Voltar para a versão anterior (${previous})` });
+    }
+    items.push(MENU.find(item => item.key === '0'));
+    return items;
+}
+
 const USAGE = [
     'Uso: node backend/scripts/launcher.js [comando] [opções]',
     '  (sem comando)          abre o menu',
@@ -50,10 +76,16 @@ const USAGE = [
     '  status                 diz se o IClass está ligado (--json)',
     '  demonstracao           liga a demonstração na porta 3100, com dados de mentira',
     '  parar-demonstracao     desliga a demonstração',
+    '  instalar               instala ou atualiza a partir da pasta do pacote (--destino <pasta>,',
+    '                         --trazer-de <pasta antiga>, --sem-iniciar, --sem-navegador, --sim)',
+    '  atualizar              atualiza a instalação a partir da pasta do pacote novo (--destino, --sim)',
+    '  voltar-versao          volta para a versão anterior guardada, com os dados de antes (--sim)',
+    '  ligar-com-windows      liga | desliga: o IClass liga sozinho quando você entra no Windows',
+    '  desinstalar            desinstala o programa (os dados ficam, a não ser que você digite APAGAR)',
 ].join('\n');
 
 function parseArgs(argv) {
-    const options = { command: null, positional: [], porta: null, semNavegador: false, minimizado: false, sim: false, dados: false, destino: null, ultimo: false, json: false, ajuda: false };
+    const options = { command: null, positional: [], porta: null, semNavegador: false, minimizado: false, sim: false, dados: false, destino: null, ultimo: false, json: false, ajuda: false, trazerDe: null, semIniciar: false, firewall: null };
     for (let index = 0; index < argv.length; index += 1) {
         const arg = argv[index];
         if (arg === '--porta') {
@@ -70,6 +102,16 @@ function parseArgs(argv) {
             options.destino = argv[index + 1] || null;
             index += 1;
         } else if (arg.startsWith('--destino=')) options.destino = arg.slice('--destino='.length);
+        else if (arg === '--trazer-de') {
+            options.trazerDe = argv[index + 1] || null;
+            index += 1;
+            if (!options.trazerDe || options.trazerDe.startsWith('--')) throw new Error('A opção --trazer-de precisa da pasta antiga do IClass.');
+        } else if (arg.startsWith('--trazer-de=')) options.trazerDe = arg.slice('--trazer-de='.length);
+        else if (arg === '--sem-iniciar') options.semIniciar = true;
+        else if (arg === '--firewall') {
+            options.firewall = argv[index + 1] || null;
+            index += 1;
+        }
         else if (arg === '--ajuda' || arg === '-h' || arg === '--help') options.ajuda = true;
         else if (!options.command && !arg.startsWith('--')) options.command = arg;
         else if (!arg.startsWith('--')) options.positional.push(arg);
@@ -163,7 +205,8 @@ async function showMenu(launcher, io) {
         launcher.describeState(found).forEach(text => line(`  ${text}`));
         if (demoRunning) line(`  Demonstração ligada na porta ${launcherCore.DEMO_PORT}.`);
         line('');
-        MENU.forEach(item => {
+        const items = menuItems(launcher);
+        items.forEach(item => {
             const label = item.key === '8' && demoRunning ? 'Desligar a demonstração' : item.label;
             line(`  [${item.key}] ${label}`);
         });
@@ -173,7 +216,7 @@ async function showMenu(launcher, io) {
         const choice = String(answer).trim().toUpperCase();
         line('');
         if (choice === '0') return EXIT.OK;
-        if (choice === '1') await launcher.iniciar();
+        if (choice === '1') await launcher.iniciarOferecendo();
         else if (choice === '2') await launcher.parar();
         else if (choice === '3') await launcher.reiniciar({ abrirNavegador: false });
         else if (choice === '4') await launcher.backup();
@@ -181,6 +224,8 @@ async function showMenu(launcher, io) {
         else if (choice === '6') await launcher.endereco();
         else if (choice === '7') await launcher.senha({ perguntarEmail: true });
         else if (choice === '8') await (demoRunning ? launcher.pararDemonstracao() : launcher.demonstracao());
+        else if (choice === '9' && items.some(item => item.key === '9')) await launcher.ligarComWindows({ ligar: !items.find(item => item.key === '9').ligado });
+        else if (choice === 'V' && items.some(item => item.key === 'V')) await launcher.voltarVersao();
         else {
             line('Opção inválida.');
             continue;
@@ -219,7 +264,7 @@ async function main(argv = process.argv.slice(2)) {
         let result;
         const command = options.command || 'menu';
         if (command === 'menu') return await showMenu(launcher, io);
-        if (command === 'iniciar') result = await launcher.iniciar({ abrirNavegador: !options.semNavegador, minimizado: options.minimizado });
+        if (command === 'iniciar') result = await launcher.iniciarOferecendo({ abrirNavegador: !options.semNavegador, minimizado: options.minimizado });
         else if (command === 'parar') result = await launcher.parar({ sim: options.sim });
         else if (command === 'reiniciar') result = await launcher.reiniciar({ sim: options.sim });
         else if (command === 'backup') result = await launcher.backup({ sim: options.sim, dados: options.dados, destino: options.destino });
@@ -229,6 +274,18 @@ async function main(argv = process.argv.slice(2)) {
         else if (command === 'status') result = await launcher.status({ json: options.json });
         else if (command === 'demonstracao') result = await launcher.demonstracao({ abrirNavegador: !options.semNavegador });
         else if (command === 'parar-demonstracao') result = await launcher.pararDemonstracao();
+        else if (command === 'instalar' || command === 'atualizar') {
+            const params = { destino: options.destino, trazerDe: options.trazerDe, sim: options.sim, semIniciar: options.semIniciar, abrirNavegador: !options.semNavegador, firewall: options.firewall };
+            result = await (command === 'instalar' ? launcher.instalar(params) : launcher.atualizar(params));
+        } else if (command === 'voltar-versao') result = await launcher.voltarVersao({ sim: options.sim, abrirNavegador: !options.semNavegador });
+        else if (command === 'ligar-com-windows') {
+            const what = String(options.positional[0] || '').toLowerCase();
+            if (!['liga', 'desliga'].includes(what)) {
+                process.stderr.write('Use: ligar-com-windows liga | desliga\n');
+                return EXIT.ERROR;
+            }
+            result = await launcher.ligarComWindows({ ligar: what === 'liga' });
+        } else if (command === 'desinstalar') result = await launcher.desinstalar({ sim: options.sim });
         else {
             process.stderr.write(`Comando desconhecido: ${command}\n${USAGE}\n`);
             return EXIT.ERROR;
@@ -250,4 +307,4 @@ if (require.main === module) {
     });
 }
 
-module.exports = { MENU, USAGE, createConsoleIo, main, parseArgs };
+module.exports = { MENU, USAGE, createConsoleIo, main, menuItems, parseArgs };

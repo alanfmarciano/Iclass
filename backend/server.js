@@ -23,6 +23,7 @@ const { SERVER_INSTANCE_ID, SESSION_RESUME_MAX_DOWNTIME_MS } = require('./utils/
 const { compressTextResponses } = require('./utils/httpCompression.js');
 const { serveBuildAssets, sendAssetNotFound, setNoStore } = require('./utils/staticAssets.js');
 const serverLifecycle = require('./utils/serverLifecycle.js');
+const { keepAwake } = require('./utils/keepAwake.js');
 const { SYNCED_FOLDER_WARNING } = require('./utils/syncedFolder.js');
 const { createNetworkPolicy, networkHttpsStatus, studentsHttpsEnabled } = require('./utils/networkPolicy.js');
 const { consoleLines, createAddressWatcher, networkAddresses, WATCH_INTERVAL_MS: NETWORK_WATCH_INTERVAL_MS } = require('./utils/networkAddresses.js');
@@ -556,6 +557,10 @@ async function prepareServer() {
             // crash.log pelo motor (uma linha por minuto) e é regravada sozinha.
             if (changed) db.save({ detached: true }).catch(err => { if (!err || err.code !== 'ICLASS_DB_WRITE') logCrash('finalização de tentativas vencidas', err); });
         } catch (e) { logCrash('finalização de tentativas vencidas', e); }
+        // Com prova em andamento, o computador não dorme (A17 / P6-S5, D13): o pedido ao
+        // Windows abre na primeira aplicação em andamento e fecha depois da última (fora
+        // do Windows não faz nada). Na mesma volta do timer, depois das contas da agenda.
+        try { keepAwake.sync(db.memory); } catch (e) { logCrash('computador acordado durante a prova', e); }
     }
     serverLifecycle.setBootPhase('checking');
     sweepExpiredAttempts();
@@ -1061,6 +1066,8 @@ async function performShutdown({ restart = false, reason = 'stop' } = {}) {
         process.exit(EXIT_CODES.ERROR);
     }, serverLifecycle.SHUTDOWN_TIMEOUT_MS);
     serverLifecycle.clearTimers();
+    // O pedido para o computador não dormir sai junto com os timers (A17).
+    try { keepAwake.stop(); } catch (e) { /* desligando */ }
     // Ainda no boot: a memória pode não estar carregada, e uma gravação completa agora
     // apagaria do disco o que não foi lido. Sai sem gravar (o que o boot já gravou foi em
     // transações completas) e sem marcar parada limpa: o heartbeat para (stopHeartbeat),

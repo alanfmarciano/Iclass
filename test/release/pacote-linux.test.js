@@ -177,6 +177,91 @@ test('[UC-LAUNCHER-001] o launcher do pacote liga pelo supervisor, diz o estado 
     }
 });
 
+// [UC-INSTALACAO-001] [UC-INSTALACAO-002] [UC-VERSAO-002] Instalar, atualizar e voltar de
+// versão com o pacote de verdade (fase 3, A17 / P6-S5): o launcher.js do pacote
+// descompactado instala no layout D10 (programa\<versão>, versao-atual.txt, dados ao
+// lado), trazendo os dados de uma pasta antiga no formato do git (data, content); a
+// versão instalada liga com o Node dela e lê os dados trazidos; um pacote "mais novo"
+// (o mesmo, com outra versão no manifesto) atualiza guardando a anterior; o voltar
+// faz o backup de agora e volta o ponteiro (sem migração entre as duas, nada a restaurar).
+test('[UC-INSTALACAO-001] instala o pacote com os dados de uma pasta antiga, atualiza para um pacote mais novo e volta de versão', { timeout: 6 * 60 * 1000 }, async () => {
+    assert.ok(zipFile, 'o teste anterior montou o pacote');
+    const node = path.join(programDir, 'node', 'node');
+    const port = await proc.freePort();
+    const env = schoolEnv(port);
+    const runFrom = (dir, ...args) => spawnSync(path.join(dir, 'node', 'node'), [path.join(dir, 'backend', 'scripts', 'launcher.js'), ...args], { cwd: dir, env, encoding: 'utf8', timeout: 180000 });
+    const show = result => `${result.stdout}\n${result.stderr}`;
+
+    // A pasta antiga (como a do git): data/ com o banco que os testes anteriores gravaram.
+    const oldRoot = path.join(tempRoot, 'IClass-antigo');
+    fs.cpSync(dataDir, path.join(oldRoot, 'data'), { recursive: true, filter: source => !source.includes(`${path.sep}runtime`) && !source.includes(`${path.sep}logs`) });
+    fs.mkdirSync(path.join(oldRoot, 'content'), { recursive: true });
+    fs.writeFileSync(path.join(oldRoot, 'content', 'Apostila.md'), '# Apostila\n');
+    fs.writeFileSync(path.join(oldRoot, 'ligarIclassV3.bat'), '@echo off\r\n');
+    const oldBefore = fs.readFileSync(path.join(oldRoot, 'data', 'database.db'));
+
+    const root = path.join(tempRoot, 'Escola', 'IClass');
+    const installed = spawnSync(node, [path.join(programDir, 'backend', 'scripts', 'launcher.js'), 'instalar', '--destino', root, '--trazer-de', oldRoot, '--sem-iniciar', '--sim'], { cwd: programDir, env, encoding: 'utf8', timeout: 180000 });
+    assert.equal(installed.status, 0, show(installed));
+    assert.match(installed.stdout, /Dados trazidos e conferidos: \d+ arquivos? .* O banco abriu sem problemas\./);
+    assert.equal(fs.readFileSync(path.join(root, 'programa', 'versao-atual.txt'), 'utf8'), version);
+    const current = path.join(root, 'programa', version);
+    assert.ok(fs.existsSync(path.join(current, 'node', 'node')));
+    assert.ok(fs.existsSync(path.join(root, 'IClass.cmd')));
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(current, 'iclass-pastas.json'), 'utf8')), { dados: '../../dados', conteudo: '../../conteudo', cursosArquivados: '../../cursos-arquivados' });
+    assert.ok(fs.existsSync(path.join(root, 'conteudo', 'Apostila.md')));
+    assert.ok(fs.readFileSync(path.join(oldRoot, 'data', 'database.db')).equals(oldBefore), 'a pasta antiga fica como estava');
+
+    try {
+        const started = runFrom(current, 'iniciar', '--sem-navegador');
+        assert.equal(started.status, 0, show(started));
+        const status = JSON.parse(runFrom(current, 'status', '--json').stdout.trim().split('\n').pop());
+        assert.equal(status.estado, 'ligado');
+        assert.equal(status.pastaDeDados, path.join(root, 'dados'));
+        assert.equal(status.computadorAcordado, false);
+
+        // Um pacote "mais novo": o mesmo, com outra versão no package.json e no manifesto
+        // (o servidor confere que as duas batem).
+        const parts = version.split('-')[0].split('.').map(Number);
+        const newer = `${parts[0]}.${parts[1]}.${parts[2] + 1}`;
+        const newPackage = path.join(tempRoot, 'pacote-novo');
+        fs.cpSync(programDir, newPackage, { recursive: true, filter: source => path.basename(source) !== 'iclass-pastas.json' });
+        const pkgFile = path.join(newPackage, 'package.json');
+        fs.writeFileSync(pkgFile, JSON.stringify({ ...JSON.parse(fs.readFileSync(pkgFile, 'utf8')), version: newer }, null, 2));
+        const manifestFile = path.join(newPackage, 'release-manifest.json');
+        const manifest = JSON.parse(fs.readFileSync(manifestFile, 'utf8'));
+        manifest.versao = newer;
+        manifest.arquivos['package.json'] = require('node:crypto').createHash('sha256').update(fs.readFileSync(pkgFile)).digest('hex');
+        fs.writeFileSync(manifestFile, JSON.stringify(manifest, null, 2));
+        const updated = runFrom(newPackage, 'atualizar', '--destino', root, '--sim');
+        assert.equal(updated.status, 0, show(updated));
+        assert.match(updated.stdout, new RegExp(`IClass atualizado de ${version.replace(/\./g, '\\.')} para ${newer.replace(/\./g, '\\.')}`));
+        assert.equal(fs.readFileSync(path.join(root, 'programa', 'versao-atual.txt'), 'utf8'), newer);
+        assert.ok(fs.existsSync(current), 'a versão anterior fica guardada');
+        const info = JSON.parse(fs.readFileSync(path.join(root, 'iclass-instalacao.json'), 'utf8'));
+        assert.equal(info.versaoAtual, newer);
+        assert.equal(info.versaoAnterior, version);
+        // Estava ligado: a versão nova liga sozinha.
+        assert.equal(JSON.parse(runFrom(path.join(root, 'programa', newer), 'status', '--json').stdout.trim().split('\n').pop()).estado, 'ligado');
+
+        const back = runFrom(path.join(root, 'programa', newer), 'voltar-versao', '--sim');
+        assert.equal(back.status, 0, show(back));
+        assert.match(back.stdout, new RegExp(`o IClass voltou para a versão ${version.replace(/\./g, '\\.')}`));
+        assert.equal(fs.readFileSync(path.join(root, 'programa', 'versao-atual.txt'), 'utf8'), version);
+        const backups = fs.readdirSync(path.join(root, 'dados', 'backups')).filter(name => name.endsWith('.zip'));
+        assert.ok(backups.length >= 1, 'o backup de agora foi feito antes de voltar');
+        const after = JSON.parse(runFrom(current, 'status', '--json').stdout.trim().split('\n').pop());
+        assert.equal(after.estado, 'ligado');
+        assert.equal(after.pastaDeDados, path.join(root, 'dados'));
+        const stopped = runFrom(current, 'parar', '--sim');
+        assert.equal(stopped.status, 0, show(stopped));
+    } finally {
+        const pidFile = path.join(root, 'dados', 'runtime', 'supervisor.pid');
+        const pid = fs.existsSync(pidFile) ? Number(String(fs.readFileSync(pidFile, 'utf8')).trim().split(/\s/)[0]) : 0;
+        if (pid > 0 && proc.processAlive(pid)) process.kill(pid, 'SIGTERM');
+    }
+});
+
 test('[UC-RELEASE-003] arquivo da interface alterado no pacote: o servidor sai com 2 e pede para reinstalar', { timeout: 60 * 1000 }, async () => {
     assert.ok(zipFile, 'o teste anterior montou o pacote');
     fs.appendFileSync(path.join(programDir, 'web', 'dist', 'index.html'), '<!-- mexido -->');

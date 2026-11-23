@@ -204,6 +204,8 @@ test('[UC-LAUNCHER-005] GET /api/system/control/status: 403 sem o token, com o e
         assert.equal(res.body.alunosConectados, before.body.alunosConectados + 1);
         assert.equal(Number.isInteger(res.body.porta) && res.body.porta > 0, true);
         assert.equal(res.body.comProblemas, false);
+        // Fora do Windows o pedido para o computador não dormir nunca abre (A17).
+        assert.equal(res.body.computadorAcordado, false);
         // Não vaza nada além do que o launcher usa (sem e-mail de aluno).
         assert.equal(JSON.stringify(res.body).includes(email), false);
     } finally {

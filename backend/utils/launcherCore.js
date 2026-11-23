@@ -25,7 +25,9 @@
 //   com o IClass parado e ligado de novo depois), senha (reset-admin-password.js, parando
 //   antes pela rota de controle), endereco (abre /endereco), status;
 // - demonstração na porta 3100 com pastas próprias recriadas do zero (TEST_MODE e o seed),
-//   sem tocar no servidor de verdade nem nos dados dele.
+//   sem tocar no servidor de verdade nem nos dados dele;
+// - instalar, atualizar, voltar para a versão anterior, ligar junto com o Windows e
+//   desinstalar (A17 / P6-S5): em launcherInstall.js, expostas pelo createLauncher.
 // Antes de desligar, reiniciar, fazer backup, restaurar ou redefinir a senha, o launcher lê
 // GET /api/system/control/status: com prova em andamento, pergunta (desligar, reiniciar) ou
 // recusa (backup, restaurar, senha) dizendo qual prova.
@@ -1015,6 +1017,7 @@ function createLauncher(options = {}) {
             if (Number.isInteger(status.provasEmAndamento)) lines.push(status.provasEmAndamento ? examsSentence(status.provas) : 'Nenhuma prova em andamento.');
             else if (found.status) lines.push('Não deu para conferir as provas em andamento agora.');
             if (Number.isInteger(status.alunosConectados)) lines.push(`Alunos conectados agora: ${status.alunosConectados}.`);
+            if (status.computadorAcordado === true) lines.push('O computador não vai dormir enquanto houver prova em andamento.');
             if (found.status && found.status.supervisionado === false) lines.push('Reinício automático desligado (o servidor foi ligado sem o supervisor).');
             if (found.legacy) lines.push('Servidor de uma versão anterior: o launcher só consegue desligá-lo e ligá-lo, sem conferir as provas em andamento.');
             return lines;
@@ -1044,6 +1047,7 @@ function createLauncher(options = {}) {
                 provas: found.status ? found.status.provas : [],
                 alunosConectados: found.status ? found.status.alunosConectados : null,
                 enderecoAlunos: found.status ? found.status.enderecoAlunos : null,
+                computadorAcordado: found.status ? found.status.computadorAcordado === true : null,
                 portaOcupada: found.portBusy === true,
                 pastaDeDados: instance.dataDir,
             }));
@@ -1109,11 +1113,39 @@ function createLauncher(options = {}) {
         return parar({ instance: demo, sim: true, jaConfirmado: true });
     }
 
+    // Instalar, atualizar, voltar de versão, ligar com o Windows e desinstalar (A17 /
+    // P6-S5): em launcherInstall.js, com as mesmas injeções deste launcher.
+    const install = require('./launcherInstall.js').createInstallActions({
+        options,
+        projectRoot,
+        platform,
+        baseEnv,
+        out,
+        ask,
+        confirm,
+        run,
+        now,
+        defaultPort,
+        version,
+        createLauncher,
+    });
+
     return {
         EXIT,
         version,
         folders,
         realInstance,
+        // Ligar do menu e do comando iniciar: com a oferta de atualizar sem o backup
+        // de antes quando ele falhou (só com a pessoa digitando SIM).
+        iniciarOferecendo: params => install.iniciarOferecendo({ iniciar, folders }, params),
+        instalar: install.instalar,
+        atualizar: install.atualizar,
+        voltarVersao: install.voltarVersao,
+        ligarComWindows: install.ligarComWindows,
+        desinstalar: install.desinstalar,
+        installationContext: install.installationContext,
+        startupState: install.startupState,
+        defaultInstallRoot: install.defaultRoot,
         demoInstance,
         locate,
         describeState,

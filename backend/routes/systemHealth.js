@@ -226,7 +226,13 @@ function controlStatusBody(req, { ready = serverLifecycle.bootState().ready } = 
         alunosConectados: connectedStudents(db.memory),
         enderecoAlunos: port ? studentAddress(port) : null,
         comProblemas: serverLifecycle.degradedState() ? true : false,
+        // Pedido ao Windows para o computador não dormir durante a prova (A17, D13).
+        computadorAcordado: keepAwakeActive(),
     };
+}
+
+function keepAwakeActive() {
+    try { return require('../utils/keepAwake.js').keepAwake.status().ativo === true; } catch (e) { return false; }
 }
 
 function controlAllowed(req) {
