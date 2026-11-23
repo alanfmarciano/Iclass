@@ -1077,3 +1077,35 @@ describe('[UC-TENTATIVA-005] MonitorPage · outro aparelho, troca de IP e IP rep
     expect(screen.queryByText(/Mesmo IP de|Entrou de outro aparelho|Mudou de IP|A rede da sala/)).toBeNull()
   })
 })
+
+// Fase 3, P3-S11 (D24): a aplicação com sorteio por aluno diz no Monitor quantas questões
+// cada aluno recebe e de quais grupos.
+describe('[UC-PROVA-007] MonitorPage · sorteio por aluno', () => {
+  const drawApplications = applications.map((item) => (item.id !== 'app-antiga' ? item : {
+    ...item,
+    sorteioView: { modo: 'por_aluno', total: 3, grupos: [{ quantidade: 2, disponiveis: 4, descricao: 'questões fáceis' }, { quantidade: 1, disponiveis: 2, descricao: 'questões difíceis' }] },
+  }))
+  beforeEach(() => {
+    vi.clearAllMocks()
+    mocks.liveApplications = drawApplications
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications?')) return { applications: drawApplications }
+      if (url.startsWith('/api/admin/monitor-status/')) return { monitorList: [] }
+      if (url.startsWith('/api/admin/question-reports/')) return { groups: [], totalOpen: 0 }
+      return {}
+    })
+  })
+  afterEach(() => {
+    mocks.liveApplications = null
+    cleanup()
+  })
+
+  it('mostra o total por aluno e os grupos', async () => {
+    render(
+      <MemoryRouter initialEntries={['/monitor?courseId=C1&className=1DES&examKey=Avaliacao_Antiga&applicationId=app-antiga']}>
+        <Routes><Route path="/monitor" element={<MonitorPage />} /></Routes>
+      </MemoryRouter>,
+    )
+    expect(await screen.findByTestId('monitor-draw')).toHaveTextContent('Sorteio por aluno: cada aluno recebe 3 questões da montagem (2 de 4 questões fáceis; 1 de 2 questões difíceis).')
+  })
+})

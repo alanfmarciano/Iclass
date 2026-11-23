@@ -1,5 +1,6 @@
 const crypto = require('crypto');
 const { answersFromGradedAnswers, correctLetterFor, gradedAnswerFor, questionPoints, questionType, roundPoints } = require('./examScoring.js');
+const { drawNumbers, isPerStudentDraw, withReplacements } = require('./examDraw.js');
 
 // Campos que decidem a nota de uma questão: o tipo, os pontos e o gabarito de cada tipo
 // (a letra de escolha única e as alternativas marcadas ficam no snapshot desde sempre).
@@ -95,16 +96,32 @@ function questionsForAttempt({ application, onlineConfig, state, evaluation } = 
         return [number, attemptQuestion(question, fallback, number)];
     }));
 
-    let assignedNumbers = Array.isArray(state?.assignedQuestionNumbers)
-        ? state.assignedQuestionNumbers.map(Number).filter(Number.isFinite)
-        : [...sourceByNumber.keys()];
+    let assignedNumbers;
+    if (Array.isArray(state?.assignedQuestionNumbers)) {
+        assignedNumbers = state.assignedQuestionNumbers.map(Number).filter(Number.isFinite);
+    } else if (state?.drawSeed && isPerStudentDraw(application)) {
+        // Sorteio por aluno (P3-S11) sem os números guardados: a semente refaz o mesmo
+        // sorteio (nunca a prova inteira, que é o pool).
+        assignedNumbers = withReplacements(
+            drawNumbers(application.sorteio, state.drawSeed, { shuffleOrder: application.shuffleQuestions !== false }).numbers,
+            snapshot
+        );
+    } else {
+        assignedNumbers = [...sourceByNumber.keys()];
+    }
     assignedNumbers = [...new Set(assignedNumbers)];
 
+    // examNumber é a posição na tentativa (D24): no sorteio por aluno a questão 7 do pool
+    // pode ser a 1ª de um aluno e a 4ª de outro; nas versões é a posição da versão.
+    const questions = assignedNumbers
+        .map(number => sourceByNumber.get(number))
+        .filter(Boolean)
+        .map((question, index) => ({ ...question, examNumber: index + 1 }));
     return {
         assignedVersion,
         snapshot,
         assignedNumbers,
-        questions: assignedNumbers.map(number => sourceByNumber.get(number)).filter(Boolean),
+        questions,
     };
 }
 

@@ -280,6 +280,14 @@ P3-S13 (AVA-17; D28 e D29 do desenho do P3). Tudo é novo e opcional: nenhuma mi
 - **Auditoria**: `exam_application_scheduled`, `exam_application_schedule_changed`, `exam_application_auto_opened`, `exam_application_auto_finished` e `exam_application_schedule_missed` (pelo `recordExamAudit`, ator `sistema` nas da varredura), `content_release_scheduled` e `content_release_auto`.
 - Nenhuma migração. Abrir o banco novo no 281029f ignora os campos novos: a aplicação agendada aparece como preparada comum (o professor inicia pelo Monitor) e o material agendado fica bloqueado.
 
+## Versões no servidor e sorteio por aluno (fase 3, A12 / P3-S11)
+
+- **`classes[].examHistory[prova][]`** ganha, opcionais: `gabaritoConferidoEm` (ISO; as versões foram montadas ou conferidas pelo servidor contra a avaliação, `utils/examVersions.js`), `montadaNoServidor: true` e `versionCount` (a online montada no servidor) e `gabaritoCorrigido` (números das questões acertadas pelo "Corrigir gabarito" numa entrada de antes da conferência; a preparação não as confere com a avaliação). Entrada sem `gabaritoConferidoEm` tem a resposta certa conferida com a avaliação de hoje ao preparar.
+- **`examApplications[].sorteio`** (novo, opcional): `{ modo: 'por_aluno', grupos: [{ filtro: { origem?, categoria?, dificuldade?, tag? }, quantidade, numeros: [números originais] }], total }`. `numeros` é a partição da montagem feita ao preparar (cada questão no primeiro grupo que a aceita): editar a avaliação depois não muda o sorteio. Sem o campo, versões, como antes. `questionCount` da aplicação é `total`.
+- **`studentExamState[...]`** ganha, só no sorteio por aluno: `drawSeed` (16 hex, `crypto`), `drawGroups` (a quantidade sorteada de cada grupo) e o `assignedQuestionNumbers` de sempre com as sorteadas na ordem da tentativa. A troca de questão no Monitor acrescenta a nova só a quem tirou a trocada. O reset da tentativa por versão nova da configuração (`examConfigVersion`) também apaga `drawSeed` e `drawGroups`.
+- **`versionSnapshots[].questions[].examNumber`** na tentativa (entrega `examSnapshot`) é a posição na tentativa, não a da versão.
+- Nenhuma migração. Abrir o banco novo no 281029f: ele não lê `sorteio`, então a tentativa que começar lá recebe todas as questões da configuração salva (como uma aplicação de versões); quem já começou continua com as `assignedQuestionNumbers` dele. As entradas de `examHistory` com os campos novos abrem lá como antes.
+
 ## Dias não letivos (`nonSchoolDays`, fase 3, B3)
 
 Cadastrados pelas rotas de `routes/adminAcademic.js` (ver API.md) e lidos só por `utils/academicCalendar.js`, que responde "há aula nesta turma nesta data?" para a Chamada, a presença automática do acesso, o Dashboard e os calendários.

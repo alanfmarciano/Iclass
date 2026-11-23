@@ -140,7 +140,8 @@ test('usa por padrão uma tentativa e dez minutos de sala de espera', async () =
                 version: 'A',
                 questions: [{
                     originalNumber: 1,
-                    text: 'Questão com valores padrão',
+                    // O enunciado da avaliação: desde o P3-S11 o servidor confere (D23).
+                    text: 'Questão de isolamento',
                     alternatives: [{ letter: 'A', text: 'Correta' }, { letter: 'B', text: 'Incorreta' }],
                 }],
             }],

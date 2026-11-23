@@ -4587,8 +4587,10 @@ router.post('/api/admin/assign-student-version', ADMIN_SCHEMAS.examStudent, (req
                 return res.json({ success: true });
             }
             // Tentativa já aberta: a ordem das questões passa a ser a da versão nova
-            // (recalculada no próximo sync), não a da versão sorteada antes.
-            openAttempt.state.assignedQuestionNumbers = null;
+            // (recalculada no próximo sync), não a da versão sorteada antes. No sorteio por
+            // aluno (P3-S11, D24) as questões sorteadas ficam: a versão nova só muda a ordem
+            // das alternativas.
+            if (!openAttempt.state.drawSeed) openAttempt.state.assignedQuestionNumbers = null;
         }
         if (!db.memory.studentExamState[key]) {
             db.memory.studentExamState[key] = {
@@ -4917,7 +4919,9 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 const snapshotCount = Array.isArray(currentConfig.versionSnapshots) && currentConfig.versionSnapshots[0] && Array.isArray(currentConfig.versionSnapshots[0].questions)
                     ? currentConfig.versionSnapshots[0].questions.length
                     : 0;
-                const totalQuestions = Number(currentConfig.questionCount) || snapshotCount || evaluation.questions.length;
+                // Sorteio por aluno (P3-S11): o total é o da tentativa dele.
+                const drawnCount = state.drawSeed && Array.isArray(state.assignedQuestionNumbers) ? state.assignedQuestionNumbers.length : 0;
+                const totalQuestions = drawnCount || Number(currentConfig.questionCount) || snapshotCount || evaluation.questions.length;
                 // Entregue: quantas questões o aluno de fato respondeu (a entrega do fim do
                 // tempo pode ter menos respostas que questões).
                 const answeredQuestions = submission
@@ -5212,7 +5216,8 @@ router.get('/api/admin/monitor-review/:class/:examKey', (req, res) => {
 
         const answeredCount = reviewQuestions.filter(q => q.answered).length;
         const correctCount = reviewQuestions.filter(q => q.isCorrect).length;
-        const totalCount = Number(currentConfig.questionCount) || reviewQuestions.length;
+        // Sorteio por aluno (P3-S11): as questões da tentativa dele.
+        const totalCount = (state.drawSeed ? reviewQuestions.length : 0) || Number(currentConfig.questionCount) || reviewQuestions.length;
         // Quem já iniciou a tentativa (startedAt) está "em andamento" mesmo sem resposta.
         const status = submission ? 'finished' : ((answeredCount > 0 || state.startedAt) ? 'in_progress' : 'not_started');
 

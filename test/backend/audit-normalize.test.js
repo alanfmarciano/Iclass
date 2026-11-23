@@ -331,7 +331,7 @@ const PHASE3_ACTIONS = {
     exam: ['exam_answer_key_corrected', 'exam_attempt_collected', 'exam_attempt_reopened_by_instructor', 'exam_attempt_extra_granted',
         'exam_application_participants_set', 'exam_application_scheduled', 'exam_application_schedule_changed',
         'exam_application_auto_opened', 'exam_application_auto_finished', 'exam_application_schedule_missed',
-        'exam_access_token_revealed'],
+        'exam_access_token_revealed', 'exam_application_draw_set'],
     content: ['content_release_scheduled', 'content_release_auto', 'content_released', 'content_hidden', 'content_preview_started'],
     attendance: ['diary_saved', 'diary_changed'],
     document: ['report_exported', 'report_printed'],

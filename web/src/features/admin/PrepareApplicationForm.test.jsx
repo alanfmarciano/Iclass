@@ -18,6 +18,7 @@ import {
   audienceProblem,
   initialAudience,
 } from './PrepareApplicationForm'
+import { drawAvailability, drawPayload, drawProblem } from './ApplicationDraw'
 
 const CANDIDATES = {
   success: true,
@@ -339,5 +340,79 @@ describe('[UC-PROVA-008] Quando da aplicação', () => {
   it('sem "schedule" no estado (chamadas antigas), o "Quando" não aparece', () => {
     render(<ScheduleHarness withSchedule={false} />)
     expect(screen.queryByTestId('application-schedule')).toBeNull()
+  })
+})
+
+// "Como montar" na preparação a partir do histórico (fase 3, P3-S11: AVA-16; D24).
+describe('[UC-PROVA-007] Como montar na preparação', () => {
+  function DrawHarness({ onValue }) {
+    const [value, setValue] = useState({
+      entry: { id: 'eh_9', label: 'Online #1', questionCount: 3, questionNumbers: [1, 2, 3] },
+      availableVersions: 2,
+      onlineVersions: 2,
+      durationMinutes: 30,
+      waitingRoomMinutes: 0,
+      timerEnabled: true,
+      timerMode: 'per_attempt',
+      tokenEnabled: false,
+      accessToken: 'ABCDE',
+      maxAttempts: '1',
+      keystrokeMode: 'eventos',
+      audience: initialAudience(),
+    })
+    return (
+      <>
+        <PrepareApplicationForm
+          value={value}
+          onChange={(next) => { setValue(next); onValue?.(next) }}
+          candidates={{ data: CANDIDATES, loading: false, refreshing: false, error: '', refetch: () => {} }}
+          tokenTools={{ normalize: (text) => text, generate: () => 'ABCDE' }}
+          studentClass="1DES"
+          courseId="DES"
+          examKey="Avaliacao_1"
+        />
+        <output data-testid="draw-payload">{JSON.stringify(drawPayload(value.draw))}</output>
+      </>
+    )
+  }
+
+  it('padrão "Versões"; o sorteio lê as questões da configuração salva e conta quantas cabem no grupo', async () => {
+    mocks.get.mockResolvedValue({ questions: [
+      { number: 1, origem: 'avaliacao', categoria: '', dificuldade: 'facil', tags: [] },
+      { number: 2, origem: 'avaliacao', categoria: '', dificuldade: 'facil', tags: [] },
+      { number: 3, origem: 'banco', categoria: 'Redes', dificuldade: 'media', tags: [] },
+    ], categorias: ['Redes'], etiquetas: [] })
+    render(<DrawHarness />)
+    expect(screen.getByRole('radio', { name: 'Versões (máx. 4)' })).toHaveAttribute('aria-checked', 'true')
+    expect(screen.getByLabelText('Versões online')).toHaveAttribute('max', '2')
+    expect(screen.getByTestId('draw-payload')).toHaveTextContent('{}')
+    expect(mocks.get).not.toHaveBeenCalledWith(expect.stringContaining('draw-pool'))
+
+    fireEvent.click(screen.getByRole('radio', { name: 'Sorteio por aluno' }))
+    await waitFor(() => expect(mocks.get).toHaveBeenCalledWith(expect.stringContaining('/api/admin/exam-applications/draw-pool?')))
+    const url = mocks.get.mock.calls.find(([item]) => item.includes('draw-pool'))[0]
+    expect(url).toContain('historyId=eh_9')
+    expect(url).toContain('examKey=Avaliacao_1')
+    const group = screen.getByRole('group', { name: 'Grupo 1' })
+    expect(await within(group).findByText('3 questões combinam com o filtro.')).toBeInTheDocument()
+    fireEvent.change(within(group).getByLabelText('Origem'), { target: { value: 'banco' } })
+    fireEvent.change(within(group).getByLabelText('Categoria do banco'), { target: { value: 'redes' } })
+    expect(within(group).getByText('1 questão combina com o filtro.')).toBeInTheDocument()
+    fireEvent.change(within(group).getByLabelText('Quantidade'), { target: { value: '1' } })
+    expect(screen.getByTestId('draw-summary')).toHaveTextContent('Cada aluno recebe 1 de 3 questões')
+    expect(JSON.parse(screen.getByTestId('draw-payload').textContent)).toEqual({ sorteio: { modo: 'por_aluno', grupos: [{ filtro: { origem: 'banco', categoria: 'redes' }, quantidade: 1 }] } })
+  })
+
+  it('as contas da tela são as do servidor: a questão que serve para dois grupos fica no primeiro', () => {
+    const pool = [
+      { number: 1, origem: 'avaliacao', dificuldade: 'facil', tags: ['Redes'] },
+      { number: 2, origem: 'avaliacao', dificuldade: 'facil', tags: [] },
+    ]
+    const draw = { modo: 'por_aluno', grupos: [{ quantidade: '1', tag: 'redes' }, { quantidade: '2', dificuldade: 'facil' }] }
+    expect(drawAvailability(pool, draw)).toEqual([1, 1])
+    expect(drawProblem(draw, pool)).toBe('Grupo 2: pediu 2 questões fáceis, mas a montagem só tem 1 (a questão que serve para dois grupos fica no primeiro).')
+    expect(drawProblem({ modo: 'por_aluno', grupos: [{ quantidade: '' }] }, null)).toBe('Grupo 1: informe quantas questões sortear (um número inteiro a partir de 1).')
+    expect(drawProblem({ modo: 'versoes', grupos: [] }, pool)).toBeNull()
+    expect(drawPayload({ modo: 'versoes' })).toEqual({})
   })
 })

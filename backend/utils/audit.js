@@ -247,6 +247,7 @@ const ACTION_LABELS = Object.freeze({
     exam_application_auto_opened: 'Prova aberta pelo agendamento',
     exam_application_auto_finished: 'Prova encerrada pelo agendamento',
     exam_application_schedule_missed: 'Agendamento perdido: servidor desligado no horário',
+    exam_application_draw_set: 'Sorteio por aluno definido na preparação',
     exam_access_token_revealed: 'Token da prova exibido',
     // Conteúdo: liberação agendada (P3), liberar e esconder material (P4; a liberação por
     // grupo do P5 usa content_released com details.groupId) e ver como aluno (P5)

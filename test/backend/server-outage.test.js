@@ -636,7 +636,12 @@ test('[UC-PROVA-003] prova só em .md (sem entrada em evaluations) é entregue e
         '',
     ].join('\n'));
     assert.equal(db.memory.evaluations[mdExamKey], undefined);
-    const application = await createApplication({ key: mdExamKey });
+    // Montagem sem enunciado nem gabarito (o mínimo): o servidor completa pela prova do .md,
+    // que é também a que ele confere (P3-S11, D23).
+    const application = await createApplication({
+        key: mdExamKey,
+        printQuestions: [1, 2, 3].map(number => ({ originalNumber: number, alternatives: ['A', 'B', 'C'].map(letter => ({ letter, text: `Alternativa ${letter}` })) })),
+    });
     const started = await startAttempt(bruno, application.id, mdExamKey);
     const response = await submit(bruno, application.id, started, { 1: 'B', 2: 'C', 3: 'C' }, { auto: false, key: mdExamKey });
     assert.equal(response.status, 200, `antes: 500 "Falha ao processar avaliação no servidor." — ${JSON.stringify(response.body)}`);

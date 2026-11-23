@@ -516,6 +516,8 @@ export default function MonitorPage() {
     if (liveApplication.status !== selectedApplication.status) refetchClasses(true)
   }, [liveApplication, selectedApplication, refetchClasses])
   const scheduleApplication = liveApplication || selectedApplication
+  // Sorteio por aluno (P3-S11): vem na lista das aplicações (sorteioView).
+  const drawView = liveApplication?.sorteioView || selectedApplication?.sorteioView || null
   const selectedConfig = useMemo(() => {
     const current = selectedClass?.onlineExamConfigs?.[examKey] || {}
     if (!selectedApplication) return current
@@ -1319,6 +1321,11 @@ export default function MonitorPage() {
                     <AlertTriangle size={17} className="mt-0.5 shrink-0" />
                     <span><strong>Não visível aos alunos.</strong> “Preparar” monta a aplicação; o aviso só será enviado depois de clicar em “Iniciar prova e avisar alunos” ou “Sala de espera”.</span>
                   </div>
+                )}
+                {drawView?.modo === 'por_aluno' && (
+                  <p className="mt-2 text-sm text-text" data-testid="monitor-draw">
+                    <strong>Sorteio por aluno:</strong> cada aluno recebe {drawView.total} {drawView.total === 1 ? 'questão' : 'questões'} da montagem ({(drawView.grupos || []).map((grupo) => `${grupo.quantidade} de ${grupo.disponiveis} ${grupo.descricao}`).join('; ')}). O progresso de cada um conta as questões que ele tirou.
+                  </p>
                 )}
                 {scheduleApplication?.agendaView && (
                   <div className="mt-3">

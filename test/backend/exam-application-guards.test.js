@@ -95,11 +95,13 @@ async function createHistory(studentClass, key = examKey) {
             examKey: key,
             type: 'online',
             questionNumbers: [1, 2],
+            // Enunciado e alternativas como estão na avaliação (a variante editada tem outro
+            // enunciado): desde o P3-S11 o servidor confere cada questão com ela (D23).
             printSnapshot: [{
                 version: 'A',
                 questions: [1, 2].map(number => ({
                     originalNumber: number,
-                    text: `Questão ${number}`,
+                    text: db.memory.evaluations[key]?.questions?.[number - 1]?.text || `Questão ${number}`,
                     alternatives: ['A', 'B', 'C'].map(letter => ({ letter, text: `Alternativa ${letter}` })),
                 })),
             }],

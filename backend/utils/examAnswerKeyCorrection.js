@@ -189,8 +189,16 @@ function applyAnswerKeyToPreparation(entry, number, key) {
         ? entry.printSnapshot
         : (entry.printSnapshot && Array.isArray(entry.printSnapshot.questions) ? [entry.printSnapshot] : []);
     const frozen = Array.isArray(entry.versionSnapshots) ? entry.versionSnapshots : [];
-    return applyAnswerKeyToSnapshots(frozen, number, key, { sameTypeOnly: true })
+    const updated = applyAnswerKeyToSnapshots(frozen, number, key, { sameTypeOnly: true })
         + applyAnswerKeyToSnapshots(print, number, key, { sameTypeOnly: true });
+    // A configuração salva de antes da conferência do gabarito (P3-S11) é conferida com a
+    // avaliação ao preparar; a questão corrigida aqui vale como foi corrigida.
+    if (updated && !entry.gabaritoConferidoEm) {
+        const corrected = new Set((Array.isArray(entry.gabaritoCorrigido) ? entry.gabaritoCorrigido : []).map(Number));
+        corrected.add(Number(number));
+        entry.gabaritoCorrigido = [...corrected].sort((a, b) => a - b);
+    }
+    return updated;
 }
 
 // A preparação já tem este gabarito na questão (ou não tem a questão do mesmo tipo):

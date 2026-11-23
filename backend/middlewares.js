@@ -18,6 +18,7 @@ const { computeAttemptDeadline } = require('./utils/examDeadline.js');
 const { listExamApplications } = require('./utils/examApplications.js');
 const { keystrokeModeOf } = require('./utils/keystrokePolicy.js');
 const { examFamilyIndex } = require('./utils/examFamily.js');
+const { ensureAttemptDraw, isPerStudentDraw } = require('./utils/examDraw.js');
 const { answerIdScope, studentAlternatives, submissionWithSeenLetters } = require('./utils/examAnswerIds.js');
 const { integrityDecision, isAwaitingCorrection } = require('./utils/submissionAttempts.js');
 const { recordBackupAudit, isBackupRestoreRequest } = require('./utils/backupAudit.js');
@@ -1520,6 +1521,8 @@ function initializeExamState(state, onlineConfig) {
         state.assignedVersion = 'A';
         state.versionAssigned = false;
         state.assignedQuestionNumbers = null;
+        state.drawSeed = null;
+        state.drawGroups = null;
         state.individualTimeAdjustment = 0;
         state.tokenValidated = false;
         state.focusLocked = false;
@@ -1536,6 +1539,15 @@ function initializeExamState(state, onlineConfig) {
     const assigned = String(state.assignedVersion || 'A').toUpperCase();
     const snapshot = snapshots.find(item => String(item && item.version || 'A').toUpperCase() === assigned)
         || snapshots[0];
+
+    // Sorteio por aluno (P3-S11, D24): as questões desta tentativa saem do pool da aplicação
+    // pela semente guardada nela (utils/examDraw.js); a mesma semente dá o mesmo sorteio.
+    const drawApplication = state.applicationId
+        ? (db.memory.examApplications || []).find(item => item && item.id === state.applicationId) || null
+        : null;
+    if (drawApplication && isPerStudentDraw(drawApplication) && ensureAttemptDraw(state, drawApplication, snapshot)) {
+        changed = true;
+    }
 
     if (!Array.isArray(state.assignedQuestionNumbers) && snapshot && Array.isArray(snapshot.questions)) {
         state.assignedQuestionNumbers = snapshot.questions

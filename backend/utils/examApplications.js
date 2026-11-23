@@ -139,6 +139,9 @@ function createExamApplication({
         finalidade: normalizeFinalidade(config.finalidade),
         participants: Array.isArray(config.participants) ? [...config.participants] : null,
         studentOverrides: clone(config.studentOverrides && typeof config.studentOverrides === 'object' ? config.studentOverrides : {}),
+        // Como montar (P3-S11, D24): sem o campo, versões (como sempre foi); com
+        // { modo: 'por_aluno', grupos, total } cada tentativa sorteia as suas (utils/examDraw.js).
+        ...(config.sorteio && config.sorteio.modo === 'por_aluno' ? { sorteio: clone(config.sorteio) } : {}),
         createdAt: timestamp,
         preparedAt: timestamp,
         startedAt: normalizedStatus === 'running' ? timestamp : null,

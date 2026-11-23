@@ -11,6 +11,7 @@ import { matchesSearch } from '../../lib/textSearch'
 import { displayEmail, isPlaceholderEmail } from '../../lib/studentProfile'
 import { DEFAULT_KEYSTROKE_MODE, KEYSTROKE_MODE_OPTIONS, keystrokeModeDescription } from '../../lib/keystrokeModes'
 import { ApplicationScheduleFields } from './ApplicationSchedule'
+import { ApplicationDrawFields, initialDraw, isPerStudent, useDrawPool } from './ApplicationDraw'
 
 // Preparar a aplicação da prova (fase 3, P3-S7: AVA-09; D15, D16 e D17 do desenho do P3).
 // Extraído da tela Provas: os campos da aplicação ("Aplicar prova novamente") e o "Para
@@ -459,8 +460,24 @@ export function SessionPolicySelect({ value, onChange }) {
 // de espera, cronômetro, tentativas, teclado, token, o "Para quem" e o "Quando" (P3-S12).
 // value/onChange: o estado applyHistory da tela; tokenTools: { normalize, generate } do
 // token; studentClass e courseId: a turma (os avisos do "Quando").
-export function PrepareApplicationForm({ value, onChange, candidates, tokenTools, studentClass, courseId }) {
+export function PrepareApplicationForm({ value, onChange, candidates, tokenTools, studentClass, courseId, examKey }) {
   const set = (patch) => onChange({ ...value, ...patch })
+  // "Como montar" (P3-S11, D24): versões da configuração salva ou sorteio por aluno sobre
+  // as questões dela. O pool só é lido no modo sorteio.
+  const draw = value.draw || initialDraw()
+  const perStudent = isPerStudent(draw)
+  const drawPool = useDrawPool({ studentClass, courseId, examKey, historyId: value.entry?.id, enabled: perStudent && !!examKey })
+  const versionsField = (
+    <Input
+      label="Versões online"
+      type="number"
+      min="1"
+      max={value.availableVersions}
+      value={value.onlineVersions}
+      helper={value.availableVersions === 1 ? 'A configuração salva tem 1 versão.' : `A configuração salva tem ${value.availableVersions} versões (máx. 4).`}
+      onChange={(e) => set({ onlineVersions: Math.max(1, Math.min(value.availableVersions, Number(e.target.value) || 1)) })}
+    />
+  )
   return (
     <div className="space-y-4">
       <div className="rounded-lg border border-border bg-surface-2/60 p-3">
@@ -471,8 +488,17 @@ export function PrepareApplicationForm({ value, onChange, candidates, tokenTools
         </div>
       </div>
 
+      <div className="rounded-lg border border-border p-3">
+        <ApplicationDrawFields
+          value={draw}
+          onChange={(next) => set({ draw: next })}
+          pool={drawPool}
+          poolSize={value.entry?.questionCount || value.entry?.questionNumbers?.length || null}
+          versionsField={versionsField}
+        />
+      </div>
+
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <Input label="Versões online" type="number" min="1" max={value.availableVersions} value={value.onlineVersions} onChange={(e) => set({ onlineVersions: Math.max(1, Math.min(value.availableVersions, Number(e.target.value) || 1)) })} />
         <Input label="Duração (min)" type="number" min="1" value={value.durationMinutes} onChange={(e) => set({ durationMinutes: e.target.value })} />
         <Input label="Sala de espera (min)" type="number" min="0" value={value.waitingRoomMinutes} helper="Padrão: 10 minutos" onChange={(e) => set({ waitingRoomMinutes: e.target.value })} />
         <Select label="Início do cronômetro" value={value.timerMode} onChange={(e) => set({ timerMode: e.target.value })}>

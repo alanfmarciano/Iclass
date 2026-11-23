@@ -37,6 +37,7 @@ import {
   useParticipantCandidates,
 } from './PrepareApplicationForm'
 import { ApplicationScheduleFields, initialSchedule, schedulePayload, scheduleProblem } from './ApplicationSchedule'
+import { ApplicationDrawFields, drawPayload, drawProblem, initialDraw, isPerStudent, useDrawPool } from './ApplicationDraw'
 import '../../styles/provas-board.css'
 import {
   ONLINE_VERSIONS_MAX,
@@ -193,6 +194,8 @@ export default function ProvasPage() {
   const [audience, setAudience] = useState(initialAudience)
   // "Quando" da montagem online (P3-S12): agora (iniciar pelo Monitor) ou agendada.
   const [schedule, setSchedule] = useState(initialSchedule)
+  // "Como montar" (P3-S11, ApplicationDraw.jsx): versões (padrão) ou sorteio por aluno.
+  const [draw, setDraw] = useState(initialDraw)
   const [audienceApplication, setAudienceApplication] = useState(null)
   const [form, setForm] = useState(DEFAULT_FORM)
   const [excluded, setExcluded] = useState([])
@@ -285,18 +288,29 @@ export default function ProvasPage() {
     const ex = new Set(effectiveExcluded.map(Number))
     return normalizedEval.questions.filter((q) => !ex.has(Number(q.originalNumber)))
   }, [normalizedEval, effectiveExcluded])
+  // No sorteio por aluno a montagem é o pool: todas as questões não excluídas.
+  const perStudentDraw = mode === 'online' && isPerStudent(draw)
   const currentVersions = useMemo(() => {
     if (!normalizedEval) return []
     return buildExamVersions(normalizedEval, {
-      questionCount: clampCount(form.questionCount, availableQuestions.length || normalizedEval.questions.length),
+      questionCount: perStudentDraw
+        ? Math.max(1, availableQuestions.length)
+        : clampCount(form.questionCount, availableQuestions.length || normalizedEval.questions.length),
       excludedNumbers: effectiveExcluded,
       shuffleQuestions: form.shuffleQuestions,
       shuffleAnswers: form.shuffleAnswers,
       versionCount: mode === 'online' ? form.onlineVersions : form.printVersions,
       seed: shuffleSeed,
     })
-  }, [normalizedEval, form, effectiveExcluded, availableQuestions.length, mode, shuffleSeed])
+  }, [normalizedEval, form, effectiveExcluded, availableQuestions.length, mode, shuffleSeed, perStudentDraw])
   const previewQuestions = currentVersions[0]?.questions || []
+  // As questões que a configuração online guarda: no sorteio por aluno, todas as que não
+  // foram excluídas (o pool do sorteio); nas versões, as da montagem (Quantidade de questões).
+  const onlineQuestionNumbers = useMemo(() => (perStudentDraw
+    ? availableQuestions.map((q) => Number(q.originalNumber))
+    : (currentVersions[0]?.questions || []).map((q) => Number(q.originalNumber))
+  ).filter(Number.isFinite), [perStudentDraw, availableQuestions, currentVersions])
+  const drawPool = useDrawPool({ studentClass: className, courseId, examKey, numbers: onlineQuestionNumbers, enabled: perStudentDraw && !!examKey && !!className })
 
   async function loadStructure(nextCourseId) {
     if (!nextCourseId) {
@@ -336,7 +350,7 @@ export default function ProvasPage() {
   }
 
   // Outra prova ou turma: o "Para quem" volta para a turma inteira.
-  useEffect(() => { setAudience(initialAudience()); setSchedule(initialSchedule()) }, [examKey, className, courseId])
+  useEffect(() => { setAudience(initialAudience()); setSchedule(initialSchedule()); setDraw(initialDraw()) }, [examKey, className, courseId])
 
   useEffect(() => {
     if (activeCourseId && courseId !== activeCourseId) setCourseId(activeCourseId)
@@ -422,8 +436,13 @@ export default function ProvasPage() {
     setExcluded((list) => include ? list.filter((item) => Number(item) !== n) : [...new Set([...list, n])])
   }
 
-  async function addHistory(type, snapshots, extra = {}) {
-    const questionNumbers = [...new Set(snapshots.flatMap((snapshot) => (snapshot.questions || []).map((q) => Number(q.originalNumber)).filter(Number.isFinite)))]
+  // A impressa manda as versões montadas aqui (para imprimir na hora); o servidor confere
+  // cada questão com a prova. A online manda só os números e quantas versões: o servidor
+  // monta e confere (P3-S11, D23).
+  async function addHistory(type, { snapshots = null, questionNumbers: numbers = null, versionCount = null } = {}, extra = {}) {
+    const questionNumbers = numbers
+      ? [...new Set(numbers.map(Number).filter(Number.isFinite))]
+      : [...new Set((snapshots || []).flatMap((snapshot) => (snapshot.questions || []).map((q) => Number(q.originalNumber)).filter(Number.isFinite)))]
     if (questionNumbers.length === 0) throw new Error('Nenhuma questão selecionada')
     const existingOfType = history.filter((entry) => entry.type === type).length
     return api.post('/api/admin/exam-history/add', {
@@ -433,8 +452,8 @@ export default function ProvasPage() {
       type,
       label: type === 'impressa' ? `Impressa #${existingOfType + 1}` : `Online #${existingOfType + 1}`,
       questionNumbers,
-      examCode: snapshots[0]?.examCode || null,
-      printSnapshot: snapshots,
+      ...(snapshots ? { examCode: snapshots[0]?.examCode || null, printSnapshot: snapshots } : {}),
+      ...(versionCount ? { versionCount } : {}),
       questionCount: questionNumbers.length,
       excludedQuestions: effectiveExcluded,
       shuffleQuestions: form.shuffleQuestions,
@@ -479,9 +498,11 @@ export default function ProvasPage() {
     if (audienceIssue) return toast.error(audienceIssue)
     const scheduleIssue = prepare ? scheduleProblem(schedule) : null
     if (scheduleIssue) return toast.error(scheduleIssue)
+    const drawIssue = prepare && perStudentDraw ? drawProblem(draw, drawPool.data?.questions || null) : null
+    if (drawIssue) return toast.error(drawIssue)
     setBusy(prepare ? 'prepare' : 'saveOnline')
     try {
-      const saved = await addHistory('online', currentVersions, { questionCount: currentVersions[0].count, maxAttempts: parsedMaxAttempts.value })
+      const saved = await addHistory('online', { questionNumbers: onlineQuestionNumbers, versionCount: form.onlineVersions }, { maxAttempts: parsedMaxAttempts.value })
       if (prepare) {
         const prepared = await api.post('/api/admin/exam-applications', {
           studentClass: className,
@@ -501,6 +522,7 @@ export default function ProvasPage() {
             sessionPolicy: form.sessionPolicy || DEFAULT_SESSION_POLICY,
             ...audiencePayload(audience, { timerMode: form.timerMode }),
             ...schedulePayload(schedule),
+            ...(perStudentDraw ? drawPayload(draw) : {}),
           },
         })
         rememberApplicationToken(prepared.application.id, prepared.accessToken, prepared.application.accessTokenIssuedAt)
@@ -526,7 +548,7 @@ export default function ProvasPage() {
     setBusy('print')
     try {
       openPrintWindow({ title: evaluation?.title || examKey, snapshots: currentVersions, includeAnswerKey: true, ...printIdentity() })
-      await addHistory('impressa', currentVersions, { questionCount: currentVersions[0].count })
+      await addHistory('impressa', { snapshots: currentVersions }, { questionCount: currentVersions[0].count })
       toast.success('Prova impressa e gabarito gerados')
       await loadExamState()
     } catch (e) {
@@ -556,6 +578,7 @@ export default function ProvasPage() {
       sessionPolicy: DEFAULT_SESSION_POLICY,
       audience: initialAudience(),
       schedule: initialSchedule(),
+      draw: initialDraw(),
     })
   }
 
@@ -568,6 +591,8 @@ export default function ProvasPage() {
     if (audienceIssue) return toast.error(audienceIssue)
     const scheduleIssue = scheduleProblem(applyHistory.schedule)
     if (scheduleIssue) return toast.error(scheduleIssue)
+    const drawIssue = drawProblem(applyHistory.draw, null)
+    if (drawIssue) return toast.error(drawIssue)
     const durationMinutes = Math.max(1, Number(applyHistory.durationMinutes) || 60)
     const waitingRoomMinutes = parseWaitingRoomInput(applyHistory.waitingRoomMinutes)
     setBusy('applyHistory')
@@ -590,6 +615,7 @@ export default function ProvasPage() {
           sessionPolicy: applyHistory.sessionPolicy || DEFAULT_SESSION_POLICY,
           ...audiencePayload(applyHistory.audience, { timerMode: applyHistory.timerMode }),
           ...schedulePayload(applyHistory.schedule),
+          ...drawPayload(applyHistory.draw),
         },
       })
       rememberApplicationToken(prepared.application.id, prepared.accessToken, prepared.application.accessTokenIssuedAt)
@@ -1025,10 +1051,20 @@ export default function ProvasPage() {
                           <p className="text-xs text-muted">Quantidade, tempo e embaralhamento</p>
                         </div>
                       </div>
-                      <Input label="Quantidade de questões" type="number" min="1" max={availableQuestions.length || 1} value={form.questionCount} onChange={(e) => setForm({ ...form, questionCount: e.target.value })} helper={`${availableQuestions.length} disponíveis`} />
+                      {mode === 'online' && (
+                        <ApplicationDrawFields
+                          value={draw}
+                          onChange={setDraw}
+                          pool={drawPool}
+                          poolSize={availableQuestions.length}
+                          versionsField={<Input label="Versões online" type="number" min="1" max={ONLINE_VERSIONS_MAX} value={form.onlineVersions} onChange={(e) => setForm({ ...form, onlineVersions: Math.max(1, Math.min(ONLINE_VERSIONS_MAX, Number(e.target.value) || 1)) })} helper={perStudentDraw ? `Máx. ${ONLINE_VERSIONS_MAX}. No sorteio, a versão muda a ordem das alternativas.` : `Máx. ${ONLINE_VERSIONS_MAX}.`} />}
+                        />
+                      )}
+                      {perStudentDraw
+                        ? <p className="text-xs text-subtle">O sorteio usa as {availableQuestions.length} questões não excluídas da prova. Use “Remover” na prévia para tirar as que não devem entrar.</p>
+                        : <Input label="Quantidade de questões" type="number" min="1" max={availableQuestions.length || 1} value={form.questionCount} onChange={(e) => setForm({ ...form, questionCount: e.target.value })} helper={`${availableQuestions.length} disponíveis`} />}
                       {mode === 'online' ? (
                         <div className="grid grid-cols-2 gap-3">
-                          <Input label="Versões online" type="number" min="1" max={ONLINE_VERSIONS_MAX} value={form.onlineVersions} onChange={(e) => setForm({ ...form, onlineVersions: Math.max(1, Math.min(ONLINE_VERSIONS_MAX, Number(e.target.value) || 1)) })} helper={`Máx. ${ONLINE_VERSIONS_MAX}.`} />
                           <Input label="Duração (min)" type="number" min="1" value={form.durationMinutes} onChange={(e) => setForm({ ...form, durationMinutes: e.target.value })} />
                           <Input label="Sala de espera (min)" type="number" min="0" value={form.waitingRoomMinutes} onChange={(e) => setForm({ ...form, waitingRoomMinutes: e.target.value })} helper="Padrão: 10 minutos." />
                           <Select label="Início do cronômetro" value={form.timerMode} onChange={(e) => setForm({ ...form, timerMode: e.target.value })}>
@@ -1164,7 +1200,7 @@ export default function ProvasPage() {
                   </div>
 
                   <Card>
-                    <CardHeader title="Prévia da prova" subtitle={`Versão ${currentVersions[0]?.version || 'A'} - ${selectedCount} questões`} action={<Button size="sm" variant="secondary" icon={RefreshCw} onClick={() => loadExamState()}>Atualizar</Button>} />
+                    <CardHeader title="Prévia da prova" subtitle={mode !== 'online' ? `Versão ${currentVersions[0]?.version || 'A'} - ${selectedCount} questões` : (perStudentDraw ? `Questões do sorteio - ${selectedCount} questões` : `${selectedCount} questões - a ordem de cada versão sai do servidor ao salvar`)} action={<Button size="sm" variant="secondary" icon={RefreshCw} onClick={() => loadExamState()}>Atualizar</Button>} />
                     <CardBody className="space-y-3">
                       {previewQuestions.map((q, index) => {
                         const usages = usage[q.originalNumber] || []
@@ -1320,6 +1356,7 @@ export default function ProvasPage() {
             onChange={setApplyHistory}
             studentClass={className}
             courseId={courseId}
+            examKey={examKey}
             candidates={historyCandidates}
             tokenTools={{ normalize: normalizeTokenInput, generate: generateExamToken }}
           />

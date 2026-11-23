@@ -1,5 +1,9 @@
 const express = require('express');
 const crypto = require('crypto');
+const fs = require('fs');
+const path = require('path');
+const runtimePaths = require('../runtimePaths.js');
+const { parseEvaluationMarkdown } = require('../utils/parser.js');
 const db = require('../database.js');
 const { ensureExamToken, hashExamToken, normalizeExamToken, sealExamToken, unsealExamToken, withoutSealedToken } = require('../utils/examToken.js');
 const { normalizeMaxAttempts, parseMaxAttempts } = require('../utils/examAttempts.js');
@@ -7,7 +11,6 @@ const { keystrokeModeOf, normalizeKeystrokeMode, parseKeystrokeModeOption, withK
 const { SESSION_POLICIES, normalizeSessionPolicy, withSessionTrail } = require('../utils/examSessionIntegrity.js');
 const {
     attemptQuestion,
-    freezeSnapshotGrading,
     questionNumber,
     regradeSubmission,
     snapshotForAttempt,
@@ -69,6 +72,10 @@ const {
     participantCandidates,
 } = require('../utils/examParticipants.js');
 const { isInheritedKey } = require('../utils/ownEntry.js');
+// Versões montadas e conferidas no servidor e sorteio por aluno (P3-S11: AVA-16; D23 e
+// D24 do desenho do P3).
+const examVersions = require('../utils/examVersions.js');
+const examDraw = require('../utils/examDraw.js');
 // Agendamento de prova e de material (P3-S12: AVA-20, UXI-17; D25 a D27). A varredura que
 // abre, fecha e libera roda no timer do servidor (server.js); aqui ficam as rotas.
 const examSchedule = require('../utils/examSchedule.js');
@@ -105,7 +112,7 @@ const {
     questionWithoutAnswerKey,
 } = require('../utils/examAnswerKeyView.js');
 
-const VERSION_LABELS = ['A', 'B', 'C', 'D'];
+const VERSION_LABELS = examVersions.ONLINE_VERSION_LABELS;
 const DEFAULT_ONLINE_DURATION_MINUTES = 60;
 const DEFAULT_WAITING_ROOM_MINUTES = 10;
 const DEFAULT_MAX_ATTEMPTS = 1;
@@ -178,6 +185,21 @@ function buildPreparedOnlineExamConfig(historyEntry, previousConfig = {}, applic
         preparedAt: updatedAt,
         updatedAt,
     };
+}
+
+// A avaliação da prova (sem herdar de Object.prototype): a gravada ou, na prova antiga só
+// em .md (content/<prova>.md, sem entrada em evaluations), a lida do arquivo, como na
+// entrega do aluno (student.js). Só lê; null quando não há nenhuma.
+function evaluationFor(examKey) {
+    const evaluations = db.memory.evaluations || {};
+    if (Object.prototype.hasOwnProperty.call(evaluations, examKey)) return evaluations[examKey];
+    if (!/^[A-Za-z0-9_-]+$/.test(String(examKey || ''))) return null;
+    try {
+        const parsed = parseEvaluationMarkdown(fs.readFileSync(path.join(runtimePaths.CONTENT_DIR, `${examKey}.md`), 'utf8'), examKey);
+        return parsed && Array.isArray(parsed.questions) && parsed.questions.length ? parsed : null;
+    } catch (_) {
+        return null;
+    }
 }
 
 async function persistClasses(classes) {
@@ -267,11 +289,17 @@ function openExamFamilyApplication(cls, examKey) {
     }).find(application => family.has(String(application.examKey || ''))) || null;
 }
 
-function prepareApplicationFromHistory(cls, examKey, historyEntry, applicationOptions, req, audience = null) {
+function prepareApplicationFromHistory(cls, examKey, historyEntry, applicationOptions, req, audience = null, draw = null) {
     const options = applicationOptions || {};
     const preparedConfig = buildPreparedOnlineExamConfig(historyEntry, cls.onlineExamConfigs?.[examKey] || {}, options);
     // Para quem (P3-S7): já conferido pela rota (parseApplicationAudience).
     if (audience) Object.assign(preparedConfig, audience);
+    // Sorteio por aluno (P3-S11, D24): já conferido pela rota (examDraw.parseDrawInput). Cada
+    // aluno recebe draw.total questões (o Monitor conta "respondidas de N" por ele).
+    if (draw) {
+        preparedConfig.sorteio = draw;
+        preparedConfig.questionCount = draw.total;
+    }
     const rawToken = preparedConfig.accessToken;
     preparedConfig.accessTokenHash = hashExamToken(rawToken);
     preparedConfig.tokenEnabled = !!preparedConfig.accessTokenHash;
@@ -375,6 +403,20 @@ const PREPARE_AUDIENCE_SCHEMA = body({
         // "Quando" (P3-S12, D25): sem agenda (ausente ou null) a aplicação fica preparada
         // esperando o "Iniciar" do Monitor, como sempre.
         agenda: shape(SCHEDULE_INPUT_FIELDS, { nullable: true, label: 'agendamento' }),
+        // "Como montar" (P3-S11, D24): versões (padrão) ou sorteio por aluno. O tipo e o
+        // tamanho de cada campo aqui; os grupos contra a montagem em examDraw.parseDrawInput.
+        sorteio: shape({
+            modo: oneOf(examDraw.DRAW_MODES, { nullable: true, label: 'como montar' }),
+            grupos: list(shape({
+                filtro: shape({
+                    origem: str({ max: 20, nullable: true, label: 'origem' }),
+                    categoria: str({ max: 80, nullable: true, label: 'categoria' }),
+                    dificuldade: str({ max: 20, nullable: true, label: 'dificuldade' }),
+                    tag: str({ max: 40, nullable: true, label: 'etiqueta' }),
+                }, { nullable: true, label: 'filtro do grupo' }),
+                quantidade: int({ coerce: true, label: 'quantidade do grupo' }),
+            }, { label: 'grupo do sorteio' }), { max: examDraw.MAX_DRAW_GROUPS, nullable: true, label: 'grupos do sorteio' }),
+        }, { nullable: true, label: 'como montar' }),
     }, { nullable: true, label: 'opções da aplicação' }),
 });
 const PARTICIPANTS_SCHEMA = body(AUDIENCE_INPUT_FIELDS);
@@ -786,9 +828,12 @@ function revealApplicationToken(application) {
 
 // A aplicação para o painel: sem o token selado e, com agenda, agendaView (a situação e
 // os horários no relógio da escola: "Abre sozinha às 08:00", "Fecha sozinha às 09:30").
+// No sorteio por aluno (P3-S11), sorteioView: os grupos em palavras.
 function withAgendaView(view, application) {
-    const agendaView = view ? examSchedule.scheduleView(application) : null;
-    return agendaView ? { ...view, agendaView } : view;
+    if (!view) return view;
+    const agendaView = examSchedule.scheduleView(application);
+    const withAgenda = agendaView ? { ...view, agendaView } : view;
+    return examDraw.isPerStudentDraw(application) ? { ...withAgenda, sorteioView: examDraw.drawSummary(application) } : withAgenda;
 }
 
 function adminApplicationView(application) {
@@ -1039,6 +1084,51 @@ function createAdminExamConfigRouter() {
         });
     });
 
+    // Questões que o sorteio por aluno pode usar (P3-S11, D24): as da configuração salva
+    // (historyId) ou as escolhidas na montagem (numbers=1,2,3), com o que o filtro dos grupos
+    // olha (origem, categoria do banco, dificuldade e etiquetas). A tela conta quantas cabem
+    // em cada grupo; quem confere de verdade é a preparação (parseDrawInput). Só leitura.
+    router.get('/api/admin/exam-applications/draw-pool', (req, res) => {
+        validateAdmin(req, res, (config, matchedAdmin) => {
+            const cls = findClassByNameAndCourse(db.memory.classes || [], String(req.query.studentClass || '').trim(), req.query.courseId);
+            if (!cls) return res.status(404).json({ error: 'Turma não encontrada.' });
+            if (!adminCanAccessClass(matchedAdmin, cls.name, cls.courseId)) {
+                return res.status(403).json({ error: 'A turma não está atribuída a esta conta.' });
+            }
+            const examKey = String(req.query.examKey || '').trim();
+            if (!examKey || !isCourseExamKey(cls, examKey)) return res.status(400).json({ error: 'Avaliação não pertence ao curso da turma.' });
+            const evaluation = evaluationFor(examKey);
+            const historyId = String(req.query.historyId || '').trim();
+            let snapshots;
+            if (historyId) {
+                const entry = findOnlineHistoryEntry(cls, examKey, historyId);
+                if (!entry) return res.status(404).json({ error: 'Configuração salva não encontrada ou sem questões.' });
+                snapshots = getHistoryVersionSnapshots(entry);
+            } else {
+                const wanted = String(req.query.numbers || '').split(',').map(item => Number(item.trim())).filter(Number.isInteger);
+                const evaluationQuestions = Array.isArray(evaluation?.questions) ? evaluation.questions : [];
+                const chosen = wanted.length ? new Set(wanted) : null;
+                snapshots = [{ questions: evaluationQuestions.filter((question, index) => !chosen || chosen.has(questionNumber(question, index))) }];
+            }
+            const pool = examDraw.drawPool(snapshots, evaluation, db.memory);
+            const distinct = values => {
+                const seen = new Map();
+                values.forEach(value => {
+                    const key = String(value || '').trim();
+                    if (key && !seen.has(key.toLowerCase())) seen.set(key.toLowerCase(), key);
+                });
+                return [...seen.values()].sort(compareText);
+            };
+            res.set('Cache-Control', 'no-store');
+            res.json({
+                success: true,
+                questions: pool,
+                categorias: distinct(pool.map(item => item.categoria)),
+                etiquetas: distinct(pool.flatMap(item => item.tags)),
+            });
+        });
+    });
+
     router.get('/api/admin/exam-applications/participant-candidates', (req, res) => {
         validateAdmin(req, res, (config, matchedAdmin) => {
             const studentClass = String(req.query.studentClass || '').trim();
@@ -1252,6 +1342,20 @@ function createAdminExamConfigRouter() {
             const historyEntry = findOnlineHistoryEntry(cls, examKey, historyId);
             if (!historyEntry) return res.status(400).json({ error: 'Configuração salva não encontrada ou sem questões.' });
             const options = req.body.applicationOptions || {};
+            // Versões online: no máximo 4 (A a D); antes o servidor cortava sem avisar (AVA-16).
+            if (Number(options.onlineVersions) > examVersions.ONLINE_VERSIONS_MAX) {
+                return res.status(400).json({ success: false, error: examVersions.ONLINE_VERSIONS_ERROR, field: 'applicationOptions.onlineVersions', code: 'too_many_versions' });
+            }
+            // Configuração salva antes da conferência do gabarito (D23): a resposta certa de
+            // cada questão precisa ser a da prova de hoje.
+            const answerKeyProblem = examVersions.preparationAnswerKeyProblem(historyEntry, evaluationFor(examKey));
+            if (answerKeyProblem) return res.status(409).json({ success: false, ...answerKeyProblem });
+            // Como montar (D24): versões (padrão) ou sorteio por aluno sobre as questões da
+            // configuração salva.
+            const draw = examDraw.parseDrawInput(options.sorteio, {
+                pool: examDraw.drawPool(getHistoryVersionSnapshots(historyEntry), evaluationFor(examKey), db.memory),
+            });
+            if (!draw.ok) return res.status(400).json({ success: false, error: draw.error, field: `applicationOptions.${draw.field}` });
             if (options.tokenEnabled === true && !normalizeExamToken(options.accessToken)) {
                 return res.status(400).json({ error: 'O token deve conter exatamente 5 letras maiúsculas.' });
             }
@@ -1288,7 +1392,15 @@ function createAdminExamConfigRouter() {
             }
             if (!cls.onlineExamConfigs) cls.onlineExamConfigs = {};
             if (!cls.releasedItems) cls.releasedItems = {};
-            const prepared = prepareApplicationFromHistory(cls, examKey, historyEntry, options, req, audience.value);
+            const prepared = prepareApplicationFromHistory(cls, examKey, historyEntry, options, req, audience.value, draw.value);
+            // Sorteio por aluno (D24): os grupos em palavras e quantas questões cada um tinha.
+            if (draw.value) {
+                const summary = examDraw.drawSummary(prepared.application);
+                recordExamAudit('exam_application_draw_set', prepared.application, adminActor(req), {
+                    total: summary.total,
+                    grupos: summary.grupos.map(group => ({ descricao: group.descricao, quantidade: group.quantidade, disponiveis: group.disponiveis })),
+                });
+            }
             let avisos = [];
             if (schedule) {
                 prepared.application.agenda = examSchedule.createAgenda(schedule, { actor: adminActor(req) });
@@ -1964,12 +2076,24 @@ function createAdminExamConfigRouter() {
                         at: new Date().toISOString(),
                     });
                 }
+                const perStudentDraw = examDraw.isPerStudentDraw(application);
                 applicationStateEntries(application.id).forEach(([, state]) => {
-                    if (!Array.isArray(state.assignedQuestionNumbers)) state.assignedQuestionNumbers = [];
-                    if (!state.assignedQuestionNumbers.includes(replacementNumber)) state.assignedQuestionNumbers.push(replacementNumber);
+                    // Sorteio por aluno (P3-S11): a questão nova vai só para quem tirou a trocada;
+                    // a tentativa ainda sem sorteio recebe a nova quando sortear.
+                    if (perStudentDraw) {
+                        if (Array.isArray(state.assignedQuestionNumbers)
+                            && state.assignedQuestionNumbers.map(Number).includes(originalNumber)
+                            && !state.assignedQuestionNumbers.map(Number).includes(replacementNumber)) {
+                            state.assignedQuestionNumbers.push(replacementNumber);
+                        }
+                    } else {
+                        if (!Array.isArray(state.assignedQuestionNumbers)) state.assignedQuestionNumbers = [];
+                        if (!state.assignedQuestionNumbers.includes(replacementNumber)) state.assignedQuestionNumbers.push(replacementNumber);
+                    }
                     if (extraMinutes > 0 && Number(state.deadlineAt) > 0) state.deadlineAt += extraMinutes * 60000;
                 });
-                application.questionCount = Number(application.questionCount || 0) + 1;
+                // No sorteio por aluno o total é por tentativa (quem tirou a trocada ganha uma).
+                if (!perStudentDraw) application.questionCount = Number(application.questionCount || 0) + 1;
                 application.globalTimeAdjustment = Number(application.globalTimeAdjustment || 0) + extraMinutes;
                 application.updatedAt = new Date().toISOString();
                 markQuestionReports(application, originalNumber, 'replaced', adminActor(req));
@@ -2399,6 +2523,8 @@ function createAdminExamConfigRouter() {
                         if (!historyEntry) {
                             return res.status(400).json({ error: 'Nenhuma aplicação salva com questões foi encontrada para preparar esta prova.' });
                         }
+                        const answerKeyProblem = examVersions.preparationAnswerKeyProblem(historyEntry, evaluationFor(itemKey));
+                        if (answerKeyProblem) return res.status(409).json({ success: false, ...answerKeyProblem });
                         if (applicationOptions?.tokenEnabled === true && !normalizeExamToken(applicationOptions.accessToken)) {
                             return res.status(400).json({ error: 'O token deve conter exatamente 5 letras maiúsculas.' });
                         }
@@ -2517,22 +2643,61 @@ function createAdminExamConfigRouter() {
             if (!cls.examHistory) cls.examHistory = {};
             if (!cls.examHistory[examKey]) cls.examHistory[examKey] = [];
             const parsedWaitingRoom = parseInt(waitingRoomMinutes, 10);
+            const entryType = type || 'online';
+            const evaluation = evaluationFor(examKey);
+            // Versões montadas e conferidas no servidor (P3-S11, D23). Online sem as versões no
+            // pedido: o servidor monta, pela avaliação, as questões escolhidas na montagem
+            // (versionCount de 1 a 4). Com as versões no pedido (a prova impressa, montada no
+            // navegador para imprimir na hora, ou um cliente de antes): cada questão é
+            // conferida com a avaliação e a resposta certa e o gabarito impresso passam a ser
+            // os calculados aqui; diferença é recusada (400 snapshot_mismatch).
+            let snapshots = null;
+            let builtOnServer = false;
+            const versionLimit = entryType === 'online' ? examVersions.ONLINE_VERSIONS_MAX : examVersions.PRINT_VERSIONS_MAX;
+            if (Array.isArray(printSnapshot) && printSnapshot.length > versionLimit) {
+                return res.status(400).json({
+                    success: false,
+                    error: entryType === 'online' ? examVersions.ONLINE_VERSIONS_ERROR : `No máximo ${versionLimit} versões impressas.`,
+                    code: 'too_many_versions',
+                    field: 'printSnapshot',
+                });
+            }
+            if (entryType === 'online' && !Array.isArray(printSnapshot)) {
+                const built = examVersions.buildOnlineVersions(evaluation, {
+                    questionNumbers,
+                    versionCount: req.body.versionCount ?? req.body.onlineVersions ?? 1,
+                    shuffleQuestions: shuffleQuestions !== false,
+                    shuffleAnswers: shuffleAnswers !== false,
+                });
+                if (!built.ok) return res.status(400).json({ success: false, error: built.error, field: built.field, ...(built.code ? { code: built.code } : {}) });
+                snapshots = built.versions;
+                builtOnServer = true;
+            } else if (Array.isArray(printSnapshot) && evaluation) {
+                const checked = examVersions.conferVersionSnapshots(printSnapshot, evaluation, { maxVersions: versionLimit });
+                if (!checked.ok) return res.status(400).json({ success: false, error: checked.error, code: checked.code, field: checked.field || 'printSnapshot', ...(checked.problems ? { problems: checked.problems } : {}) });
+                snapshots = checked.snapshots;
+            }
             const entry = {
                 id: 'eh_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
-                type: type || 'online',
+                type: entryType,
                 label: label || null,
-                questionNumbers: questionNumbers.map(Number),
-                examCode: examCode || null,
-                printSnapshot: printSnapshot || null,
+                questionNumbers: snapshots
+                    ? [...new Set(snapshots.flatMap(snapshot => snapshot.questions.map((question, index) => questionNumber(question, index))))]
+                    : questionNumbers.map(Number),
+                examCode: (builtOnServer ? snapshots[0]?.examCode : examCode) || null,
+                printSnapshot: snapshots || printSnapshot || null,
                 // Tipo, pontos e gabarito de cada questão como estão na avaliação agora: a
                 // aplicação corrige por eles daqui em diante, mesmo que a avaliação mude.
-                versionSnapshots: Array.isArray(printSnapshot)
-                    ? freezeSnapshotGrading(
-                        printSnapshot.slice(0, VERSION_LABELS.length).map((snapshot, index) => ({ version: VERSION_LABELS[index], ...snapshot })),
-                        Object.prototype.hasOwnProperty.call(db.memory.evaluations || {}, examKey) ? db.memory.evaluations[examKey] : null
-                    )
-                    : [],
-                questionCount: parseInt(questionCount, 10) || questionNumbers.length,
+                // Sem avaliação nenhuma (nem gravada nem em .md) não há o que conferir: as
+                // versões ficam como vieram, como antes (e sem gabaritoConferidoEm).
+                versionSnapshots: snapshots
+                    ? examVersions.frozenVersionSnapshots(snapshots, evaluation)
+                    : (Array.isArray(printSnapshot) ? examVersions.frozenVersionSnapshots(printSnapshot, null) : []),
+                // O gabarito desta configuração foi calculado (online) ou conferido (impressa)
+                // pelo servidor: preparar por ela não confere de novo (D23).
+                ...(snapshots ? { gabaritoConferidoEm: new Date().toISOString() } : {}),
+                ...(builtOnServer ? { montadaNoServidor: true, versionCount: snapshots.length } : {}),
+                questionCount: builtOnServer ? snapshots[0].questions.length : (parseInt(questionCount, 10) || questionNumbers.length),
                 excludedQuestions: Array.isArray(excludedQuestions) ? excludedQuestions.map(Number) : [],
                 shuffleQuestions: shuffleQuestions !== false,
                 shuffleAnswers: shuffleAnswers !== false,

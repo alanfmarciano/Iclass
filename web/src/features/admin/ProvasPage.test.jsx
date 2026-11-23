@@ -353,3 +353,95 @@ describe('[UC-PROVA-005] ProvasPage do professor · gabarito corrigido depois da
     expect(screen.queryByRole('button', { name: 'Corrigir gabarito' })).not.toBeInTheDocument()
   })
 })
+
+// Fase 3, P3-S11 (AVA-16; D23 e D24): a versão online é montada e conferida no servidor (a
+// tela manda os números e quantas versões, nunca o gabarito); a impressa continua montada
+// aqui. "Como montar": versões (máx. 4) ou sorteio por aluno, com os grupos.
+describe('[UC-PROVA-007] ProvasPage do professor · como montar', () => {
+  function mockPrepare() {
+    mocks.post.mockImplementation(async (url) => {
+      if (url === '/api/admin/exam-history/add') return { success: true, entry: { id: 'eh_1' } }
+      if (url === '/api/admin/exam-applications') return { success: true, application: { id: 'app_1' } }
+      return { success: true }
+    })
+  }
+
+  it('preparar a online manda os números e quantas versões, sem as versões montadas no navegador', async () => {
+    await openTypedExam()
+    mockPrepare()
+    expect(screen.getByRole('radio', { name: 'Versões (máx. 4)' })).toHaveAttribute('aria-checked', 'true')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Preparar e abrir monitor' })) })
+    await waitFor(() => expect(posts('/api/admin/exam-applications')).toHaveLength(1))
+    const [[, history]] = posts('/api/admin/exam-history/add')
+    expect(history.printSnapshot).toBeUndefined()
+    expect(history.examCode).toBeUndefined()
+    expect(history.versionCount).toBe(4)
+    expect([...history.questionNumbers].sort()).toEqual([1, 2])
+    const [[, prepared]] = posts('/api/admin/exam-applications')
+    expect(prepared.historyId).toBe('eh_1')
+    expect(prepared.applicationOptions.sorteio).toBeUndefined()
+  })
+
+  it('a impressa continua mandando as versões montadas aqui (o servidor confere)', async () => {
+    const win = { document: { write: vi.fn(), close: vi.fn() }, print: vi.fn() }
+    const open = vi.spyOn(window, 'open').mockReturnValue(win)
+    try {
+      await openTypedExam()
+      fireEvent.click(screen.getByRole('button', { name: 'Impressa' }))
+      expect(screen.queryByRole('radiogroup', { name: 'Como montar' })).toBeNull()
+      await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Gerar prova + gabarito' })) })
+      const [[, history]] = posts('/api/admin/exam-history/add')
+      expect(history.type).toBe('impressa')
+      expect(history.printSnapshot.length).toBeGreaterThanOrEqual(1)
+      expect(history.printSnapshot[0].version).toBe('A')
+      expect(Object.values(history.printSnapshot[0].answerKey)).toHaveLength(1)
+      expect(history.printSnapshot[0].questions.map((q) => q.originalNumber).sort()).toEqual([1, 2])
+    } finally {
+      open.mockRestore()
+    }
+  })
+
+  it('sorteio por aluno: conta as questões de cada grupo, avisa o grupo maior que a montagem e manda os grupos ao preparar', async () => {
+    await openTypedExam()
+    const baseGet = mocks.get.getMockImplementation()
+    mocks.get.mockImplementation(async (url) => {
+      if (url.startsWith('/api/admin/exam-applications/draw-pool')) {
+        return { questions: [
+          { number: 1, origem: 'avaliacao', categoria: '', dificuldade: 'facil', tags: ['redes'] },
+          { number: 2, origem: 'banco', categoria: 'Protocolos', dificuldade: 'dificil', tags: [] },
+        ], categorias: ['Protocolos'], etiquetas: ['redes'] }
+      }
+      return baseGet(url)
+    })
+    mockPrepare()
+    fireEvent.click(screen.getByRole('radio', { name: 'Sorteio por aluno' }))
+    expect(screen.getByRole('radio', { name: 'Sorteio por aluno' })).toHaveAttribute('aria-checked', 'true')
+    await waitFor(() => expect(mocks.get.mock.calls.some(([url]) => url.startsWith('/api/admin/exam-applications/draw-pool') && url.includes('numbers=1%2C2'))).toBe(true))
+    expect(screen.queryByLabelText('Quantidade de questões')).toBeNull()
+    expect(await screen.findByText('2 questões combinam com o filtro.')).toBeInTheDocument()
+
+    const group = screen.getByRole('group', { name: 'Grupo 1' })
+    fireEvent.change(within(group).getByLabelText('Dificuldade'), { target: { value: 'dificil' } })
+    expect(within(group).getByText('1 questão combina com o filtro.')).toBeInTheDocument()
+    fireEvent.change(within(group).getByLabelText('Quantidade'), { target: { value: '2' } })
+    expect(screen.getByTestId('draw-problem')).toHaveTextContent('Grupo 1: pediu 2 questões difíceis, mas a montagem só tem 1.')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Preparar e abrir monitor' })) })
+    expect(posts('/api/admin/exam-history/add')).toHaveLength(0)
+    expect(mocks.toast.error).toHaveBeenCalledWith('Grupo 1: pediu 2 questões difíceis, mas a montagem só tem 1.')
+
+    fireEvent.change(within(group).getByLabelText('Quantidade'), { target: { value: '1' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Adicionar grupo' }))
+    const second = screen.getByRole('group', { name: 'Grupo 2' })
+    fireEvent.change(within(second).getByLabelText('Etiqueta'), { target: { value: 'REDES' } })
+    fireEvent.change(within(second).getByLabelText('Quantidade'), { target: { value: '1' } })
+    expect(screen.getByTestId('draw-summary')).toHaveTextContent('Cada aluno recebe 2 de 2 questões, sorteadas ao começar a prova.')
+    await act(async () => { fireEvent.click(screen.getByRole('button', { name: 'Preparar e abrir monitor' })) })
+    await waitFor(() => expect(posts('/api/admin/exam-applications')).toHaveLength(1))
+    const [[, history]] = posts('/api/admin/exam-history/add')
+    expect([...history.questionNumbers].sort()).toEqual([1, 2])
+    expect(posts('/api/admin/exam-applications')[0][1].applicationOptions.sorteio).toEqual({
+      modo: 'por_aluno',
+      grupos: [{ filtro: { dificuldade: 'dificil' }, quantidade: 1 }, { filtro: { tag: 'REDES' }, quantidade: 1 }],
+    })
+  })
+})

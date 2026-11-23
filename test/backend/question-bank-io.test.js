@@ -448,8 +448,18 @@ test('[UC-BANCO-001] exam-history/add não aceita chave do banco vinda do navega
     questions[0].sourceBankKey = outsider.key;
     questions[1] = { ...questions[1], sourceBankKey: outsider.key };
     delete questions[1].bankKey;
-    // Questão que não existe na avaliação, com bankKey e sourceBankKey.
+    // Questão que não existe na avaliação, com bankKey e sourceBankKey: desde o P3-S11 a
+    // montagem inteira é recusada (D23: cada questão é conferida com a avaliação).
     questions.push({ originalNumber: 9, examNumber: 3, text: 'Inventada', questionText: 'Inventada', alternatives: [], bankKey: outsider.key, sourceBankKey: outsider.key });
+    for (const type of ['impressa', 'online']) {
+        const refused = await asAdmin('post', '/api/admin/exam-history/add').send({
+            studentClass, courseId, examKey, type, label: type, questionNumbers: [1, 2, 9], printSnapshot,
+        });
+        assert.equal(refused.status, 400, JSON.stringify(refused.body));
+        assert.equal(refused.body.code, 'snapshot_mismatch');
+        assert.match(refused.body.error, /questão 9 não existe na prova/);
+    }
+    questions.pop();
     for (const type of ['impressa', 'online']) {
         const history = await asAdmin('post', '/api/admin/exam-history/add').send({
             studentClass, courseId, examKey, type, label: type, questionNumbers: [1, 2], printSnapshot,
@@ -459,8 +469,10 @@ test('[UC-BANCO-001] exam-history/add não aceita chave do banco vinda do navega
         assert.equal(frozen[0].bankKey, fromBank.key, 'a chave da avaliação fica');
         frozen.forEach(question => assert.equal('sourceBankKey' in question, false, 'sourceBankKey do navegador sai'));
         assert.equal('bankKey' in frozen[1], false);
-        assert.equal('bankKey' in frozen[2], false, 'questão sem origem na avaliação fica sem chave');
+        assert.equal(frozen.length, 2);
         assert.equal(JSON.stringify(history.body.entry.versionSnapshots).includes(outsider.key), false);
+        // A montagem guardada (a da tela e da impressão) também sai sem a chave do navegador.
+        assert.equal(JSON.stringify(history.body.entry.printSnapshot).includes(outsider.key), false);
     }
     const stats = Object.fromEntries((await asAdmin('get', '/api/admin/question-bank').expect(200)).body.questions.map(question => [question.key, question.stats]));
     assert.equal(stats[outsider.key].usos, 0, 'o item que não está na prova não ganha uso');

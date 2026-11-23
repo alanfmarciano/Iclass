@@ -96,6 +96,13 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 - "Mudar horário" e "Agendar de novo" no Monitor guardam o que você digitou: antes, a atualização automática da tela a cada 5 segundos voltava os campos para o horário antigo.
 - Em Materiais, a conta só de consulta (Coordenação) vê o horário agendado sem os botões "Agendar", "Mudar" e "Cancelar".
 
+### Versões no servidor e sorteio por aluno
+- A prova online agora é montada pelo servidor, a partir da prova gravada: a tela manda só as questões escolhidas e quantas versões (até 4, de A a D). O gabarito de cada versão é calculado pelo servidor, não mais pelo navegador. Antes, a quinta versão sumia sem aviso; agora a tela diz "máx. 4" e o servidor recusa com "No máximo 4 versões online (A a D).".
+- A prova impressa continua montada na tela, para imprimir na hora, e o servidor confere cada questão antes de guardar: se o enunciado, as alternativas ou a resposta certa não forem os da prova gravada (por exemplo, a prova foi editada em outra aba), ele recusa e pede para recarregar a página e montar de novo.
+- Na preparação, o novo campo "Como montar" tem "Versões (máx. 4)", como sempre, e "Sorteio por aluno": cada aluno recebe questões sorteadas da montagem, na quantidade de cada grupo (por exemplo, 2 fáceis e 1 difícil), sem repetir e em ordem própria. Cada grupo filtra por origem (escritas na prova ou vindas do banco), categoria do banco, dificuldade e etiqueta, e a tela mostra quantas questões combinam com o filtro. O sorteio é feito quando o aluno começa a prova; recarregar a página ou trocar a versão dele no Monitor não muda as questões que ele tirou.
+- No Monitor, a aplicação com sorteio diz quantas questões cada aluno recebe, e o progresso de cada um conta as questões dele. A troca de questão no Monitor vai só para quem tirou a questão trocada.
+- "Aplicar prova novamente" com uma configuração salva antes desta versão: se a resposta certa de alguma questão mudou na prova desde então, a preparação é recusada e pede para montar a prova de novo (a questão acertada por "Corrigir gabarito" vale como foi corrigida).
+
 ### Versão, Novidades e Ajuda
 - O rodapé do menu mostra a versão de verdade do IClass (por exemplo, "v3.0.0") e se a tela está falando com o servidor: "Conectado", "Sem conexão" ou "Servidor reiniciando". Antes ficava "Sistema ativo" e "v3", mesmo com o servidor fora do ar.
 - Na tela Sistema, o cartão novo "Sobre o IClass" mostra a versão instalada, a última atualização (com o nome do backup feito antes dela), a versão dos dados, o código desta instalação e o botão "Novidades", que abre esta lista.
