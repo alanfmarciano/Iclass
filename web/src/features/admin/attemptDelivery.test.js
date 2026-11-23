@@ -8,6 +8,8 @@ describe('[UC-TENTATIVA-001] como a entrega chegou (AVA-03, UXA-01)', () => {
     expect(deliveryLabel({ submissionSource: 'timer_auto_submit', lateBySeconds: 184 })).toBe('Enviada após o prazo (3 min 4 s)')
     expect(deliveryLabel({ submissionSource: 'timer_auto_submit' })).toBe('Enviada automaticamente no fim do tempo')
     expect(deliveryLabel({ submissionSource: 'instructor_finish' })).toBe('Salva pelo professor ao encerrar')
+    // Fechamento da prova agendada (P3-S12): não diz que foi o professor.
+    expect(deliveryLabel({ submissionSource: 'instructor_finish', finishedBySchedule: true })).toBe('Entregue no horário de fechar da agenda, com as respostas salvas')
     expect(deliveryLabel({ submissionSource: 'student' })).toBe('')
     expect(formatLateness(120)).toBe('2 min')
   })

@@ -10,6 +10,7 @@ import { PageHeader } from '../../components/ui/PageHeader'
 import { api } from '../../lib/api'
 import { useToast } from '../../context/ToastProvider'
 import { useAdminWorkspace } from '../../hooks/useAdminWorkspace'
+import { useAuth } from '../../context/AuthProvider'
 import { compareOrdinal } from '../../lib/textSearch'
 import { ReleaseScheduleDialog, cancelReleaseSchedule, releaseScheduleText } from './ReleaseSchedule'
 
@@ -119,6 +120,11 @@ export default function MateriaisPage() {
   const [error, setError] = useState(null)
   const toast = useToast()
   const navigate = useNavigate()
+  // Conta só de consulta (a Coordenação com page.materials): a agenda da liberação grava
+  // (release-item responde 403 read_only_account), então "Agendar", "Mudar" e "Cancelar"
+  // não aparecem; o horário agendado continua visível (P3-S12).
+  const auth = useAuth()?.auth || {}
+  const canSchedule = auth.readOnly !== true
 
   async function load() {
     if (!courseId) { setStructure(null); return }
@@ -321,14 +327,17 @@ export default function MateriaisPage() {
                                 {lockedByExam && !scheduled && <p className="text-xs text-muted mt-0.5">{answerKeyLockHint(examState.status)}</p>}
                                 {scheduled && (
                                   <p data-testid={`release-schedule-${item.key}`} className={`text-xs mt-0.5 ${scheduled.adiado ? 'text-warning' : 'text-primary'}`}>
-                                    {releaseScheduleText(scheduled)}{' '}
-                                    <button type="button" onClick={() => setScheduleItem(item)} className="underline hover:no-underline">Mudar</button>{' · '}
-                                    <button type="button" onClick={() => cancelSchedule(item)} className="underline hover:no-underline">Cancelar</button>
+                                    {releaseScheduleText(scheduled)}
+                                    {canSchedule && (<>
+                                      {' '}
+                                      <button type="button" onClick={() => setScheduleItem(item)} className="underline hover:no-underline">Mudar</button>{' · '}
+                                      <button type="button" onClick={() => cancelSchedule(item)} className="underline hover:no-underline">Cancelar</button>
+                                    </>)}
                                   </p>
                                 )}
                               </div>
                               <div className="ml-auto flex shrink-0 items-center gap-2">
-                                {!isOn && !scheduled && className && (
+                                {canSchedule && !isOn && !scheduled && className && (
                                   <Button size="sm" variant="ghost" icon={CalendarClock} onClick={() => setScheduleItem(item)} aria-label={`Agendar a liberação: ${item.type} de ${unit.name}`}>Agendar</Button>
                                 )}
                                 <span className={`text-xs mr-2 shrink-0 ${isOn ? 'text-success' : scheduled ? 'text-primary' : 'text-muted'}`}>{isOn ? 'Liberado' : scheduled ? 'Agendado' : 'Bloqueado'}</span>
@@ -347,7 +356,7 @@ export default function MateriaisPage() {
         </PageState>
       )}
       <ReleaseScheduleDialog
-        open={!!scheduleItem}
+        open={canSchedule && !!scheduleItem}
         item={scheduleItem}
         entry={scheduleItem ? releaseSchedule[scheduleItem.key] : null}
         studentClass={className}

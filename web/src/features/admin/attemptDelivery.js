@@ -1,5 +1,6 @@
 // Como a entrega da prova chegou: o professor vê quando foi automática no fim do
-// tempo, quando chegou atrasada (e quanto) e quando foi salva no encerramento.
+// tempo, quando chegou atrasada (e quanto) e quando foi salva no encerramento (pelo
+// professor ou pelo horário de fechar da prova agendada).
 export function formatLateness(seconds) {
   const total = Math.max(0, Math.round(Number(seconds) || 0))
   if (total < 60) return `${total} s`
@@ -22,6 +23,8 @@ function sourceLabel(item) {
   if (source === 'deadline_server_auto_submit') return 'Tempo esgotado: entregue automaticamente com as respostas salvas'
   if (late > 0) return `Enviada após o prazo (${formatLateness(late)})`
   if (source === 'timer_auto_submit') return 'Enviada automaticamente no fim do tempo'
+  // Fechamento automático da prova agendada (P3-S12): não foi o professor que encerrou.
+  if (source === 'instructor_finish' && item?.finishedBySchedule === true) return 'Entregue no horário de fechar da agenda, com as respostas salvas'
   if (source === 'instructor_finish') return 'Salva pelo professor ao encerrar'
   if (source === 'instructor_collect') return 'Recolhida pelo professor com as respostas salvas'
   return ''

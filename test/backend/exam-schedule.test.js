@@ -244,6 +244,15 @@ test('[UC-PROVA-008] agendada: o aluno vê "Abre em..." sem questões nem token;
     const submission = db.memory.submissions.find(item => item.applicationId === application.id);
     assert.ok(submission, 'a tentativa em andamento virou entrega');
     assert.equal(submission.finishPolicy, 'submit');
+    // Entregue pelo horário de fechar, não pelo professor: o Monitor e Resultados não
+    // dizem "Salva pelo professor ao encerrar".
+    assert.equal(submission.finishedBySchedule, true);
+    assert.equal(submission.autoSubmittedByInstructor, undefined);
+    const monitor = await admin(request(app).get(`/api/admin/monitor-status/${encodeURIComponent(studentClass)}/${examKey}`))
+        .query({ courseId, applicationId: application.id }).expect(200);
+    const aliceRow = monitor.body.find(row => row.email === ALICE.email);
+    assert.equal(aliceRow.submissionSource, 'instructor_finish');
+    assert.equal(aliceRow.finishedBySchedule, true);
     assert.equal(submission.gradedAnswers[0].studentChoice, 'A', 'com a resposta salva');
     assert.equal(submission.score, 100);
     assert.equal(cls.releasedItems[examKey], false);

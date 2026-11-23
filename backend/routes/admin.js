@@ -5010,6 +5010,8 @@ router.get('/api/admin/monitor-status/:class/:examKey', (req, res) => {
                 applicationId: application?.id || null,
                 attemptId: (submission ? submission.attemptId : state.attemptId) || state.attemptId || null,
                 submissionSource: submission?.submissionSource || null,
+                // Entregue pelo fechamento da agenda (P3-S12), não pelo professor.
+                finishedBySchedule: submission?.finishedBySchedule === true,
                 lateBySeconds: Number(submission?.lateBySeconds || 0),
                 focusLockedAtDeadline: submission?.focusLockedAtDeadline === true,
                 // Motivo da trava no fim do tempo ('session_replaced': outro aparelho, P3-S13).

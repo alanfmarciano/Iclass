@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   post: vi.fn(),
   navigate: vi.fn(),
   toast: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() },
+  auth: {},
 }))
 
 vi.mock('react-router-dom', async () => {
@@ -17,6 +18,7 @@ vi.mock('react-router-dom', async () => {
 })
 vi.mock('../../lib/api', () => ({ api: { get: mocks.get, post: mocks.post } }))
 vi.mock('../../context/ToastProvider', () => ({ useToast: () => mocks.toast }))
+vi.mock('../../context/AuthProvider', () => ({ useAuth: () => ({ auth: mocks.auth }) }))
 vi.mock('../../hooks/useAdminWorkspace', () => ({
   useAdminWorkspace: () => ({ courseId: 'DES', courseName: 'Técnico em TI', className: '1DES' }),
 }))
@@ -40,7 +42,7 @@ function mockServer({ released = {}, configs = {}, applications = [], releaseSch
 }
 
 describe('MateriaisPage', () => {
-  beforeEach(() => { vi.clearAllMocks() })
+  beforeEach(() => { vi.clearAllMocks(); mocks.auth = {} })
   afterEach(cleanup)
 
   it('[UC-APLICACAO-001] liberar em lote só libera apostilas e bloquear não mexe na prova online (AVA-X1)', () => {
@@ -195,5 +197,18 @@ describe('MateriaisPage', () => {
     })
     render(<MateriaisPage />)
     expect(await screen.findByTestId('release-schedule-Gabarito_Avaliacao_U1')).toHaveTextContent('aplicação preparada que não abriu')
+  })
+
+  it('[UC-PROVA-008] conta só de consulta vê o horário agendado sem "Agendar", "Mudar" e "Cancelar" (o servidor responde 403)', async () => {
+    mocks.auth = { accountRole: 'coordenacao', readOnly: true }
+    mockServer({
+      releaseSchedule: { Apostila_U2: { at: 2, atLabel: '25/11 às 07:30', atLocal: '2026-11-25T07:30', adiado: false } },
+    })
+    render(<MateriaisPage />)
+    const scheduled = await screen.findByTestId('release-schedule-Apostila_U2')
+    expect(scheduled).toHaveTextContent('Libera sozinho em 25/11 às 07:30.')
+    expect(within(scheduled).queryByRole('button')).toBeNull()
+    expect(screen.queryByRole('button', { name: /Agendar a liberação/ })).toBeNull()
+    expect(screen.queryByText('Salvar horário')).toBeNull()
   })
 })

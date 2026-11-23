@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { CalendarClock, AlertTriangle, X } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
 import { Input } from '../../components/ui/Input'
@@ -198,15 +198,21 @@ export function ScheduleDialog({ open, application, onClose, onSaved, toast }) {
   const [schedule, setSchedule] = useState(() => scheduleFromView(application?.agendaView))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  // O Monitor manda um objeto novo da aplicação a cada consulta (5 s). O formulário só volta
+  // ao horário gravado quando o diálogo abre ou quando troca a aplicação, nunca no meio do
+  // que o professor está digitando.
+  const applicationRef = useRef(application)
+  applicationRef.current = application
+  const applicationId = application?.id || ''
   useEffect(() => {
     if (open) {
-      const view = application?.agendaView
+      const view = applicationRef.current?.agendaView
       const base = scheduleFromView(view)
       // A perdida volta com os mesmos horários e sem o dia, que já passou: o professor escolhe.
       setSchedule(view && view.estado === 'perdida' ? { ...base, date: '', closeDate: '' } : base)
       setError('')
     }
-  }, [open, application])
+  }, [open, applicationId])
   const check = useScheduleCheck({ schedule, studentClass: application?.studentClass, courseId: application?.courseId, durationMinutes: application?.durationMinutes, timerEnabled: application?.timerEnabled })
   const problem = scheduleProblem(schedule)
 

@@ -276,8 +276,9 @@ P3-S13 (AVA-17; D28 e D29 do desenho do P3). Tudo é novo e opcional: nenhuma mi
 
 - **`examApplications[].agenda`** (novo, opcional): `{ abreEm, fechaEm (ms), criadoPor, criadoEm, abertaEm?, atrasoSegundos?, encerradaEm?, perdida?, perdidaEm?, fechamentoCanceladoEm?, fechamentoCanceladoPor? }`. Só a aplicação `prepared` ganha agenda; a varredura (`sweepSchedules`, `utils/examSchedule.js`) escreve `abertaEm`/`atrasoSegundos` ao abrir, `perdida`/`perdidaEm` quando o servidor ligou depois de `fechaEm` e `encerradaEm` ao encerrar. Agenda que não é objeto ou sem `abreEm`/`fechaEm` válidos vale como sem agenda. Aplicação de antes desta versão não tem o campo e nada muda nela.
 - **`classes[].releaseSchedule`** (novo, opcional): `{ [itemKey]: { at (ms), released: true, por, porNome, criadoEm, adiadoEm? } }`. Na hora, a varredura grava `releasedItems[itemKey] = true` e `releaseMeta[itemKey]` e tira a entrada; o gabarito com aplicação aberta da prova ganha `adiadoEm` e espera. Só para a turma inteira.
+- **`submissions[].finishedBySchedule`** (novo, opcional, `true`): a entrega que o encerramento da agenda gerou com as respostas salvas (`submissionSource: 'instructor_finish'`, `finishPolicy: 'submit'`, sem `autoSubmittedByInstructor`). O Monitor (`monitor-status`, campo `finishedBySchedule` da linha) e Resultados mostram "Entregue no horário de fechar da agenda" em vez de "Salva pelo professor ao encerrar".
 - **Auditoria**: `exam_application_scheduled`, `exam_application_schedule_changed`, `exam_application_auto_opened`, `exam_application_auto_finished` e `exam_application_schedule_missed` (pelo `recordExamAudit`, ator `sistema` nas da varredura), `content_release_scheduled` e `content_release_auto`.
-- Nenhuma migração. Abrir o banco novo no 281029f ignora os dois campos: a aplicação agendada aparece como preparada comum (o professor inicia pelo Monitor) e o material agendado fica bloqueado.
+- Nenhuma migração. Abrir o banco novo no 281029f ignora os campos novos: a aplicação agendada aparece como preparada comum (o professor inicia pelo Monitor) e o material agendado fica bloqueado.
 
 ## Dias não letivos (`nonSchoolDays`, fase 3, B3)
 

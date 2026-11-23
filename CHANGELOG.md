@@ -92,6 +92,9 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 - O gabarito agendado que está preso por uma aplicação preparada que não abriu (por exemplo, a agendada que não abriu porque o computador estava desligado) diz como destravar: aplicar e encerrar a prova, ou bloquear a prova em Materiais.
 - No Monitor, quem não prepara provas (Professor auxiliar, Coordenação) vê o aviso do agendamento sem os botões de mudar.
 - Duplicar o curso leva as liberações agendadas para os itens do curso novo.
+- No Monitor, a entrega feita pelo horário de fechar aparece como "Entregue no horário de fechar da agenda, com as respostas salvas" (também em Resultados), e não como "Salva pelo professor ao encerrar".
+- "Mudar horário" e "Agendar de novo" no Monitor guardam o que você digitou: antes, a atualização automática da tela a cada 5 segundos voltava os campos para o horário antigo.
+- Em Materiais, a conta só de consulta (Coordenação) vê o horário agendado sem os botões "Agendar", "Mudar" e "Cancelar".
 
 ### Versão, Novidades e Ajuda
 - O rodapé do menu mostra a versão de verdade do IClass (por exemplo, "v3.0.0") e se a tela está falando com o servidor: "Conectado", "Sem conexão" ou "Servidor reiniciando". Antes ficava "Sistema ativo" e "v3", mesmo com o servidor fora do ar.

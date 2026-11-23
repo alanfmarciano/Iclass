@@ -90,7 +90,7 @@ No botão **⋯** (Mais ações) da linha do aluno ficam as ações só dele:
 
 Em **Tempo**, os botões −5, +5 e +10 preenchem os minutos, e o motivo é opcional. Em **Msg** e **Aviso turma** há avisos prontos, e a janela mostra para quem a mensagem vai.
 
-**Prova agendada.** No topo do Monitor, **Abre sozinha em 20/11 às 08:00** mostra o horário, com **Mudar horário** e **Cancelar agendamento** (a aplicação continua preparada). Para começar antes, inicie como sempre: ela fecha sozinha no horário marcado do mesmo jeito. Depois de aberta, **Fecha sozinha em ...** mostra a hora do fechamento, que anda junto com as pausas e com os minutos dados à turma (**+N min**). **Não encerrar sozinha** tira o fechamento automático: aí você encerra pelo Monitor.
+**Prova agendada.** No topo do Monitor, **Abre sozinha em 20/11 às 08:00** mostra o horário, com **Mudar horário** e **Cancelar agendamento** (a aplicação continua preparada). Para começar antes, inicie como sempre: ela fecha sozinha no horário marcado do mesmo jeito. Depois de aberta, **Fecha sozinha em ...** mostra a hora do fechamento, que anda junto com as pausas e com os minutos dados à turma (**+N min**). **Não encerrar sozinha** tira o fechamento automático: aí você encerra pelo Monitor. Quem estava fazendo a prova no fechamento aparece com **Entregue no horário de fechar da agenda, com as respostas salvas** (também em **Resultados**).
 
 Abriu o Monitor em outro computador, no projetor ou fechou a aba? Em **Token de acesso**, **Mostrar token** traz o mesmo token, sem trocar (cada vez fica no registro da aplicação). Se a aplicação é de antes desta versão ou veio de um backup de outro computador, o IClass não tem como mostrar o token de novo: use **Gerar outro**. Quem já entrou continua na prova.
 

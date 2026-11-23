@@ -39,9 +39,12 @@ export function ReleaseScheduleDialog({ open, item, entry, studentClass, courseI
   const [value, setValue] = useState({ date: '', time: '' })
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  // Volta ao horário gravado só ao abrir (ou ao trocar de item), não a cada objeto novo da
+  // agenda: o que o professor digitou não se perde.
+  const atLocal = entry?.atLocal || ''
   useEffect(() => {
-    if (open) { setValue(splitLocal(entry?.atLocal)); setError('') }
-  }, [open, entry])
+    if (open) { setValue(splitLocal(atLocal)); setError('') }
+  }, [open, item?.key, atLocal]) // eslint-disable-line react-hooks/exhaustive-deps
   const problem = releaseScheduleProblem(value)
 
   async function save() {

@@ -178,7 +178,10 @@ function resolveInProgressAttempts(memory, { application, onlineConfig = null, p
                 previousAttempts,
                 source: 'instructor_finish',
             });
-            submission.autoSubmittedByInstructor = true;
+            // Encerramento da agenda (P3-S12, reason 'agendamento'): a entrega foi do horário
+            // de fechar, não do professor; o Monitor e Resultados mostram isso.
+            if (reason === 'agendamento') submission.finishedBySchedule = true;
+            else submission.autoSubmittedByInstructor = true;
             submission.finishPolicy = 'submit';
             memory.submissions.push(submission);
             submitted += 1;

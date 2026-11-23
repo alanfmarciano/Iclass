@@ -249,6 +249,9 @@ test('[UC-APLICACAO-001] controle antigo por turma encerra salvando as respostas
     const saved = db.memory.submissions.find(item => item.attemptId === started.attemptId);
     assert.ok(saved, 'a tentativa em andamento virou entrega');
     assert.equal(saved.submissionSource, 'instructor_finish');
+    // Encerrada pelo professor: não ganha a marca do fechamento da agenda (P3-S12).
+    assert.equal(saved.autoSubmittedByInstructor, true);
+    assert.equal(saved.finishedBySchedule, undefined);
     assert.equal(openStatesOf(bruno, application.id).length, 0);
 });
 
