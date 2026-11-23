@@ -138,9 +138,24 @@ function normalizeGradeCriterion(criterio) {
 }
 
 // Critério que vale para o curso/turma: gradeCriterionFor(memory, { courseId, studentClass }).
-// Hoje nenhum curso tem critérios: sempre o padrão.
-function gradeCriterionFor(_memory, _context) {
-    return { ...DEFAULT_GRADE_CRITERION };
+// Os critérios são do curso (course.avaliacao, B6 / P2-S3): sem critérios, ou com eles
+// desligados, o padrão (mínima 6,0, regraAntiga). A tela pinta a nota por ele (C1 do P2).
+function gradeCriterionFor(memory, context = {}) {
+    const course = courseForContext(memory, context);
+    if (!course) return { ...DEFAULT_GRADE_CRITERION };
+    return gradingRules.criterioForScreen(course.avaliacao);
+}
+
+// Curso de { courseId } ou, sem curso, o da turma { studentClass } (a primeira com o nome).
+function courseForContext(memory, { courseId = '', studentClass = '' } = {}) {
+    const courses = (memory && Array.isArray(memory.courses)) ? memory.courses : [];
+    let id = String(courseId || '').trim();
+    if (!id && studentClass) {
+        const cls = ((memory && memory.classes) || []).find(item => item && item.name === String(studentClass).trim());
+        id = cls ? String(cls.courseId || '') : '';
+    }
+    if (!id) return null;
+    return courses.find(item => item && String(item.id) === id) || null;
 }
 
 // Nota de 0 a 10 -> faixa (GRADE_BANDS), ou null sem nota válida.
@@ -491,13 +506,425 @@ function consolidatedStudentAverage(submissions) {
     };
 }
 
+// ------------------------------------- critérios, plano e itens (B6 / P2-S3, FUN-02)
+// A conta única com critérios (contrato C1 do P2): os construtores abaixo (boletim, quadro,
+// ficha, resumo do aluno) recebem o contexto da turma (classGradingContext) e chamam
+// gradingRules.computeStudentResult. Sem contexto, ou com o curso sem critérios, a conta
+// é a de sempre (D1 do P2).
+//
+// Itens de avaliação da turma (o que o plano lista e o quadro mostra como coluna):
+// - 'prova': as provas da estrutura da turma (avaliacaoKey), cada uma com o módulo;
+// - 'manual': as avaliações manuais do plano (classes[].avaliacao.manuais, id 'man_*'):
+//   trabalho, prática, seminário... A nota é uma entrega comum em submissions com
+//   examKey = id, type 'manual', entryMode 'quick' (D6 do P2), consolidada como as
+//   outras. Avaliação manual arquivada some do plano e as notas dela ficam guardadas, mas
+//   saem da média (com aviso) até reativar;
+// - os itens dos provedores registrados (registerGradeItemProvider), como a tarefa do P1
+//   (contrato C2 do P2 e K1 do plano): a nota mora na coleção do provedor (a da tarefa em
+//   assignmentSubmissions.grade) e entra aqui como um grupo a mais, sem linha em
+//   submissions.
+// Etapa, peso, "Recuperação de" e "Não conta" de qualquer item ficam no plano da turma
+// (classes[].avaliacao.itens[id]) e só valem com os critérios do curso ligados.
+
+// Origens que não vêm de provedor.
+const GRADE_ITEM_BUILTIN_ORIGINS = Object.freeze(['prova', 'manual']);
+const MANUAL_ITEM_PREFIX = 'man_';
+const MANUAL_MODULE_NAME = 'Avaliações da turma';
+const MANUAL_TYPE_LABELS = Object.freeze({
+    trabalho: 'Trabalho',
+    pratica: 'Prática',
+    seminario: 'Seminário',
+    participacao: 'Participação',
+    outro: 'Outra avaliação',
+});
+const gradeItemProviders = new Map();
+
+function isManualItemId(id) {
+    return typeof id === 'string' && id.startsWith(MANUAL_ITEM_PREFIX);
+}
+
+// Provedor de itens de avaliação que não são prova (contrato C2 do P2):
+// registerGradeItemProvider({
+//   origem: 'tarefa',
+//   items(course, cls, memory) => [{ id, titulo, moduloId?, data?, fora? }]
+//     os itens da turma (fora: true = "Conta na média" desmarcado, o padrão do item no plano
+//     enquanto o professor não mexer nele);
+//   entries(memory, { course, cls, courseId, studentClass, emails, publishedOnly })
+//     => [{ itemId, email, studentId?, score (0 a 100), publicada }]
+//     as notas da turma (emails: lista de e-mails minúsculos para limitar, ou null para
+//     todos; publishedOnly: só o que o aluno já vê).
+// })
+// O id do item não pode ser de prova da estrutura nem começar com 'man_'. Provedor que
+// falha não derruba o quadro: os itens dele ficam de fora e o erro vai para o registro.
+// Devolve a função que desfaz o registro (testes).
+function registerGradeItemProvider(provider) {
+    const origem = String((provider && provider.origem) || '').trim();
+    if (!/^[a-z][a-z0-9_]{1,30}$/.test(origem) || GRADE_ITEM_BUILTIN_ORIGINS.includes(origem)) {
+        throw new Error(`Origem de itens de avaliação inválida: ${origem || '(vazia)'}`);
+    }
+    if (typeof provider.items !== 'function' || typeof provider.entries !== 'function') {
+        throw new Error(`O provedor de itens '${origem}' precisa de items() e entries().`);
+    }
+    const entry = { origem, items: provider.items, entries: provider.entries };
+    gradeItemProviders.set(origem, entry);
+    return () => {
+        if (gradeItemProviders.get(origem) === entry) gradeItemProviders.delete(origem);
+    };
+}
+
+function gradeItemProviderList() {
+    return [...gradeItemProviders.values()];
+}
+
+function callGradeItemProvider(provider, kind, args) {
+    try {
+        const out = provider[kind](...args);
+        return Array.isArray(out) ? out : [];
+    } catch (error) {
+        console.error(`[notas] o provedor de itens '${provider.origem}' falhou em ${kind}: ${error && error.message}`);
+        return [];
+    }
+}
+
+// Presenças do aluno na turma, como no boletim: registros dele no curso (ou sem curso) e
+// na turma (ou sem turma), deduplicados por data. Uma passada para a turma inteira:
+// Map email -> { records, stats }.
+function classAttendanceByEmail(memory, { courseId = '', studentClass = '' } = {}) {
+    const course = String(courseId || '');
+    const name = String(studentClass || '');
+    const byEmail = new Map();
+    ((memory && memory.attendance) || []).forEach(record => {
+        if (!record) return;
+        const email = String(record.studentEmail || '').trim().toLowerCase();
+        if (!email) return;
+        if (course && record.courseId && String(record.courseId) !== course) return;
+        if (name && record.studentClass && record.studentClass !== name) return;
+        if (!byEmail.has(email)) byEmail.set(email, []);
+        byEmail.get(email).push(record);
+    });
+    const out = new Map();
+    byEmail.forEach((records, email) => {
+        const rows = attendanceUtil.dedupeByDate(records);
+        out.set(email, { records: rows, stats: attendanceUtil.computeAttendanceStats(rows) });
+    });
+    return out;
+}
+
+// Contexto de notas da turma, montado uma vez por pedido:
+// classGradingContext(memory, { course, cls, structure, hoje })
+// - structure: a estrutura efetiva da turma (classContent.effectiveStructure), que pode ter
+//   prova a mais que o curso;
+// - hoje: 'AAAA-MM-DD' no fuso da escola, para saber se o período letivo terminou.
+// Devolve { courseId, studentClass, course, cls, criterios (normalizados ou null = regra
+// antiga), criterio (o da tela), ativo, plano (normalizado), planoEfetivo, itens,
+// itemById, examIndex, disciplinas, periodo, applicationsById, aulasPrevistas(),
+// providerGroups({ emails, publishedOnly }), frequenciaDe(email) }.
+function classGradingContext(memory, { course = null, cls = null, structure = null, hoje = null, attendance = null } = {}) {
+    const mem = memory || {};
+    const courseId = String((course && course.id) || (cls && cls.courseId) || '');
+    const studentClass = String((cls && cls.name) || '');
+    const effective = Array.isArray(structure) ? structure : ((course && course.structure) || []);
+    const examIndex = structureExamIndex(effective);
+    const evaluations = mem.evaluations || {};
+    const criterios = gradingRules.normalizeCriteria(course && course.avaliacao);
+    const plano = gradingRules.normalizePlan(cls && cls.avaliacao);
+
+    const moduleNames = new Map();
+    effective.forEach((module, index) => {
+        if (module && typeof module === 'object') moduleNames.set(structureModuleId(module, index), module.name || module.title || module.id || `Módulo ${index + 1}`);
+    });
+    const disciplinas = ((course && Array.isArray(course.disciplinas)) ? course.disciplinas : [])
+        .filter(item => item && item.id)
+        .map(item => ({ id: String(item.id), nome: item.nome || String(item.id), modulos: Array.isArray(item.modulos) ? item.modulos.map(String) : [] }));
+    const disciplinaDoModulo = new Map();
+    disciplinas.forEach(item => item.modulos.forEach(modulo => { if (!disciplinaDoModulo.has(modulo)) disciplinaDoModulo.set(modulo, item); }));
+
+    const itens = [];
+    const itemById = new Map();
+    const push = (item) => {
+        if (!item.id || itemById.has(item.id)) return;
+        const disciplina = item.moduloId ? disciplinaDoModulo.get(item.moduloId) : null;
+        const full = {
+            ...item,
+            moduloNome: item.moduloId ? (moduleNames.get(item.moduloId) || null) : null,
+            disciplinaId: disciplina ? disciplina.id : null,
+            disciplinaNome: disciplina ? disciplina.nome : null,
+        };
+        itens.push(full);
+        itemById.set(full.id, full);
+    };
+    examIndex.forEach((meta, key) => push({ id: key, titulo: examTitle(key, { evaluations, examIndex }), origem: 'prova', moduloId: meta.moduleId }));
+    plano.manuais.forEach(manual => push({
+        id: manual.id,
+        titulo: manual.titulo,
+        origem: 'manual',
+        tipo: manual.tipo,
+        tipoRotulo: MANUAL_TYPE_LABELS[manual.tipo] || MANUAL_TYPE_LABELS.outro,
+        descricao: manual.descricao,
+        data: manual.data,
+        moduloId: manual.moduloId && moduleNames.has(manual.moduloId) ? manual.moduloId : null,
+        arquivado: !!manual.arquivadoEm,
+    }));
+    const foraPadrao = new Set();
+    gradeItemProviderList().forEach(provider => {
+        callGradeItemProvider(provider, 'items', [course, cls, mem]).forEach(raw => {
+            const id = raw && typeof raw.id === 'string' ? raw.id.trim() : '';
+            if (!id || id.length > gradingRules.LIMITES.itemIdMax || isManualItemId(id) || examIndex.has(id)) return;
+            push({
+                id,
+                titulo: String(raw.titulo || raw.title || id).slice(0, 200),
+                origem: provider.origem,
+                moduloId: typeof raw.moduloId === 'string' && moduleNames.has(raw.moduloId) ? raw.moduloId : null,
+                data: typeof raw.data === 'string' ? raw.data : null,
+            });
+            if (raw.fora === true) foraPadrao.add(id);
+        });
+    });
+
+    // Plano com o padrão "fora da média" dos itens de provedor ainda sem linha no plano.
+    const planoEfetivo = { itens: { ...plano.itens }, manuais: plano.manuais };
+    foraPadrao.forEach(id => {
+        if (!Object.prototype.hasOwnProperty.call(planoEfetivo.itens, id)) planoEfetivo.itens[id] = { etapa: null, peso: 1, recuperacaoDe: null, fora: true };
+    });
+
+    // Turma encerrada (B10): situação final. Com período letivo: terminou depois do fim.
+    let periodo = null;
+    if (cls && academicCalendar.isClassClosed(cls)) periodo = { encerrada: true };
+    else {
+        const term = cls ? academicCalendar.termForClass(mem, cls) : null;
+        if (term) periodo = { fim: term.fim, hoje: hoje || null };
+    }
+
+    let planned;
+    const aulasPrevistas = () => {
+        if (planned === undefined) planned = cls ? academicCalendar.plannedLessons(mem, cls) : null;
+        return planned;
+    };
+    let attendanceIndex = attendance;
+    const frequenciaDe = (email) => {
+        if (!attendanceIndex) attendanceIndex = classAttendanceByEmail(mem, { courseId, studentClass });
+        const entry = attendanceIndex.get(String(email || '').trim().toLowerCase());
+        return entry ? entry.stats : null;
+    };
+
+    const providerGroups = ({ emails = null, publishedOnly = false } = {}) => {
+        const wanted = Array.isArray(emails) ? emails.map(item => String(item || '').trim().toLowerCase()).filter(Boolean) : null;
+        const out = [];
+        gradeItemProviderList().forEach(provider => {
+            callGradeItemProvider(provider, 'entries', [mem, { course, cls, courseId, studentClass, emails: wanted, publishedOnly }]).forEach(raw => {
+                const itemId = raw && typeof raw.itemId === 'string' ? raw.itemId : '';
+                const item = itemById.get(itemId);
+                if (!item || item.origem !== provider.origem) return;
+                const email = String((raw && raw.email) || '').trim().toLowerCase();
+                if (!email || (wanted && !wanted.includes(email))) return;
+                const publicada = raw.publicada === true;
+                if (publishedOnly && !publicada) return;
+                out.push({
+                    examKey: itemId,
+                    applicationId: null,
+                    email,
+                    scopeId: `provider:${provider.origem}`,
+                    origem: provider.origem,
+                    score: normalizeScore(raw.score),
+                    policy: null,
+                    attempts: [],
+                    firstAt: null,
+                    lastAt: null,
+                    pendingCount: publicada ? 0 : 1,
+                });
+            });
+        });
+        return out;
+    };
+
+    return {
+        courseId,
+        studentClass,
+        course,
+        cls,
+        criterios,
+        criterio: gradingRules.criterioForScreen(course && course.avaliacao),
+        ativo: !!criterios,
+        plano,
+        planoEfetivo,
+        itens,
+        itemById,
+        examIndex,
+        disciplinas,
+        periodo,
+        applicationsById: new Map((mem.examApplications || []).map(item => [String(item && item.id), item])),
+        aulasPrevistas,
+        frequenciaDe,
+        providerGroups,
+    };
+}
+
+// Avaliação manual da turma pelo id (normalizada, com arquivadoEm quando arquivada), ou null.
+function manualItemOfClass(cls, id) {
+    if (!cls || !isManualItemId(id)) return null;
+    return gradingRules.normalizePlan(cls.avaliacao).manuais.find(item => item.id === id) || null;
+}
+
+// O item (do contexto) do grupo, ou null.
+function gradingItemOf(grading, examKey) {
+    return grading && grading.itemById ? (grading.itemById.get(examKey) || null) : null;
+}
+
+// O grupo fica fora da média? Só a nota de avaliação manual arquivada (fica guardada).
+function isArchivedItemGroup(grading, group) {
+    const item = gradingItemOf(grading, group && group.examKey);
+    return !!(item && item.arquivado);
+}
+
+// Plano efetivo de um item (com os padrões e a etapa única do curso).
+function planItemView(grading, id) {
+    const raw = grading.planoEfetivo.itens[id];
+    const item = raw ? { etapa: raw.etapa, peso: raw.peso, recuperacaoDe: raw.recuperacaoDe || null, fora: raw.fora === true } : { etapa: null, peso: 1, recuperacaoDe: null, fora: false };
+    const etapas = grading.criterios ? grading.criterios.etapas : [];
+    const ordens = new Set(etapas.map(etapa => etapa.ordem));
+    let etapaEfetiva = item.etapa !== null && ordens.has(item.etapa) ? item.etapa : null;
+    if (item.etapa === null && etapas.length === 1) etapaEfetiva = etapas[0].ordem;
+    return { ...item, etapaEfetiva };
+}
+
+// Avisos do plano que valem para a turma inteira (não dependem do aluno): avaliações sem
+// etapa com duas etapas ou mais (D7 do P2). Só com critérios ligados.
+function planWarnings(grading) {
+    if (!grading || !grading.criterios) return [];
+    const avisos = [];
+    const semEtapa = grading.itens.filter(item => !item.arquivado).filter(item => {
+        const plan = planItemView(grading, item.id);
+        return !plan.fora && !plan.recuperacaoDe && plan.etapaEfetiva === null;
+    });
+    if (semEtapa.length) {
+        avisos.push({
+            codigo: 'itens_sem_etapa',
+            texto: `${semEtapa.length === 1 ? '1 avaliação sem etapa não entra' : `${semEtapa.length} avaliações sem etapa não entram`} na média.`,
+            itens: semEtapa.map(item => item.id),
+        });
+    }
+    return avisos;
+}
+
+// Resultado de um aluno pela conta única (gradingRules): grupos de nota já consolidados
+// (buildGradeGroups, mais os dos provedores) -> etapas, média final, situação e menção.
+// Sem critérios, a média simples dos grupos (a de sempre). A nota de avaliação manual
+// arquivada fica de fora, com aviso.
+function studentGradeResult(grading, { groups = [], frequencia = null } = {}) {
+    let arquivadas = 0;
+    const grupos = [];
+    (groups || []).forEach(group => {
+        if (!group || group.score === null || group.score === undefined) return;
+        if (isArchivedItemGroup(grading, group)) { arquivadas += 1; return; }
+        const item = gradingItemOf(grading, group.examKey);
+        const meta = grading && grading.examIndex ? grading.examIndex.get(group.examKey) : null;
+        const application = group.applicationId && grading ? grading.applicationsById.get(String(group.applicationId)) : null;
+        grupos.push({
+            itemId: group.examKey,
+            score: group.score,
+            finalidade: application ? application.finalidade : undefined,
+            moduloId: item ? item.moduloId : (meta ? meta.moduleId : null),
+        });
+    });
+    const ativo = !!(grading && grading.criterios);
+    const result = gradingRules.computeStudentResult({
+        criterios: ativo ? grading.criterios : null,
+        plano: ativo ? grading.planoEfetivo : null,
+        grupos,
+        frequencia,
+        aulasPrevistas: ativo ? grading.aulasPrevistas() : null,
+        periodo: ativo ? grading.periodo : null,
+        disciplinas: ativo ? grading.disciplinas : [],
+    });
+    if (arquivadas) {
+        result.avisos = [...result.avisos, {
+            codigo: 'avaliacoes_arquivadas',
+            texto: `${arquivadas === 1 ? '1 nota de avaliação arquivada não entra' : `${arquivadas} notas de avaliações arquivadas não entram`} na média.`,
+        }];
+    }
+    return result;
+}
+
+// O que vai para a tela e para os documentos do resultado (sem as notas cruas de 0 a 100
+// de cada etapa, que só servem à conta).
+function resultSummary(result) {
+    if (!result || result.regraAntiga) {
+        return {
+            etapas: [],
+            mediaFinal: result ? result.mediaFinal : null,
+            mediaFinalScore: result ? result.mediaFinalScore : null,
+            recuperacaoFinal: null,
+            situacao: null,
+            situacaoRotulo: null,
+            mencao: null,
+            frequenciaMinima: null,
+            avisos: result ? result.avisos : [],
+            disciplinas: [],
+        };
+    }
+    return {
+        etapas: result.etapas.map(etapa => ({
+            ordem: etapa.ordem,
+            nome: etapa.nome,
+            peso: etapa.peso,
+            itens: etapa.itens,
+            media: etapa.media,
+            recuperacao: etapa.recuperacao,
+            recuperacaoAplicada: etapa.recuperacaoAplicada,
+            final: etapa.final,
+            semNota: etapa.semNota,
+            contouComoZero: etapa.contouComoZero,
+        })),
+        mediaFinal: result.mediaFinal,
+        mediaFinalScore: result.mediaFinalScore,
+        recuperacaoFinal: result.recuperacaoFinal,
+        recuperacaoFinalAplicada: result.recuperacaoFinalAplicada,
+        situacao: result.situacao,
+        situacaoRotulo: result.situacaoRotulo,
+        mencao: result.mencao,
+        frequenciaMinima: result.frequenciaMinima,
+        unidadeSituacao: result.unidadeSituacao,
+        avisos: result.avisos,
+        disciplinas: (result.disciplinas || []).map(item => ({
+            id: item.id,
+            nome: item.nome,
+            mediaFinal: item.mediaFinal,
+            situacao: item.situacao,
+            situacaoRotulo: item.situacaoRotulo,
+            mencao: item.mencao,
+            frequencia: item.frequencia,
+            frequenciaTurma: item.frequenciaTurma === true,
+        })),
+    };
+}
+
+// Média do aluno para a ficha, a coluna "Média" de Alunos e o risco do Dashboard
+// (studentAnalytics): sem contexto, a consolidação de sempre (consolidatedStudentAverage);
+// com o contexto da turma, a média final da conta única (com critérios, a ponderada por
+// etapa; sem eles, a mesma média simples, sem a nota de avaliação manual arquivada e com
+// os itens dos provedores). 0 a 100 ou null.
+function studentAverageFor(submissions, grading, { email = '', frequencia = null } = {}) {
+    if (!grading) return consolidatedStudentAverage(submissions).average;
+    const groups = buildGradeGroups(submissions);
+    const mail = String(email || (groups[0] && groups[0].email) || '').trim().toLowerCase();
+    const extra = mail ? grading.providerGroups({ emails: [mail] }) : [];
+    return studentGradeResult(grading, { groups: [...groups, ...extra], frequencia }).mediaFinalScore;
+}
+
 // Boletim de um aluno: uma linha por prova; quando a mesma prova tem mais de
 // uma aplicação, uma linha por aplicação (é assim que entram na média em Resultados).
 // Médias = média simples das notas consolidadas de cada aplicação, sem arredondar antes.
-function buildStudentReportModules({ submissions, allSubmissions = submissions, structure, evaluations = {}, applications = [] }) {
+// grading (classGradingContext, B6 / P2-S3): as avaliações manuais e os itens dos
+// provedores entram com o título deles, no módulo escolhido (ou em "Outras avaliações");
+// a nota de avaliação manual arquivada aparece marcada (arquivada) e sai das médias; com
+// os critérios do curso ligados, cada linha leva etapa e peso do plano, e a média geral é
+// a média final da conta única (resultado: etapas, situação, menção). extraGroups: os
+// grupos dos provedores (grading.providerGroups); frequencia: computeAttendanceStats do
+// aluno na turma (para a situação).
+function buildStudentReportModules({ submissions, allSubmissions = submissions, structure, evaluations = {}, applications = [], grading = null, extraGroups = [], frequencia = null }) {
     const examIndex = structureExamIndex(structure);
     const applicationsById = new Map((applications || []).map(item => [String(item.id), item]));
-    const groups = buildGradeGroups(submissions).filter(group => group.score !== null).sort(compareGroups(examIndex));
+    const groups = [...buildGradeGroups(submissions), ...(extraGroups || [])].filter(group => group.score !== null).sort(compareGroups(examIndex));
     const scopesByExam = new Map();
     groups.forEach(group => {
         if (!scopesByExam.has(group.examKey)) scopesByExam.set(group.examKey, new Set());
@@ -512,17 +939,46 @@ function buildStudentReportModules({ submissions, allSubmissions = submissions, 
     }));
     const moduleById = new Map(modules.map(module => [module.id, module]));
     const otherModule = { id: OTHER_MODULE_ID, name: 'Outras avaliações', exams: [], scores: [] };
+    const withCriteria = !!(grading && grading.criterios);
+    // Campos novos só onde valem: a linha de prova da regra antiga sai como sempre saiu.
+    const itemFields = (examKey) => {
+        const item = gradingItemOf(grading, examKey);
+        const out = {};
+        if (item && item.origem !== 'prova') {
+            out.origem = item.origem;
+            if (item.tipoRotulo) out.tipo = item.tipoRotulo;
+        }
+        if (withCriteria) {
+            const plan = planItemView(grading, examKey);
+            out.etapa = plan.etapaEfetiva;
+            out.peso = plan.peso;
+            if (plan.recuperacaoDe) out.recuperacaoDe = plan.recuperacaoDe;
+            if (plan.fora) out.fora = true;
+        }
+        return out;
+    };
+    const targetFor = (examKey) => {
+        const meta = examIndex.get(examKey);
+        if (meta) return moduleById.get(meta.moduleId) || otherModule;
+        const item = gradingItemOf(grading, examKey);
+        return (item && item.moduloId && moduleById.get(item.moduloId)) || otherModule;
+    };
+    const titleFor = (examKey) => {
+        const item = gradingItemOf(grading, examKey);
+        if (item && item.origem !== 'prova') return item.titulo;
+        return examTitle(examKey, { evaluations, examIndex });
+    };
 
     const pendingFor = (examKey, scopeId = null) => (allSubmissions || []).filter(item => item.examKey === examKey
         && item.gradePublished !== true
         && (!scopeId || (item.applicationId ? `application:${item.applicationId}` : 'legacy') === scopeId)).length;
 
+    const counted = [];
     groups.forEach(group => {
-        const meta = examIndex.get(group.examKey);
-        const target = (meta && moduleById.get(meta.moduleId)) || otherModule;
-        const title = examTitle(group.examKey, { evaluations, examIndex });
+        const target = targetFor(group.examKey);
+        const title = titleFor(group.examKey);
         const multiple = (scopesByExam.get(group.examKey)?.size || 0) > 1;
-        target.exams.push({
+        const entry = {
             examKey: group.examKey,
             applicationId: group.applicationId,
             title: multiple ? `${title} (${scopeLabel(group, applicationsById)})` : title,
@@ -531,38 +987,56 @@ function buildStudentReportModules({ submissions, allSubmissions = submissions, 
             grade: roundGrade(group.score),
             policy: group.policy,
             lastAt: group.lastAt,
-        });
-        target.scores.push(group.score);
+            ...itemFields(group.examKey),
+        };
+        if (isArchivedItemGroup(grading, group)) {
+            entry.arquivada = true;
+        } else {
+            target.scores.push(group.score);
+            counted.push(group);
+        }
+        target.exams.push(entry);
     });
 
     // Provas da estrutura ainda sem nota publicada aparecem (com o que falta publicar).
+    const emptyRow = (examKey) => ({
+        examKey,
+        applicationId: null,
+        title: titleFor(examKey),
+        attempts: 0,
+        pendingAttempts: pendingFor(examKey),
+        grade: null,
+        policy: null,
+        lastAt: null,
+        ...itemFields(examKey),
+    });
     examIndex.forEach((meta, examKey) => {
         if (scopesByExam.has(examKey)) return;
         const target = moduleById.get(meta.moduleId);
         if (!target) return;
-        target.exams.push({
-            examKey,
-            applicationId: null,
-            title: examTitle(examKey, { evaluations, examIndex }),
-            attempts: 0,
-            pendingAttempts: pendingFor(examKey),
-            grade: null,
-            policy: null,
-            lastAt: null,
-        });
+        target.exams.push(emptyRow(examKey));
     });
+    // Avaliações manuais e itens de provedor ainda sem nota também (as arquivadas, não).
+    if (grading) {
+        grading.itens.filter(item => item.origem !== 'prova' && !item.arquivado && !scopesByExam.has(item.id))
+            .forEach(item => targetFor(item.id).exams.push(emptyRow(item.id)));
+    }
     modules.forEach(module => {
         module.exams.sort((a, b) => {
             const metaA = examIndex.get(a.examKey);
             const metaB = examIndex.get(b.examKey);
-            return (metaA?.unitIndex ?? 0) - (metaB?.unitIndex ?? 0);
+            return (metaA?.unitIndex ?? (metaA ? 0 : Infinity)) - (metaB?.unitIndex ?? (metaB ? 0 : Infinity))
+                || (metaA || metaB ? 0 : String(a.title).localeCompare(String(b.title), 'pt-BR'));
         });
     });
 
     const all = [...modules, ...(otherModule.exams.length ? [otherModule] : [])];
-    const allScores = groups.map(group => group.score);
-    const overall = average(allScores);
-    return {
+    const allScores = counted.map(group => group.score);
+    const result = grading ? studentGradeResult(grading, { groups, frequencia }) : null;
+    // Média geral: com critérios, a média final da conta única; sem eles, a média simples
+    // de sempre (a mesma que studentGradeResult dá na regra antiga).
+    const overall = withCriteria ? result.mediaFinalScore : average(allScores);
+    const out = {
         modules: all.map(module => {
             const moduleAverage = average(module.scores);
             return {
@@ -575,14 +1049,25 @@ function buildStudentReportModules({ submissions, allSubmissions = submissions, 
         overallAverage: roundGrade(overall),
         gradedCount: allScores.length,
     };
+    if (result) out.resultado = resultSummary(result);
+    return out;
 }
 
 // Planilha da turma: uma linha por aluno, uma coluna por prova (ou por aplicação
 // quando a prova foi aplicada mais de uma vez), média igual à de Resultados.
-function buildClassGradebook({ students = [], submissions = [], structure = [], evaluations = {}, applications = [] }) {
+// grading (classGradingContext, B6 / P2-S3): as avaliações manuais ativas e os itens dos
+// provedores ganham coluna (com nota ou não), com o título deles; a nota de avaliação
+// manual arquivada aparece na coluna marcada (arquivado) e sai da média. Com os critérios
+// do curso ligados, cada coluna leva etapa e peso do plano, cada linha leva etapas, média
+// final, frequência, situação e menção (average passa a ser a média final), e o quadro leva
+// as etapas do curso e os avisos do plano. Sem critérios, tudo como sempre (D1 do P2).
+function buildClassGradebook({ students = [], submissions = [], structure = [], evaluations = {}, applications = [], grading = null }) {
     const examIndex = structureExamIndex(structure);
     const applicationsById = new Map((applications || []).map(item => [String(item.id), item]));
-    const groups = buildGradeGroups(submissions).sort(compareGroups(examIndex));
+    const emails = (students || []).map(student => String(student.email || '').trim().toLowerCase()).filter(Boolean);
+    const extraGroups = grading ? grading.providerGroups({ emails }) : [];
+    const groups = [...buildGradeGroups(submissions), ...extraGroups].sort(compareGroups(examIndex));
+    const withCriteria = !!(grading && grading.criterios);
 
     const scopesByExam = new Map();
     groups.forEach(group => {
@@ -596,23 +1081,47 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
     const addColumn = (examKey, scopeId, sample) => {
         const id = scopeId ? `${examKey}::${scopeId}` : examKey;
         if (columnIndex.has(id)) return;
-        const title = examTitle(examKey, { evaluations, examIndex });
+        const item = gradingItemOf(grading, examKey);
+        const itemOfOtherOrigin = item && item.origem !== 'prova' ? item : null;
+        const title = itemOfOtherOrigin ? itemOfOtherOrigin.titulo : examTitle(examKey, { evaluations, examIndex });
         const meta = examIndex.get(examKey);
-        columns.push({
+        const column = {
             id,
             examKey,
             applicationId: sample?.applicationId || null,
             label: scopeId ? `${title} (${scopeLabel(sample, applicationsById)})` : title,
-            moduleName: meta ? meta.moduleName : 'Outras avaliações',
+            moduleName: meta ? meta.moduleName : (itemOfOtherOrigin ? (itemOfOtherOrigin.moduloNome || (itemOfOtherOrigin.origem === 'manual' ? MANUAL_MODULE_NAME : 'Outras avaliações')) : 'Outras avaliações'),
             // Nome da prova na estrutura do curso (só no JSON): Resultados monta a estrutura
             // por ele para quem não abre o editor de cursos (Coordenação).
             unitName: meta ? meta.unitName || '' : '',
-        });
+        };
+        // Campos novos só onde valem (a coluna de prova da regra antiga sai como sempre).
+        if (itemOfOtherOrigin) {
+            column.origem = itemOfOtherOrigin.origem;
+            if (itemOfOtherOrigin.tipoRotulo) column.tipo = itemOfOtherOrigin.tipoRotulo;
+            if (itemOfOtherOrigin.arquivado) column.arquivado = true;
+        }
+        if (withCriteria) {
+            const plan = planItemView(grading, examKey);
+            column.origem = item ? item.origem : 'prova';
+            column.etapa = plan.etapaEfetiva;
+            column.peso = plan.peso;
+            column.recuperacaoDe = plan.recuperacaoDe;
+            column.fora = plan.fora;
+        }
+        columns.push(column);
         columnIndex.set(id, columns.length - 1);
     };
-    // Ordem: estrutura do curso; provas sem nota também ganham coluna.
+    // Ordem: estrutura do curso; provas sem nota também ganham coluna. Depois as avaliações
+    // manuais e os itens dos provedores (os ativos, com nota ou não; os arquivados, só com
+    // nota) e, por fim, as provas fora da estrutura.
     const orderedExamKeys = [...examIndex.keys()];
-    [...scopesByExam.keys()].filter(key => !examIndex.has(key)).sort((a, b) => a.localeCompare(b, 'pt-BR')).forEach(key => orderedExamKeys.push(key));
+    if (grading) {
+        grading.itens.filter(item => item.origem !== 'prova' && (!item.arquivado || scopesByExam.has(item.id)))
+            .forEach(item => orderedExamKeys.push(item.id));
+    }
+    const listed = new Set(orderedExamKeys);
+    [...scopesByExam.keys()].filter(key => !listed.has(key)).sort((a, b) => a.localeCompare(b, 'pt-BR')).forEach(key => orderedExamKeys.push(key));
     orderedExamKeys.forEach(examKey => {
         const scopes = scopesByExam.get(examKey);
         if (!scopes || scopes.size <= 1) return addColumn(examKey, null, scopes ? [...scopes.values()][0] : null);
@@ -636,6 +1145,7 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
                 status: (student && student.status) || '',
                 cells: {},
                 scores: [],
+                groups: [],
                 pendingCount: 0,
             });
         }
@@ -659,7 +1169,9 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
         row.cells[id] = existing
             ? { score: (existing.score * existing.groups + group.score) / (existing.groups + 1), groups: existing.groups + 1, pending: existing.pending + group.pendingCount }
             : { score: group.score, groups: 1, pending: group.pendingCount };
-        row.scores.push(group.score);
+        row.groups.push(group);
+        // A nota de avaliação manual arquivada fica na célula e sai da média.
+        if (!isArchivedItemGroup(grading, group)) row.scores.push(group.score);
     });
 
     const rows = [...rowsByEmail.values()].map(row => {
@@ -668,7 +1180,7 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
         Object.entries(row.cells).forEach(([id, cell]) => {
             cells[id] = { score: cell.score, grade: roundGrade(cell.score), pending: cell.pending };
         });
-        return {
+        const out = {
             email: row.email,
             name: row.name,
             matricula: row.matricula,
@@ -679,16 +1191,43 @@ function buildClassGradebook({ students = [], submissions = [], structure = [], 
             gradedCount: row.scores.length,
             pendingCount: row.pendingCount,
         };
+        if (withCriteria) {
+            const frequencia = grading.frequenciaDe(row.email);
+            const summary = resultSummary(studentGradeResult(grading, { groups: row.groups, frequencia }));
+            out.average = summary.mediaFinal;
+            out.averageScore = summary.mediaFinalScore;
+            out.etapas = summary.etapas;
+            out.mediaFinal = summary.mediaFinal;
+            out.recuperacaoFinal = summary.recuperacaoFinal;
+            out.situacao = summary.situacao;
+            out.situacaoRotulo = summary.situacaoRotulo;
+            out.mencao = summary.mencao;
+            out.frequencia = frequencia ? frequencia.frequenciaGeral : null;
+            out.disciplinas = summary.disciplinas;
+            out.avisos = summary.avisos.filter(entry => entry.codigo !== 'itens_sem_etapa');
+        }
+        return out;
     }).sort((a, b) => String(a.name).localeCompare(String(b.name), 'pt-BR'));
 
-    return { columns, rows };
+    const result = { columns, rows };
+    if (grading) {
+        result.etapas = withCriteria ? grading.criterios.etapas.map(etapa => ({ ordem: etapa.ordem, nome: etapa.nome, peso: etapa.peso })) : [];
+        result.mencoes = withCriteria ? grading.criterios.mencoes : null;
+        result.avisos = planWarnings(grading);
+    }
+    return result;
 }
 
 // Planilha do quadro de notas (UXI-01, FUN-06): o mesmo cabeçalho e as mesmas linhas
 // para o CSV e o XLSX. A nota vai crua (0 a 10 com uma casa, null sem nota válida);
 // cada formato escreve do seu jeito ("7,5" no CSV, número com formato 0,0 no XLSX, que
 // soma e faz média no Excel). Coluna nova do quadro entra aqui e sai nos dois.
+// Com os critérios do curso ligados (gradebook.etapas com etapas, B6), no lugar de "Média"
+// entram uma coluna por etapa, "Média final", "Frequência (%)", "Situação", "Menção" (só
+// com menções no curso) e "Notas não publicadas". Sem critérios, o cabeçalho e as linhas
+// de sempre, byte a byte (D1 do P2).
 function gradebookSheet(gradebook) {
+    if (Array.isArray(gradebook.etapas) && gradebook.etapas.length) return gradebookSheetWithCriteria(gradebook);
     const cabecalho = ['Aluno', 'E-mail', 'Matrícula', ...gradebook.columns.map(column => column.label), 'Média', 'Notas não publicadas'];
     const formatos = ['texto', 'texto', 'texto', ...gradebook.columns.map(() => 'nota'), 'nota', 'inteiro'];
     const linhas = gradebook.rows.map(row => [
@@ -702,6 +1241,37 @@ function gradebookSheet(gradebook) {
         row.averageScore === null ? null : gradeFromScore(row.averageScore),
         row.pendingCount,
     ]);
+    return { cabecalho, formatos, linhas };
+}
+
+function gradebookSheetWithCriteria(gradebook) {
+    const etapas = gradebook.etapas;
+    const comMencao = Array.isArray(gradebook.mencoes) && gradebook.mencoes.length > 0;
+    const cabecalho = ['Aluno', 'E-mail', 'Matrícula', ...gradebook.columns.map(column => column.label),
+        ...etapas.map(etapa => etapa.nome), 'Média final', 'Frequência (%)', 'Situação', ...(comMencao ? ['Menção'] : []), 'Notas não publicadas'];
+    const formatos = ['texto', 'texto', 'texto', ...gradebook.columns.map(() => 'nota'),
+        ...etapas.map(() => 'nota'), 'nota', 'inteiro', 'texto', ...(comMencao ? ['texto'] : []), 'inteiro'];
+    const linhas = gradebook.rows.map(row => {
+        const porOrdem = new Map((row.etapas || []).map(etapa => [etapa.ordem, etapa]));
+        return [
+            row.name,
+            row.email,
+            row.matricula,
+            ...gradebook.columns.map(column => {
+                const cell = row.cells[column.id];
+                return cell ? gradeFromScore(cell.score) : null;
+            }),
+            ...etapas.map(etapa => {
+                const value = porOrdem.get(etapa.ordem);
+                return value && value.final !== null && value.final !== undefined ? value.final : null;
+            }),
+            row.mediaFinal === null || row.mediaFinal === undefined ? null : row.mediaFinal,
+            row.frequencia === null || row.frequencia === undefined ? null : Math.round(row.frequencia),
+            row.situacaoRotulo || '',
+            ...(comMencao ? [row.mencao ? row.mencao.sigla : ''] : []),
+            row.pendingCount,
+        ];
+    });
     return { cabecalho, formatos, linhas };
 }
 
@@ -1358,8 +1928,23 @@ module.exports = {
     GRADE_REASON_REQUIRED_MESSAGE,
     MANUAL_TYPES,
     REQUIRE_REASON_AFTER_PUBLISH,
+    MANUAL_ITEM_PREFIX,
+    MANUAL_MODULE_NAME,
+    MANUAL_TYPE_LABELS,
     buildClassGradebook,
     buildCsv,
+    classAttendanceByEmail,
+    classGradingContext,
+    courseForContext,
+    gradeItemProviderList,
+    isManualItemId,
+    manualItemOfClass,
+    planItemView,
+    planWarnings,
+    registerGradeItemProvider,
+    resultSummary,
+    studentAverageFor,
+    studentGradeResult,
     buildGradeGroups,
     anonymizeStudentAuditTrail,
     anonymizeStudentExamRecords,

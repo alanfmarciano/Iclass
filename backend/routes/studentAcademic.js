@@ -7,14 +7,20 @@
 //   dos provedores, como os dias não letivos), para importar no celular. Exige a sessão
 //   do aluno e a matrícula na turma, como /api/student/calendar-events. Só lê: entra na
 //   lista da pré-visualização (PREVIEW_READ_ROUTES).
-// As próximas subetapas acrescentam aqui o resumo de notas (grades-summary, P2-S3) e o
-// autoatendimento (P4-S13).
+// - GET /api/student/grades-summary?courseId=&studentClass= (B6 / P2-S3, FUN-02): o resumo
+//   de notas do aluno na turma, só com o que já foi publicado, pela conta única do boletim
+//   (studentReport.buildStudentGradesSummary): itens com etapa e nota, média final,
+//   situação ("Cursando" enquanto falta nota de etapa), menção, frequência e as faltas que
+//   ainda pode ter (faltasPermitidasRestantes, contrato C8). A tela não recalcula (D3).
+//   Exige a sessão do aluno e a matrícula na turma; só lê (PREVIEW_READ_ROUTES).
+// A próxima subetapa acrescenta aqui o autoatendimento (P4-S13).
 const express = require('express');
 const db = require('../database.js');
 const { validateStudentSession, studentBelongsToClass, findClassByNameAndCourse } = require('../middlewares.js');
 const settingsUtil = require('../utils/settings.js');
 const { studentCalendarEvents } = require('../utils/calendarFeed.js');
 const { buildIcs, icsFileName, calendarEventToIcs } = require('../utils/icsCalendar.js');
+const { buildStudentGradesSummary } = require('../utils/studentReport.js');
 
 const router = express.Router();
 
@@ -38,6 +44,18 @@ router.get('/api/student/calendar.ics', validateStudentSession, (req, res) => {
     res.set('Content-Type', 'text/calendar; charset=utf-8');
     res.set('Content-Disposition', `attachment; filename="${icsFileName(courseId, studentClass)}"`);
     res.send(ics);
+});
+
+router.get('/api/student/grades-summary', validateStudentSession, (req, res) => {
+    const courseId = String(req.query.courseId || '').trim();
+    const studentClass = String(req.query.studentClass || '').trim();
+    const student = req.studentAccount;
+    const cls = studentClass ? findClassByNameAndCourse(db.memory.classes || [], studentClass, courseId) : null;
+    if (!student || !cls || !studentBelongsToClass(student, cls)) {
+        return res.status(403).json({ error: 'Contexto de turma não autorizado.' });
+    }
+    const course = (db.memory.courses || []).find(item => item && String(item.id) === String(cls.courseId || courseId)) || null;
+    res.json(buildStudentGradesSummary(db.memory, { email: req.studentEmail, course, cls, hoje: settingsUtil.today() }));
 });
 
 module.exports = router;

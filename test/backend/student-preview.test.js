@@ -497,6 +497,8 @@ function decisions(virtualEmail) {
         'GET /api/student/calendar-events': read(`/api/student/calendar-events?${Q}`),
         // Agenda .ics da turma (fase 3, B3): só lê o calendário da turma, como calendar-events.
         'GET /api/student/calendar.ics': read(`/api/student/calendar.ics?${Q}`),
+        // Resumo de notas (fase 3, B6): só lê as notas publicadas do aluno (o virtual não tem).
+        'GET /api/student/grades-summary': read(`/api/student/grades-summary?${Q}`),
         'POST /api/student/login': 'recusada',
         'POST /api/student/recover': 'recusada',
         'POST /api/student/change-password': 'recusada',

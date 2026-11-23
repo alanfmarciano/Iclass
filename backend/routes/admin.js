@@ -113,8 +113,11 @@ const {
     MANUAL_TYPES,
     buildClassGradebook,
     buildCsv,
-    buildStudentReportModules,
+    MANUAL_TYPE_LABELS,
+    classGradingContext,
     consolidatedStudentAverage,
+    isManualItemId,
+    manualItemOfClass,
     createResolvedGroupKey,
     describeSubmissionGrade,
     examTitle,
@@ -141,6 +144,7 @@ const {
     structureExamIndex,
 } = require('../utils/gradebook.js');
 const { XLSX_CONTENT_TYPE } = require('../utils/tabularFile.js');
+const { buildStudentReport } = require('../utils/studentReport.js');
 const { isStudentSessionOnline, sessionLastSeen } = require('../utils/studentSessions.js');
 const { revokeStudentSession, studentSessionByEmail } = require('../utils/authSessions.js');
 const loginGuard = require('../utils/loginGuard.js');
@@ -1199,6 +1203,16 @@ router.get('/api/admin/submissions/manual-context', (req, res) => {
         const classes = readJSON(DB_CLASSES_FILE);
         const cls = findClassByNameAndCourse(classes, studentClass, courseId);
         if (!cls) return res.status(404).json({ error: 'Turma não encontrada neste curso.' });
+        // Avaliação manual da turma (B6): sem questões, só a nota (a tela esconde acertos e total).
+        if (isManualItemId(examKey)) {
+            const manual = manualItemOfClass(cls, examKey);
+            if (!manual || manual.arquivadoEm) return res.status(404).json({ error: 'Avaliação manual não encontrada nesta turma.' });
+            return res.json({
+                examKey, studentClass: cls.name, courseId: cls.courseId || courseId, manual: true, titulo: manual.titulo,
+                tipo: manual.tipo, tipoRotulo: MANUAL_TYPE_LABELS[manual.tipo] || MANUAL_TYPE_LABELS.outro,
+                questionCount: 0, defaultTotal: null, configuredCount: null, excludedCount: 0,
+            });
+        }
         const questions = loadManualExamQuestions(examKey);
         if (questions.length === 0) return res.status(404).json({ error: 'Avaliação não encontrada ou sem questões cadastradas.' });
         const { defaultTotal, questionCount, configuredCount, excludedCount } = manualExamTotals(cls, examKey, questions);
@@ -1255,9 +1269,12 @@ router.post('/api/admin/submissions/create', (req, res) => {
         const studentClass = membership.name || '';
         const studentCourseId = membership.courseId || requestedCourse || registeredStudent.courseId || null;
 
+        // Avaliação manual da turma (trabalho, prática, seminário; B6 / P2-S3, D6 do P2):
+        // examKey 'man_*' do plano da turma do aluno. Não tem questões: só a nota.
+        const isManualItem = isManualItemId(examKey);
         // Busca informações sobre a avaliação para correção ou contagem
-        const questions = loadManualExamQuestions(examKey);
-        if (questions.length === 0) {
+        const questions = isManualItem ? [] : loadManualExamQuestions(examKey);
+        if (!isManualItem && questions.length === 0) {
             return res.status(400).json({ error: 'Avaliação não encontrada ou sem questões cadastradas.' });
         }
         const questionByNumber = new Map(questions.map(question => [question.originalNumber, question]));
@@ -1267,7 +1284,16 @@ router.post('/api/admin/submissions/create', (req, res) => {
         const cls = findClassByNameAndCourse(classes, studentClass, studentCourseId) || classes.find(c => c.name === studentClass);
         // Turma encerrada não recebe lançamento (sem efeito até o B10).
         if (!assertClassOpen(cls, { res })) return;
-        if (cls) {
+        let manualItem = null;
+        if (isManualItem) {
+            manualItem = manualItemOfClass(cls, examKey);
+            if (!manualItem) return res.status(400).json({ error: 'Avaliação manual não encontrada na turma do aluno.' });
+            if (manualItem.arquivadoEm) return res.status(400).json({ error: 'Esta avaliação manual está arquivada. Reative-a no plano de avaliação para lançar nota.' });
+            const hasAnswers = answers && typeof answers === 'object' && !Array.isArray(answers) && Object.values(answers).some(letter => !isEmptyInput(letter));
+            if (hasAnswers || body.mode === 'card' || !isEmptyInput(body.correctCount) || !isEmptyInput(body.totalCount)) {
+                return res.status(400).json({ error: 'Avaliação manual recebe só a nota.' });
+            }
+        } else if (cls) {
             const course = getCourseForClass(cls);
             const structure = effectiveStructure(course?.id || cls.courseId, cls.name)?.structure || course?.structure || [];
             const courseHasExams = structure.some(mod => (mod.units || mod.items || []).some(unit => unit.avaliacaoKey));
@@ -1292,7 +1318,13 @@ router.post('/api/admin/submissions/create', (req, res) => {
             return res.status(400).json({ error: 'Marque ao menos uma resposta no cartão.' });
         }
 
-        if (answeredEntries.length > 0) {
+        if (manualItem) {
+            const gradeInput = parseGradeInput(body.grade);
+            if (gradeInput.error) return res.status(400).json({ error: gradeInput.error });
+            if (gradeInput.empty) return res.status(400).json({ error: 'Informe a nota (0 a 10).' });
+            finalScore = scoreFromGrade(gradeInput.value);
+            gradedAnswers = [];
+        } else if (answeredEntries.length > 0) {
             // Correção baseada no cartão-resposta (respostas fornecidas)
             entryMode = 'card';
             if (reqQuestionNumbers !== undefined && reqQuestionNumbers !== null && !Array.isArray(reqQuestionNumbers)) {
@@ -1419,7 +1451,7 @@ router.post('/api/admin/submissions/create', (req, res) => {
             correctCount: finalCorrectCount,
             totalCount: finalTotalCount,
             gradedAnswers,
-            type,
+            type: manualItem ? 'manual' : type,
             entryMode,
             launchedBy: matchedAdmin?.email || 'admin',
             ...(ignoredQuestionNumbers.length ? { ignoredQuestionNumbers } : {}),
@@ -1443,7 +1475,7 @@ router.post('/api/admin/submissions/create', (req, res) => {
             action: 'grade_create',
             field: 'Nota',
             oldValue: '',
-            newValue: `${describeSubmissionGrade(submissionObj, examTitle(examKey, { evaluations: db.memory.evaluations }))} · lançamento ${entryMode === 'card' ? 'pelo cartão-resposta' : 'manual'} (${type})${ignoredNote ? ` · ${ignoredNote}` : ''}`,
+            newValue: `${describeSubmissionGrade(submissionObj, manualItem ? manualItem.titulo : examTitle(examKey, { evaluations: db.memory.evaluations }))} · lançamento ${entryMode === 'card' ? 'pelo cartão-resposta' : 'manual'} (${submissionObj.type})${ignoredNote ? ` · ${ignoredNote}` : ''}`,
         });
         writeJSON(DB_SUBMISSIONS_FILE, submissions);
 
@@ -2181,10 +2213,12 @@ router.get('/api/admin/student/academic', (req, res) => {
     });
 });
 
-// Boletim consolidado do aluno (provas por módulo + frequência por disciplina),
-// pronto para o frontend imprimir/salvar em PDF. Só notas publicadas entram na média.
-// As notas usam a mesma consolidação da tela Resultados: cada aplicação da prova é
-// um grupo com a regra escolhida pelo professor, e a média é a dos grupos (UXI-X1, FUN-X1).
+// Boletim consolidado do aluno (provas por módulo + frequência por disciplina), pronto
+// para o frontend imprimir/salvar em PDF. Só notas publicadas entram na média. A conta
+// mora em utils/studentReport.js (buildStudentReport, B6 / P2-S3), lida também pelo
+// boletim em lote, pelo aviso ao responsável e pelo autoatendimento do aluno; aqui ficam
+// o escopo da conta e quem lê nota (canReadStudentGrades: o Professor auxiliar recebe o
+// boletim sem as provas, gradesHidden: true).
 router.get('/api/admin/student/report', (req, res) => {
     validateAdmin(req, res, (config, matchedAdmin) => {
         const email = String(req.query.email || '').trim().toLowerCase();
@@ -2192,113 +2226,15 @@ router.get('/api/admin/student/report', (req, res) => {
         const student = (db.memory.students || []).find(s => s.email && s.email.toLowerCase() === email);
         if (!student) return res.status(404).json({ error: 'Aluno não encontrado.' });
         if (!adminCanAccessStudent(matchedAdmin, student)) return res.status(403).json({ error: 'Aluno fora do seu escopo.' });
-
-        const requestedCourseId = String(req.query.courseId || '').trim();
-        const requestedClass = String(req.query.studentClass || '').trim();
-        const memberships = (Array.isArray(student.classes) && student.classes.length ? student.classes : (student.studentClass ? [student.studentClass] : []))
-            .map(item => typeof item === 'string'
-                ? { name: item, courseId: String(student.courseId || '') }
-                : { name: item?.name || item?.className || '', courseId: String(item?.courseId || student.courseId || '') })
-            .filter(item => item.name);
-        const inCourse = item => !requestedCourseId || !item.courseId || item.courseId === requestedCourseId;
-        let membership;
-        if (requestedCourseId || requestedClass) {
-            membership = memberships.find(item => inCourse(item) && (!requestedClass || item.name === requestedClass))
-                || memberships.find(inCourse);
-            if (!membership) return res.status(400).json({ error: 'O aluno não tem matrícula no curso selecionado.' });
-        } else {
-            membership = memberships[0] || { name: student.studentClass || '', courseId: '' };
-        }
-        const cls = findClassByNameAndCourse(db.memory.classes || [], membership.name, membership.courseId || requestedCourseId)
-            || (db.memory.classes || []).find(c => c.name === membership.name) || null;
-        const courseId = String((cls && cls.courseId) || membership.courseId || requestedCourseId || '');
-        const course = (db.memory.courses || []).find(c => String(c.id) === courseId) || null;
-        const className = cls?.name || membership.name || '';
-        const structure = effectiveStructure(courseId, cls?.name)?.structure || course?.structure || [];
-
-        // Conta que não lê nota (Professor auxiliar, canReadStudentGrades): o boletim vem
-        // sem as provas (modules vazio, overallAverage null, gradesHidden: true); a
-        // frequência e o progresso continuam.
-        const withGrades = canReadStudentGrades(matchedAdmin);
-        const ownSubmissions = !withGrades ? [] : (db.memory.submissions || []).filter(s => s.student && String(s.student.email || '').toLowerCase() === email);
-        const contextSubmissions = scopeSubmissionsToContext(ownSubmissions, gradeScope(courseId, className));
-        const { modules, overallAverage } = !withGrades ? { modules: [], overallAverage: null } : buildStudentReportModules({
-            submissions: contextSubmissions.filter(s => s.gradePublished === true),
-            allSubmissions: contextSubmissions,
-            structure,
-            evaluations: db.memory.evaluations || {},
-            applications: db.memory.examApplications || [],
-        });
-
-        const attendanceRows = attendanceUtil.dedupeByDate((db.memory.attendance || []).filter(a => a.studentEmail === email
-            && (!courseId || !a.courseId || String(a.courseId) === courseId) && (!cls || !a.studentClass || a.studentClass === cls.name)));
-        const stats = attendanceUtil.computeAttendanceStats(attendanceRows);
-        // Aulas previstas no período letivo da turma e faltas que ainda pode ter (B5 / P2-S7,
-        // C8 do P2): null sem período letivo; as faltas restantes, só com a frequência
-        // mínima dos critérios do curso, e contando só as faltas de dentro das datas do
-        // período (a frequência mostrada continua sendo a de todas as aulas lançadas).
-        const allowance = attendanceAllowanceFor(db.memory, { course, cls, records: attendanceRows });
-        const discById = {};
-        ((course && course.disciplinas) || []).forEach(d => { if (d && d.id) discById[d.id] = d; });
-        const disciplineRow = (id, value) => {
-            const disciplina = discById[id] || null;
-            return {
-                id,
-                name: (disciplina && disciplina.nome) || id || 'Sem disciplina',
-                ...value,
-                cargaHoraria: disciplina && Number.isInteger(disciplina.cargaHoraria) ? disciplina.cargaHoraria : null,
-                professor: (disciplina && disciplina.professor) || '',
-                ...allowance.disciplina(id, value.faltas),
-            };
-        };
-        const disciplines = Object.entries(stats.porDisciplina).map(([id, value]) => disciplineRow(id, value));
-        // Disciplina do curso ainda sem chamada lançada (começo do período) também entra,
-        // quando tem o que mostrar: carga horária ou aula prevista no período. Sem nenhum
-        // dos dois (curso antigo, sem período), o boletim fica como sempre foi.
-        const listed = new Set(disciplines.map(item => item.id));
-        const previstas = new Set(allowance.disciplinasPrevistas);
-        ((course && course.disciplinas) || []).forEach(d => {
-            if (!d || !d.id || listed.has(d.id)) return;
-            if (!Number.isInteger(d.cargaHoraria) && !previstas.has(d.id)) return;
-            listed.add(d.id);
-            disciplines.push(disciplineRow(d.id, { presentes: 0, faltas: 0, total: 0, frequencia: null }));
-        });
-        const progressMap = (db.memory.progress && db.memory.progress[email]) || {};
-        const unitKeys = structure.flatMap(module => (module.units || module.items || []).map(unit => unit.apostilaKey).filter(Boolean));
-        const completedUnits = unitKeys.filter(key => Array.isArray(progressMap[key]) ? progressMap[key].length > 0 : !!progressMap[key]).length;
-        const school = (db.memory.schools || []).find(s => s.id === (course && course.schoolId)) || null;
-
-        res.json({
-            ...(withGrades ? {} : { gradesHidden: true }),
-            generatedAt: Date.now(),
-            institution: (school && (school.name || school.info?.tradeName)) || db.memory.branding?.displayName || db.memory.branding?.institutionName || 'IClass',
-            // Boletim impresso: o aluno sem e-mail aparece com 'sem e-mail' (C1 / P4-S3).
-            student: { name: student.name, nomeSocial: student.nomeSocial || '', email: studentIdentity.publicStudentEmail(student), matricula: student.matricula || '', status: student.status || '' },
-            course: { id: courseId, name: course?.name || courseId || '' },
-            className,
-            period: cls?.period || student.period || '',
-            modules,
-            overallAverage,
-            // Critério de nota da matrícula (C1 do P2): a nota em vermelho do boletim é a
-            // que fica abaixo de criterio.mediaMinima (sem critérios, o padrão 6,0).
-            criterio: gradeCriterionFor(db.memory, { courseId, studentClass: className }),
-            periodoLetivo: allowance.periodoLetivo,
-            attendance: {
-                frequency: stats.frequenciaGeral,
-                presentes: stats.presentes,
-                faltas: stats.faltasContam,
-                totalAulas: stats.totalAulas,
-                days: attendanceRows.length,
-                disciplines,
-                riskThreshold: attendanceUtil.effectiveAttendanceConfig(cls).limiarRiscoPct,
-                aulasPrevistas: allowance.aulasPrevistas,
-                frequenciaMinima: allowance.frequenciaMinima,
-                faltasNoPeriodo: allowance.faltasNoPeriodo,
-                faltasPermitidasRestantes: allowance.faltasPermitidasRestantes,
-            },
-            progress: { completedUnits, totalUnits: unitKeys.length },
+        const built = buildStudentReport(db.memory, {
+            student,
+            courseId: String(req.query.courseId || '').trim(),
+            studentClass: String(req.query.studentClass || '').trim(),
+            withGrades: canReadStudentGrades(matchedAdmin),
             issuedBy: (matchedAdmin && (matchedAdmin.name || matchedAdmin.email)) || 'Instrutor',
         });
+        if (!built.ok) return res.status(built.status).json({ error: built.error });
+        res.json(built.report);
     });
 });
 
@@ -2316,6 +2252,8 @@ router.get('/api/admin/student/dashboard', (req, res) => {
             structureFor: (courseId, className) => (courseId ? effectiveStructure(courseId, className)?.structure : null),
             // Sem nota para quem não lê nota (Professor auxiliar): gradesHidden: true.
             withGrades: canReadStudentGrades(matchedAdmin),
+            // Fim do período letivo da turma, para a situação da conta única (B6).
+            hoje: settingsUtil.today(),
         }));
     });
 });
@@ -5289,12 +5227,16 @@ router.get('/api/admin/gradebook', (req, res) => {
         const submissions = scopeSubmissionsToContext(filterSubmissionsForAdmin(db.memory.submissions || [], matchedAdmin), gradeScope(courseId, studentClass));
         const students = filterStudentsForAdmin(db.memory.students || [], matchedAdmin)
             .filter(student => studentBelongsToClass(student, studentClass, courseId));
+        // Contexto de notas da turma (B6 / P2-S3): avaliações manuais, itens dos provedores
+        // e, com os critérios do curso ligados, etapas, média final, situação e menção.
+        const grading = classGradingContext(db.memory, { course, cls, structure, hoje: settingsUtil.today() });
         const gradebook = buildClassGradebook({
             students,
             submissions,
             structure,
             evaluations: db.memory.evaluations || {},
             applications: db.memory.examApplications || [],
+            grading,
         });
 
         const format = String(req.query.format || '').toLowerCase();
@@ -5541,7 +5483,15 @@ router.get('/api/admin/dashboard/students-overview', (req, res) => {
             email: st.email,
             name: (st.nomeSocial && st.nomeSocial.trim()) || st.name || st.email,
             className: studentClass || scn(st)[0] || '',
-            ...studentOverview(db.memory, st, { courseId, studentClass, index, withGrades }),
+            ...studentOverview(db.memory, st, {
+                courseId,
+                studentClass,
+                index,
+                withGrades,
+                // Média final da turma pela conta única (B6), com a estrutura da turma.
+                structureFor: (cid, className) => (cid ? effectiveStructure(cid, className)?.structure : null),
+                hoje: settingsUtil.today(),
+            }),
         }));
         res.json(overview);
     });

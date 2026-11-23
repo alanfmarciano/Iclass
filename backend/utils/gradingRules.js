@@ -261,9 +261,12 @@ function normalizeManualItem(raw) {
         tipo: MANUAL_TIPOS.includes(raw.tipo) ? raw.tipo : 'outro',
         descricao: cleanText(raw.descricao, 500),
         data: /^\d{4}-\d{2}-\d{2}$/.test(String(raw.data || '')) ? raw.data : null,
+        // Módulo do curso a que a avaliação pertence (B6): com ele, a nota entra na
+        // disciplina do módulo (situação por disciplina). Sem módulo, null.
+        moduloId: typeof raw.moduloId === 'string' && raw.moduloId.trim() && raw.moduloId.length <= 120 ? raw.moduloId.trim() : null,
     };
-    ['criadoPor', 'arquivadoPor'].forEach(field => { if (typeof raw[field] === 'string') manual[field] = raw[field]; });
-    ['criadoEm', 'arquivadoEm'].forEach(field => {
+    ['criadoPor', 'arquivadoPor', 'atualizadoPor'].forEach(field => { if (typeof raw[field] === 'string') manual[field] = raw[field]; });
+    ['criadoEm', 'arquivadoEm', 'atualizadoEm'].forEach(field => {
         if (typeof raw[field] === 'string' || typeof raw[field] === 'number') manual[field] = raw[field];
     });
     return manual;
@@ -681,6 +684,11 @@ function computeStudentResult({ criterios = null, plano = null, grupos = [], fre
         return { id, nome: cleanText(item.nome, 80) || id, ...own, frequenciaTurma: !propria && !!frequenciaTurma };
     });
     let situacao = combineSituacoes(result.disciplinas.map(item => item.situacao));
+    // Todas as notas fora de disciplina (módulo sem disciplina ou avaliação manual sem
+    // módulo, B6) e nenhuma disciplina com nota: a situação geral é a da turma (a conta de
+    // todas as notas), para não sair "Sem notas" ao lado de uma média.
+    const situacaoDaTurma = situacao === 'sem_notas' && foraDeDisciplina > 0 && core.situacao !== 'sem_notas';
+    if (situacaoDaTurma) situacao = core.situacao;
     const avisos = [];
     result.disciplinas.forEach(item => item.avisos
         .filter(entry => AVISOS_DE_SITUACAO.includes(entry.codigo))
@@ -702,7 +710,7 @@ function computeStudentResult({ criterios = null, plano = null, grupos = [], fre
     if (foraDeDisciplina) {
         avisos.push(aviso('itens_fora_de_disciplina', `${countLabel(foraDeDisciplina, 'nota de módulo sem disciplina conta', 'notas de módulos sem disciplina contam')} só na média da turma, não na situação das disciplinas.`));
     }
-    result.avisos = [...result.avisos.filter(entry => !AVISOS_DE_SITUACAO.includes(entry.codigo)), ...avisos];
+    result.avisos = [...result.avisos.filter(entry => situacaoDaTurma || !AVISOS_DE_SITUACAO.includes(entry.codigo)), ...avisos];
     return result;
 }
 

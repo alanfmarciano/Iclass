@@ -1,8 +1,8 @@
 // Calendário acadêmico no painel (fase 3, grupo P2; B3 / P2-S5, FUN-15): dias não
 // letivos (feriado, recesso, ponto facultativo, evento escolar) e a agenda da turma em
-// .ics. As próximas subetapas da trilha B acrescentam aqui critérios de avaliação, plano
-// da turma, avaliações manuais, período letivo e encerrar turma (D20 do P2: rotas novas
-// fora de admin.js).
+// .ics. As próximas subetapas da trilha B acrescentam aqui período letivo e encerrar turma
+// (D20 do P2: rotas novas fora de admin.js). Critérios de avaliação, plano da turma e
+// avaliações manuais (B6 / P2-S3) ficam em adminGrading.js, registrados neste router.
 //
 // Rotas (a guarda de /api/admin pede page.forum, a mesma do Calendário; o escopo do dia
 // é decidido aqui):
@@ -68,6 +68,7 @@ const settingsUtil = require('../utils/settings.js');
 const academicCalendar = require('../utils/academicCalendar.js');
 const { nonSchoolDayCalendarItems } = require('../utils/calendarFeed.js');
 const { buildIcs, icsFileName, calendarEventToIcs } = require('../utils/icsCalendar.js');
+const { registerGradingRoutes } = require('./adminGrading.js');
 
 const {
     NON_SCHOOL_DAY_TYPES,
@@ -880,6 +881,9 @@ function createAdminAcademicRouter() {
             res.send(ics);
         });
     });
+
+    // Critérios de avaliação, plano da turma e avaliações manuais (B6 / P2-S3): adminGrading.js.
+    registerGradingRoutes(router);
 
     return router;
 }

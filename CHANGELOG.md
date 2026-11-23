@@ -4,6 +4,13 @@ O que mudou em cada versão, em português simples. O que já está pronto e ain
 
 ## Não publicado
 
+### Critérios de avaliação e avaliações da turma (servidor)
+- O curso pode ter critérios de avaliação: média mínima, frequência mínima, etapas com peso (até seis), recuperação por etapa e final, menções (MB, B, R, I ou outra lista) e situação por disciplina ou da turma. Sem critérios, as médias continuam exatamente como antes. Quem tem "Gerenciar cursos" grava a regra; o professor vê. Antes de salvar, a prévia mostra quais alunos mudam de média ou de situação. Mudar a regra de um curso com nota já publicada pede o motivo, que fica na Auditoria.
+- O professor monta o plano de avaliação da turma: a etapa e o peso de cada prova, qual prova é recuperação de qual etapa e o que fica fora da média.
+- Avaliação da turma sem questões (trabalho, prática, seminário, participação): o professor cria com título, tipo, data e módulo e lança só a nota, de 0 a 10. A nota aparece em Resultados, na planilha e no boletim como as outras, e o aluno vê depois de publicada. Arquivar a avaliação tira a nota da média (com aviso no boletim) sem apagar nada; reativar devolve.
+- Com os critérios ligados, Resultados, a planilha (CSV e Excel), o boletim, a ficha do aluno, o Dashboard e o Início do portal usam a mesma média final ponderada por etapa, com situação (Aprovado, Em recuperação, Reprovado por nota ou por falta, Cursando) e menção. A recuperação lançada numa aplicação de recuperação entra como recuperação, e a segunda chamada conta como a mesma prova.
+- O portal do aluno tem o resumo de notas da turma (só o que já foi publicado), com a média final, a situação, as notas por etapa e quantas faltas ainda pode ter. (As telas novas chegam na próxima etapa.)
+
 ### Editor de questões do professor
 - Em Provas, "Editar conteúdo" e "Nova prova" têm os seis tipos de questão: Uma correta, Várias corretas, Verdadeiro ou falso, Numérica, Resposta curta e Dissertativa. Cada tipo mostra uma frase de exemplo e só os campos dele: a marca da correta (ou das corretas, com "Pontuação parcial" ou tudo ou nada), Verdadeiro ou Falso, o número certo com tolerância e unidade, as respostas aceitas, e na dissertativa a resposta esperada (só você vê) e a rubrica com os critérios e os pontos.
 - Cada questão tem os seus pontos (de 0,1 a 100, com vírgula) e o topo do editor mostra o total da prova. Na dissertativa, a soma dos critérios da rubrica aparece ao lado e o botão "Usar ... como pontos" acerta a diferença.

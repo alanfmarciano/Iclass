@@ -71,6 +71,8 @@ const {
 } = require('../utils/examAttempts.js');
 const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, normalizeScore, roundGrade } = require('../utils/submissionAttempts.js');
 const { scopeSubmissionsToContext } = require('../utils/gradebook.js');
+const { normalizeCriteria } = require('../utils/gradingRules.js');
+const { buildStudentGradesSummary } = require('../utils/studentReport.js');
 const { createStudentSession, revokeStudentSession, pruneExpiredSessions, studentSessionByEmail } = require('../utils/authSessions.js');
 const { attemptPasswordLogin } = require('../utils/passwordLogin.js');
 const { studentSessionProfile } = require('../utils/studentProfile.js');
@@ -2323,6 +2325,12 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         .slice(0, 4)
         .map(item => ({ id: item.id, title: item.title, eventDate: item.eventDate, startTime: item.startTime || '', eventType: item.eventType || 'outro' }));
 
+    // Critérios do curso ligados (B6 / P2-S3): a nota geral é a média final do resumo de
+    // notas (a conta única do boletim), com a situação e a menção. Sem critérios, a média
+    // de sempre, e a resposta não muda.
+    const gradesSummary = course && normalizeCriteria(course.avaliacao)
+        ? buildStudentGradesSummary(db.memory, { email, course, cls: (db.memory.classes || []).find(item => item.name === cls.name && String(item.courseId || '') === String(cls.courseId || '')) || cls, hoje: settingsUtil.today() })
+        : null;
     res.json({
         courseName: course?.name || courseId,
         modules,
@@ -2330,7 +2338,10 @@ router.get('/api/student/dashboard', validateStudentSession, (req, res) => {
         completedCount,
         totalUnits: totalUnits.length,
         // Mesmo arredondamento do boletim, do quadro e das planilhas (roundGrade).
-        overallNote: publishedSubmissions.length ? roundGrade(publishedSubmissions.reduce((sum, item) => sum + Number(item.score), 0) / publishedSubmissions.length) : null,
+        overallNote: gradesSummary
+            ? gradesSummary.mediaFinal
+            : (publishedSubmissions.length ? roundGrade(publishedSubmissions.reduce((sum, item) => sum + Number(item.score), 0) / publishedSubmissions.length) : null),
+        ...(gradesSummary ? { situacao: gradesSummary.situacao, situacaoRotulo: gradesSummary.situacaoRotulo, mencao: gradesSummary.mencao } : {}),
         frequency,
         pendingCount,
         continueItem,
