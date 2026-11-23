@@ -31,6 +31,7 @@ process.env.TEST_MODE = '1';
 const db = require('../../backend/database.js');
 const runtimePaths = require('../../backend/runtimePaths.js');
 const coursePackage = require('../../backend/utils/coursePackage.js');
+const { normalizeEvaluationQuestions } = require('../../backend/utils/questionModel.js');
 const { createApp } = require('../../backend/server.js');
 
 let app;
@@ -267,9 +268,17 @@ test('[UC-PACOTE-001] exportar e importar numa instalação vazia dá o mesmo cu
     assert.equal(bankItem.questionText, 'Qual topologia tem um nó central?');
     assert.equal(bankItem.author, 'admin@b.local', 'autor é quem importou, não o e-mail da origem');
     assert.notEqual(bankItem.key, 'qb_redes_1');
+    // As questões entram pelo modelo único da questão, como no PUT do editor
+    // (normalizeEvaluationQuestions): o mesmo gabarito, com os campos que o editor grava.
     const expectedEval = JSON.parse(JSON.stringify(db.memory.evaluations.Avaliacao_REDES_1));
+    expectedEval.questions = normalizeEvaluationQuestions(expectedEval.questions);
+    delete expectedEval.key;
     expectedEval.questions[0].bankKey = bankItem.key;
-    assert.deepEqual(memory.evaluations.Avaliacao_REDES_1, expectedEval);
+    const { key: importedKey, ...importedEval } = memory.evaluations.Avaliacao_REDES_1;
+    assert.equal(importedKey, 'Avaliacao_REDES_1');
+    assert.deepEqual(importedEval, expectedEval);
+    assert.deepEqual(memory.evaluations.Avaliacao_REDES_1.questions.map(question => [question.type, question.correctAnswer, question.acceptedAnswers]),
+        [['multiple_choice', 'A', undefined], ['short_answer', '', ['ip a']]]);
     assert.deepEqual(memory.evaluations.Avaliacao_REDES_2, db.memory.evaluations.Avaliacao_REDES_2);
     assert.equal(memory.evaluations.Avaliacao_OUTRO_1, undefined);
     // Biblioteca do curso (sem a da turma), com id e autor desta instalação.
@@ -283,6 +292,7 @@ test('[UC-PACOTE-001] exportar e importar numa instalação vazia dá o mesmo cu
     assert.equal(memory.classes[0].name, CLASS);
     assert.equal(memory.classes[0].period, 'Noite');
     assert.equal(memory.classes[0].courseId, 'REDES');
+    assert.deepEqual(memory.classes[0].onlineExamConfigs, {}, 'como o "Duplicar": o boot seguinte não regrava a turma');
     assert.deepEqual(memory.classes[0].attendanceConfig, { toleranciaMin: 5, limiarRiscoPct: 80, grade: { 1: [{ ordem: 1, inicio: '19:00', disciplinaId: 'RED' }] } });
     assert.deepEqual(memory.classes[0].releasedItems, { Apostila_REDES_1: true, Apostila_REDES_2: true, Avaliacao_REDES_1: false, Gabarito_Avaliacao_REDES_1: false, Avaliacao_REDES_2: false, Gabarito_Avaliacao_REDES_2: false });
     assert.equal(result.contagens.turmasModelo, 1);
@@ -430,8 +440,10 @@ test('[UC-PACOTE-002] falha da gravação: o curso sai da memória, os arquivos 
     const auditBefore = db.memory.auditLogs.length;
     fs.writeFileSync(path.join(runtimePaths.CONTENT_DIR, 'imagens', 'redes', 'topologia.svg'), SVG_DIFERENTE); // força uma imagem nova
     const originalSave = db.save;
+    let failedOnly = null;
     db.save = function failingSave(options) {
         if (options && Array.isArray(options.only) && options.only.includes('courses')) {
+            failedOnly = options.only;
             const error = new Error('Não foi possível gravar os dados agora.');
             error.code = 'ICLASS_DB_WRITE';
             return Promise.reject(error);
@@ -447,7 +459,8 @@ test('[UC-PACOTE-002] falha da gravação: o curso sai da memória, os arquivos 
     assert.equal(res.status, 503, JSON.stringify(res.body));
     assert.equal(res.body.retryable, true);
     assert.equal(JSON.stringify([db.memory.courses, db.memory.classes, db.memory.evaluations, db.memory.library, db.memory.questionBank]), memoryBefore);
-    assert.equal(db.memory.auditLogs.length, auditBefore);
+    assert.equal(db.memory.auditLogs.length, auditBefore, 'a entrada da auditoria que não foi gravada sai da memória');
+    assert.ok(failedOnly.includes('auditLogs'), 'a auditoria vai na mesma gravação do curso (contrato auditoria do plano)');
     assert.deepEqual(listTree(runtimePaths.CONTENT_DIR), filesBefore.content, 'nenhum .md nem imagem novo ficou');
     assert.deepEqual(listTree(runtimePaths.UPLOADS_DIR), filesBefore.uploads);
 });
@@ -614,4 +627,191 @@ test('remapCourseKeys: "Duplicar curso" copia arquivos, avaliações e turmas co
     assert.deepEqual(clonedClass.onlineExamConfigs, {});
     assert.equal(clonedClass.activeExamKey, null);
     assert.equal(audits('course_cloned').length, 1);
+});
+
+// ------------------------------------------------------------------ rodada de ajuste 1
+
+function evaluationPackage({ questions, bank = [], codigo = 'MALQ' } = {}) {
+    return buildPackage(({ manifest }) => {
+        manifest.curso.codigo = codigo;
+        manifest.curso.structure[0].units.push({ id: '2', name: 'Prova', avaliacaoKey: 'Avaliacao_X_1' });
+        manifest.avaliacoes = { Avaliacao_X_1: { key: 'Avaliacao_X_1', title: 'Prova X', questions } };
+        manifest.questoes = bank;
+    });
+}
+
+test('[UC-PACOTE-003] avaliação e questão do banco passam pelo modelo único da questão: fora do modelo, 400 com o lugar da questão', async () => {
+    freshInstall();
+    const before = { courses: JSON.stringify(db.memory.courses), evaluations: JSON.stringify(db.memory.evaluations), bank: JSON.stringify(db.memory.questionBank), content: listTree(runtimePaths.CONTENT_DIR) };
+    const cases = [
+        ['tipo desconhecido, enunciado que não é texto, pontos em texto', evaluationPackage({ questions: [{ text: { a: 1 }, alternatives: 'abc', type: 'tipo_inexistente', points: 'muitos' }] }), /avaliação Avaliacao_X_1: Questão 1: /],
+        ['questão sem enunciado', evaluationPackage({ questions: [{ type: 'essay', text: '' }] }), /avaliação Avaliacao_X_1: Questão 1: informe o enunciado/],
+        ['item do banco com tipo desconhecido', evaluationPackage({ questions: [], bank: [{ ref: 'q1', questionText: 12345, type: 'xyz', archived: 'talvez', stats: { usos: 999 } }] }), /questão 1 do banco: /],
+        ['item do banco com categoria que não é texto', evaluationPackage({ questions: [], bank: [{ ref: 'q1', questionText: 'Ok?', alternatives: [{ letter: 'A', text: 'Sim', isCorrect: true }, { letter: 'B', text: 'Não' }], category: { x: 1 } }] }), /categoria da questão 1 do banco precisa ser texto/],
+    ];
+    for (const [label, buffer, pattern] of cases) {
+        const preview = await postPackage('/api/admin/course-packages/preview', buffer);
+        assert.equal(preview.status, 400, `${label}: ${JSON.stringify(preview.body)}`);
+        assert.equal(preview.body.code, 'invalid_package', label);
+        assert.match(preview.body.error, pattern, label);
+        const imported = await postPackage('/api/admin/course-packages/import', buffer, { sha256: sha(buffer), newId: 'MALQ', newName: 'Malicioso' });
+        assert.equal(imported.status, 400, `${label}: ${JSON.stringify(imported.body)}`);
+        assert.match(imported.body.error, pattern, label);
+        assert.equal(JSON.stringify(db.memory.courses), before.courses, label);
+        assert.equal(JSON.stringify(db.memory.evaluations), before.evaluations, label);
+        assert.equal(JSON.stringify(db.memory.questionBank), before.bank, label);
+        assert.deepEqual(listTree(runtimePaths.CONTENT_DIR), before.content, label);
+    }
+
+    // A questão antiga (sem type nem points, com weight, como as do banco do Alan) continua
+    // aceita, como no PUT do editor: vira "uma correta" com o mesmo gabarito. O item do
+    // banco entra só com os campos do banco: sem estatística, arquivada só com true e
+    // revisão nova.
+    const legacy = { originalNumber: 1, text: 'Qual é o gargalo?', weight: 1, alternatives: [{ letter: 'A', text: 'Disco', isCorrect: false }, { letter: 'B', text: 'Memória', isCorrect: true }], correctAnswer: 'B', bankKey: 'q1' };
+    const bankItem = { ref: 'q1', category: 'FUTEC', curriculumKey: '', questionText: 'Qual é o gargalo?', alternatives: legacy.alternatives, correctAnswer: 'B', sourceExamKey: 'Avaliacao_X_1', archived: 'talvez', stats: { usos: 999 }, revision: 7, createdAt: '2026-10-19T13:24:20.450Z' };
+    const good = evaluationPackage({ questions: [legacy], bank: [bankItem], codigo: 'LEGADO' });
+    const preview = await postPackage('/api/admin/course-packages/preview', good);
+    assert.equal(preview.status, 200, JSON.stringify(preview.body));
+    const done = await postPackage('/api/admin/course-packages/import', good, { sha256: preview.body.sha256, newId: 'LEGADO', newName: 'Legado' });
+    assert.equal(done.status, 200, JSON.stringify(done.body));
+    const evaluation = db.memory.evaluations.Avaliacao_X_1;
+    assert.deepEqual(evaluation.questions, normalizeEvaluationQuestions([legacy]).map(question => ({ ...question, bankKey: evaluation.questions[0].bankKey })));
+    assert.equal(evaluation.questions[0].type, 'multiple_choice');
+    assert.equal(evaluation.questions[0].correctAnswer, 'B');
+    assert.equal(evaluation.questions[0].weight, undefined);
+    const item = db.memory.questionBank.find(entry => entry.key === evaluation.questions[0].bankKey);
+    assert.ok(item, 'a questão da avaliação aponta para o item importado');
+    assert.equal(item.archived, false);
+    assert.equal(item.stats, undefined);
+    assert.equal(item.revision, 1);
+    assert.equal(item.questionText, 'Qual é o gargalo?');
+    assert.equal(item.category, 'FUTEC');
+    assert.equal(item.sourceExamKey, 'Avaliacao_X_1');
+    assert.equal(item.ref, undefined);
+});
+
+test('[UC-PACOTE-003] chave de conteúdo com nome que todo objeto herda (toString, hasOwnProperty) é recusada', async () => {
+    freshInstall();
+    for (const key of ['toString', 'hasOwnProperty', 'valueOf']) {
+        const buffer = buildPackage(({ manifest }) => { manifest.curso.structure[0].units.push({ id: '2', name: 'U2', apostilaKey: key }); });
+        const preview = await postPackage('/api/admin/course-packages/preview', buffer);
+        assert.equal(preview.status, 400, `${key}: ${JSON.stringify(preview.body)}`);
+        assert.match(preview.body.error, /chave de conteúdo inválida/, key);
+    }
+    // Avaliação com essa chave nem é lida (sai na limpeza do manifesto, como '__proto__').
+    const avaliacao = buildPackage(({ manifest }) => { manifest.avaliacoes = JSON.parse('{"toString":{"title":"x","questions":[]},"__proto__":{"title":"y"}}'); });
+    const res = await postPackage('/api/admin/course-packages/preview', avaliacao);
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    assert.equal(res.body.contagens.avaliacoes, 0);
+    const done = await postPackage('/api/admin/course-packages/import', avaliacao, { sha256: res.body.sha256, newId: 'HERDA', newName: 'Herda' });
+    assert.equal(done.status, 200, JSON.stringify(done.body));
+    assert.equal(Object.prototype.hasOwnProperty.call(db.memory.evaluations, 'toString'), false);
+    assert.equal({}.title, undefined);
+    assert.equal(fs.existsSync(path.join(runtimePaths.CONTENT_DIR, 'toString.md')), false);
+});
+
+test('[UC-PACOTE-004] e-mail em campo aninhado que ninguém listou não vai para o pacote', async () => {
+    freshInstall();
+    db.memory.questionBank[0].history = [{ by: 'prof.historico@escola.local', em: '2026-11-01', mudou: ['texto'] }];
+    db.memory.questionBank[0].revisions = [{ editor: 'editora@escola.local', n: 2 }];
+    db.memory.questionBank[0].campoNovo = { quemMexeu: 'outra.pessoa@escola.local', vistoPor: ['um@escola.local', 'dois@escola.local'] };
+    db.memory.evaluations.Avaliacao_REDES_1.questions[1].meta = { revisor: 'revisor@escola.local' };
+    const { body: buffer } = await exportBuffer();
+    const text = new AdmZip(buffer).readAsText('manifest.json');
+    assert.doesNotMatch(text, /@/, 'nenhum e-mail, em nenhum nível');
+    const manifest = JSON.parse(text);
+    assert.deepEqual(manifest.questoes[0].history, [{ em: '2026-11-01', mudou: ['texto'] }], 'o resto do campo fica');
+    assert.deepEqual(manifest.questoes[0].campoNovo, { vistoPor: [] });
+});
+
+test('[UC-PACOTE-001] apostila da estrutura sem o .md fica de fora, entra em foraDoPacote e a prévia avisa', async () => {
+    freshInstall();
+    fs.rmSync(path.join(runtimePaths.CONTENT_DIR, 'Apostila_REDES_2.md'));
+    const res = await exportBuffer();
+    assert.equal(res.headers['x-iclass-fora-do-pacote'], '1');
+    const manifest = JSON.parse(new AdmZip(res.body).readAsText('manifest.json'));
+    assert.deepEqual(manifest.foraDoPacote, [{ arquivo: 'conteudo/Apostila_REDES_2.md', motivo: 'apostila sem o arquivo nesta instalação' }]);
+    // A avaliação feita no editor (sem .md) não é "arquivo que falta".
+    assert.equal(manifest.foraDoPacote.some(item => item.arquivo.includes('Avaliacao_REDES_2')), false);
+    const preview = await coursePackage.previewCoursePackage(res.body, { memory: emptyMemory(), ...otherInstallDirs('instalacao-fora') });
+    assert.ok(preview.avisos.some(aviso => /1 arquivo citado no curso não estava na instalação de origem.*conteudo\/Apostila_REDES_2\.md/.test(aviso)), JSON.stringify(preview.avisos));
+});
+
+test('[UC-PACOTE-002] turma modelo em que alunos antigos (turma gravada só pelo nome) entrariam não é criada, e a prévia avisa', async () => {
+    freshInstall();
+    const { studentBelongsToClass } = require('../../backend/middlewares.js');
+    // Como no banco do Alan: turma gravada só como texto, e o campo antigo studentClass.
+    db.memory.students.push(
+        { name: 'Raul', email: 'raul@pacote.local', status: 'Ativo', classes: [CLASS], studentClass: CLASS },
+        { name: 'Mateus', email: 'mateus@pacote.local', status: 'Ativo', studentClass: CLASS },
+        { name: 'Bia', email: 'bia@pacote.local', status: 'Ativo', classes: [{ name: CLASS }] },
+    );
+    const { body: buffer } = await exportBuffer();
+    const preview = await postPackage('/api/admin/course-packages/preview', buffer);
+    assert.equal(preview.status, 200, JSON.stringify(preview.body));
+    assert.deepEqual(preview.body.turmasModelo, [CLASS]);
+    assert.deepEqual(preview.body.turmasModeloComAlunos, [{ nome: CLASS, alunos: 3 }], 'Ana, matriculada com o curso, não conta');
+    assert.ok(preview.body.avisos.some(aviso => aviso.includes(`A turma modelo ${CLASS} não será criada: 3 alunos daqui têm a turma ${CLASS} gravada só pelo nome`)), JSON.stringify(preview.body.avisos));
+
+    const done = await postPackage('/api/admin/course-packages/import', buffer, { sha256: preview.body.sha256, newId: 'REDES_NOVO', newName: 'Redes novo', incluirTurmasModelo: 'sim' });
+    assert.equal(done.status, 200, JSON.stringify(done.body));
+    assert.deepEqual(done.body.classes, []);
+    assert.deepEqual(done.body.turmasPuladas, [{ nome: CLASS, alunos: 3 }]);
+    assert.ok(done.body.avisos.some(aviso => aviso.includes('não será criada')));
+    assert.equal(db.memory.classes.some(cls => cls.courseId === 'REDES_NOVO'), false);
+    assert.deepEqual(audits('course_package_imported').at(-1).details.turmasPuladas, [{ nome: CLASS, alunos: 3 }]);
+    // Nenhuma turma do curso novo tem aluno.
+    const novas = db.memory.classes.filter(cls => cls.courseId === 'REDES_NOVO');
+    assert.equal(db.memory.students.filter(student => novas.some(cls => studentBelongsToClass(student, cls))).length, 0);
+
+    // Sem aluno antigo com esse nome, a turma é criada vazia.
+    db.memory.students = db.memory.students.filter(student => student.email === STUDENT);
+    const again = await postPackage('/api/admin/course-packages/preview', buffer);
+    assert.deepEqual(again.body.turmasModeloComAlunos, []);
+    const created = await postPackage('/api/admin/course-packages/import', buffer, { sha256: again.body.sha256, newId: 'REDES_OUTRO', newName: 'Redes outro', incluirTurmasModelo: 'sim' });
+    assert.equal(created.status, 200, JSON.stringify(created.body));
+    const cls = db.memory.classes.find(item => item.courseId === 'REDES_OUTRO');
+    assert.equal(cls.name, CLASS);
+    assert.equal(db.memory.students.filter(student => studentBelongsToClass(student, cls)).length, 0, 'vazia');
+});
+
+test('[UC-PACOTE-002] código sugerido: separador quando o código termina em número; a prévia diz para quais escolas a conta importa', async () => {
+    const buffer = buildPackage(({ manifest }) => { manifest.curso.codigo = 'curso_legacy_01'; });
+    const memory = { ...emptyMemory(), courses: [{ id: 'CURSO_LEGACY_01' }, { id: 'CURSO_LEGACY_01_2' }] };
+    const preview = await coursePackage.previewCoursePackage(buffer, { memory, ...otherInstallDirs('instalacao-sugestao') });
+    assert.equal(preview.conflitos.cursoExiste, true);
+    assert.equal(preview.sugestao.newId, 'CURSO_LEGACY_01_3');
+    const letters = buildPackage(({ manifest }) => { manifest.curso.codigo = 'FUTEC'; });
+    const futec = await coursePackage.previewCoursePackage(letters, { memory: { ...emptyMemory(), courses: [{ id: 'FUTEC' }] }, ...otherInstallDirs('instalacao-sugestao-2') });
+    assert.equal(futec.sugestao.newId, 'FUTEC2', 'o exemplo do desenho continua');
+
+    freshInstall();
+    const asAdminPreview = await postPackage('/api/admin/course-packages/preview', buffer);
+    assert.deepEqual(asAdminPreview.body.escolasPermitidas, ['escola_a', 'escola_b']);
+    const asProfPreview = await postPackage('/api/admin/course-packages/preview', buffer, {}, asProfessor);
+    assert.equal(asProfPreview.status, 200, JSON.stringify(asProfPreview.body));
+    assert.deepEqual(asProfPreview.body.escolasPermitidas, ['escola_a'], 'só a escola atribuída, como a importação exige');
+});
+
+test('[UC-PACOTE-002] importar grava o curso e a auditoria numa gravação só', async () => {
+    freshInstall();
+    const { body: buffer } = await exportBuffer();
+    const preview = await postPackage('/api/admin/course-packages/preview', buffer);
+    const originalSave = db.save;
+    const calls = [];
+    db.save = function spySave(options) {
+        calls.push(options && Array.isArray(options.only) ? [...options.only] : 'tudo');
+        return originalSave.call(this, options);
+    };
+    let res;
+    try {
+        res = await postPackage('/api/admin/course-packages/import', buffer, { sha256: preview.body.sha256, newId: 'UMA_VEZ', newName: 'Uma vez' });
+    } finally {
+        db.save = originalSave;
+    }
+    assert.equal(res.status, 200, JSON.stringify(res.body));
+    const withCourse = calls.filter(only => only === 'tudo' || only.includes('courses'));
+    assert.equal(withCourse.length, 1, JSON.stringify(calls));
+    assert.ok(withCourse[0] === 'tudo' || withCourse[0].includes('auditLogs'), JSON.stringify(calls));
+    assert.equal(calls.filter(only => only !== 'tudo' && only.length === 1 && only[0] === 'auditLogs').length, 0, 'sem gravação só da auditoria depois');
 });

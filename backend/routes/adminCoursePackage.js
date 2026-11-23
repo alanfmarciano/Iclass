@@ -17,8 +17,12 @@
 // - Importar pede o sha256 que a prévia devolveu (arquivo diferente: 409 import_changed),
 //   o código novo (as regras do "Duplicar": letras sem acento, números, '-' e '_') e o
 //   nome; a escola de destino, para quem não é administrador, precisa ser uma das
-//   atribuídas à conta (como no "Duplicar"). A gravação é uma só (course_package_imported
-//   junto); se ela falhar, o curso sai da memória e os arquivos novos são apagados.
+//   atribuídas à conta (como no "Duplicar"); a prévia devolve essas escolas
+//   (escolasPermitidas) para a tela oferecer só elas. A gravação é uma só, com a
+//   auditoria (course_package_imported) junto; se ela falhar, o curso e a entrada da
+//   auditoria saem da memória e os arquivos novos são apagados.
+// - Turma modelo com o nome de uma turma em que há aluno com a matrícula antiga só pelo
+//   nome não é criada (os alunos entrariam nela): a prévia avisa e a resposta diz quais.
 const express = require('express');
 const fs = require('fs');
 const path = require('path');
@@ -33,6 +37,7 @@ const {
     guarded,
     sendInternalError,
     sendRouteError,
+    studentBelongsToClass,
 } = require('../middlewares.js');
 const { accountScopeKind, outOfScopeMessage } = require('../utils/adminRoles.js');
 const { canAccessAdminPermission } = require('../utils/adminPermissions.js');
@@ -134,6 +139,15 @@ function createAdminCoursePackageRouter({ uploadErrorMessage, isUploadRequestErr
         });
     }
 
+    // Escolas para onde a conta pode importar (a mesma regra do "Duplicar"): todas para
+    // quem tem escopo total; senão só as atribuídas à conta.
+    function importSchools(account) {
+        const schools = (db.memory.schools || []).filter(Boolean);
+        if (accountScopeKind(account) === 'tudo') return schools.map(school => String(school.id));
+        const assigned = new Set(adminAssignedSchoolIds(account).map(String));
+        return schools.map(school => String(school.id)).filter(id => assigned.has(id));
+    }
+
     function refuseWithoutPermission(res, account) {
         if (canAccessAdminPermission(account, 'course.manage')) return false;
         res.status(403).json({ success: false, error: 'Sua conta não possui permissão para esta operação.' });
@@ -183,8 +197,8 @@ function createAdminCoursePackageRouter({ uploadErrorMessage, isUploadRequestErr
             const upload = await receivePackage(req, res);
             if (!upload) return;
             try {
-                const preview = await previewCoursePackage({ path: upload.path }, { memory: db.memory });
-                res.json({ success: true, arquivo: upload.originalName, ...preview });
+                const preview = await previewCoursePackage({ path: upload.path }, { memory: db.memory, studentBelongsToClass });
+                res.json({ success: true, arquivo: upload.originalName, ...preview, escolasPermitidas: importSchools(matchedAdmin) });
             } catch (error) {
                 sendPackageError(error, req, res);
             } finally {
@@ -230,20 +244,12 @@ function createAdminCoursePackageRouter({ uploadErrorMessage, isUploadRequestErr
                         incluirTurmasModelo: ['sim', 'true', '1'].includes(fields.incluirTurmasModelo),
                         actorEmail: actorEmail(matchedAdmin),
                         expectedSha256: fields.sha256,
+                        studentBelongsToClass,
                     });
                 } catch (error) {
                     return sendPackageError(error, req, res);
                 }
-                try {
-                    await db.save({ only: ['courses', 'classes', 'evaluations', 'library', 'questionBank'] });
-                } catch (error) {
-                    // Nada fica pela metade: o curso sai da memória e os arquivos novos saem
-                    // do disco; a tela recebe o 503 de "tente de novo". A auditoria só é
-                    // registrada depois da gravação (a trilha é só de acréscimo).
-                    result.undo();
-                    return sendInternalError(error, req, res, 'Falha ao gravar o curso importado.');
-                }
-                recordAudit(db.memory, {
+                const entry = recordAudit(db.memory, {
                     req,
                     actor: matchedAdmin,
                     action: 'course_package_imported',
@@ -262,13 +268,21 @@ function createAdminCoursePackageRouter({ uploadErrorMessage, isUploadRequestErr
                         renomeadas: result.renomeadas.length,
                         ...(result.renomeadas.length ? { exemplosRenomeadas: result.renomeadas.slice(0, 20) } : {}),
                         arquivosRenomeados: result.arquivosRenomeados.length,
+                        ...(result.turmasPuladas.length ? { turmasPuladas: result.turmasPuladas } : {}),
                     },
                 });
                 try {
-                    await db.save({ only: ['auditLogs'] });
+                    // Uma gravação só: o curso e a auditoria entram juntos ou nenhum entra.
+                    await db.save({ only: ['courses', 'classes', 'evaluations', 'library', 'questionBank', 'auditLogs'] });
                 } catch (error) {
-                    // O curso já está gravado; a entrada fica na memória e vai com a próxima gravação.
-                    console.error('[pacote de curso] auditoria da importação não gravada agora:', error && error.message);
+                    // Nada fica pela metade: o curso e a entrada da auditoria (que nunca foi
+                    // gravada) saem da memória e os arquivos novos saem do disco; a tela
+                    // recebe o 503 de "tente de novo".
+                    result.undo();
+                    const audits = Array.isArray(db.memory.auditLogs) ? db.memory.auditLogs : [];
+                    const at = audits.indexOf(entry);
+                    if (at >= 0) audits.splice(at, 1);
+                    return sendInternalError(error, req, res, 'Falha ao gravar o curso importado.');
                 }
                 res.json({
                     success: true,
@@ -278,6 +292,7 @@ function createAdminCoursePackageRouter({ uploadErrorMessage, isUploadRequestErr
                     renomeadas: result.renomeadas.length,
                     arquivosRenomeados: result.arquivosRenomeados.length,
                     arquivosReaproveitados: result.arquivosReaproveitados,
+                    turmasPuladas: result.turmasPuladas,
                     avisos: result.avisos,
                 });
             } finally {

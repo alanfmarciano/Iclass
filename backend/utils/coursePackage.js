@@ -38,6 +38,8 @@ const { headSignatureMatches, isBlockedUploadName } = require('./uploadSecurity.
 const attendanceUtil = require('./attendance.js');
 const { extractBranding } = require('./branding.js');
 const { schoolDateOf } = require('./schoolTime.js');
+const { normalizeEvaluationQuestions } = require('./questionModel.js');
+const { DEFAULT_CATEGORY, QUESTION_CATEGORY_MAX_CHARS, normalizeBankQuestion } = require('./questionBank.js');
 
 const COURSE_PACKAGE_FORMAT = 'iclass-curso';
 const COURSE_PACKAGE_VERSION = 1;
@@ -65,6 +67,11 @@ const PACKAGE_LIMITS = Object.freeze({
 const MANIFEST_ENTRY = 'manifest.json';
 const PREFIX = Object.freeze({ conteudo: 'conteudo/', upload: 'midia/uploads/', imagem: 'midia/imagens/' });
 const SAFE_CONTENT_KEY = /^[a-zA-Z0-9_-]{1,200}$/;
+// Chave de apostila ou de avaliação: vira nome de arquivo e chave de mapa (avaliações,
+// releasedItems), então nada que todo objeto herda ('toString', 'constructor'...).
+function isSafeContentKey(key) {
+    return typeof key === 'string' && SAFE_CONTENT_KEY.test(key) && !isInheritedKey(key) && key !== 'prototype';
+}
 const SAFE_UPLOAD_NAME = /^[A-Za-z0-9._-]{1,200}$/;
 const SHA256 = /^[a-f0-9]{64}$/;
 const IMAGE_EXTENSIONS = new Set(['.svg', '.png', '.jpg', '.jpeg', '.gif', '.webp']);
@@ -73,7 +80,17 @@ const IMAGE_EXTENSIONS = new Set(['.svg', '.png', '.jpg', '.jpeg', '.gif', '.web
 const UPLOAD_EXTENSIONS = new Set(['.jpg', '.jpeg', '.png', '.gif', '.webp', '.pdf', '.zip', '.docx', '.xlsx', '.pptx', '.odt', '.ods', '.doc', '.xls', '.ppt', '.mp4', '.mov', '.webm', '.csv', '.txt', '.md', '.json']);
 const BACKUP_LIKE_EXTENSIONS = new Set(['.json', '.zip']);
 // Campos de autoria ou de pessoa que nunca entram no pacote (o pacote não tem e-mail).
-const PERSONAL_FIELDS = new Set(['author', 'createdBy', 'updatedBy', 'archivedBy', 'deletedBy', 'publishedBy', 'reviewedBy', 'gradedBy', 'importedBy', 'restoredBy']);
+const PERSONAL_FIELDS = new Set([
+    'author', 'createdBy', 'updatedBy', 'archivedBy', 'deletedBy', 'publishedBy', 'reviewedBy', 'gradedBy', 'importedBy', 'restoredBy',
+    'by', 'editor', 'actor', 'email', 'studentEmail', 'targetEmail', 'professorEmail', 'ownerEmail', 'userEmail',
+]);
+// Além dos nomes acima, qualquer texto que é só um e-mail sai do pacote, em qualquer
+// nível (histórico de revisão de uma questão com { by: 'prof@escola' }, campo novo de um
+// grupo que guarda quem mexeu): campo com e-mail que ninguém listou não vaza.
+const EMAIL_VALUE = /^\s*[^\s@<>()",;:]+@[^\s@<>()",;:]+\.[^\s@<>()",;:]+\s*$/;
+function isEmailValue(value) {
+    return typeof value === 'string' && value.length <= 320 && EMAIL_VALUE.test(value);
+}
 
 class CoursePackageError extends Error {
     constructor(message, { status = 400, code = 'invalid_package', field } = {}) {
@@ -106,15 +123,16 @@ function isPlainObject(value) {
     return !!value && typeof value === 'object' && !Array.isArray(value);
 }
 
-// Cópia de um valor vindo do pacote (JSON de outra instalação): sem chave herdada de
-// Object.prototype ('__proto__', 'constructor', 'prototype') e sem os campos de autoria.
+// Cópia de um valor que vai para o pacote ou vem dele (JSON de outra instalação): sem
+// chave herdada de Object.prototype ('__proto__', 'constructor', 'prototype'), sem os
+// campos de autoria e sem texto que é só um e-mail.
 function cleanValue(value, depth = 0) {
     if (depth > 40) throw INVALID('dados aninhados demais.');
-    if (Array.isArray(value)) return value.map(item => cleanValue(item, depth + 1));
+    if (Array.isArray(value)) return value.filter(item => !isEmailValue(item)).map(item => cleanValue(item, depth + 1));
     if (value && typeof value === 'object') {
         const out = {};
         for (const [key, item] of Object.entries(value)) {
-            if (isInheritedKey(key) || key === 'prototype' || PERSONAL_FIELDS.has(key)) continue;
+            if (isInheritedKey(key) || key === 'prototype' || PERSONAL_FIELDS.has(key) || isEmailValue(item)) continue;
             out[key] = cleanValue(item, depth + 1);
         }
         return out;
@@ -309,7 +327,7 @@ function listContentFiles(contentDir) {
 }
 
 function findContentFileSync(files, contentDir, key) {
-    if (!SAFE_CONTENT_KEY.test(String(key || ''))) return null;
+    if (!isSafeContentKey(String(key || ''))) return null;
     const wanted = `${key}.md`;
     const match = files.find(file => file === wanted) || files.find(file => file.toLowerCase() === wanted.toLowerCase());
     return match ? path.join(contentDir, match) : null;
@@ -425,16 +443,23 @@ async function exportCoursePackage(memory, courseId, options = {}) {
     const biblioteca = courseLibraryEntries(memory, course).map(entry => cleanValue(libraryForPackage(entry)));
     const turmasModelo = (Array.isArray(memory?.classes) ? memory.classes : [])
         .filter(cls => cls && String(cls.courseId) === String(course.id) && typeof cls.name === 'string' && cls.name.trim())
-        .map(cls => ({ name: cls.name, ...(cls.period ? { period: cls.period } : {}), attendanceConfig: deepCopy(attendanceUtil.effectiveAttendanceConfig(cls)) }));
+        .map(cls => ({ name: cls.name, ...(cls.period ? { period: cls.period } : {}), attendanceConfig: cleanValue(deepCopy(attendanceUtil.effectiveAttendanceConfig(cls))) }));
 
     // Arquivos: as apostilas e avaliações (.md) e o que elas e os dados citam.
     const files = listContentFiles(contentDir);
     const conteudo = [];
     const texts = [];
+    const foraDoPacote = [];
+    const materialSet = new Set(materials);
     [...materials, ...evaluations].forEach(key => {
         if (conteudo.some(item => item.chave === key)) return;
         const filePath = findContentFileSync(files, contentDir, key);
-        if (!filePath || !regularFile(filePath)) return;
+        if (!filePath || !regularFile(filePath)) {
+            // A avaliação feita no editor vive só no banco (sem .md); a apostila sem o
+            // arquivo fica de fora e a tela avisa, como uma imagem que falta.
+            if (materialSet.has(key) && !evaluationSet.has(key)) foraDoPacote.push({ arquivo: `conteudo/${key}.md`, motivo: 'apostila sem o arquivo nesta instalação' });
+            return;
+        }
         const buffer = fs.readFileSync(filePath);
         conteudo.push({ chave: key, buffer });
         texts.push(buffer.toString('utf8'));
@@ -442,7 +467,6 @@ async function exportCoursePackage(memory, courseId, options = {}) {
     const dataText = JSON.stringify([curso, avaliacoes, biblioteca, questoes]);
     texts.push(dataText);
 
-    const foraDoPacote = [];
     const uploadNames = new Set();
     texts.forEach(text => referencedUploads(text).forEach(name => uploadNames.add(name)));
     biblioteca.forEach(entry => { if (entry.kind !== 'link' && typeof entry.filename === 'string') uploadNames.add(entry.filename); });
@@ -744,12 +768,74 @@ function validateStructure(structure) {
             if (!isPlainObject(unit)) throw INVALID(`a unidade ${unitIndex + 1} do módulo ${index + 1} está mal formada.`);
             ['apostilaKey', 'avaliacaoKey'].forEach(field => {
                 if (unit[field] === undefined || unit[field] === null || unit[field] === '') return;
-                if (typeof unit[field] !== 'string' || !SAFE_CONTENT_KEY.test(unit[field])) throw INVALID(`chave de conteúdo inválida na unidade ${unitIndex + 1} do módulo ${index + 1}.`);
+                if (!isSafeContentKey(unit[field])) throw INVALID(`chave de conteúdo inválida na unidade ${unitIndex + 1} do módulo ${index + 1}.`);
             });
             if (unit.files !== undefined && !Array.isArray(unit.files)) throw INVALID(`os arquivos da unidade ${unitIndex + 1} do módulo ${index + 1} não são uma lista.`);
         });
     });
     if (units > PACKAGE_LIMITS.maxUnits) throw INVALID(`unidades demais (mais de ${PACKAGE_LIMITS.maxUnits}).`);
+}
+
+// Erro 400 do modelo da questão ("Questão 3: tipo de questão desconhecido.") vira recusa
+// do pacote com o lugar da questão; outro erro segue como veio.
+function questionRefusal(error, where) {
+    if (error && error.status === 400 && typeof error.message === 'string') return INVALID(`${where}: ${error.message}`);
+    return error;
+}
+
+const TIME_VALUE = value => (typeof value === 'string' && value.length <= 40) || (Number.isFinite(value) && value >= 0);
+
+// Avaliação do pacote pelo modelo único da questão (o mesmo do PUT /api/admin/evaluation,
+// questionModel.normalizeEvaluationQuestions): questão com tipo desconhecido, enunciado
+// que não é texto ou pontos inválidos recusa o pacote inteiro; a questão antiga sem type
+// continua valendo uma correta, como no editor. Ficam só os campos que a avaliação tem
+// (título, nome, tema, rubrica, questões, revisão e datas); o resto do pacote fica de fora.
+function packageEvaluation(key, evaluation) {
+    const out = {
+        title: requireString(evaluation.title, `o título da avaliação ${key}`, 1000),
+        theme: requireString(evaluation.theme, `o tema da avaliação ${key}`, QUESTION_CATEGORY_MAX_CHARS),
+        rubric: requireString(evaluation.rubric, `a rubrica da avaliação ${key}`, 200000),
+    };
+    if (evaluation.name !== undefined && evaluation.name !== null) out.name = requireString(evaluation.name, `o nome da avaliação ${key}`, 1000);
+    if (evaluation.questions !== undefined && evaluation.questions !== null && !Array.isArray(evaluation.questions)) throw INVALID(`as questões da avaliação ${key} não são uma lista.`);
+    const list = Array.isArray(evaluation.questions) ? evaluation.questions : [];
+    if (list.length > PACKAGE_LIMITS.maxEvaluationQuestions) throw INVALID(`a avaliação ${key} tem questões demais.`);
+    if (list.length) {
+        try {
+            out.questions = normalizeEvaluationQuestions(list);
+        } catch (error) {
+            throw questionRefusal(error, `avaliação ${key}`);
+        }
+    } else {
+        out.questions = [];
+    }
+    if (typeof evaluation.sourceEvaluationKey === 'string' && isSafeContentKey(evaluation.sourceEvaluationKey)) out.sourceEvaluationKey = evaluation.sourceEvaluationKey;
+    if (Number.isSafeInteger(evaluation.revision) && evaluation.revision > 0) out.revision = evaluation.revision;
+    if (TIME_VALUE(evaluation.createdAt)) out.createdAt = evaluation.createdAt;
+    if (TIME_VALUE(evaluation.updatedAt)) out.updatedAt = evaluation.updatedAt;
+    return out;
+}
+
+// Questão do banco do pacote pelo mesmo modelo (questionBank.normalizeBankQuestion, o do
+// "Nova questão" do banco): só a questão normalizada e os campos do item que o banco usa
+// (categoria, componente curricular, avaliação de origem, número original e arquivada).
+// Estatística, revisão e autoria nascem aqui: a questão é nova nesta instalação.
+function packageBankQuestion(item, index) {
+    const where = `questão ${index + 1} do banco`;
+    let normalized;
+    try {
+        normalized = normalizeBankQuestion(item);
+    } catch (error) {
+        throw questionRefusal(error, where);
+    }
+    const category = requireString(item.category, `a categoria da ${where}`, QUESTION_CATEGORY_MAX_CHARS).trim();
+    const curriculumKey = requireString(item.curriculumKey, `o componente curricular da ${where}`, 100);
+    const out = { category: category || DEFAULT_CATEGORY, curriculumKey, ...normalized };
+    if (typeof item.sourceExamKey === 'string' && item.sourceExamKey) out.sourceExamKey = item.sourceExamKey;
+    if (Number.isSafeInteger(item.originalNumber) && item.originalNumber > 0) out.originalNumber = item.originalNumber;
+    out.archived = item.archived === true;
+    if (item.ref !== undefined) out.ref = item.ref;
+    return out;
 }
 
 // Confere e limpa os dados do manifesto. Devolve o pacote no formato que a importação usa.
@@ -783,15 +869,15 @@ function packageData(manifest) {
     }
     // Campos de curso que esta versão não conhece (de versão mais nova do mesmo formato)
     // ficam de fora; só os de COURSE_PACKAGE_FIELDS entram.
-    const avaliacoes = isPlainObject(manifest.avaliacoes) ? cleanValue(manifest.avaliacoes) : {};
-    Object.entries(avaliacoes).forEach(([key, evaluation]) => {
-        if (!SAFE_CONTENT_KEY.test(key)) throw INVALID(`avaliação com chave inválida (${key.slice(0, 200)}).`);
+    const rawEvaluations = isPlainObject(manifest.avaliacoes) ? cleanValue(manifest.avaliacoes) : {};
+    const avaliacoes = {};
+    Object.entries(rawEvaluations).forEach(([key, evaluation]) => {
+        if (!isSafeContentKey(key)) throw INVALID(`avaliação com chave inválida (${key.slice(0, 200)}).`);
         if (!isPlainObject(evaluation)) throw INVALID(`a avaliação ${key} está mal formada.`);
-        if (evaluation.questions !== undefined && !Array.isArray(evaluation.questions)) throw INVALID(`as questões da avaliação ${key} não são uma lista.`);
-        if ((evaluation.questions || []).length > PACKAGE_LIMITS.maxEvaluationQuestions) throw INVALID(`a avaliação ${key} tem questões demais.`);
-        (evaluation.questions || []).forEach((question, index) => {
+        (Array.isArray(evaluation.questions) ? evaluation.questions : []).forEach((question, index) => {
             if (!isPlainObject(question)) throw INVALID(`a questão ${index + 1} da avaliação ${key} está mal formada.`);
         });
+        avaliacoes[key] = packageEvaluation(key, evaluation);
     });
     const biblioteca = Array.isArray(manifest.biblioteca) ? cleanValue(manifest.biblioteca) : [];
     if (biblioteca.length > PACKAGE_LIMITS.maxLibrary) throw INVALID('itens demais na biblioteca.');
@@ -802,11 +888,12 @@ function packageData(manifest) {
         requireString(entry.name, `o nome do item ${index + 1} da biblioteca`, 200);
         requireString(entry.description, `a descrição do item ${index + 1} da biblioteca`, 500);
     });
-    const questoes = Array.isArray(manifest.questoes) ? cleanValue(manifest.questoes) : [];
-    if (questoes.length > PACKAGE_LIMITS.maxQuestions) throw INVALID('questões demais no banco.');
-    questoes.forEach((item, index) => {
+    const rawQuestions = Array.isArray(manifest.questoes) ? cleanValue(manifest.questoes) : [];
+    if (rawQuestions.length > PACKAGE_LIMITS.maxQuestions) throw INVALID('questões demais no banco.');
+    const questoes = rawQuestions.map((item, index) => {
         if (!isPlainObject(item)) throw INVALID(`a questão ${index + 1} do banco está mal formada.`);
         if (item.ref !== undefined && (typeof item.ref !== 'string' || item.ref.length > 40)) throw INVALID(`a referência da questão ${index + 1} do banco é inválida.`);
+        return packageBankQuestion(item, index);
     });
     const turmasModelo = Array.isArray(manifest.turmasModelo) ? cleanValue(manifest.turmasModelo) : [];
     if (turmasModelo.length > PACKAGE_LIMITS.maxClasses) throw INVALID('turmas modelo demais.');
@@ -824,6 +911,11 @@ function packageData(manifest) {
         versaoApp: typeof manifest.versaoApp === 'string' ? manifest.versaoApp.slice(0, 40) : '',
         versao: manifest.versao,
         foraDoPacote: Array.isArray(manifest.foraDoPacote) ? manifest.foraDoPacote.length : 0,
+        // Nomes do que ficou de fora na origem, só para o aviso da prévia.
+        foraDoPacoteNomes: (Array.isArray(manifest.foraDoPacote) ? manifest.foraDoPacote : [])
+            .map(item => (isPlainObject(item) && typeof item.arquivo === 'string' ? item.arquivo.slice(0, 200) : ''))
+            .filter(Boolean)
+            .slice(0, 5),
     };
 }
 
@@ -948,14 +1040,42 @@ function countsOf(data, files) {
     };
 }
 
-// Código sugerido: o do pacote, ou com 2, 3... no fim quando ele já existe aqui.
+// Código sugerido: o do pacote, ou com 2, 3... no fim quando ele já existe aqui (FUTEC
+// vira FUTEC2). Código que já termina em número ganha um '_' antes (CURSO_01 vira
+// CURSO_01_2, não CURSO_012, que se lê como "12").
 function suggestCourseId(memory, codigo) {
     const base = /^[A-Za-z0-9_-]{1,60}$/.test(codigo) ? codigo.toUpperCase() : 'CURSO_IMPORTADO';
     const exists = id => (memory?.courses || []).some(course => course && String(course.id).toLowerCase() === id.toLowerCase());
     if (!exists(base)) return base;
+    const separator = /[0-9]$/.test(base) ? '_' : '';
     let index = 2;
-    while (exists(`${base}${index}`)) index += 1;
-    return `${base}${index}`;
+    while (exists(`${base}${separator}${index}`)) index += 1;
+    return `${base}${separator}${index}`;
+}
+
+// Turma modelo que já nasceria com alunos: a matrícula antiga gravada só com o nome da
+// turma ('2DES', ou { name: '2DES' } sem curso) vale para toda turma com esse nome, de
+// qualquer curso (middlewares.studentBelongsToClass). Uma turma nova com esse nome
+// mostraria esses alunos na chamada e liberaria para eles o conteúdo do curso importado;
+// por isso ela não é criada, e a prévia diz quantos alunos são. A conta usa a mesma regra
+// da matrícula, com um curso que não existe (só a matrícula sem curso casa).
+function belongsToClassFn(options) {
+    if (typeof options.studentBelongsToClass === 'function') return options.studentBelongsToClass;
+    return require('../middlewares.js').studentBelongsToClass;
+}
+
+function classesWithLegacyMembers(memory, turmasModelo, belongs) {
+    const students = Array.isArray(memory?.students) ? memory.students.filter(Boolean) : [];
+    if (!students.length) return [];
+    return turmasModelo.map(model => {
+        const probe = { name: model.name, courseId: '\u0000curso-do-pacote' };
+        return { nome: model.name, alunos: students.filter(student => belongs(student, probe)).length };
+    }).filter(item => item.alunos > 0);
+}
+
+function legacyMembersWarning(item) {
+    const alunos = item.alunos === 1 ? '1 aluno daqui tem' : `${item.alunos} alunos daqui têm`;
+    return `A turma modelo ${item.nome} não será criada: ${alunos} a turma ${item.nome} gravada só pelo nome (cadastro antigo) e ${item.alunos === 1 ? 'entraria' : 'entrariam'} nela. Depois de importar, crie a turma com outro nome em "Nova turma".`;
 }
 
 // Prévia: confere o pacote inteiro (cada arquivo com o sha256) sem gravar nada e diz o
@@ -969,7 +1089,14 @@ async function previewCoursePackage(input, options = {}) {
     const plan = planImport(memory, data, pkg.files, { newId: suggestedId, ...dirs });
     const cursoExiste = (memory?.courses || []).some(course => course && String(course.id).toLowerCase() === String(data.codigo).toLowerCase());
     const avisos = [...data.avisos];
-    if (data.foraDoPacote) avisos.push(`${data.foraDoPacote} arquivo(s) citado(s) no curso não estava(m) na instalação de origem e não veio(vieram) no pacote.`);
+    if (data.foraDoPacote) {
+        const nomes = data.foraDoPacoteNomes.length ? ` (${data.foraDoPacoteNomes.join(', ')}${data.foraDoPacote > data.foraDoPacoteNomes.length ? ', ...' : ''})` : '';
+        avisos.push(data.foraDoPacote === 1
+            ? `1 arquivo citado no curso não estava na instalação de origem e não veio no pacote${nomes}.`
+            : `${data.foraDoPacote} arquivos citados no curso não estavam na instalação de origem e não vieram no pacote${nomes}.`);
+    }
+    const turmasComAlunos = classesWithLegacyMembers(memory, data.turmasModelo, belongsToClassFn(options));
+    turmasComAlunos.forEach(item => avisos.push(legacyMembersWarning(item)));
     return {
         sha256: pkg.sha256,
         versaoFormato: data.versao,
@@ -984,6 +1111,8 @@ async function previewCoursePackage(input, options = {}) {
         },
         sugestao: { newId: suggestedId, newName: data.nome || suggestedId },
         turmasModelo: data.turmasModelo.map(cls => cls.name),
+        // Turmas modelo que não serão criadas (alunos antigos entrariam nelas).
+        turmasModeloComAlunos: turmasComAlunos,
         avisos,
     };
 }
@@ -1033,7 +1162,9 @@ function newBankKey(index) {
 // turmas modelo, as avaliações, a biblioteca e as questões. Quem chama grava o banco e,
 // se a gravação falhar, chama undo() (tira da memória e apaga os arquivos novos).
 // Devolve { course, classes, contagens, renomeadas, arquivosRenomeados,
-// arquivosReaproveitados, origem, avisos, sha256, undo }.
+// arquivosReaproveitados, origem, turmasPuladas, avisos, sha256, undo }. Turma modelo em
+// que alunos antigos entrariam (classesWithLegacyMembers) não é criada e vai em
+// turmasPuladas, com o aviso.
 async function importCoursePackage(input, options = {}) {
     const memory = options.memory || require('../database.js').memory;
     const dirs = contentDirs(options);
@@ -1126,7 +1257,7 @@ async function importCoursePackage(input, options = {}) {
             existingBankKeys.add(key);
             if (ref) refToKey.set(ref, key);
             const sourceExamKey = typeof item.sourceExamKey === 'string' ? keyFor(item.sourceExamKey) : null;
-            return rewriteValue({ ...item, key, sourceExamKey: sourceExamKey || null, author: actor, updatedBy: actor, createdAt: nowIso, updatedAt: nowIso }, maps);
+            return rewriteValue({ key, ...item, sourceExamKey: sourceExamKey || null, author: actor, revision: 1, createdAt: nowIso, updatedAt: nowIso, updatedBy: actor }, maps);
         });
 
         const evaluations = {};
@@ -1180,7 +1311,15 @@ async function importCoursePackage(input, options = {}) {
         // Turmas modelo (opcional): nome, período e grade, sem alunos; a liberação começa
         // como numa turma nova (apostilas liberadas, avaliações e gabaritos fechados).
         const classes = [];
+        const turmasPuladas = [];
+        const avisos = [...data.avisos];
         if (options.incluirTurmasModelo) {
+            const skipped = new Set();
+            classesWithLegacyMembers(memory, data.turmasModelo, belongsToClassFn(options)).forEach(item => {
+                skipped.add(item.nome);
+                turmasPuladas.push(item);
+                avisos.push(legacyMembersWarning(item));
+            });
             const disciplinaIds = new Set((course.disciplinas || []).map(item => item.id));
             const releasedItems = {};
             course.structure.forEach(module => unitsOf(module).forEach(unit => {
@@ -1190,13 +1329,15 @@ async function importCoursePackage(input, options = {}) {
                     releasedItems[`Gabarito_${unit.avaliacaoKey}`] = false;
                 }
             }));
-            data.turmasModelo.forEach(model => {
+            data.turmasModelo.filter(model => !skipped.has(model.name)).forEach(model => {
                 classes.push({
                     name: model.name,
                     period: ['Manhã', 'Tarde', 'Noite'].includes(model.period) ? model.period : 'Manhã',
                     courseId: newId,
                     registrationEnabled: true,
                     examConfigs: {},
+                    // Como o "Duplicar" e o boot (sem isso o boot seguinte regrava a turma).
+                    onlineExamConfigs: {},
                     releasedItems: { ...releasedItems },
                     attendanceConfig: attendanceUtil.sanitizeAttendanceConfig(model.attendanceConfig, disciplinaIds) || attendanceUtil.configDefault(),
                     contentOverrides: { materials: {}, evaluations: {}, unitNames: {}, extraUnits: [], structure: null },
@@ -1237,7 +1378,8 @@ async function importCoursePackage(input, options = {}) {
             arquivosRenomeados: plan.renamedFiles,
             arquivosReaproveitados: plan.reaproveitados,
             origem: { codigo: data.codigo, nome: data.nome, versaoFormato: data.versao, versaoApp: data.versaoApp },
-            avisos: data.avisos,
+            turmasPuladas,
+            avisos,
             sha256: pkg.sha256,
             undo,
         };

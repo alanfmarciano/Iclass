@@ -173,4 +173,54 @@ describe('TurmasPage · pacote de curso', () => {
     expect(screen.queryByRole('button', { name: 'Duplicar' })).not.toBeInTheDocument()
     expect(screen.queryByRole('button', { name: 'Novo curso' })).not.toBeInTheDocument()
   })
+  it('[UC-PACOTE-002] turma modelo em que alunos antigos entrariam sai da caixa; a escola é só uma das permitidas; o exemplo segue o código digitado', async () => {
+    mocks.post.mockImplementation(async (path) => {
+      if (path === '/api/admin/course-packages/preview') {
+        return {
+          ...PREVIEW,
+          turmasModelo: ['1DES', '2DES'],
+          turmasModeloComAlunos: [{ nome: '2DES', alunos: 5 }],
+          avisos: ['A turma modelo 2DES não será criada: 5 alunos daqui têm a turma 2DES gravada só pelo nome (cadastro antigo) e entrariam nela. Depois de importar, crie a turma com outro nome em "Nova turma".'],
+          escolasPermitidas: ['escola-b'],
+        }
+      }
+      return { success: true, course: { id: 'DES2', name: 'Técnico em TI' }, classes: [{ name: '1DES' }], renomeadas: 0, arquivosRenomeados: 0, turmasPuladas: [{ nome: '2DES', alunos: 5 }], avisos: [] }
+    })
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByRole('button', { name: 'Importar curso' }))
+    const dialog = screen.getByRole('dialog', { name: 'Importar curso' })
+    await user.upload(within(dialog).getByLabelText('Pacote do curso'), new File(['PK'], 'curso.zip', { type: 'application/zip' }))
+    await within(dialog).findByText('Já existe um curso DES: será importado como DES2.')
+    expect(dialog).toHaveTextContent('A turma modelo 2DES não será criada: 5 alunos daqui têm a turma 2DES gravada só pelo nome')
+    expect(dialog).toHaveTextContent('Criar as turmas modelo (1DES), vazias')
+    expect(dialog).toHaveTextContent('(ex.: Apostila_DES_1 → Apostila_DES_1_DES2)')
+    const school = within(dialog).getByLabelText('Escola')
+    expect([...school.querySelectorAll('option')].map(option => option.value)).toEqual(['escola-b'])
+    expect(school).toHaveValue('escola-b')
+    const code = within(dialog).getByLabelText('Código do curso')
+    await user.clear(code)
+    await user.type(code, 'TI')
+    expect(dialog).toHaveTextContent('(ex.: Apostila_DES_1 → Apostila_DES_1_TI, ou com _2 no fim se esse nome também já existir)')
+    await user.clear(code)
+    await user.type(code, 'DES2')
+    await user.click(within(dialog).getByRole('button', { name: 'Importar curso' }))
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledTimes(2))
+    expect(formEntries(mocks.post.mock.calls[1][1])).toMatchObject({ schoolId: 'escola-b', incluirTurmasModelo: 'sim' })
+    await waitFor(() => expect(mocks.toast.warning).toHaveBeenCalledWith(expect.stringContaining('A turma modelo 2DES não foi criada')))
+  })
+
+  it('[UC-PACOTE-002] todas as turmas modelo com alunos antigos: caixa some; conta sem escola atribuída não importa', async () => {
+    mocks.post.mockResolvedValue({ ...PREVIEW, turmasModelo: ['2DES'], turmasModeloComAlunos: [{ nome: '2DES', alunos: 5 }], escolasPermitidas: [] })
+    const user = userEvent.setup()
+    renderPage()
+    await user.click(screen.getByRole('button', { name: 'Importar curso' }))
+    const dialog = screen.getByRole('dialog', { name: 'Importar curso' })
+    await user.upload(within(dialog).getByLabelText('Pacote do curso'), new File(['PK'], 'curso.zip', { type: 'application/zip' }))
+    await within(dialog).findByText('Já existe um curso DES: será importado como DES2.')
+    expect(within(dialog).queryByRole('checkbox')).not.toBeInTheDocument()
+    expect(within(dialog).queryByLabelText('Escola')).not.toBeInTheDocument()
+    expect(within(dialog).getByRole('alert')).toHaveTextContent('Sua conta não tem escola atribuída para receber o curso.')
+    expect(within(dialog).getByRole('button', { name: 'Importar curso' })).toBeDisabled()
+  })
 })

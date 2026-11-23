@@ -1,14 +1,26 @@
 import { useEffect, useRef, useState } from 'react'
-import { FileArchive, Upload } from 'lucide-react'
+import { Download, FileArchive, Upload } from 'lucide-react'
 import { Button } from '../../components/ui/Button'
-import { Modal } from '../../components/ui/Modal'
+import { ConfirmDialog, Modal } from '../../components/ui/Modal'
 import { Input } from '../../components/ui/Input'
 import { Select } from '../../components/ui/Select'
-import { api } from '../../lib/api'
+import { api, downloadFile } from '../../lib/api'
+import { useAuth } from '../../context/AuthProvider'
+import { useToast } from '../../context/ToastProvider'
+import { canAccessAdminPermission, isFullAdmin } from '../../lib/adminPermissions'
 
 // Pacote de curso (P4-S14, D25 a D27): a prévia confere o ZIP sem gravar nada e diz o
 // que vai entrar; a importação manda o mesmo arquivo de novo com o sha256 da prévia (o
 // servidor recusa outro arquivo) e grava tudo ou nada.
+// Os botões ("Exportar curso" e "Importar curso") ficam aqui, com o diálogo de cada um,
+// para Cursos e turmas (TurmasPage) só pôr cada botão no lugar.
+
+// Exportar e importar pedem course.manage (o administrador sempre tem; o professor só
+// quando a conta recebeu a permissão, na escola dele).
+export function useCanPackageCourses() {
+  const { auth } = useAuth()
+  return isFullAdmin(auth) || canAccessAdminPermission(auth, 'course.manage')
+}
 export const COURSE_PACKAGE_ACCEPT = '.zip,application/zip'
 export const PACKAGE_PERSONAL_DATA_NOTE = 'O pacote não leva alunos, notas nem presença.'
 export const PACKAGE_ANSWERS_WARNING = 'O arquivo tem as provas e os gabaritos: guarde como guardaria a prova impressa.'
@@ -34,11 +46,74 @@ function formatDate(value) {
   return Number.isFinite(date.getTime()) ? date.toLocaleDateString('pt-BR') : ''
 }
 
+const NO_SCHOOL_MESSAGE = 'Sua conta não tem escola atribuída para receber o curso. Peça ao administrador para atribuir a escola à sua conta.'
+
+// Escolas que a conta pode escolher: as que o servidor devolveu na prévia
+// (escolasPermitidas, a mesma regra da importação); sem o campo, todas as da lista.
+function allowedSchools(schools, preview) {
+  if (!preview || !Array.isArray(preview.escolasPermitidas)) return schools
+  const allowed = new Set(preview.escolasPermitidas.map(String))
+  return schools.filter(school => allowed.has(String(school.id)))
+}
+
+// Turmas modelo que a importação cria: as do pacote menos as que já nasceriam com alunos
+// (turma gravada só pelo nome em cadastros antigos; o servidor não cria e avisa).
+function creatableClasses(preview) {
+  const skipped = new Set((preview?.turmasModeloComAlunos || []).map(item => item.nome))
+  return (preview?.turmasModelo || []).filter(name => !skipped.has(name))
+}
+
 function packageForm(file, fields = {}) {
   const form = new FormData()
   form.append('arquivo', file)
   Object.entries(fields).forEach(([key, value]) => form.append(key, value))
   return form
+}
+
+// "Exportar curso": avisa que o arquivo leva as provas e os gabaritos e baixa o pacote.
+// O erro do download fica no próprio diálogo (o ConfirmDialog mostra a mensagem).
+export function CourseExportButton({ course }) {
+  const canPackage = useCanPackageCourses()
+  const toast = useToast()
+  const [open, setOpen] = useState(false)
+  if (!canPackage || !course) return null
+  async function exportCourse() {
+    await downloadFile(`/api/admin/courses/${encodeURIComponent(course.id)}/package`, `curso_${course.id}.iclass-curso.zip`)
+    toast.success('Pacote do curso baixado.')
+    setOpen(false)
+  }
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button size="sm" variant="secondary" icon={Download} onClick={() => setOpen(true)}>Exportar curso</Button>
+      <span className="text-xs text-subtle">Leva este curso para outro IClass.</span>
+      <ConfirmDialog open={open} onClose={() => setOpen(false)} onConfirm={exportCourse} title="Exportar curso?"
+        description={`Baixa um pacote (.iclass-curso.zip) de ${course.name} para importar em outro IClass: estrutura, apostilas, avaliações, arquivos e questões do banco ligadas às provas.`}
+        note={`${PACKAGE_ANSWERS_WARNING}\n${PACKAGE_PERSONAL_DATA_NOTE}`} confirmLabel="Baixar pacote" />
+    </div>
+  )
+}
+
+// "Importar curso": abre o diálogo da prévia; no fim avisa o que entrou (e a turma modelo
+// que não foi criada) e devolve o curso novo para a tela selecionar.
+export function CourseImportButton({ schools = [], onImported, className = '' }) {
+  const canPackage = useCanPackageCourses()
+  const toast = useToast()
+  const [open, setOpen] = useState(false)
+  if (!canPackage) return null
+  function finish(result) {
+    setOpen(false)
+    const renamed = Number(result?.renomeadas || 0) + Number(result?.arquivosRenomeados || 0)
+    toast.success(renamed ? `Curso importado como ${result.course.id}. Algumas chaves e arquivos ganharam o código do curso para não misturar com os daqui.` : `Curso importado como ${result.course.id}.`)
+    const skipped = Array.isArray(result?.turmasPuladas) ? result.turmasPuladas : []
+    if (skipped.length) toast.warning(`${skipped.length === 1 ? 'A turma modelo' : 'As turmas modelo'} ${skipped.map(item => item.nome).join(', ')} não ${skipped.length === 1 ? 'foi criada' : 'foram criadas'}: há alunos daqui com essa turma gravada só pelo nome. Crie a turma com outro nome em "Nova turma".`)
+    onImported?.(result.course)
+  }
+  return (
+    <>
+      <Button variant="secondary" icon={Upload} className={className} onClick={() => setOpen(true)}>Importar curso</Button>
+      <CoursePackageImportDialog open={open} onClose={() => setOpen(false)} schools={schools} onImported={finish} />
+    </>
+  )
 }
 
 export function CoursePackageImportDialog({ open, onClose, schools = [], onImported }) {
@@ -72,11 +147,13 @@ export function CoursePackageImportDialog({ open, onClose, schools = [], onImpor
     try {
       const result = await api.post('/api/admin/course-packages/preview', packageForm(chosen), { timeoutMs: 0 })
       setPreview(result)
+      const allowed = allowedSchools(schools, result)
+      const creatable = creatableClasses(result)
       setForm({
         newId: result.sugestao?.newId || '',
         newName: result.sugestao?.newName || '',
-        schoolId: schools.some(school => school.id === form.schoolId) ? form.schoolId : (schools[0]?.id || ''),
-        incluirTurmasModelo: true,
+        schoolId: allowed.some(school => school.id === form.schoolId) ? form.schoolId : (allowed[0]?.id || ''),
+        incluirTurmasModelo: creatable.length > 0,
       })
     } catch (err) {
       setError(err.message)
@@ -92,7 +169,8 @@ export function CoursePackageImportDialog({ open, onClose, schools = [], onImpor
     const missing = {}
     if (!newId) missing.newId = 'Informe o código do curso.'
     if (!newName) missing.newName = 'Informe o nome do curso.'
-    if (!form.schoolId && schools.length) missing.schoolId = 'Escolha a escola.'
+    if (!form.schoolId && schoolOptions.length) missing.schoolId = 'Escolha a escola.'
+    if (noSchool) missing.schoolId = NO_SCHOOL_MESSAGE
     setFieldError(missing)
     if (Object.keys(missing).length) return
     setLoading(true)
@@ -117,15 +195,25 @@ export function CoursePackageImportDialog({ open, onClose, schools = [], onImpor
 
   const counts = preview?.contagens || {}
   const conflitos = preview?.conflitos || {}
-  const turmasModelo = preview?.turmasModelo || []
+  const turmasModelo = creatableClasses(preview)
   const typedId = form.newId.trim().toUpperCase()
+  const suggestedId = preview?.sugestao?.newId || ''
+  const example = conflitos.exemplos?.[0]
+  // O exemplo do servidor vale para o código sugerido; com outro código, a chave ganha o
+  // código digitado (e _2 no fim se esse nome também já existir aqui).
+  const exampleText = !example ? '' : (!typedId || typedId === suggestedId)
+    ? `${example.de} → ${example.para}`
+    : `${example.de} → ${example.de}_${typedId}, ou com _2 no fim se esse nome também já existir`
+  const schoolOptions = allowedSchools(schools, preview)
+  // Conta sem escola atribuída (o professor só com turmas): a importação recusaria.
+  const noSchool = !!preview && schools.length > 0 && schoolOptions.length === 0
 
   return (
     <Modal open={open} onClose={loading ? () => {} : onClose} size="lg" title="Importar curso"
       description="Escolha um pacote exportado de outro IClass (arquivo .iclass-curso.zip). Nada é gravado antes de você confirmar."
       footer={<>
         <Button variant="ghost" onClick={onClose} disabled={loading}>Cancelar</Button>
-        <Button icon={Upload} loading={loading && !!preview} disabled={!preview || loading} onClick={importPackage}>Importar curso</Button>
+        <Button icon={Upload} loading={loading && !!preview} disabled={!preview || loading || noSchool} onClick={importPackage}>Importar curso</Button>
       </>}>
       <div className="space-y-4">
         <label className="block space-y-1.5">
@@ -151,8 +239,8 @@ export function CoursePackageImportDialog({ open, onClose, schools = [], onImpor
 
           {(conflitos.cursoExiste || conflitos.chavesRenomeadas > 0 || conflitos.arquivosRenomeados > 0 || (preview.avisos || []).length > 0) && (
             <div className="space-y-1.5 rounded-lg border border-warning/40 bg-warning-soft p-3 text-sm text-text [overflow-wrap:anywhere]" aria-label="Avisos da prévia">
-              {conflitos.cursoExiste && <p>Já existe um curso {preview.resumo?.codigo}: será importado como {typedId || preview.sugestao?.newId}.</p>}
-              {conflitos.chavesRenomeadas > 0 && <p>{plural(conflitos.chavesRenomeadas, 'apostila ou avaliação tem', 'apostilas ou avaliações têm')} o nome de um conteúdo que já existe aqui e {conflitos.chavesRenomeadas === 1 ? 'vai' : 'vão'} ganhar o código do curso no fim (ex.: {conflitos.exemplos?.[0]?.de} → {conflitos.exemplos?.[0]?.de}_{typedId || preview.sugestao?.newId}).</p>}
+              {conflitos.cursoExiste && <p>Já existe um curso {preview.resumo?.codigo}: será importado como {typedId || suggestedId}.</p>}
+              {conflitos.chavesRenomeadas > 0 && <p>{plural(conflitos.chavesRenomeadas, 'apostila ou avaliação tem', 'apostilas ou avaliações têm')} o nome de um conteúdo que já existe aqui e {conflitos.chavesRenomeadas === 1 ? 'vai' : 'vão'} ganhar o código do curso no fim{exampleText ? ` (ex.: ${exampleText})` : ''}.</p>}
               {conflitos.arquivosRenomeados > 0 && <p>{plural(conflitos.arquivosRenomeados, 'arquivo tem', 'arquivos têm')} o nome de outro arquivo daqui e {conflitos.arquivosRenomeados === 1 ? 'vai' : 'vão'} entrar com outro nome; as apostilas são ajustadas.</p>}
               {(preview.avisos || []).map(aviso => <p key={aviso}>{aviso}</p>)}
             </div>
@@ -164,11 +252,12 @@ export function CoursePackageImportDialog({ open, onClose, schools = [], onImpor
             <Input label="Nome do curso" value={form.newName} maxLength={120} error={fieldError.newName}
               onChange={event => setForm(current => ({ ...current, newName: event.target.value }))} />
           </div>
-          {schools.length > 0 && <Select label="Escola" value={form.schoolId} error={fieldError.schoolId}
+          {schoolOptions.length > 0 && <Select label="Escola" value={form.schoolId} error={fieldError.schoolId}
             onChange={event => setForm(current => ({ ...current, schoolId: event.target.value }))}>
-            {schools.map(school => <option key={school.id} value={school.id}>{school.name}</option>)}
+            {schoolOptions.map(school => <option key={school.id} value={school.id}>{school.name}</option>)}
           </Select>}
-          {fieldError.schoolId && schools.length === 0 && <p role="alert" className="text-xs text-danger">{fieldError.schoolId}</p>}
+          {noSchool && <p role="alert" className="text-sm text-danger">{NO_SCHOOL_MESSAGE}</p>}
+          {fieldError.schoolId && schoolOptions.length === 0 && !noSchool && <p role="alert" className="text-xs text-danger">{fieldError.schoolId}</p>}
           {turmasModelo.length > 0 && <label className="flex items-start gap-2 text-sm text-text">
             <input type="checkbox" className="mt-0.5" checked={form.incluirTurmasModelo}
               onChange={event => setForm(current => ({ ...current, incluirTurmasModelo: event.target.checked }))} />

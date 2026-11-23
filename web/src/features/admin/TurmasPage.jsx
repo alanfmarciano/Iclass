@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useNavigate } from 'react-router-dom'
-import { Archive, BookCopy, BookOpen, Building2, Download, Pencil, Plus, RotateCcw, Search, School, Trash2, Upload, UserPlus, Users, Wand2 } from 'lucide-react'
+import { Archive, BookCopy, BookOpen, Building2, Pencil, Plus, RotateCcw, Search, School, Trash2, UserPlus, Users, Wand2 } from 'lucide-react'
 import { Badge } from '../../components/ui/Badge'
 import { Button } from '../../components/ui/Button'
 import { Card, CardBody } from '../../components/ui/Card'
@@ -11,12 +11,12 @@ import { PageState } from '../../components/ui/PageState'
 import { EmptyState } from '../../components/ui/EmptyState'
 import { useApi } from '../../hooks/useApi'
 import { matchesSearch, normalizeSearch } from '../../lib/textSearch'
-import { api, downloadFile } from '../../lib/api'
+import { api } from '../../lib/api'
 import { useAuth } from '../../context/AuthProvider'
+import { CourseExportButton, CourseImportButton } from './CoursePackageDialog'
 import { useToast } from '../../context/ToastProvider'
 import { DisciplinasModal, GradeEditor } from './TurmaPresencaConfig'
-import { canAccessAdminPermission, isFullAdmin, isProfessorRoleAccount } from '../../lib/adminPermissions'
-import { CoursePackageImportDialog, PACKAGE_ANSWERS_WARNING, PACKAGE_PERSONAL_DATA_NOTE } from './CoursePackageDialog'
+import { isFullAdmin, isProfessorRoleAccount } from '../../lib/adminPermissions'
 
 const CLASS_PERIODS = ['Manhã', 'Tarde', 'Noite']
 
@@ -54,9 +54,6 @@ export default function TurmasPage() {
   // Criar e mudar cursos e turmas, atribuir professor e arquivo: só o administrador pleno
   // (contrato C2 do P4; antes era "não é professor").
   const isAdmin = isFullAdmin(auth)
-  // Pacote do curso (P4-S14): exportar e importar pedem course.manage (o administrador
-  // sempre tem; o professor só quando a conta recebeu a permissão, na escola dele).
-  const canPackage = isAdmin || canAccessAdminPermission(auth, 'course.manage')
   const coursesApi = useApi('/api/admin/course-summaries?includeDeleted=1')
   const classesApi = useApi('/api/admin/classes')
   const schoolsApi = useApi('/api/admin/schools')
@@ -73,7 +70,6 @@ export default function TurmasPage() {
   const [disciplinasForm, setDisciplinasForm] = useState(null)
   const [assignmentForm, setAssignmentForm] = useState(null)
   const [confirm, setConfirm] = useState(null)
-  const [importOpen, setImportOpen] = useState(false)
   const [saving, setSaving] = useState(false)
 
   const courses = coursesApi.data || []
@@ -208,22 +204,7 @@ export default function TurmasPage() {
     if (current.type === 'course') ok = await run(() => api.delete(`/api/admin/courses/${encodeURIComponent(current.target.id)}`, { timeoutMs: 0 }), 'Curso excluído e preservado para restauração.')
     if (current.type === 'archive') ok = await run(() => api.post(`/api/admin/courses/${encodeURIComponent(current.target.id)}/purge`, {}, { timeoutMs: 0 }), 'Curso arquivado com segurança.')
     if (current.type === 'archive-delete') ok = await run(() => api.post('/api/admin/archived-courses/delete', { folder: current.target.folder }, { timeoutMs: 0 }), 'Arquivo excluído definitivamente.')
-    if (current.type === 'export') {
-      // Erro do download fica no próprio diálogo (ConfirmDialog mostra a mensagem).
-      await downloadFile(`/api/admin/courses/${encodeURIComponent(current.target.id)}/package`, `curso_${current.target.id}.iclass-curso.zip`)
-      toast.success('Pacote do curso baixado.')
-      ok = true
-    }
     if (ok) setConfirm(null)
-  }
-
-  async function finishImport(result) {
-    setImportOpen(false)
-    const renamed = Number(result?.renomeadas || 0) + Number(result?.arquivosRenomeados || 0)
-    toast.success(renamed ? `Curso importado como ${result.course.id}. Algumas chaves e arquivos ganharam o código do curso para não misturar com os daqui.` : `Curso importado como ${result.course.id}.`)
-    setStatusFilter('active')
-    setSelectedCourseId(result.course.id)
-    await refresh()
   }
 
   const loading = coursesApi.loading || classesApi.loading || schoolsApi.loading || (isAdmin && accountsApi.loading)
@@ -235,8 +216,9 @@ export default function TurmasPage() {
         <div>
           <h1 className="text-[2rem] font-semibold tracking-[-0.045em] text-text">Cursos e turmas</h1>
           <p className="mt-1.5 text-sm text-muted">Gerencie cursos, turmas e o escopo de atuação dos professores.</p>
+          <CourseImportButton className="mt-3" schools={schools} onImported={course => { setStatusFilter('active'); setSelectedCourseId(course.id); refresh() }} />
         </div>
-        {(isAdmin || canPackage) && <div className="flex flex-wrap gap-2">{canPackage && <Button variant="secondary" icon={Upload} onClick={() => setImportOpen(true)}>Importar curso</Button>}{isAdmin && <><Button variant="secondary" icon={Plus} onClick={openNewCourse}>Novo curso</Button><Button icon={Plus} disabled={!selectedCourse || isDeleted(selectedCourse)} onClick={() => setClassForm({ mode: 'create', name: '', period: 'Manhã', registrationEnabled: true, attendanceConfig: { toleranciaMin: 10, limiarRiscoPct: 75, grade: {} } })}>Nova turma</Button></>}</div>}
+        {isAdmin && <div className="flex gap-2"><Button variant="secondary" icon={Plus} onClick={openNewCourse}>Novo curso</Button><Button icon={Plus} disabled={!selectedCourse || isDeleted(selectedCourse)} onClick={() => setClassForm({ mode: 'create', name: '', period: 'Manhã', registrationEnabled: true, attendanceConfig: { toleranciaMin: 10, limiarRiscoPct: 75, grade: {} } })}>Nova turma</Button></div>}
       </div>
 
       <PageState loading={loading} error={error} onRetry={refresh}>
@@ -268,10 +250,10 @@ export default function TurmasPage() {
               <Card><CardBody className="space-y-5 pt-5">
                 <div className="flex flex-wrap items-start justify-between gap-4">
                   <div><div className="flex items-center gap-2"><h2 className="text-xl font-semibold text-text">{selectedCourse.name}</h2>{isDeleted(selectedCourse) && <Badge tone="warning">Excluído</Badge>}</div><p className="mt-1 flex items-center gap-1.5 text-sm text-muted"><Building2 size={15} /> {selectedSchool?.name || 'Sem escola vinculada'}</p></div>
-                  {!isAdmin && canPackage && !isDeleted(selectedCourse) && <div className="flex flex-wrap gap-2"><Button size="sm" variant="secondary" icon={Download} onClick={() => setConfirm({ type: 'export', target: selectedCourse })}>Exportar curso</Button></div>}
-                  {isAdmin && <div className="flex flex-wrap gap-2">{isDeleted(selectedCourse) ? <Button size="sm" icon={RotateCcw} onClick={() => run(() => api.put(`/api/admin/courses/${encodeURIComponent(selectedCourse.id)}`, { status: 'active', deleted: false, deletedAt: null }), 'Curso restaurado.')}>Restaurar</Button> : <><Button size="sm" variant="secondary" icon={Pencil} onClick={openEditCourse}>Editar</Button><Button size="sm" variant="secondary" icon={BookOpen} onClick={() => setDisciplinasForm(selectedCourse)}>Disciplinas</Button><Button size="sm" variant="secondary" icon={BookCopy} onClick={openCloneCourse}>Duplicar</Button><Button size="sm" variant="secondary" icon={Download} onClick={() => setConfirm({ type: 'export', target: selectedCourse })}>Exportar curso</Button><Button size="sm" variant="secondary" icon={Archive} onClick={() => setConfirm({ type: 'archive', target: selectedCourse })}>Arquivar</Button><Button size="sm" variant="destructive" icon={Trash2} onClick={() => setConfirm({ type: 'course', target: selectedCourse })}>Excluir</Button></>}</div>}
+                  {isAdmin && <div className="flex flex-wrap gap-2">{isDeleted(selectedCourse) ? <Button size="sm" icon={RotateCcw} onClick={() => run(() => api.put(`/api/admin/courses/${encodeURIComponent(selectedCourse.id)}`, { status: 'active', deleted: false, deletedAt: null }), 'Curso restaurado.')}>Restaurar</Button> : <><Button size="sm" variant="secondary" icon={Pencil} onClick={openEditCourse}>Editar</Button><Button size="sm" variant="secondary" icon={BookOpen} onClick={() => setDisciplinasForm(selectedCourse)}>Disciplinas</Button><Button size="sm" variant="secondary" icon={BookCopy} onClick={openCloneCourse}>Duplicar</Button><Button size="sm" variant="secondary" icon={Archive} onClick={() => setConfirm({ type: 'archive', target: selectedCourse })}>Arquivar</Button><Button size="sm" variant="destructive" icon={Trash2} onClick={() => setConfirm({ type: 'course', target: selectedCourse })}>Excluir</Button></>}</div>}
                 </div>
 
+                {!isDeleted(selectedCourse) && <CourseExportButton course={selectedCourse} />}
                 <div className="border-t border-border pt-4">
                   <div className="mb-3 flex flex-wrap items-center justify-between gap-2"><div><h3 className="font-semibold text-text">Professores do curso</h3><p className="text-xs text-subtle">A etiqueta mostra se o acesso vem da escola, do curso ou de turma específica.</p></div>{isAdmin && !isDeleted(selectedCourse) && <Button size="sm" icon={UserPlus} onClick={() => openAssignments()}>Atribuir professor</Button>}</div>
                   {courseProfessors.length === 0 ? <p className="rounded-lg border border-dashed border-border p-3 text-sm text-muted">Nenhum professor atribuído.</p> : <div className="grid gap-2 md:grid-cols-2">{courseProfessors.map(professor => <button key={professor.email} disabled={!isAdmin || isDeleted(selectedCourse)} onClick={() => openAssignments(professor.email)} className="flex items-center justify-between gap-3 rounded-lg border border-border p-3 text-left hover:bg-surface-2 disabled:cursor-default"><span><span className="block text-sm font-medium text-text">{professor.name}</span><span className="text-xs text-subtle">{professor.email}</span></span><OriginBadges sources={teacherSources(professor, selectedCourse)} /></button>)}</div>}
@@ -323,9 +305,7 @@ export default function TurmasPage() {
         {assignmentForm && <div className="space-y-5"><Select label="Professor" value={assignmentForm.professorEmail} onChange={event => changeAssignmentProfessor(event.target.value)}>{professors.map(professor => <option key={professor.email} value={professor.email}>{professor.name} — {professor.email}</option>)}</Select><div className="grid gap-3 md:grid-cols-2"><label className="rounded-lg border border-border p-4"><span className="flex items-center gap-2 font-medium text-text"><input type="checkbox" checked={assignmentForm.school} onChange={event => setAssignmentForm({ ...assignmentForm, school: event.target.checked })} /> Escola inteira</span><span className="mt-1 block text-xs text-subtle">Todos os cursos e turmas atuais e futuros de {selectedSchool?.name}.</span></label><label className="rounded-lg border border-border p-4"><span className="flex items-center gap-2 font-medium text-text"><input type="checkbox" checked={assignmentForm.course} onChange={event => setAssignmentForm({ ...assignmentForm, course: event.target.checked })} /> Curso inteiro</span><span className="mt-1 block text-xs text-subtle">Todas as turmas atuais e futuras de {selectedCourse?.name}.</span></label></div><div><h3 className="font-medium text-text">Turmas específicas</h3><p className="mb-3 text-xs text-subtle">As marcações diretas são preservadas mesmo ao adicionar ou remover um vínculo amplo.</p><div className="grid gap-2 md:grid-cols-2">{selectedClasses.map(cls => { const inherited = assignmentForm.school || assignmentForm.course; const checked = assignmentForm.classes.includes(cls.name); return <label key={cls.name} className={`flex items-center justify-between rounded-lg border border-border p-3 ${inherited ? 'opacity-70' : ''}`}><span className="flex items-center gap-2 text-sm text-text"><input type="checkbox" disabled={inherited} checked={checked} onChange={event => setAssignmentForm({ ...assignmentForm, classes: event.target.checked ? [...assignmentForm.classes, cls.name] : assignmentForm.classes.filter(name => name !== cls.name) })} /> {cls.name}</span>{inherited && <Badge tone="info">Acesso herdado</Badge>}</label>})}{selectedClasses.length === 0 && <p className="text-sm text-muted">O curso ainda não possui turmas.</p>}</div></div></div>}
       </Modal>
 
-      <ConfirmDialog open={!!confirm} onClose={() => setConfirm(null)} onConfirm={executeConfirm} danger={confirm?.type !== 'archive' && confirm?.type !== 'export'} title={confirm?.type === 'class' ? 'Excluir turma?' : confirm?.type === 'archive' ? 'Arquivar curso?' : confirm?.type === 'archive-delete' ? 'Excluir arquivo definitivamente?' : confirm?.type === 'export' ? 'Exportar curso?' : 'Excluir curso?'} description={confirm?.type === 'archive' ? 'Será criado um pacote restaurável com curso, turmas e dados relacionados.' : confirm?.type === 'export' ? `Baixa um pacote (.iclass-curso.zip) de ${confirm.target.name} para importar em outro IClass: estrutura, apostilas, avaliações, arquivos e questões do banco ligadas às provas.` : confirm?.type === 'course' ? undefined : 'Confirme a operação.'} note={confirm?.type === 'course' ? 'O curso ficará desativado e poderá ser restaurado.' : confirm?.type === 'export' ? `${PACKAGE_ANSWERS_WARNING}\n${PACKAGE_PERSONAL_DATA_NOTE}` : undefined} confirmLabel={confirm?.type === 'archive' ? 'Arquivar' : confirm?.type === 'export' ? 'Baixar pacote' : 'Excluir'} />
-
-      <CoursePackageImportDialog open={importOpen} onClose={() => setImportOpen(false)} schools={schools} onImported={finishImport} />
+      <ConfirmDialog open={!!confirm} onClose={() => setConfirm(null)} onConfirm={executeConfirm} danger={confirm?.type !== 'archive'} title={confirm?.type === 'class' ? 'Excluir turma?' : confirm?.type === 'archive' ? 'Arquivar curso?' : confirm?.type === 'archive-delete' ? 'Excluir arquivo definitivamente?' : 'Excluir curso?'} description={confirm?.type === 'archive' ? 'Será criado um pacote restaurável com curso, turmas e dados relacionados.' : confirm?.type === 'course' ? undefined : 'Confirme a operação.'} note={confirm?.type === 'course' ? 'O curso ficará desativado e poderá ser restaurado.' : undefined} confirmLabel={confirm?.type === 'archive' ? 'Arquivar' : 'Excluir'} />
     </div>
   )
 }
