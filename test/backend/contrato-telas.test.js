@@ -167,6 +167,16 @@ test('[UC-ERRO-003] contrato das telas do aluno: avisos, notificações, matríc
     screen('features/student/ProvasPage.jsx', "api.post('/api/student/my-submissions', { email, courseId, studentClass }, requestOptions)");
     ok(await asStudent('/api/student/my-submissions').send({ email, courseId: COURSE_ID, studentClass: CLASS_NAME }), 'minhas entregas');
 
+    // Pedido de revisão da nota (A19, P3-S5): { questionNumber (número ou null), texto }; a
+    // resposta do professor na tela Corrigir: { resposta }.
+    screen('features/student/ReviewRequestPanel.jsx', 'api.post(`/api/student/submissions/${encodeURIComponent(submission.id)}/review-request`, { questionNumber: questionNumber ? Number(questionNumber) : null, texto: text, })');
+    screen('features/admin/CorrecaoPage.jsx', 'api.post(`/api/admin/submissions/${encodeURIComponent(detail.submissionId)}/review-requests/${encodeURIComponent(reviewRequest.id)}/answer`, { resposta: text })');
+    const published = (db.memory.submissions || []).find(item => item && item.gradePublished === true && String(item.student?.email || '').toLowerCase() === email && Array.isArray(item.gradedAnswers) && item.gradedAnswers.length);
+    assert.ok(published, 'o seed tem nota publicada do aluno de teste');
+    published.gradePublishedAt = Date.now();
+    const review = ok(await asStudent(`/api/student/submissions/${encodeURIComponent(published.id)}/review-request`).send({ questionNumber: Number(published.gradedAnswers[0].questionNumber), texto: 'A questão tinha duas alternativas certas.' }), 'pedido de revisão');
+    ok(await asInstructor(`/api/admin/submissions/${encodeURIComponent(published.id)}/review-requests/${encodeURIComponent(review.body.pedido.id)}/answer`).send({ resposta: 'A nota está certa.' }), 'resposta ao pedido de revisão');
+
     // StudentCourseGate: pedir e cancelar matrícula.
     screen('features/student/StudentCourseGate.jsx', "api.post('/api/student/enrollments/request', { courseId: request.courseId, studentClass: request.requestedClassName })");
     screen('features/student/StudentCourseGate.jsx', "api.post('/api/student/enrollments/cancel', { id: request.id })");

@@ -504,6 +504,8 @@ function decisions(virtualEmail) {
         'POST /api/student/change-password': 'recusada',
         'POST /api/student/exam-applications/:applicationId/start-attempt': 'recusada',
         'POST /api/student/report-question': 'recusada',
+        // Pedido de revisão da nota (fase 3, A19 / P3-S5): grava na entrega; a prévia não pede.
+        'POST /api/student/submissions/:id/review-request': 'recusada',
         'POST /api/student/submit': 'recusada',
         'POST /api/student/my-submissions': read('/api/student/my-submissions', { method: 'POST', body: { courseId: COURSE, studentClass: CLASS } }),
         'GET /api/student/progress': read(`/api/student/progress?email=${encodeURIComponent(virtualEmail)}`),

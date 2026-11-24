@@ -13,9 +13,10 @@ import { useStudent } from './useStudent'
 import { countByBand, criterioOf, fmtGradeValue, fmtMencao, gradeBand as faixaDaNota, gradeBandRanges, gradeRangeLabel, gradeTone as tomDaNota, situacaoTone } from '../../lib/grades'
 import { createContext, useContext, useState, useEffect, useMemo, useRef } from 'react'
 import { usePolling } from '../../hooks/usePolling'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { matchesSearch } from '../../lib/textSearch'
 import { ScheduledExams } from './ScheduledExams'
+import { ReviewRequestPanel } from './ReviewRequestPanel'
 import QuestionMarkdown from '../exam/QuestionMarkdown'
 import { QUESTION_TYPE_LABEL, answerStatus, answerType, isTextType, pointsLabel, possibleLabel, studentAnswerText } from '../exam/answerView'
 
@@ -741,6 +742,29 @@ export default function ProvasPage() {
       return true
     } catch { return false }
   }, { intervalMs: 5000 })
+  // Resultado aberto acompanha a lista: o pedido de revisão enviado, a resposta do
+  // professor e a nota nova aparecem sem fechar e abrir de novo (P3-S5 / A19).
+  useEffect(() => {
+    setDetail((current) => {
+      if (!current) return current
+      const fresh = mine.find((item) => String(item.id) === String(current.id))
+      return fresh && JSON.stringify(fresh) !== JSON.stringify(current) ? fresh : current
+    })
+  }, [mine])
+  // ?entrega=<id> (o aviso "Seu pedido de revisão foi respondido" do sino): abre aquele
+  // resultado quando a lista chega e tira o parâmetro do endereço.
+  const [searchParams, setSearchParams] = useSearchParams()
+  const openId = searchParams.get('entrega') || ''
+  useEffect(() => {
+    if (!openId) return
+    const found = mine.find((item) => String(item.id) === openId)
+    if (!found) return
+    setDetail(found)
+    const next = new URLSearchParams(searchParams)
+    next.delete('entrega')
+    setSearchParams(next, { replace: true })
+  }, [openId, mine, searchParams, setSearchParams])
+
   // Troca de turma: consulta já (a primeira consulta sai sozinha ao abrir).
   const mineKeySeenRef = useRef(mineKey)
   useEffect(() => {
@@ -1030,6 +1054,7 @@ export default function ProvasPage() {
                 <p className="mt-1 whitespace-pre-wrap break-words text-text">{detail.comentarioGeral}</p>
               </div>
             )}
+            <ReviewRequestPanel key={detail.id} submission={detail} onSent={() => minePolling.runNow()} />
             {Array.isArray(detail.gradedAnswers) && detail.gradedAnswers.length > 0 ? (
               detail.answerKeyReleased && Array.isArray(detail.examQuestions) && detail.examQuestions.length > 0 ? (
                 <FullExamView detail={detail} questions={detail.examQuestions} answers={detail.gradedAnswers} />

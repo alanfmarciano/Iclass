@@ -192,6 +192,10 @@ Com a nota liberada, o aluno vê a nota e o comentário geral. Os pontos de cada
 
 Para anular a tentativa de um aluno por cola, use **Anular tentativa** no Monitor (veja Monitor). Para corrigir uma resposta certa que estava errada no gabarito, use **Corrigir gabarito** em Provas, na aplicação anterior. Se a preparação da prova foi excluída de **Aplicações anteriores**, a aplicação aparece em **Aplicações online sem preparação salva**, com o mesmo botão.
 
+### Pedidos de revisão da nota
+
+Com a nota liberada, o aluno pode pedir revisão em Provas até 7 dias depois da liberação, um pedido aberto por vez, sobre uma questão ou a prova toda. Os pedidos abertos aparecem em **Precisa de você** e no alto de **Corrigir provas**, do mais antigo para o mais novo; toque no pedido para abrir a entrega. Na entrega, a caixa **Pedidos de revisão do aluno** mostra a questão e o texto do aluno. Se a nota precisar mudar, ajuste os pontos nas questões (com o motivo, como em toda nota já liberada) e salve; depois escreva a resposta em **Resposta para o aluno** e toque em **Responder ao aluno**. O IClass marca sozinho se a nota mudou depois do pedido, e o aluno recebe um aviso no sino com a resposta. Toda mudança de nota já liberada também avisa o aluno com **Nota alterada**. A Coordenação vê os pedidos e as respostas, sem responder. Com a turma encerrada, não dá para pedir nem responder.
+
 ## Materiais e liberação {#materiais}
 
 <!-- P3 (A11) e P5 escrevem aqui: liberar unidades, agendamento de material e liberação por grupo. -->

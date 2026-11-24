@@ -938,7 +938,11 @@ router.post('/api/admin/submissions/publish', (req, res) => {
             if (published && integrityDecision(item) === null && isAwaitingCorrection(item)) { skippedPendingCorrection++; return; }
             const wasPublished = item.gradePublished === true;
             item.gradePublished = published;
-            item.gradePublishedAt = published ? Date.now() : null;
+            // Publicar de novo uma nota que já estava publicada mantém a hora da publicação:
+            // é dela que contam o prazo do pedido de revisão (7 dias, P3-S5) e o aviso "Nota
+            // alterada" das mudanças depois dela (antes, a hora andava e a nota antiga
+            // voltava como novidade no sino do aluno).
+            item.gradePublishedAt = published ? (wasPublished && Number(item.gradePublishedAt) > 0 ? item.gradePublishedAt : Date.now()) : null;
             item.gradePublishedBy = published ? (matchedAdmin?.email || 'admin') : null;
             updated++;
             if (wasPublished !== published) {

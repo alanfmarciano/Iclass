@@ -51,6 +51,7 @@ const {
 const { revokeStudentSession } = require('./authSessions.js');
 const fileStore = require('./storage.js');
 const studentData = require('./studentDataHandlers.js');
+const { anonymizeReviewRequests } = require('./examReviewRequests.js');
 
 const ANONYMIZE_WORD = 'ANONIMIZAR';
 const PURGE_WORD = 'APAGAR';
@@ -414,6 +415,9 @@ function anonymizedSubmission(submission, pseudonym, scrub = null) {
     const next = { ...submission };
     PERSONAL_SUBMISSION_FIELDS.forEach(field => { delete next[field]; });
     if (scrub) scrubSubmissionTexts(next, scrub);
+    // Pedidos de revisão da nota (P3-S5 / A19; contrato C7 do P3): o texto do pedido é do
+    // aluno e sai; a resposta do professor fica sem o nome, o e-mail e a matrícula dele.
+    if (Array.isArray(next.pedidosRevisao)) next.pedidosRevisao = anonymizeReviewRequests(next.pedidosRevisao, scrub);
     if (next.studentEmail !== undefined) next.studentEmail = pseudonym.email;
     next.student = {
         name: pseudonym.name,

@@ -18,6 +18,7 @@ import { ADMIN_PERMISSIONS, canWriteAdminPermission } from '../../lib/adminPermi
 import QuestionMarkdown from '../exam/QuestionMarkdown'
 import { QUESTION_TYPE_LABEL, isTextType, pointsLabel, possibleLabel } from '../exam/answerView'
 import { GradeReasonDialog, isReasonRequiredError } from './GradeReasonDialog'
+import { ReviewQueueList, ReviewRequestsBox } from './ReviewRequestsBox'
 import {
   CORRECTION_LIMITS,
   correctionBody,
@@ -58,6 +59,10 @@ import {
 //   botões da própria tela.
 // - Conflito (409 correction_conflict: outra aba gravou antes): aviso com "Recarregar".
 // - Nota já publicada que muda: o GradeReasonDialog pede o motivo (reason_required).
+// - Pedidos de revisão da nota (P3-S5 / A19): os abertos da turma ficam no topo, para
+//   qualquer prova (também a de correção já concluída); a entrega mostra os pedidos dela
+//   com o texto do aluno e o campo da resposta. Mudar a nota é pelos pontos (e Salvar)
+//   antes de responder. A resposta digitada e não enviada também pede "Sair sem salvar?".
 // - A Coordenação (só consulta) vê a correção sem os campos.
 // - No celular de 375 px: uma coluna, campos de 44 px e a barra de Salvar/Concluir
 //   presa ao pé da tela, sem rolagem para o lado.
@@ -272,6 +277,8 @@ export default function CorrecaoPage() {
   const contextQuery = new URLSearchParams({ courseId: courseId || '', studentClass: className || '' }).toString()
   const queueApi = useApi(courseId && className ? `/api/admin/corrections?${contextQuery}` : null, [courseId, className])
   const allPending = useMemo(() => (Array.isArray(queueApi.data?.pendentes) ? queueApi.data.pendentes : []), [queueApi.data])
+  const reviewRows = useMemo(() => (Array.isArray(queueApi.data?.pedidosRevisao) ? queueApi.data.pedidosRevisao : [])
+    .filter((row) => (!examKey || row.examKey === examKey) && (!applicationId || String(row.applicationId || '') === applicationId)), [queueApi.data, examKey, applicationId])
   const exams = useMemo(() => {
     const map = new Map()
     allPending.forEach((entry) => map.set(entry.examKey, { examKey: entry.examKey, prova: entry.prova || entry.examKey, count: (map.get(entry.examKey)?.count || 0) + 1 }))
@@ -295,6 +302,10 @@ export default function CorrecaoPage() {
   const [saving, setSaving] = useState(false)
   const [done, setDone] = useState(null)
   const [reasonFor, setReasonFor] = useState(null) // { concluir }
+  // Resposta aos pedidos de revisão da entrega aberta: { [requestId]: texto }.
+  const [replies, setReplies] = useState({})
+  const [replyErrors, setReplyErrors] = useState({})
+  const [replying, setReplying] = useState('')
   const loadRef = useRef(0)
   // Há mudanças não gravadas? Lido pelo useBlocker na hora da navegação; applyDetail zera
   // na hora (o endereço muda logo depois de concluir, antes de a tela redesenhar).
@@ -312,6 +323,8 @@ export default function CorrecaoPage() {
     setErrors({})
     setFormError('')
     setConflict(false)
+    setReplies({})
+    setReplyErrors({})
   }
 
   async function loadDetail(id) {
@@ -344,7 +357,8 @@ export default function CorrecaoPage() {
   const missing = missingQuestions(questoes, draft)
   const teacherCount = questoes.filter((question) => needsTeacher(question) && !question.annulled).length
   const readOnly = !canWrite
-  unsavedRef.current = dirty && !readOnly
+  const replyDirty = Object.values(replies).some((text) => String(text || '').trim())
+  unsavedRef.current = (dirty || replyDirty) && !readOnly
 
   // Qualquer troca de endereço (outra entrega, outra prova, o menu, o sino, o voltar do
   // navegador) com mudanças não gravadas para no diálogo "Sair sem salvar?".
@@ -380,7 +394,7 @@ export default function CorrecaoPage() {
 
   // Fechar ou recarregar a aba: o navegador pergunta (o texto é dele).
   useEffect(() => {
-    if (!dirty || readOnly) return undefined
+    if ((!dirty && !replyDirty) || readOnly) return undefined
     const warn = (event) => {
       event.preventDefault()
       event.returnValue = ''
@@ -388,7 +402,7 @@ export default function CorrecaoPage() {
     }
     window.addEventListener('beforeunload', warn)
     return () => window.removeEventListener('beforeunload', warn)
-  }, [dirty, readOnly])
+  }, [dirty, replyDirty, readOnly])
 
   function go(next) {
     if (typeof next === 'function') next()
@@ -480,6 +494,30 @@ export default function CorrecaoPage() {
     }
   }
 
+  // Responde o pedido de revisão aberto (POST .../review-requests/:id/answer). A nota já
+  // foi mudada (ou não) pelos pontos; o servidor diz se mudou.
+  async function answerReview(reviewRequest) {
+    if (!detail || replying) return
+    const text = String(replies[reviewRequest.id] || '').trim()
+    if (!text) {
+      setReplyErrors((current) => ({ ...current, [reviewRequest.id]: 'Escreva a resposta para o aluno.' }))
+      return
+    }
+    setReplying(reviewRequest.id)
+    setReplyErrors((current) => ({ ...current, [reviewRequest.id]: undefined }))
+    try {
+      const result = await api.post(`/api/admin/submissions/${encodeURIComponent(detail.submissionId)}/review-requests/${encodeURIComponent(reviewRequest.id)}/answer`, { resposta: text })
+      setDetail((current) => (current && String(current.submissionId) === String(detail.submissionId) ? { ...current, pedidosRevisao: result.pedidosRevisao || current.pedidosRevisao } : current))
+      setReplies((current) => { const next = { ...current }; delete next[reviewRequest.id]; return next })
+      toast?.success?.(result?.pedido?.notaMudou ? 'Resposta enviada. O aluno vê a resposta e a nota nova.' : 'Resposta enviada. O aluno vê a resposta; a nota ficou como estava.')
+      queueApi.refetch?.()
+    } catch (error) {
+      setReplyErrors((current) => ({ ...current, [reviewRequest.id]: error?.message || 'Não foi possível enviar a resposta.' }))
+    } finally {
+      setReplying('')
+    }
+  }
+
   const nextInQueue = () => {
     const rest = queue.filter((entry) => String(entry.submissionId) !== String(detail?.submissionId))
     const after = queue.slice(Math.max(position, 0) + 1).find((entry) => String(entry.submissionId) !== String(detail?.submissionId))
@@ -504,7 +542,7 @@ export default function CorrecaoPage() {
       <PageHeader
         title="Corrigir provas"
         helpTopic="correcao"
-        subtitle={`${courseName || courseId} · ${className} · ${queue.length === 1 ? '1 entrega aguardando' : `${queue.length} entregas aguardando`}`}
+        subtitle={`${courseName || courseId} · ${className} · ${queue.length === 1 ? '1 entrega aguardando' : `${queue.length} entregas aguardando`}${reviewRows.length ? ` · ${reviewRows.length === 1 ? '1 pedido de revisão' : `${reviewRows.length} pedidos de revisão`}` : ''}`}
       >
         <Button variant="ghost" icon={ArrowLeft} onClick={() => go(() => navigate('/resultados'))}>Resultados</Button>
       </PageHeader>
@@ -533,12 +571,14 @@ export default function CorrecaoPage() {
         )}
       </div>
 
+      <ReviewQueueList rows={reviewRows} selectedId={selectedId} anonymous={anonymous} onSelect={selectSubmission} />
+
       {queueApi.loading && !queueApi.data ? (
         <div className="flex min-h-40 items-center justify-center gap-3 text-muted"><Loader2 size={20} className="animate-spin text-primary" /> Carregando a fila...</div>
       ) : queueApi.error ? (
         <p role="alert" className="rounded-lg bg-danger-soft px-3 py-2 text-sm text-danger">{queueApi.error.message || 'Não foi possível carregar a fila.'}</p>
       ) : !selectedId ? (
-        <EmptyState icon={CheckCircle2} title="Nenhuma prova aguardando correção" description="Quando um aluno entregar uma prova com questão dissertativa (ou outra que o sistema não corrige sozinho), ela aparece aqui." />
+        <EmptyState icon={CheckCircle2} title="Nenhuma prova aguardando correção" description={reviewRows.length ? 'Toque num pedido de revisão acima para abrir a entrega e responder ao aluno.' : 'Quando um aluno entregar uma prova com questão dissertativa (ou outra que o sistema não corrige sozinho), ela aparece aqui.'} />
       ) : (
         <div className={`grid gap-5 ${queue.length > 0 ? 'lg:grid-cols-[15rem_minmax(0,1fr)]' : ''}`}>
           {queue.length > 0 && (
@@ -583,6 +623,20 @@ export default function CorrecaoPage() {
                     {detail.situacao === 'concluida' ? <>Nota: <b className="text-text">{fmtScore(detail.score)}</b>{detail.gradePublished ? ' · publicada para o aluno' : ' · ainda não publicada'}</> : <>{teacherCount === 1 ? '1 questão espera' : `${teacherCount} questões esperam`} a sua correção. A nota sai quando você concluir.</>}
                   </p>
                 </header>
+
+                <ReviewRequestsBox
+                  requests={detail.pedidosRevisao}
+                  questoes={questoes}
+                  readOnly={readOnly}
+                  replies={replies}
+                  errors={replyErrors}
+                  sending={replying}
+                  onReplyChange={(id, text) => {
+                    setReplies((current) => ({ ...current, [id]: text }))
+                    setReplyErrors((current) => ({ ...current, [id]: undefined }))
+                  }}
+                  onAnswer={answerReview}
+                />
 
                 {done && (
                   <div role="status" className="rounded-xl border border-success/30 bg-success-soft p-4">
@@ -667,7 +721,7 @@ export default function CorrecaoPage() {
         open={leaving}
         onClose={stayHere}
         title="Sair sem salvar?"
-        message="Os pontos e comentários que você digitou nesta entrega ainda não foram gravados."
+        message={dirty ? 'Os pontos e comentários que você digitou nesta entrega ainda não foram gravados.' : 'A resposta ao pedido de revisão que você digitou ainda não foi enviada.'}
         confirmLabel="Sair sem salvar"
         cancelLabel="Continuar corrigindo"
         tone="danger"

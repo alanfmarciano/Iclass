@@ -25,10 +25,19 @@
 // esperava o professor), grade_item_override (questão corrigida pelo sistema, com motivo)
 // e grade_correction_completed (nota antes e depois).
 //
-// Permissão page.results para as três (adminPermissions.js: /corrections e a regra de
+// - POST /api/admin/submissions/:id/review-requests/:requestId/answer
+//   { resposta } (P3-S5 / A19, D13): responde o pedido de revisão aberto do aluno. A
+//   mudança de nota, quando há, vem antes pela rota da correção; notaMudou é calculado pelo
+//   histórico da nota (utils/examReviewRequests.js). 409 com o pedido já respondido e
+//   class_closed (assertClassOpen). Auditoria grade_review_answered (sem o texto).
+//   A fila (GET /corrections) traz também os pedidos abertos (pedidosRevisao) e a entrega
+//   (GET .../correction) traz todos os pedidos dela, com a resposta e quem respondeu.
+//
+// Permissão page.results para todas (adminPermissions.js: /corrections e a regra de
 // /submissions); a Coordenação, só de leitura, recebe os GET. O escopo é o de Resultados
-// (filterSubmissionsForAdmin). A fila "Precisa de você" ganha o item "provas aguardando
-// correção" (provedor 'correcoes-de-prova' do studentFeeds).
+// (filterSubmissionsForAdmin). A fila "Precisa de você" ganha os itens "provas aguardando
+// correção" (provedor 'correcoes-de-prova' do studentFeeds) e "pedidos de revisão"
+// (provedor 'revisoes-de-nota').
 const express = require('express');
 const db = require('../database.js');
 const {
@@ -56,8 +65,19 @@ const { body, bool, dict, int, num, shape, str } = require('../utils/inputSchema
 const { integrityDecision, isArchived, isAwaitingCorrection, normalizeScore } = require('../utils/submissionAttempts.js');
 const studentFeeds = require('../utils/studentFeeds.js');
 const { displayName, normalizeEmail } = require('../utils/students.js');
+const {
+    REVIEW_ANSWER_MAX,
+    answerReviewRequest,
+    openReviewRequest,
+    reviewRequestsForTeacher,
+} = require('../utils/examReviewRequests.js');
 
 const QUEUE_PROVIDER_ID = 'correcoes-de-prova';
+const REVIEW_QUEUE_PROVIDER_ID = 'revisoes-de-nota';
+
+const REVIEW_ANSWER_SCHEMA = body({
+    resposta: str({ max: REVIEW_ANSWER_MAX, nullable: true, label: 'resposta' }),
+});
 
 const CORRECTION_SCHEMA = body({
     versao: int({ min: 0, max: 1000000, coerce: true, required: true, label: 'versão da correção' }),
@@ -159,8 +179,65 @@ function queueItems(ctx) {
     }];
 }
 
+// Pedidos de revisão abertos (P3-S5 / A19) das entregas da turma, dos alunos do escopo de
+// quem vê. Um só leva direto à entrega na tela Corrigir.
+function openReviewRows(submissions) {
+    return submissions
+        .map(submission => ({ submission, request: openReviewRequest(submission) }))
+        .filter(row => row.request);
+}
+
+function reviewQueueItems(ctx) {
+    const cls = ctx && ctx.cls;
+    if (!cls || !cls.name || !ctx.memory) return [];
+    const scoped = scopeSubmissionsToContext((ctx.memory.submissions || []).filter(item => item && openReviewRequest(item)), {
+        courseId: String(cls.courseId || ''),
+        studentClass: String(cls.name),
+        students: ctx.memory.students || [],
+        classes: ctx.memory.classes || [],
+    });
+    const emails = ctx.emails instanceof Set ? ctx.emails : null;
+    const rows = openReviewRows(scoped.filter(item => !emails || emails.has(normalizeEmail(item?.student?.email))));
+    if (!rows.length) return [];
+    const oldest = Math.min(...rows.map(row => Number(row.request.criadoEm) || Date.now()));
+    return [{
+        id: 'pedidos_de_revisao',
+        tipo: 'pedidos_de_revisao',
+        titulo: rows.length === 1 ? 'Pedido de revisão de nota' : 'Pedidos de revisão de nota',
+        detalhe: rows.length === 1
+            ? `em "${examTitle(rows[0].submission.examKey, { evaluations: ctx.memory.evaluations || {} })}" · Responder`
+            : `de ${rows.length} entregas · Responder`,
+        count: rows.length,
+        tone: 'warning',
+        href: rows.length === 1
+            ? `/resultados/correcao?submissionId=${encodeURIComponent(String(rows[0].submission.id))}`
+            : '/resultados/correcao',
+        permissao: 'page.results',
+        // Responder é ação: a Coordenação (só consulta) não recebe o item.
+        somenteQuemAltera: true,
+        at: Number.isFinite(oldest) ? oldest : undefined,
+    }];
+}
+
 function registerCorrectionFeeds() {
     studentFeeds.registerInstructorQueueProvider({ id: QUEUE_PROVIDER_ID, items: queueItems });
+    studentFeeds.registerInstructorQueueProvider({ id: REVIEW_QUEUE_PROVIDER_ID, items: reviewQueueItems });
+}
+
+// Pedido aberto como a fila da tela Corrigir mostra (sem o texto: ele aparece ao abrir a
+// entrega).
+function reviewQueueRow(submission, request) {
+    return {
+        submissionId: submission.id,
+        requestId: request.id,
+        aluno: studentOf(submission),
+        examKey: submission.examKey,
+        prova: examTitle(submission.examKey, { evaluations: db.memory.evaluations || {} }),
+        applicationId: submission.applicationId || null,
+        attemptNumber: submission.attemptNumber || 1,
+        questionNumber: request.questionNumber ?? null,
+        criadoEm: request.criadoEm || null,
+    };
 }
 
 function createAdminCorrectionsRouter() {
@@ -200,7 +277,13 @@ function createAdminCorrectionsRouter() {
                         versao: correctionSummary(item).versao,
                     };
                 });
-            res.json({ success: true, pendentes, total: pendentes.length });
+            // Pedidos de revisão abertos (P3-S5 / A19), do mais antigo para o mais novo, com
+            // os mesmos filtros (a entrega pode já estar com a correção concluída).
+            const pedidosRevisao = openReviewRows(scoped
+                .filter(item => (!applicationId || String(item.applicationId || '') === applicationId) && (!examKey || item.examKey === examKey)))
+                .sort((a, b) => (Number(a.request.criadoEm) || 0) - (Number(b.request.criadoEm) || 0))
+                .map(row => reviewQueueRow(row.submission, row.request));
+            res.json({ success: true, pendentes, total: pendentes.length, pedidosRevisao });
         });
     });
 
@@ -226,6 +309,7 @@ function createAdminCorrectionsRouter() {
                 integrity: integrityDecision(submission),
                 ...correctionSummary(submission),
                 questoes,
+                pedidosRevisao: reviewRequestsForTeacher(submission),
             });
         });
     });
@@ -309,6 +393,42 @@ function createAdminCorrectionsRouter() {
                 reaberta: applied.reopened === true,
                 ...correctionSummary(draft),
                 questoes: correctionQuestionRows(draft, { ...context, withAnswerKey: canReadQuestionAnswerKey(matchedAdmin) }),
+                pedidosRevisao: reviewRequestsForTeacher(draft),
+            });
+        });
+    });
+
+    router.post('/api/admin/submissions/:id/review-requests/:requestId/answer', (req, res) => {
+        validateAdmin(req, res, async (config, matchedAdmin) => {
+            if (!REVIEW_ANSWER_SCHEMA.check(req, res)) return;
+            const submission = scopedSubmission(matchedAdmin, req.params.id);
+            if (!submission) return res.status(404).json({ error: 'Entrega não encontrada.' });
+            // Turma encerrada não recebe resposta de revisão (sem efeito até o B10; C5).
+            if (!assertClassOpen(classOfSubmission(db.memory, submission), { res })) return;
+            const answered = answerReviewRequest(submission, req.params.requestId, {
+                resposta: req.body.resposta,
+                by: actorOf(matchedAdmin),
+                now: Date.now(),
+            });
+            if (!answered.ok) return res.status(answered.status).json(answered.body);
+            const title = examTitle(submission.examKey, { evaluations: db.memory.evaluations || {} });
+            recordGradeAudit(db.memory, {
+                req,
+                actor: matchedAdmin,
+                submission,
+                action: 'grade_review_answered',
+                field: answered.request.questionNumber ? `Questão ${answered.request.questionNumber}` : 'Prova toda',
+                oldValue: `${title}: pedido de revisão aberto`,
+                newValue: answered.request.notaMudou ? `respondido · a nota mudou (${gradeLabel(normalizeScore(submission.score))})` : 'respondido · nota mantida',
+                details: { requestId: answered.request.id, notaMudou: answered.request.notaMudou },
+            });
+            // submissions só cresce (append): a entrega antiga mudada vai pela gravação completa.
+            await db.save();
+            res.json({
+                success: true,
+                submissionId: submission.id,
+                pedido: reviewRequestsForTeacher({ pedidosRevisao: [answered.request] })[0],
+                pedidosRevisao: reviewRequestsForTeacher(submission),
             });
         });
     });
@@ -318,7 +438,9 @@ function createAdminCorrectionsRouter() {
 
 module.exports = {
     QUEUE_PROVIDER_ID,
+    REVIEW_QUEUE_PROVIDER_ID,
     createAdminCorrectionsRouter,
     queueItems,
     registerCorrectionFeeds,
+    reviewQueueItems,
 };

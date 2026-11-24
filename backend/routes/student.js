@@ -43,7 +43,8 @@ const studentFeeds = require('../utils/studentFeeds.js');
 // ao carregar, para o sino abaixo juntar os itens dele.
 require('../utils/gradeChangeNotices.js');
 const attendanceUtil = require('../utils/attendance.js');
-const { lessonsForDate } = require('../utils/academicCalendar.js');
+const { assertClassOpen, classOfSubmission, lessonsForDate } = require('../utils/academicCalendar.js');
+const examReviewRequests = require('../utils/examReviewRequests.js');
 const { studentCalendarEvents, upcomingNonSchoolDayEvents } = require('../utils/calendarFeed.js');
 const examSchedule = require('../utils/examSchedule.js');
 const settingsUtil = require('../utils/settings.js');
@@ -71,7 +72,7 @@ const {
     normalizeMaxAttempts,
 } = require('../utils/examAttempts.js');
 const { consolidateSubmissions, enrichSubmissionsWithAttemptResult, integrityDecision, isAwaitingCorrection, normalizeScore, roundGrade } = require('../utils/submissionAttempts.js');
-const { scopeSubmissionsToContext, manualAssessmentTitle, manualItemOfClass, structureModuleId } = require('../utils/gradebook.js');
+const { examTitle, recordGradeAudit, scopeSubmissionsToContext, manualAssessmentTitle, manualItemOfClass, structureModuleId } = require('../utils/gradebook.js');
 const { normalizeCriteria } = require('../utils/gradingRules.js');
 const { buildStudentGradesSummary } = require('../utils/studentReport.js');
 const { createStudentSession, hasSessionCredential, revokeStudentSession, pruneExpiredSessions, studentSessionByEmail } = require('../utils/authSessions.js');
@@ -189,6 +190,12 @@ const STUDENT_SCHEMAS = {
         reason: str({ max: 60, nullable: true, label: 'motivo' }),
         text: str({ max: 300, nullable: true, label: 'detalhe' }),
         questionNumber: int({ min: 1, max: 100000, coerce: true, nullable: true, label: 'questão' }),
+    }),
+    // Pedido de revisão da nota (fase 3, P3-S5 / A19): a questão (ou null, a prova toda) e
+    // o texto; o mínimo de letras é conferido na rota, com a mensagem dela.
+    reviewRequest: body({
+        questionNumber: int({ min: 1, max: 100000, coerce: true, nullable: true, emptyAsNull: true, label: 'questão' }),
+        texto: str({ max: 1000, nullable: true, label: 'pedido' }),
     }),
     submit: body({
         email: emailField(),
@@ -1766,6 +1773,47 @@ router.post('/api/student/report-question', validateStudentSession, STUDENT_SCHE
     res.status(201).json({ success: true, report });
 });
 
+// Pedido de revisão da nota (fase 3, P3-S5 / A19: AVA-07; D13 do desenho do P3): depois
+// de a nota ser publicada, até 7 dias, um pedido aberto por vez em cada entrega, ligado
+// ou não a uma questão. Só o dono da entrega pede (403 para a entrega de outro aluno);
+// 409 com a nota não publicada, fora do prazo ou com um pedido aberto. O professor responde
+// na tela Corrigir (adminCorrections.js). A auditoria guarda a questão, não o texto.
+router.post('/api/student/submissions/:id/review-request', validateStudentSession, STUDENT_SCHEMAS.reviewRequest, async (req, res) => {
+    const submissions = db.memory.submissions || [];
+    const submission = submissions.find(item => item && String(item.id) === String(req.params.id));
+    if (!submission) return res.status(404).json({ success: false, error: 'Entrega não encontrada.' });
+    const owner = String(submission.student?.email || '').trim().toLowerCase();
+    if (!owner || owner !== req.studentEmail) {
+        return res.status(403).json({ success: false, error: 'Esta entrega não é sua.' });
+    }
+    // Turma encerrada não recebe pedido de revisão (sem efeito até o B10; contrato C5).
+    if (!assertClassOpen(classOfSubmission(db.memory, submission), { res })) return;
+    const added = examReviewRequests.addReviewRequest(submission, {
+        questionNumber: req.body.questionNumber,
+        texto: req.body.texto,
+        now: Date.now(),
+    });
+    if (!added.ok) return res.status(added.status).json(added.body);
+    const title = examTitle(submission.examKey, { evaluations: db.memory.evaluations || {}, classes: db.memory.classes || [] });
+    recordGradeAudit(db.memory, {
+        req,
+        actor: req.studentEmail,
+        submission,
+        action: 'grade_review_requested',
+        field: added.request.questionNumber ? `Questão ${added.request.questionNumber}` : 'Prova toda',
+        oldValue: title,
+        newValue: 'pedido de revisão aberto',
+        details: { requestId: added.request.id, questionNumber: added.request.questionNumber },
+    });
+    // submissions só cresce (append): a entrega antiga mudada vai pela gravação completa.
+    await db.save();
+    res.status(201).json({
+        success: true,
+        pedido: examReviewRequests.reviewRequestsForStudent({ pedidosRevisao: [added.request] })[0],
+        revisao: examReviewRequests.reviewEligibility(submission),
+    });
+});
+
 router.post('/api/student/submit', validateStudentSession, STUDENT_SCHEMAS.submit, async (req, res) => {
     const { student = {}, studentClass: bodyStudentClass, courseId: bodyCourseId, examKey, applicationId, attemptId, answers: rawAnswers, questionNumbers, examConfigVersion, auto } = req.body;
     if (!examKey || !rawAnswers || typeof rawAnswers !== 'object' || Array.isArray(rawAnswers)) {
@@ -2160,6 +2208,9 @@ router.post('/api/student/my-submissions', validateStudentSession, STUDENT_SCHEM
             const sanitized = {
                 ...sanitizeSubmissionForStudent(s, canViewAnswerKey),
                 answerKeyReleased: canViewAnswerKey,
+                // Pedido de revisão (P3-S5 / A19): se o aluno pode pedir agora, até quando e,
+                // quando não pode, o motivo (a tela mostra o botão ou o aviso).
+                revisao: examReviewRequests.reviewEligibility(s),
                 // Nome legível da prova (o aluno via a chave técnica "Avaliacao_FUTEC_1").
                 examTitle: studentApplicationLabel({ examKey: s.examKey }, cls)
             };

@@ -21,6 +21,7 @@ const { examFamilyIndex } = require('./utils/examFamily.js');
 const { ensureAttemptDraw, isPerStudentDraw } = require('./utils/examDraw.js');
 const { answerIdScope, studentAlternatives, submissionWithSeenLetters } = require('./utils/examAnswerIds.js');
 const { integrityDecision, isAwaitingCorrection } = require('./utils/submissionAttempts.js');
+const { reviewRequestsForStudent } = require('./utils/examReviewRequests.js');
 const { answerKeyText } = require('./utils/examScoring.js');
 const { recordBackupAudit, isBackupRestoreRequest } = require('./utils/backupAudit.js');
 const { installProfessorResponseRedaction } = require('./utils/studentPrivacy.js');
@@ -1192,8 +1193,13 @@ function sanitizeSubmissionForStudent(rawSubmission, canViewAnswerKey) {
     // scoreHistory (notas anteriores de cada recorreção) é do professor: revelava a
     // nota antes da publicação. correcao e integrity (rascunho e motivos do professor)
     // saem e voltam só com o que o aluno pode ver, mais abaixo.
-    const { examSnapshot, scoreHistory, correcao, integrity, ...submissionWithoutSnapshot } = submission || {};
+    const { examSnapshot, scoreHistory, correcao, integrity, pedidosRevisao, ...submissionWithoutSnapshot } = submission || {};
     const safeGrade = { ...submissionWithoutSnapshot, gradePublished };
+    // Pedidos de revisão da nota (P3-S5 / A19): os do aluno, com a resposta do professor,
+    // sem a conta de quem respondeu.
+    if (Array.isArray(pedidosRevisao) && pedidosRevisao.length) {
+        safeGrade.pedidosRevisao = reviewRequestsForStudent(submission);
+    }
     if (awaiting) safeGrade.aguardandoCorrecao = true;
     // A anulação é decisão sobre a nota: o aluno fica sabendo com a nota publicada.
     if (decision && submission.gradePublished === true) safeGrade.anulada = decision;

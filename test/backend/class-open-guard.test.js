@@ -65,6 +65,10 @@ const ROTAS_QUE_GRAVAM = [
     // Correção manual no servidor (A9, P3-S4a): grava pontos, comentários e a conclusão
     // da correção e recalcula a nota da entrega.
     ['adminCorrections.js', 'POST', '/api/admin/submissions/:id/correction'],
+    // Pedido de revisão da nota (A19, P3-S5): o aluno pede e o professor responde; os dois
+    // gravam na entrega (pedidosRevisao), e a turma encerrada não recebe nenhum.
+    ['student.js', 'POST', '/api/student/submissions/:id/review-request'],
+    ['adminCorrections.js', 'POST', '/api/admin/submissions/:id/review-requests/:requestId/answer'],
     // Dias não letivos (B3 / P2-S5): o dia de uma turma marca a presença do login dela
     // (naoLetivoId); a turma do dia (de antes e de depois, no update) passa pelo portão.
     // O dia de curso, escola ou instituição chama com null (vale para muitas turmas; a
@@ -136,6 +140,9 @@ const DIRECT_WRITE_MARKERS = [
     /only:\s*\[[^\]]*['"]assignmentSubmissions['"]/,
     // Plano de avaliação da turma e avaliações manuais (B6): gravam classes[].avaliacao.
     /\bsaveClassPlan\(/,
+    // Pedido de revisão da nota (A19): gravado e respondido na entrega (pedidosRevisao).
+    /\.pedidosRevisao\.push\(/,
+    /\banswerReviewRequest\(/,
 ];
 
 const UTILS_DIR = path.join(__dirname, '../../backend/utils');

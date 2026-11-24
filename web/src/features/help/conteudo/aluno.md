@@ -118,6 +118,10 @@ O botão **Baixar prova (PDF)** gera a mesma revisão para imprimir ou guardar.
 
 Se o professor descobrir, depois da prova, que a resposta certa de uma questão era outra, ele corrige o gabarito e as notas são recalculadas. Se a sua nota já tinha saído e mudou, o sino mostra **Nota alterada** com o número da questão na sua prova. A nota nova aparece em Provas.
 
+### Pedido de revisão da nota
+
+Se você acha que algo na correção está errado, abra a prova em Provas e toque em **Pedir revisão**. Escolha a questão (ou **A prova toda**), explique o que deve ser revisto e toque em **Enviar pedido**. Dá para pedir até 7 dias depois de a nota sair, um pedido por vez. O pedido fica no resultado da prova como **Aguardando o professor**. Quando o professor responder, o sino mostra **Seu pedido de revisão foi respondido** e a resposta aparece no resultado, com **a nota mudou** ou **nota mantida**. Sempre que uma nota que já saiu muda, o sino também mostra **Nota alterada**.
+
 ## Atividades {#atividades}
 
 Em **Atividades** ficam os trabalhos que o professor pediu, com o prazo. Elas aparecem em **A fazer**, **Enviadas** e **Devolvidas**, e as que estão esperando o seu envio também aparecem na **Início**.

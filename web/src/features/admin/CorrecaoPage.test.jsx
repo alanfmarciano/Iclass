@@ -386,3 +386,63 @@ describe('Corrigir provas · formulário (correctionForm)', () => {
     expect(queueLabel({ aluno: { name: 'Ana' } }, 2, { anonymous: true })).toBe('Aluno 3')
   })
 })
+
+describe('Pedidos de revisão na tela Corrigir (A19)', () => {
+  const OPEN = { id: 'rev_1', questionNumber: 2, texto: 'Acho que minha resposta da 2 merecia mais.', criadoEm: Date.parse('2026-11-22T10:00:00Z'), situacao: 'aberto', resposta: '', notaMudou: false, respondidoPor: null, respondidoEm: null }
+
+  function withReviews() {
+    mocks.get.mockImplementation(async (path) => {
+      if (path.startsWith('/api/admin/corrections')) {
+        return { success: true, total: 0, pendentes: [], pedidosRevisao: [{ submissionId: 's9', requestId: 'rev_1', aluno: { email: 'caio@x.local', name: 'Caio Reis' }, examKey: 'P1', prova: 'Prova 1', questionNumber: 2, criadoEm: OPEN.criadoEm }] }
+      }
+      const match = path.match(/submissions\/([^/]+)\/correction/)
+      if (match) return correction(decodeURIComponent(match[1]), { aluno: { email: 'caio@x.local', name: 'Caio Reis' }, situacao: 'concluida', gradePublished: true, score: 70, pedidosRevisao: [OPEN] })
+      return {}
+    })
+  }
+
+  it('[UC-CORRECAO-001] o pedido aberto aparece no topo; abrir a entrega mostra o texto e a resposta vai para o servidor', async () => {
+    const user = userEvent.setup()
+    withReviews()
+    mocks.post.mockResolvedValue({ success: true, submissionId: 's9', pedido: { ...OPEN, situacao: 'respondido', resposta: 'A nota está certa.', respondidoPor: 'prof@x.local', respondidoEm: Date.now() }, pedidosRevisao: [{ ...OPEN, situacao: 'respondido', resposta: 'A nota está certa.', respondidoPor: 'prof@x.local', respondidoEm: Date.now() }] })
+    renderPage()
+    const list = await screen.findByRole('region', { name: 'Pedidos de revisão' })
+    expect(list).toHaveTextContent('1 pedido de revisão de nota')
+    expect(screen.getByText(/1 pedido de revisão$/)).toBeInTheDocument()
+    expect(screen.getByText('Toque num pedido de revisão acima para abrir a entrega e responder ao aluno.')).toBeInTheDocument()
+    await user.click(within(list).getByRole('button', { name: /Caio Reis/ }))
+    expect(await screen.findByRole('heading', { name: 'Caio Reis' })).toBeInTheDocument()
+    expect(screen.getByTestId('where')).toHaveTextContent('submissionId=s9')
+    const box = screen.getByRole('region', { name: 'Pedidos de revisão do aluno' })
+    // A questão pela posição na prova do aluno (a mesma dos cartões de correção).
+    expect(box).toHaveTextContent('Questão 2')
+    expect(box).toHaveTextContent('Acho que minha resposta da 2 merecia mais.')
+    const send = within(box).getByRole('button', { name: 'Responder ao aluno' })
+    expect(send).toBeDisabled()
+    await user.type(within(box).getByLabelText('Resposta para o aluno'), 'A nota está certa.')
+    await user.click(send)
+    await waitFor(() => expect(mocks.post).toHaveBeenCalledWith('/api/admin/submissions/s9/review-requests/rev_1/answer', { resposta: 'A nota está certa.' }))
+    expect(await within(box).findByText('Respondido · nota mantida')).toBeInTheDocument()
+    expect(box).toHaveTextContent('Resposta de prof@x.local')
+    expect(mocks.toast.success).toHaveBeenCalledWith('Resposta enviada. O aluno vê a resposta; a nota ficou como estava.')
+  })
+
+  it('[UC-CORRECAO-001] resposta digitada e não enviada pede confirmação ao sair; a Coordenação vê sem o campo', async () => {
+    const user = userEvent.setup()
+    withReviews()
+    renderPage('/resultados/correcao?submissionId=s9')
+    const box = await screen.findByRole('region', { name: 'Pedidos de revisão do aluno' })
+    await user.type(within(box).getByLabelText('Resposta para o aluno'), 'Vou rever.')
+    await user.click(screen.getByRole('link', { name: 'Chamada' }))
+    const dialog = await screen.findByRole('dialog')
+    expect(dialog).toHaveTextContent('A resposta ao pedido de revisão que você digitou ainda não foi enviada.')
+    expect(screen.getByTestId('where')).toHaveTextContent('/resultados/correcao')
+    cleanup()
+
+    mocks.auth = { role: 'coordenacao', accountRole: 'coordenacao', readOnly: true, effectivePermissions: ['page.results'] }
+    renderPage('/resultados/correcao?submissionId=s9')
+    const readOnlyBox = await screen.findByRole('region', { name: 'Pedidos de revisão do aluno' })
+    expect(within(readOnlyBox).queryByLabelText('Resposta para o aluno')).not.toBeInTheDocument()
+    expect(readOnlyBox).toHaveTextContent('Quem responde é o professor da turma.')
+  })
+})
